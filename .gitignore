@@ -1,0 +1,13 @@
+/target
+/gen
+/dist
+/.tauri/*.key
+/.tauri/*.key.pub
+/frontend/node_modules
+/frontend/dist
+*.tsbuildinfo
+/frontend/vite.config.js
+/frontend/vite.config.d.ts
+/.devicehub
+.DS_Store
+*.log

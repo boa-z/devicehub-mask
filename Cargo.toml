@@ -1,0 +1,30 @@
+[package]
+name = "devicehub-mask"
+version = "0.1.0"
+edition = "2024"
+description = "Tauri 2 iOS game control workspace over CoreDevice"
+license = "MIT"
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
+futures-util = "0.3"
+idevice = { version = "0.1.63", features = ["full"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
+plist = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "sync", "process", "net", "signal", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+turbojpeg = "1.4"
+uuid = { version = "1", features = ["v4"] }

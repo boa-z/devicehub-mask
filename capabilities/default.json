@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the main control window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-is-always-on-top",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-fullscreen",
+    "process:allow-restart",
+    "updater:default"
+  ]
+}

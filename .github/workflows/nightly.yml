@@ -1,0 +1,246 @@
+name: Verify and Nightly DMG
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-14
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Verify source
+        run: |
+          npm --prefix frontend run lint
+          npm --prefix frontend test
+          npm --prefix frontend run build
+          cargo fmt --all -- --check
+          cargo test --locked
+          cargo clippy --all-targets --locked -- -D warnings
+          bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh
+
+      - name: Build desktop application
+        run: frontend/node_modules/.bin/tauri build --debug --no-bundle
+
+  build-macos:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Install Universal build tools
+        run: brew install nasm
+
+      - name: Read version metadata
+        id: version
+        shell: bash
+        run: |
+          APP_VERSION="$(node -p "require('./tauri.conf.json').version")"
+          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
+          VERSION_PREFIX="${APP_VERSION%.*}"
+          UPDATE_VERSION="${VERSION_PREFIX}.${BUILD_NUMBER}"
+          ARTIFACT="devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}.dmg"
+          UPDATER_ARTIFACT="devicehub-mask_${APP_VERSION}-${BUILD_NUMBER}_universal.app.tar.gz"
+          {
+            echo "app_version=${APP_VERSION}"
+            echo "build_number=${BUILD_NUMBER}"
+            echo "update_version=${UPDATE_VERSION}"
+            echo "artifact=${ARTIFACT}"
+            echo "updater_artifact=${UPDATER_ARTIFACT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Tauri application
+        id: build
+        shell: bash
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          CREATE_UPDATER=false
+          SIGN_ARGS=(--no-sign)
+          if [[ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
+            CREATE_UPDATER=true
+            SIGN_ARGS=()
+            echo "updater_enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is not configured; updater artifacts will be skipped"
+            echo "updater_enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          BUILD_CONFIG=$(jq -nc \
+            --arg version "$UPDATE_VERSION" \
+            --arg bundleVersion "$BUILD_NUMBER" \
+            --argjson createUpdaterArtifacts "$CREATE_UPDATER" \
+            '{version: $version, bundle: {createUpdaterArtifacts: $createUpdaterArtifacts, macOS: {bundleVersion: $bundleVersion, signingIdentity: "-"}}}')
+          frontend/node_modules/.bin/tauri build \
+            --target universal-apple-darwin \
+            --bundles app \
+            "${SIGN_ARGS[@]}" \
+            --ignore-version-mismatches \
+            --config "$BUILD_CONFIG"
+
+      - name: Stamp app and package DMG
+        shell: bash
+        env:
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          BUNDLE_VERSION: ${{ steps.version.outputs.update_version }}
+          ARTIFACT: ${{ steps.version.outputs.artifact }}
+        run: |
+          APP_PATH="target/universal-apple-darwin/release/bundle/macos/DeviceHub Mask.app" \
+            scripts/package-dmg.sh
+
+      - name: Verify packaged application
+        shell: bash
+        run: |
+          APP_PATH="dist/dmg/DeviceHub Mask.app"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          test "$(lipo -archs "$APP_PATH/Contents/MacOS/devicehub-mask")" = "x86_64 arm64"
+
+      - name: Prepare signed updater manifest
+        if: steps.build.outputs.updater_enabled == 'true'
+        shell: bash
+        env:
+          UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
+          UPDATER_ARTIFACT: ${{ steps.version.outputs.updater_artifact }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+        run: |
+          BUNDLE_DIR="target/universal-apple-darwin/release/bundle/macos"
+          SOURCE_ARCHIVE=$(find "$BUNDLE_DIR" -maxdepth 1 -name '*.app.tar.gz' -print -quit)
+          test -n "$SOURCE_ARCHIVE"
+          test -s "${SOURCE_ARCHIVE}.sig"
+          cp "$SOURCE_ARCHIVE" "dist/${UPDATER_ARTIFACT}"
+          cp "${SOURCE_ARCHIVE}.sig" "dist/${UPDATER_ARTIFACT}.sig"
+          UPDATE_ARCHIVE="dist/${UPDATER_ARTIFACT}" \
+          SIGNATURE_FILE="dist/${UPDATER_ARTIFACT}.sig" \
+          RELEASE_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly" \
+          NOTES="DeviceHub Mask nightly build ${BUILD_NUMBER} (${GITHUB_SHA})." \
+            scripts/generate-update-manifest.sh
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: devicehub-mask-${{ steps.version.outputs.app_version }}-${{ steps.version.outputs.build_number }}
+          path: |
+            dist/${{ steps.version.outputs.artifact }}
+            dist/${{ steps.version.outputs.artifact }}.sha256
+            dist/*.app.tar.gz
+            dist/*.app.tar.gz.sig
+            dist/latest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish rolling nightly release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
+          ARTIFACT: ${{ steps.version.outputs.artifact }}
+          UPDATER_ARTIFACT: ${{ steps.version.outputs.updater_artifact }}
+        run: |
+          git tag --force nightly "$GITHUB_SHA"
+          git push origin refs/tags/nightly --force
+
+          NOTES=$(cat <<EOF
+          Automated DeviceHub Mask nightly build.
+
+          - Version: ${APP_VERSION}
+          - Build: ${BUILD_NUMBER}
+          - Updater version: ${UPDATE_VERSION}
+          - Commit: ${GITHUB_SHA}
+          EOF
+          )
+
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release edit nightly \
+              --title "DeviceHub Mask Nightly ${APP_VERSION}+${BUILD_NUMBER}" \
+              --notes "$NOTES" \
+              --prerelease \
+              --latest=false
+            while IFS= read -r asset; do
+              test -z "$asset" || gh release delete-asset nightly "$asset" --yes
+            done < <(gh release view nightly --json assets --jq '.assets[].name')
+          else
+            gh release create nightly \
+              --title "DeviceHub Mask Nightly ${APP_VERSION}+${BUILD_NUMBER}" \
+              --notes "$NOTES" \
+              --prerelease \
+              --latest=false
+          fi
+
+          ASSETS=("dist/${ARTIFACT}" "dist/${ARTIFACT}.sha256")
+          if [[ -f "dist/latest.json" ]]; then
+            ASSETS+=(
+              "dist/${UPDATER_ARTIFACT}"
+              "dist/${UPDATER_ARTIFACT}.sig"
+              "dist/latest.json"
+            )
+          fi
+          gh release upload nightly "${ASSETS[@]}" --clobber
