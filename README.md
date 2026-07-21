@@ -26,8 +26,8 @@ transport.
 - Always-visible hardware buttons with user-defined keyboard shortcuts
 - Desktop controls for always-on-top, fullscreen, and inspector visibility
 - Live decode, transmit, render, JPEG latency, and bandwidth diagnostics
-- Signed in-app nightly updates on macOS with download progress and automatic
-  restart
+- Signed in-app nightly updates on macOS, Windows, and Linux with download
+  progress and automatic restart
 
 ## Architecture
 
@@ -55,7 +55,7 @@ boundary.
 ## Requirements
 
 - macOS with Xcode Command Line Tools, or Windows 10/11 with WebView2 and the
-  Microsoft C++ Build Tools
+  Microsoft C++ Build Tools, or a Linux desktop with WebKitGTK 4.1
 - A paired and trusted iPhone or iPad
 - Developer Mode enabled on the iOS device when required by the OS version
 - Rust stable toolchain
@@ -219,6 +219,22 @@ The installers are written below `target/release/bundle/msi` and
 `target/release/bundle/nsis`. FFmpeg and Apple Mobile Device Service remain
 runtime prerequisites and are not bundled.
 
+### Linux Build
+
+Install the Tauri 2 and native-code build dependencies on Ubuntu/Debian:
+
+```sh
+sudo apt-get install build-essential cmake nasm pkg-config libssl-dev \
+  libudev-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf ffmpeg
+frontend/node_modules/.bin/tauri build --bundles appimage,deb
+```
+
+The packages are written below `target/release/bundle/appimage` and
+`target/release/bundle/deb`. Linux device connectivity depends on a working
+usbmuxd/Apple pairing setup and has not received the same device coverage as the
+macOS and Windows paths.
+
 ### Universal macOS Build
 
 Install both targets and request a universal binary:
@@ -313,12 +329,11 @@ delete, import, and export. The active profile cannot be deleted. Profiles are
 stored as validated JSON files in the DeviceHub Mask application data directory.
 
 DeviceHub Mask can import scrcpy-mask `0.0.1` JSON files and export the current
-profile back to that format. `SingleTap` and button-based `DirectionPad` mappings
-are converted bidirectionally, including pixel-to-normalized coordinates, Bevy
-keyboard codes, and contact identities. Chord bindings and Android-specific
-mapping types such as Swipe, CastSpell, FPS, Fire, RawInput, and Script are
-reported as skipped because the current iOS mapping model has no behaviorally
-equivalent representation.
+profile back to that format. All thirteen controller types are preserved,
+including nested sequence positions, bindings, release modes, timing, and
+script fields. Saved profiles may contain more than five mappings; the runtime
+selects at most five unique active contact identities for each Universal HID
+frame.
 
 ### Hardware Button Shortcuts
 
@@ -355,18 +370,20 @@ keyboard state before resizing the window.
 
 ## CI And Nightly Releases
 
-[`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) contains two
-jobs and does not use GitHub Environments or create Deployment records:
+[`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) runs only for
+commits and manual dispatches. It does not use GitHub Environments or create
+Deployment records:
 
-- `verify` runs for every push and pull request. It checks localization and
-  frontend tests, lint, production assets, Rust formatting/tests/clippy, and
-  release-script syntax, then builds the debug desktop application without
-  access to signing secrets.
-- `build-macos` runs only for pushes to `main` and manual dispatches. It builds
-  a Universal macOS application and rolling nightly
-  release. The packaging step signs the complete bundle, verifies its sealed
-  resources, and checks that both macOS architectures are present. Workflow
-  artifacts are retained for 14 days.
+- `verify` is a fail-independent macOS, Windows, and Linux matrix. Every leg
+  runs frontend lint/tests/build, Rust format/tests/clippy, and a debug Tauri
+  application build.
+- `build-macos` produces a Universal Apple Silicon/Intel DMG and verifies the
+  complete app signature and both executable architectures.
+- `build-windows` produces x64 NSIS and MSI installers.
+- `build-linux` produces x64 AppImage and DEB packages.
+- `publish-nightly` waits for all packages, merges signed updater fragments into
+  one `latest.json`, and atomically replaces the rolling nightly release assets.
+  Per-platform and combined workflow artifacts are retained for 14 days.
 
 Nightly artifacts are published at:
 
@@ -375,16 +392,23 @@ Nightly artifacts are published at:
 Each release can contain:
 
 ```text
-devicehub-mask_<base-version>+<build>.dmg
-devicehub-mask_<base-version>+<build>.dmg.sha256
+devicehub-mask_<base-version>+<build>_universal.dmg
+devicehub-mask_<base-version>+<build>_universal.dmg.sha256
 devicehub-mask_<base-version>-<build>_universal.app.tar.gz
 devicehub-mask_<base-version>-<build>_universal.app.tar.gz.sig
+devicehub-mask_<base-version>+<build>_x64-setup.exe
+devicehub-mask_<base-version>+<build>_x64-setup.exe.sig
+devicehub-mask_<base-version>+<build>_x64.msi
+devicehub-mask_<base-version>+<build>_amd64.AppImage
+devicehub-mask_<base-version>+<build>_amd64.AppImage.sig
+devicehub-mask_<base-version>+<build>_amd64.deb
 latest.json
 ```
 
-The workflow run number becomes `CFBundleVersion`. Nightly updater versions use
-`major.minor.<run-number>` because SemVer build metadata such as `0.1.0+12` does
-not participate in update ordering.
+Installer filenames retain the base version plus build number. The workflow run
+number becomes `CFBundleVersion` on macOS, while all updater artifacts use the
+shared `major.minor.<run-number>` version because SemVer build metadata such as
+`0.1.0+12` does not participate in update ordering.
 
 ## Configure App Updates
 
@@ -417,9 +441,10 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY < .tauri/devicehub-mask.key
 gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 ```
 
-If the private-key secret is absent, CI still publishes a DMG but deliberately
-skips updater archives and `latest.json`. Losing or replacing the private key
-prevents existing installations from accepting future updates.
+If the private-key secret is absent, CI still publishes native installers for
+all platforms but deliberately skips updater signatures and `latest.json`. Losing
+or replacing the private key prevents existing installations from accepting
+future updates.
 
 At runtime the app checks the nightly endpoint shortly after startup. The
 automatic check can be disabled under **Application Settings > Updates**; this
@@ -508,8 +533,9 @@ Touch coordinates are normalized in that exact displayed space.
 
 ### Update check fails
 
-- Confirm the nightly release contains `latest.json`, the updater archive, and
-  matching `.sig` file.
+- Confirm the nightly release contains `latest.json`, the updater artifact, and
+  matching `.sig` file. Current Tauri 2 Windows and Linux updates use the NSIS
+  installer and AppImage directly; macOS uses the app archive.
 - Confirm the public key in `tauri.conf.json` matches the private CI key.
 - Verify that the installed version is lower than the `version` in
   `latest.json`.
