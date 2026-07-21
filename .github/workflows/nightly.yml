@@ -22,13 +22,13 @@ jobs:
         include:
           - name: macOS
             os: macos-14
-            tauri: frontend/node_modules/.bin/tauri
+            tauri: node_modules/.bin/tauri
           - name: Windows
             os: windows-latest
-            tauri: frontend/node_modules/.bin/tauri.cmd
+            tauri: node_modules/.bin/tauri.cmd
           - name: Linux
             os: ubuntu-24.04
-            tauri: frontend/node_modules/.bin/tauri
+            tauri: node_modules/.bin/tauri
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -45,7 +45,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -54,6 +54,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: verify-${{ matrix.name }}
+          workspaces: src-tauri -> target
 
       - name: Install Windows build tools
         if: runner.os == 'Windows'
@@ -69,17 +70,17 @@ jobs:
             build-essential cmake nasm pkg-config libssl-dev libudev-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
-      - name: Install frontend dependencies
-        run: npm --prefix frontend ci
+      - name: Install dependencies
+        run: npm ci
 
       - name: Verify source
         run: |
-          npm --prefix frontend run lint
-          npm --prefix frontend test
-          npm --prefix frontend run build
-          cargo fmt --all -- --check
-          cargo test --locked
-          cargo clippy --all-targets --locked -- -D warnings
+          npm run lint
+          npm test
+          npm run build
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 
       - name: Validate release scripts
         if: runner.os != 'Windows'
@@ -109,7 +110,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -120,17 +121,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: release-macos-universal
+          workspaces: src-tauri -> target
 
       - name: Install dependencies
         run: |
-          npm --prefix frontend ci
+          npm ci
           brew install nasm
 
       - name: Read version metadata
         id: version
         shell: bash
         run: |
-          APP_VERSION="$(node -p "require('./tauri.conf.json').version")"
+          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
           UPDATE_VERSION="${APP_VERSION%.*}.${BUILD_NUMBER}"
           {
@@ -165,7 +167,7 @@ jobs:
             --arg bundleVersion "$BUILD_NUMBER" \
             --argjson createUpdaterArtifacts "$CREATE_UPDATER" \
             '{version: $version, bundle: {createUpdaterArtifacts: $createUpdaterArtifacts, macOS: {bundleVersion: $bundleVersion, signingIdentity: "-"}}}')
-          frontend/node_modules/.bin/tauri build \
+          node_modules/.bin/tauri build \
             --target universal-apple-darwin \
             --bundles app \
             "${SIGN_ARGS[@]}" \
@@ -180,7 +182,7 @@ jobs:
           BUNDLE_VERSION: ${{ steps.version.outputs.update_version }}
           ARTIFACT: ${{ steps.version.outputs.installer }}
         run: |
-          APP_PATH="target/universal-apple-darwin/release/bundle/macos/DeviceHub Mask.app" \
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/DeviceHub Mask.app" \
             scripts/package-dmg.sh
           APP_PATH="dist/dmg/DeviceHub Mask.app"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
@@ -193,7 +195,7 @@ jobs:
           UPDATER: ${{ steps.version.outputs.updater }}
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
         run: |
-          SOURCE=$(find target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz' -print -quit)
+          SOURCE=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz' -print -quit)
           test -n "$SOURCE"
           test -s "${SOURCE}.sig"
           cp "$SOURCE" "dist/${UPDATER}"
@@ -237,7 +239,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -246,18 +248,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: release-windows-x64
+          workspaces: src-tauri -> target
 
       - name: Install build dependencies
         shell: pwsh
         run: |
           choco install cmake nasm --yes --no-progress
-          npm --prefix frontend ci
+          npm ci
 
       - name: Read version metadata
         id: version
         shell: pwsh
         run: |
-          $appVersion = node -p "require('./tauri.conf.json').version"
+          $appVersion = node -p "require('./src-tauri/tauri.conf.json').version"
           $buildNumber = "${env:GITHUB_RUN_NUMBER}"
           $parts = $appVersion.Split('.')
           $updateVersion = "$($parts[0]).$($parts[1]).${buildNumber}"
@@ -280,7 +283,7 @@ jobs:
           if (-not $createUpdater) { Write-Warning "Updater signing key is not configured; signed update archive will be skipped" }
           $config = @{ version = $env:UPDATE_VERSION; bundle = @{ createUpdaterArtifacts = $createUpdater } } | ConvertTo-Json -Compress -Depth 5
           $config | Set-Content -Encoding utf8 tauri.ci.windows.json
-          & frontend/node_modules/.bin/tauri.cmd build --verbose --bundles nsis,msi --ignore-version-mismatches --config tauri.ci.windows.json
+          & node_modules/.bin/tauri.cmd build --verbose --bundles nsis,msi --ignore-version-mismatches --config tauri.ci.windows.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect Windows artifacts
@@ -291,8 +294,8 @@ jobs:
           UPDATER_ENABLED: ${{ steps.build.outputs.updater_enabled }}
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          $nsisSource = Get-ChildItem target/release/bundle -Recurse -File -Filter '*-setup.exe' | Select-Object -First 1
-          $msiSource = Get-ChildItem target/release/bundle -Recurse -File -Filter '*.msi' | Select-Object -First 1
+          $nsisSource = Get-ChildItem src-tauri/target/release/bundle -Recurse -File -Filter '*-setup.exe' | Select-Object -First 1
+          $msiSource = Get-ChildItem src-tauri/target/release/bundle -Recurse -File -Filter '*.msi' | Select-Object -First 1
           if (-not $nsisSource -or -not $msiSource) { throw 'Tauri did not produce both NSIS and MSI installers' }
           Copy-Item $nsisSource.FullName "dist/$env:NSIS"
           Copy-Item $msiSource.FullName "dist/$env:MSI"
@@ -339,7 +342,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -348,6 +351,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: release-linux-x64
+          workspaces: src-tauri -> target
 
       - name: Install build dependencies
         shell: bash
@@ -356,13 +360,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake nasm pkg-config libssl-dev libudev-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-          npm --prefix frontend ci
+          npm ci
 
       - name: Read version metadata
         id: version
         shell: bash
         run: |
-          APP_VERSION="$(node -p "require('./tauri.conf.json').version")"
+          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
           UPDATE_VERSION="${APP_VERSION%.*}.${BUILD_NUMBER}"
           {
@@ -391,7 +395,7 @@ jobs:
           fi
           BUILD_CONFIG=$(jq -nc --arg version "$UPDATE_VERSION" --argjson createUpdaterArtifacts "$CREATE_UPDATER" \
             '{version: $version, bundle: {createUpdaterArtifacts: $createUpdaterArtifacts}}')
-          frontend/node_modules/.bin/tauri build \
+          node_modules/.bin/tauri build \
             --bundles appimage,deb \
             --ignore-version-mismatches \
             --config "$BUILD_CONFIG"
@@ -404,9 +408,9 @@ jobs:
           UPDATER_ENABLED: ${{ steps.build.outputs.updater_enabled }}
         run: |
           mkdir -p dist
-          find target/release/bundle -maxdepth 3 -type f -print
-          APPIMAGE_SOURCE=$(find target/release/bundle -type f -name '*.AppImage' -print -quit)
-          DEB_SOURCE=$(find target/release/bundle -type f -name '*.deb' -print -quit)
+          find src-tauri/target/release/bundle -maxdepth 3 -type f -print
+          APPIMAGE_SOURCE=$(find src-tauri/target/release/bundle -type f -name '*.AppImage' -print -quit)
+          DEB_SOURCE=$(find src-tauri/target/release/bundle -type f -name '*.deb' -print -quit)
           test -n "$APPIMAGE_SOURCE"
           test -n "$DEB_SOURCE"
           cp "$APPIMAGE_SOURCE" "dist/${APPIMAGE}"
@@ -458,7 +462,7 @@ jobs:
         env:
           NOTES: DeviceHub Mask nightly build ${{ github.run_number }} (${{ github.sha }}).
         run: |
-          APP_VERSION="$(node -p "require('./tauri.conf.json').version")"
+          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           UPDATE_VERSION="${APP_VERSION%.*}.${GITHUB_RUN_NUMBER}" \
           NOTES="$NOTES" \
             scripts/generate-update-manifest.sh
@@ -478,7 +482,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          APP_VERSION="$(node -p "require('./tauri.conf.json').version")"
+          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           UPDATE_VERSION="${APP_VERSION%.*}.${GITHUB_RUN_NUMBER}"
           git tag --force nightly "$GITHUB_SHA"
           git push origin refs/tags/nightly --force

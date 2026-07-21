@@ -52,6 +52,21 @@ The CoreDevice session runs on a dedicated Tokio runtime because several
 `idevice` service objects cannot safely be moved through a normal `tokio::spawn`
 boundary.
 
+The repository follows the standard Tauri 2 layout:
+
+```text
+devicehub-mask/
+├── package.json          # Vite, React, and Tauri CLI scripts
+├── src/                  # React application
+├── dist/                 # generated frontend assets
+└── src-tauri/
+    ├── Cargo.toml
+    ├── tauri.conf.json
+    ├── capabilities/
+    ├── icons/
+    └── src/              # Rust desktop backend
+```
+
 ## Requirements
 
 - macOS with Xcode Command Line Tools, or Windows 10/11 with WebView2 and the
@@ -133,7 +148,7 @@ image may need to be prepared again after rebooting or upgrading the device.
 ```sh
 git clone https://github.com/boa-z/devicehub-mask.git
 cd devicehub-mask
-npm --prefix frontend ci
+npm ci
 ```
 
 `npm ci` installs both the frontend dependencies and the repository-local Tauri
@@ -158,19 +173,20 @@ setting is unrelated to USB displayservice availability and is not required.
 Start Vite, Tauri, the local stream service, and automatic Rust/frontend reload:
 
 ```sh
-npm --prefix frontend run tauri:dev
+npm run tauri:dev
 ```
 
 To request a specific device at startup, pass its UDID after `--`:
 
 ```sh
-npm --prefix frontend run tauri:dev -- -- 00008110-001624E2013A801E
+npm run tauri:dev -- -- 00008110-001624E2013A801E
 ```
 
 The development frontend runs at `http://127.0.0.1:5173` inside the Tauri
 WebView. It obtains the authenticated random backend endpoint through Tauri IPC;
-Vite does not proxy or expose the device API. The packaged application loads
-assets from the Tauri protocol instead.
+Vite does not proxy or expose the device API. Development Rust artifacts are
+isolated under `src-tauri/target/tauri-dev`; packaged and standalone debug builds
+load embedded assets from the Tauri protocol instead.
 
 Useful environment variables:
 
@@ -188,35 +204,47 @@ Build the optimized frontend, Rust binary, macOS application, and configured
 bundles:
 
 ```sh
-npm --prefix frontend run tauri:build
+npm run tauri:build
 ```
 
 Or invoke the local CLI directly when build flags are needed:
 
 ```sh
-frontend/node_modules/.bin/tauri build --bundles app
+npm run tauri -- build --bundles app
 ```
 
 The main outputs are:
 
 ```text
-target/release/devicehub-mask
-target/release/bundle/macos/DeviceHub Mask.app
-target/release/bundle/dmg/DeviceHub Mask_0.1.0_aarch64.dmg
+src-tauri/target/release/devicehub-mask
+src-tauri/target/release/bundle/macos/DeviceHub Mask.app
+src-tauri/target/release/bundle/dmg/DeviceHub Mask_0.1.0_aarch64.dmg
 ```
 
 Output names can vary slightly by Tauri CLI version and host architecture.
+
+To produce a standalone debug executable without creating an installer, run:
+
+```sh
+npm run tauri:build:debug
+./src-tauri/target/debug/devicehub-mask
+```
+
+Do not use a binary emitted by `tauri dev` as a standalone build. Development
+binaries are compiled to load `http://127.0.0.1:5173`; after Vite exits that
+WebView has no document to load. The `tauri:dev` script keeps those artifacts in
+`src-tauri/target/tauri-dev` so they cannot overwrite the standalone debug path.
 
 ### Windows Build
 
 On Windows, build the application and the configured MSI/NSIS installers with:
 
 ```powershell
-npm --prefix frontend run tauri:build
+npm run tauri:build
 ```
 
-The installers are written below `target/release/bundle/msi` and
-`target/release/bundle/nsis`. FFmpeg and Apple Mobile Device Service remain
+The installers are written below `src-tauri/target/release/bundle/msi` and
+`src-tauri/target/release/bundle/nsis`. FFmpeg and Apple Mobile Device Service remain
 runtime prerequisites and are not bundled.
 
 ### Linux Build
@@ -227,11 +255,11 @@ Install the Tauri 2 and native-code build dependencies on Ubuntu/Debian:
 sudo apt-get install build-essential cmake nasm pkg-config libssl-dev \
   libudev-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
   librsvg2-dev patchelf ffmpeg
-frontend/node_modules/.bin/tauri build --bundles appimage,deb
+npm run tauri -- build --bundles appimage,deb
 ```
 
-The packages are written below `target/release/bundle/appimage` and
-`target/release/bundle/deb`. Linux device connectivity depends on a working
+The packages are written below `src-tauri/target/release/bundle/appimage` and
+`src-tauri/target/release/bundle/deb`. Linux device connectivity depends on a working
 usbmuxd/Apple pairing setup and has not received the same device coverage as the
 macOS and Windows paths.
 
@@ -242,7 +270,7 @@ Install both targets and request a universal binary:
 ```sh
 brew install nasm
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-frontend/node_modules/.bin/tauri build \
+npm run tauri -- build \
   --target universal-apple-darwin \
   --bundles app
 ```
@@ -250,7 +278,7 @@ frontend/node_modules/.bin/tauri build \
 Universal artifacts are written below:
 
 ```text
-target/universal-apple-darwin/release/bundle/macos/
+src-tauri/target/universal-apple-darwin/release/bundle/macos/
 ```
 
 ### Reproducible DMG Packaging
@@ -260,7 +288,7 @@ The same helper used by CI can stamp an existing `.app` and create a DMG:
 ```sh
 APP_VERSION=0.1.0 \
 BUILD_NUMBER=1 \
-APP_PATH="target/release/bundle/macos/DeviceHub Mask.app" \
+APP_PATH="src-tauri/target/release/bundle/macos/DeviceHub Mask.app" \
   scripts/package-dmg.sh
 ```
 
@@ -271,12 +299,12 @@ The output is `dist/devicehub-mask_0.1.0+1.dmg` plus its SHA-256 checksum.
 Run all source checks before committing:
 
 ```sh
-npm --prefix frontend run lint
-npm --prefix frontend test
-npm --prefix frontend run build
-cargo test --locked
-cargo clippy --all-targets --locked -- -D warnings
-frontend/node_modules/.bin/tauri build --debug --no-bundle
+npm run lint
+npm test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+npm run tauri:build:debug
 bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh
 ```
 
@@ -295,20 +323,20 @@ WebView local storage key `devicehub-mask.locale`.
 Translation resources are kept in:
 
 ```text
-frontend/src/locales/en-US.ts
-frontend/src/locales/zh-CN.ts
+src/locales/en-US.ts
+src/locales/zh-CN.ts
 ```
 
 To add or change UI text, add the same key to both resources and use
-`useTranslation()` in the component. `frontend/src/i18n.test.ts` verifies that
+`useTranslation()` in the component. `src/i18n.test.ts` verifies that
 both resource trees contain the same keys. Protocol identifiers, key codes,
 profile names, and user-authored mapping labels are deliberately not translated.
 New default mapping labels are localized when a profile is first created;
 switching languages never rewrites an existing profile.
 
 The shared system font stack is declared as `--system-font` in
-`frontend/src/styles.css` and passed to Ant Design from
-`frontend/src/AppProviders.tsx`. Keep typography on this stack rather than
+`src/styles.css` and passed to Ant Design from
+`src/AppProviders.tsx`. Keep typography on this stack rather than
 adding remote or bundled fonts.
 
 ### Workspace Pages
@@ -417,7 +445,7 @@ shared `major.minor.<run-number>` version because SemVer build metadata such as
 ## Configure App Updates
 
 Tauri updater packages are cryptographically signed independently of Apple code
-signing. The committed updater public key is in `tauri.conf.json`; its private
+signing. The committed updater public key is in `src-tauri/tauri.conf.json`; its private
 key must never be committed.
 
 Generate a replacement keypair only before publishing the first compatible
@@ -425,11 +453,11 @@ release:
 
 ```sh
 mkdir -p .tauri
-frontend/node_modules/.bin/tauri signer generate \
+npm run tauri -- signer generate \
   --write-keys .tauri/devicehub-mask.key
 ```
 
-Then update `plugins.updater.pubkey` in `tauri.conf.json` and configure these
+Then update `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` and configure these
 repository-level Actions secrets under **Settings > Secrets and variables >
 Actions**:
 
@@ -468,6 +496,18 @@ should configure a Developer ID Application certificate, notarize the DMG, and
 staple the notarization ticket.
 
 ## Troubleshooting
+
+### A debug executable opens a blank window
+
+`tauri dev` intentionally compiles a WebView that loads Vite from
+`http://127.0.0.1:5173`. Running that development executable after the dev server
+stops produces a blank window. Use `npm run tauri:dev` for hot reload, or run
+`npm run tauri:build:debug` and then execute
+`src-tauri/target/debug/devicehub-mask` for an embedded, standalone frontend.
+
+The two commands use separate Cargo target directories, so switching between
+development and standalone testing does not silently replace one binary with the
+other.
 
 ### Private backend does not start
 
@@ -540,7 +580,7 @@ Touch coordinates are normalized in that exact displayed space.
 - Confirm the nightly release contains `latest.json`, the updater artifact, and
   matching `.sig` file. Current Tauri 2 Windows and Linux updates use the NSIS
   installer and AppImage directly; macOS uses the app archive.
-- Confirm the public key in `tauri.conf.json` matches the private CI key.
+- Confirm the public key in `src-tauri/tauri.conf.json` matches the private CI key.
 - Verify that the installed version is lower than the `version` in
   `latest.json`.
 

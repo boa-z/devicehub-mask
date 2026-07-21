@@ -170,7 +170,7 @@ fn spawn_backend(
     }
 }
 
-fn main() {
+pub fn run() {
     use tauri::Manager;
 
     init_tracing();

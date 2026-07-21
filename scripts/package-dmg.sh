@@ -9,7 +9,7 @@ if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-APP_PATH="${APP_PATH:-target/release/bundle/macos/DeviceHub Mask.app}"
+APP_PATH="${APP_PATH:-src-tauri/target/release/bundle/macos/DeviceHub Mask.app}"
 ARTIFACT="${ARTIFACT:-devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}.dmg}"
 BUNDLE_VERSION="${BUNDLE_VERSION:-$APP_VERSION}"
 DIST_DIR="${DIST_DIR:-dist}"
