@@ -34,9 +34,13 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .mapping-overlay { position: absolute; inset: 0; pointer-events: none; }
 .mapping-node { position: absolute; width: 48px; min-width: 32px; max-width: 96px; transform: translate(-50%, -50%); border-radius: 50%; border: 2px solid rgba(237,242,240,.72); background: rgba(18,24,24,.55); color: white; padding: 0; display: grid; place-content: center; pointer-events: none; cursor: grab; user-select: none; touch-action: none; }
 .mapping-overlay.is-editing .mapping-node { pointer-events: auto; }
-.mapping-node span { font-size: 11px; font-weight: 700; }
+.mapping-node span { max-width: 44px; padding: 2px; overflow: hidden; font-size: 9px; font-weight: 700; line-height: 1.05; text-align: center; text-overflow: ellipsis; }
 .mapping-node small { position: absolute; right: -3px; top: -5px; width: 17px; height: 17px; border-radius: 50%; background: #303839; font-size: 10px; line-height: 17px; }
 .mapping-node.dpad { border-color: #55c5e8; background: rgba(24, 98, 119, .23); }
+.mapping-node.DirectionPad, .mapping-dot.DirectionPad { border-color: #55c5e8; background-color: #2387a5; }
+.mapping-node.RepeatTap, .mapping-node.MultipleTap, .mapping-dot.RepeatTap, .mapping-dot.MultipleTap { border-color: #f0c75e; background-color: #8a6e25; }
+.mapping-node.Swipe, .mapping-node.Observation, .mapping-node.Fps, .mapping-dot.Swipe, .mapping-dot.Observation, .mapping-dot.Fps { border-color: #68a7ff; background-color: #285b9d; }
+.mapping-node.MouseCastSpell, .mapping-node.PadCastSpell, .mapping-node.CancelCast, .mapping-node.Fire, .mapping-dot.MouseCastSpell, .mapping-dot.PadCastSpell, .mapping-dot.CancelCast, .mapping-dot.Fire { border-color: #ed7e8d; background-color: #8d3340; }
 .mapping-node.selected { outline: 2px solid #f0c75e; outline-offset: 3px; }
 .mapping-node.active { border-color: #42b883; background: rgba(66,184,131,.45); box-shadow: 0 0 16px rgba(66,184,131,.55); }
 .inspector { min-width: 0; border-left: 1px solid #303638; background: #171b1c; padding: 14px; overflow-y: auto; }

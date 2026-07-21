@@ -10,6 +10,7 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-fullscreen",
     "process:allow-restart",
+    "opener:allow-open-url",
     "updater:default"
   ]
 }

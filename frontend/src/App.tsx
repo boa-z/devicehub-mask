@@ -30,8 +30,8 @@ import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { buildTouchFrame, isBoundKey, keyboardUsage, type TouchContact } from "./control";
-import { defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type StreamMetrics } from "./types";
+import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, type TouchContact } from "./control";
+import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
 const emptyStatus: DeviceStatus = { status: "", active_udid: null, error: null, orientation: "portrait", devices: [] };
 const emptyMetrics: StreamMetrics = { decoded_fps: 0, sent_fps: 0, jpeg_encode_ms: 0, megabits_per_second: 0 };
@@ -133,6 +133,8 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const orientationRef = useRef<Orientation>("portrait");
   const heldRef = useRef(new Set<string>());
+  const heldSinceRef = useRef(new Map<string, number>());
+  const mappingOffsetsRef = useRef(new Map<string, { x: number; y: number }>());
   const heldHardwareRef = useRef(new Map<string, HardwareButtonName>());
   const forwardedKeyboardRef = useRef(new Map<string, number>());
   const directTouchesRef = useRef(new Map<number, TouchContact>());
@@ -154,21 +156,25 @@ export default function App() {
   }, []);
 
   const sendFrame = useCallback((nextHeld = heldRef.current, released: TouchContact[] = []) => {
-    const contacts = [
-      ...buildTouchFrame(controlProfile.mappings, nextHeld),
+    const candidates = [
+      ...buildTouchFrame(controlProfile.mappings, nextHeld, frameSize, performance.now(), heldSinceRef.current, mappingOffsetsRef.current),
       ...directTouchesRef.current.values(),
       ...released,
     ];
+    const ordered = [...candidates.filter((contact) => contact.touching), ...candidates.filter((contact) => !contact.touching)];
+    const contacts = ordered.filter((contact, index, all) => all.findIndex((candidate) => candidate.identity === contact.identity) === index).slice(0, 5);
     setActiveIds(new Set(contacts.filter((contact) => contact.touching).map((contact) => contact.identity)));
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({ type: "multi_touch", contacts }));
     }
-  }, [controlProfile.mappings]);
+  }, [controlProfile.mappings, frameSize]);
 
   const releaseAllControls = useCallback(() => {
     const released = [...directTouchesRef.current.values()].map((contact) => ({ ...contact, touching: false }));
     directTouchesRef.current.clear();
     heldRef.current.clear();
+    heldSinceRef.current.clear();
+    mappingOffsetsRef.current.clear();
     for (const name of heldHardwareRef.current.values()) {
       command({ type: "button_up", name });
     }
@@ -180,6 +186,34 @@ export default function App() {
     setDirectTouches([]);
     sendFrame(heldRef.current, released);
   }, [command, sendFrame]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (heldRef.current.size) sendFrame(); }, 16);
+    return () => clearInterval(timer);
+  }, [sendFrame]);
+
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      if (mappingEditing || controlMode !== "mapping" || (!event.movementX && !event.movementY)) return;
+      let changed = false;
+      for (const mapping of controlProfile.mappings) {
+        if (!(mapping.type === "Observation" || mapping.type === "Fps" || mapping.type === "Fire" || mapping.type === "MouseCastSpell")) continue;
+        const keys = mappingBindings(mapping);
+        if (!keys.length || !keys.every((key) => heldRef.current.has(key))) continue;
+        const current = mappingOffsetsRef.current.get(mapping.id) ?? mapping.position;
+        const sensitivityX = "sensitivity_x" in mapping ? mapping.sensitivity_x : mapping.horizontal_scale_factor;
+        const sensitivityY = "sensitivity_y" in mapping ? mapping.sensitivity_y : mapping.vertical_scale_factor;
+        mappingOffsetsRef.current.set(mapping.id, {
+          x: Math.max(0, Math.min(1, current.x + event.movementX * sensitivityX / frameSize.width)),
+          y: Math.max(0, Math.min(1, current.y + event.movementY * sensitivityY / frameSize.height)),
+        });
+        changed = true;
+      }
+      if (changed) sendFrame();
+    };
+    window.addEventListener("pointermove", move);
+    return () => window.removeEventListener("pointermove", move);
+  }, [controlMode, controlProfile.mappings, frameSize, mappingEditing, sendFrame]);
 
   useEffect(() => {
     invoke<BackendConnection>("backend_connection")
@@ -313,7 +347,27 @@ export default function App() {
       }
       if (!isBoundKey(controlProfile.mappings, event.code)) return;
       event.preventDefault();
+      const triggered = controlProfile.mappings.filter((mapping) => mappingBindings(mapping).includes(event.code));
+      if (triggered.some((mapping) => mapping.type === "RawInput")) {
+        releaseAllControls();
+        setControlMode("keyboard");
+        setEditing(false);
+        return;
+      }
+      if (triggered.some((mapping) => mapping.type === "CancelCast")) {
+        for (const mapping of controlProfile.mappings) {
+          if (mapping.type === "MouseCastSpell" || mapping.type === "PadCastSpell") {
+            for (const key of mappingBindings(mapping)) { heldRef.current.delete(key); heldSinceRef.current.delete(key); }
+          }
+        }
+        sendFrame();
+        return;
+      }
+      for (const mapping of triggered) {
+        if (mapping.type === "Observation" || mapping.type === "Fps" || mapping.type === "Fire" || mapping.type === "MouseCastSpell") mappingOffsetsRef.current.set(mapping.id, mapping.position);
+      }
       heldRef.current.add(event.code);
+      heldSinceRef.current.set(event.code, performance.now());
       sendFrame();
     };
     const up = (event: KeyboardEvent) => {
@@ -332,6 +386,8 @@ export default function App() {
         return;
       }
       if (!heldRef.current.delete(event.code)) return;
+      heldSinceRef.current.delete(event.code);
+      for (const mapping of controlProfile.mappings) if (mappingBindings(mapping).includes(event.code)) mappingOffsetsRef.current.delete(mapping.id);
       event.preventDefault();
       sendFrame();
     };
@@ -400,10 +456,6 @@ export default function App() {
   }, [backend, readProfile, refreshProfiles, request, writeProfile]);
 
   const updateMapping = (next: Mapping) => setProfile((current) => {
-    if (current.mappings.some((mapping) => mapping.id !== next.id && mapping.contactId === next.contactId)) {
-      void message.warning(t("mapping.contactInUse", { id: next.contactId }));
-      return current;
-    }
     const keyConflict = hardwareButtons.some((button) => {
       const key = current.hardwareBindings[button.name];
       return key && isBoundKey([next], key);
@@ -425,15 +477,10 @@ export default function App() {
     }
     return { ...current, hardwareBindings: { ...current.hardwareBindings, [name]: key } };
   });
-  const moveMapping = (id: string, x: number, y: number) => setProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? { ...mapping, x, y } : mapping) }));
-  const addMapping = (type: "touch" | "dpad") => {
-    if (profile.mappings.length >= 5) { void message.warning(t("mapping.contactLimit")); return; }
-    const used = new Set(profile.mappings.map((mapping) => mapping.contactId));
-    const contactId = [0, 1, 2, 3, 4].find((id) => !used.has(id)) ?? 4;
-    const id = crypto.randomUUID();
-    const next: Mapping = type === "touch"
-      ? { id, type, label: t("mapping.defaults.touch", { id: contactId }), contactId, x: 0.5, y: 0.5, key: "KeyF" }
-      : { id, type, label: t("mapping.dpad"), contactId, x: 0.25, y: 0.75, radius: 0.1, keys: { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD" } };
+  const moveMapping = (id: string, x: number, y: number) => setProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? ("position" in mapping ? { ...mapping, position: { x, y } } : { ...mapping, x, y }) as Mapping : mapping) }));
+  const addMapping = (type: ScrcpyMappingType) => {
+    const next = createMapping(type, { x: 0.5, y: 0.5 }, frameSize);
+    const id = next.id;
     setProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
     setSelectedId(id);
   };
@@ -531,7 +578,7 @@ export default function App() {
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (mappingEditing || event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
     const used = new Set([
-      ...controlProfile.mappings.map((mapping) => mapping.contactId),
+      ...buildTouchFrame(controlProfile.mappings, heldRef.current, frameSize).filter((contact) => contact.touching).map((contact) => contact.identity),
       ...[...directTouchesRef.current.values()].map((contact) => contact.identity),
     ]);
     const identity = [0, 1, 2, 3, 4].find((candidate) => !used.has(candidate));

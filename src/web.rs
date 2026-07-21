@@ -64,7 +64,7 @@ struct StreamMetricsView {
 struct Profile {
     version: u8,
     name: String,
-    mappings: Vec<Mapping>,
+    mappings: Vec<serde_json::Value>,
     #[serde(default = "default_hardware_bindings", rename = "hardwareBindings")]
     hardware_bindings: BTreeMap<String, String>,
 }
@@ -84,38 +84,6 @@ fn default_hardware_bindings() -> BTreeMap<String, String> {
         .into_iter()
         .map(|name| (name.to_string(), String::new()))
         .collect()
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Mapping {
-    Touch {
-        id: String,
-        label: String,
-        #[serde(rename = "contactId")]
-        contact_id: u8,
-        x: f32,
-        y: f32,
-        key: String,
-    },
-    Dpad {
-        id: String,
-        label: String,
-        #[serde(rename = "contactId")]
-        contact_id: u8,
-        x: f32,
-        y: f32,
-        radius: f32,
-        keys: DpadKeys,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-struct DpadKeys {
-    up: String,
-    down: String,
-    left: String,
-    right: String,
 }
 
 #[derive(Serialize)]
@@ -335,7 +303,7 @@ async fn delete_profile(
 fn validate_profile(profile: &Profile) -> Result<(), StatusCode> {
     if profile.version != 1
         || profile.name.is_empty()
-        || profile.mappings.len() > 5
+        || profile.mappings.len() > 512
         || profile.hardware_bindings.len() != HARDWARE_BUTTON_NAMES.len()
         || HARDWARE_BUTTON_NAMES
             .iter()
@@ -343,54 +311,25 @@ fn validate_profile(profile: &Profile) -> Result<(), StatusCode> {
     {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
-    let mut contacts = HashSet::new();
+    let mut ids = HashSet::new();
     for mapping in &profile.mappings {
-        let (id, label, contact_id, x, y, radius) = match mapping {
-            Mapping::Touch {
-                id,
-                label,
-                contact_id,
-                x,
-                y,
-                ..
-            } => (id, label, contact_id, x, y, None),
-            Mapping::Dpad {
-                id,
-                label,
-                contact_id,
-                x,
-                y,
-                radius,
-                ..
-            } => (id, label, contact_id, x, y, Some(radius)),
+        let Some(mapping) = mapping.as_object() else {
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
         };
-        if id.is_empty()
-            || label.is_empty()
-            || *contact_id >= 5
-            || !contacts.insert(*contact_id)
-            || !x.is_finite()
-            || !y.is_finite()
-            || !(0.0..=1.0).contains(x)
-            || !(0.0..=1.0).contains(y)
-            || radius.is_some_and(|radius| !radius.is_finite() || !(0.0..=0.5).contains(radius))
+        let id = mapping.get("id").and_then(serde_json::Value::as_str);
+        let mapping_type = mapping.get("type").and_then(serde_json::Value::as_str);
+        if id.is_none_or(str::is_empty)
+            || !ids.insert(id.unwrap())
+            || !mapping_type.is_some_and(valid_mapping_type)
+            || !valid_mapping_positions(mapping)
         {
             return Err(StatusCode::UNPROCESSABLE_ENTITY);
         }
     }
-    let mapping_keys: HashSet<&str> = profile
-        .mappings
-        .iter()
-        .flat_map(|mapping| match mapping {
-            Mapping::Touch { key, .. } => vec![key.as_str()],
-            Mapping::Dpad { keys, .. } => vec![
-                keys.up.as_str(),
-                keys.down.as_str(),
-                keys.left.as_str(),
-                keys.right.as_str(),
-            ],
-        })
-        .filter(|key| !key.is_empty())
-        .collect();
+    let mut mapping_keys = HashSet::new();
+    for mapping in &profile.mappings {
+        collect_mapping_keys(mapping, &mut mapping_keys);
+    }
     let mut hardware_keys = HashSet::new();
     for key in profile.hardware_bindings.values() {
         if key.len() > 64
@@ -404,6 +343,91 @@ fn validate_profile(profile: &Profile) -> Result<(), StatusCode> {
         }
     }
     Ok(())
+}
+
+fn valid_mapping_type(mapping_type: &str) -> bool {
+    matches!(
+        mapping_type,
+        "touch"
+            | "dpad"
+            | "SingleTap"
+            | "RepeatTap"
+            | "MultipleTap"
+            | "Swipe"
+            | "DirectionPad"
+            | "MouseCastSpell"
+            | "PadCastSpell"
+            | "CancelCast"
+            | "Observation"
+            | "Fps"
+            | "Fire"
+            | "RawInput"
+            | "Script"
+    )
+}
+
+fn valid_mapping_positions(mapping: &serde_json::Map<String, serde_json::Value>) -> bool {
+    fn valid_position(value: &serde_json::Value) -> bool {
+        let Some(point) = value.as_object() else {
+            return false;
+        };
+        let Some(x) = point.get("x").and_then(serde_json::Value::as_f64) else {
+            return false;
+        };
+        let Some(y) = point.get("y").and_then(serde_json::Value::as_f64) else {
+            return false;
+        };
+        x.is_finite() && y.is_finite() && (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)
+    }
+    let primary = if mapping.contains_key("position") {
+        mapping.get("position").is_some_and(valid_position)
+    } else {
+        mapping
+            .get("x")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|x| (0.0..=1.0).contains(&x))
+            && mapping
+                .get("y")
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|y| (0.0..=1.0).contains(&y))
+    };
+    primary
+        && mapping.get("center").is_none_or(valid_position)
+        && mapping.get("positions").is_none_or(|values| {
+            values
+                .as_array()
+                .is_some_and(|values| values.iter().all(valid_position))
+        })
+        && mapping.get("items").is_none_or(|values| {
+            values.as_array().is_some_and(|values| {
+                values
+                    .iter()
+                    .all(|item| item.get("position").is_some_and(valid_position))
+            })
+        })
+}
+
+fn collect_mapping_keys<'a>(value: &'a serde_json::Value, keys: &mut HashSet<&'a str>) {
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .for_each(|value| collect_mapping_keys(value, keys)),
+        serde_json::Value::Object(values) => {
+            for (name, value) in values {
+                if name == "key"
+                    || name == "bind"
+                    || name.ends_with("_bind")
+                    || matches!(name.as_str(), "up" | "down" | "left" | "right")
+                {
+                    collect_mapping_keys(value, keys);
+                }
+            }
+        }
+        serde_json::Value::String(value) if !value.is_empty() => {
+            keys.insert(value);
+        }
+        _ => {}
+    }
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
@@ -799,14 +823,10 @@ mod tests {
         let mut profile = Profile {
             version: 1,
             name: "conflict".into(),
-            mappings: vec![Mapping::Touch {
-                id: "touch".into(),
-                label: "Touch".into(),
-                contact_id: 0,
-                x: 0.5,
-                y: 0.5,
-                key: "KeyH".into(),
-            }],
+            mappings: vec![json!({
+                "id": "touch", "type": "touch", "label": "Touch",
+                "contactId": 0, "x": 0.5, "y": 0.5, "key": "KeyH"
+            })],
             hardware_bindings: default_hardware_bindings(),
         };
         profile

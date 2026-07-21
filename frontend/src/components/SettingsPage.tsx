@@ -1,4 +1,8 @@
-import { Select, Switch, Typography } from "antd";
+import { GithubOutlined } from "@ant-design/icons";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Button, Select, Switch, Typography } from "antd";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
 import { useUpdates } from "../updateContext";
@@ -24,6 +28,8 @@ export function SettingsPage({
   const { t, i18n } = useTranslation();
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
   const { automatic, setAutomatic } = useUpdates();
+  const [version, setVersion] = useState("-");
+  useEffect(() => { void getVersion().then(setVersion); }, []);
 
   return (
     <section className="settings-page">
@@ -62,6 +68,11 @@ export function SettingsPage({
           <span>{t("update.manual")}</span>
           <UpdateButton />
         </label>
+      </div>
+      <div className="settings-section">
+        <Typography.Title level={5}>{t("settings.about")}</Typography.Title>
+        <label><span>{t("settings.version")}</span><Typography.Text code>{version}</Typography.Text></label>
+        <label><span>{t("settings.repository")}</span><Button icon={<GithubOutlined />} onClick={() => void openUrl("https://github.com/boa-z/devicehub-mask")}>{t("settings.openGithub")}</Button></label>
       </div>
     </section>
   );
