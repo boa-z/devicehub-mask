@@ -26,6 +26,7 @@ import { Button, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, mes
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
+import { DeviceInspector } from "./components/DeviceInspector";
 import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
@@ -108,6 +109,7 @@ const backendStatusKeys: Record<string, string> = {
   "connecting to device...": "backendStatus.connecting",
   "starting screen media stream...": "backendStatus.startingStream",
   "connecting HID...": "backendStatus.connectingHid",
+  "device management connected": "backendStatus.managementConnected",
   connected: "backendStatus.connected",
   "stopping...": "backendStatus.stopping",
 };
@@ -741,7 +743,7 @@ export default function App() {
                   onImport={importProfile}
                 />
               )}
-              <main className={`workspace ${page === "mappings" && inspectorVisible ? "" : "inspector-hidden"}`}>
+              <main className={`workspace ${page === "device" ? "device-workspace" : page === "mappings" && inspectorVisible ? "" : "inspector-hidden"}`}>
                 <section className="stage-column">
                   <div className="stage-toolbar">
                     <div className="stream-status">
@@ -839,6 +841,9 @@ export default function App() {
                     hardwareBindings={profile.hardwareBindings}
                     onHardwareBindingChange={updateHardwareBinding}
                   />
+                )}
+                {page === "device" && (
+                  <DeviceInspector activeUdid={status.active_udid} request={request} />
                 )}
               </main>
             </>

@@ -2213,8 +2213,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "idevice"
 version = "0.1.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7484b3a39a089068167a8ab0b3da6a05b5f6f8969daf1a893da1c7087cb2e09a"
+source = "git+https://github.com/boa-z/idevice.git?rev=0371286#0371286f45a9f96775d3a3c4c776fd44611a2546"
 dependencies = [
  "aes",
  "async-stream",

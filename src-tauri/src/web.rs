@@ -15,6 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
@@ -100,6 +101,9 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/status", get(status))
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
+        .route("/api/device/details", get(device_details))
+        .route("/api/device/apps", get(device_apps))
+        .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
         .route("/api/profiles", get(list_profiles))
         .route("/api/profiles/{name}", get(load_profile).put(save_profile))
         .route("/api/profiles/{name}/activate", put(activate_profile))
@@ -169,6 +173,108 @@ async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
 async fn connect_device(State(state): State<AppState>, Path(udid): Path<String>) -> StatusCode {
     let _ = state.control.send(ControlCmd::Connect(udid));
     StatusCode::ACCEPTED
+}
+
+const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn device_details(
+    State(state): State<AppState>,
+) -> Result<Json<crate::protocol::DeviceDetails>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::GetDeviceDetails(reply)) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let details = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "device metadata request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(details))
+}
+
+async fn device_apps(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::protocol::DeviceApp>>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::ListApps(reply)) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let apps = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "app list request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(apps))
+}
+
+async fn launch_app(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !valid_bundle_identifier(&bundle_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
+    }
+    let (reply, response) = oneshot::channel();
+    if !state
+        .input
+        .try_send(InputCmd::LaunchApp { bundle_id, reply })
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "app launch request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn valid_bundle_identifier(bundle_id: &str) -> bool {
+    !bundle_id.is_empty()
+        && bundle_id.len() <= 255
+        && bundle_id.contains('.')
+        && bundle_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
 }
 
 fn profile_path(state: &AppState, name: &str) -> Result<PathBuf, StatusCode> {
@@ -910,6 +1016,34 @@ mod tests {
             "devicehub-mask, secret".parse().unwrap(),
         );
         assert!(private_api_authorized(&headers, "secret"));
+    }
+
+    #[tokio::test]
+    async fn device_queries_require_an_active_session() {
+        let (state, _input_rx) = test_state();
+        state.input.set(None);
+
+        assert!(matches!(
+            device_details(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            device_apps(State(state)).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+    }
+
+    #[tokio::test]
+    async fn app_launch_rejects_invalid_bundle_identifiers_before_dispatch() {
+        let (state, mut input_rx) = test_state();
+
+        for bundle_id in ["", "no-domain", "com.example.bad value", "com/example/app"] {
+            assert!(matches!(
+                launch_app(State(state.clone()), Path(bundle_id.into())).await,
+                Err((StatusCode::BAD_REQUEST, _))
+            ));
+        }
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[tokio::test]

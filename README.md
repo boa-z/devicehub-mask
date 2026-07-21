@@ -21,6 +21,7 @@ transport.
 - Mutually exclusive mapping and raw keyboard HID modes with safe key release
 - Drag-to-place overlays and profile persistence
 - Device, keyboard mapping, and application settings workspaces
+- Live Lockdown device metadata and CoreDevice AppService app browsing/launching
 - Runtime Simplified Chinese and English localization with persistent selection
 - scrcpy-mask profile import/export for taps and button direction pads
 - Always-visible hardware buttons with user-defined keyboard shortcuts
@@ -51,6 +52,22 @@ five-contact limit, coordinate ranges, and orientation before dispatching input.
 The CoreDevice session runs on a dedicated Tokio runtime because several
 `idevice` service objects cannot safely be moved through a normal `tokio::spawn`
 boundary.
+
+Device metadata is read once through Lockdown when a session connects. App list
+and launch requests prefer a long-lived CoreDevice AppService client owned by
+that same session, so the UI does not create a second RSD tunnel for each
+operation. App listing falls back to Lockdown's Installation Proxy when the
+newer AppService is absent. If DisplayService is unavailable, the backend keeps
+this reduced management session alive instead of discarding usable Lockdown
+capabilities; screen control and app launching remain explicitly unavailable.
+Device-management routes are exposed only through the authenticated private
+loopback API and return `503` while no session is active.
+
+The `idevice` dependency is temporarily pinned to the reviewed
+`0371286` revision from the project fork. That revision adds the
+`requireContainerAccess=false` field required by the iOS 27 AppService request
+decoder. Replace the pin with an upstream release after the fix is merged and
+published.
 
 The repository follows the standard Tauri 2 layout:
 
@@ -583,6 +600,18 @@ Touch coordinates are normalized in that exact displayed space.
 - Confirm the public key in `src-tauri/tauri.conf.json` matches the private CI key.
 - Verify that the installed version is lower than the `version` in
   `latest.json`.
+
+## Roadmap
+
+- Parse and manage provisioning profiles through Misagent without exposing raw
+  mobileprovision payloads to the frontend
+- Add explicit app installation and removal workflows with confirmations and
+  progress reporting
+- Expand Device Hub-style controls for location, appearance, and accessibility
+  when stable `idevice` service APIs are available
+- Continue profiling decode, frame transport, and WebView presentation on
+  Windows, with platform-specific metrics kept visible in the device workspace
+- Close remaining scrcpy-mask mapping editor and runtime compatibility gaps
 
 ## Credits
 

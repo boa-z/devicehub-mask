@@ -18,6 +18,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .profile-manager > .ant-space { margin-left: auto; }
 .file-input { display: none; }
 .workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
+.workspace.device-workspace { grid-template-columns: minmax(0, 1fr) 360px; }
 .workspace.inspector-hidden { grid-template-columns: minmax(0, 1fr); }
 .stage-column { min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
 .stage-toolbar { min-height: 46px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #131718; }
@@ -50,6 +51,23 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .mapping-node.selected { outline: 2px solid #f0c75e; outline-offset: 3px; }
 .mapping-node.active { border-color: #42b883; background: rgba(66,184,131,.45); box-shadow: 0 0 16px rgba(66,184,131,.55); }
 .inspector { min-width: 0; border-left: 1px solid #303638; background: #171b1c; padding: 14px; overflow-y: auto; }
+.device-inspector { min-width: 0; min-height: 0; border-left: 1px solid #303638; background: #171b1c; padding: 12px; overflow: hidden; display: flex; flex-direction: column; gap: 12px; }
+.device-inspector-header { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; }
+.device-inspector-header .ant-btn { width: 32px; padding-inline: 0; }
+.device-inspector-loading { flex: 1; display: grid; place-items: center; }
+.device-info-list { overflow-y: auto; border-top: 1px solid #303638; }
+.device-info-row { min-height: 48px; padding: 9px 4px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.4fr); align-items: center; gap: 12px; }
+.device-info-row > :last-child { text-align: right; }
+.device-apps-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.device-app-count { color: #7f8a89; font-size: 11px; font-variant-numeric: tabular-nums; }
+.device-app-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
+.device-app-row { min-height: 72px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.device-app-icon { width: 40px; height: 40px; border-radius: 8px; background: #2c5550; color: #edf2f0; display: grid; place-items: center; font-size: 16px; font-weight: 700; }
+.device-app-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.device-app-meta > .ant-typography { margin: 0; }
+.device-app-tags { min-height: 18px; display: flex; gap: 4px; }
+.device-app-tags .ant-tag { margin: 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
+.device-app-actions { display: flex; gap: 4px; }
 .inspector-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .inspector-title h5 { margin: 0; }
 .mapping-list { margin-top: 14px; display: grid; gap: 2px; }
@@ -89,4 +107,5 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .stream-status { align-items: flex-start; flex-direction: column; gap: 3px; }
   .stream-metrics { min-width: 0; white-space: normal; }
   .inspector { border-left: 0; border-top: 1px solid #303638; min-height: 340px; }
+  .device-inspector { border-left: 0; border-top: 1px solid #303638; min-height: 420px; }
 }

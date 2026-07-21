@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use idevice::{
     IdeviceError, IdeviceService, ReadWrite, RsdService,
     core_device::{
-        CallInfoBlob, CoreDeviceError, DataInclusionPolicy, DisplayServiceClient,
+        AppServiceClient, CallInfoBlob, CoreDeviceError, DataInclusionPolicy, DisplayServiceClient,
         GENERAL_PASTEBOARD, HevcDepacketizer, Orientation as DevOrientation,
         OrientationServiceClient, PasteboardServiceClient, PasteboardSnapshot, ReportBlock,
         RotationDirection, RtpPacket, SenderReport, UTI_PNG, build_frame_ack,
@@ -27,6 +27,7 @@ use idevice::{
         is_rtcp,
     },
     core_device_proxy::CoreDeviceProxy,
+    installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     provider::IdeviceProvider,
     rsd::RsdHandshake,
@@ -39,9 +40,9 @@ use tokio::process::ChildStdin;
 use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
-    ActiveSlot, ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceInfo, DeviceListSlot,
-    ErrorSlot, FrameSlot, InputCmd, InputSink, KeyMods, Orientation, OrientationSlot, RotateDir,
-    StatusSlot, clipboard_preview,
+    ActiveSlot, ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceApp, DeviceDetails,
+    DeviceInfo, DeviceListSlot, ErrorSlot, FrameSlot, InputCmd, InputSink, KeyMods, Orientation,
+    OrientationSlot, RotateDir, StatusSlot, clipboard_preview,
 };
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -313,6 +314,13 @@ enum Next {
     Quit,
 }
 
+#[derive(Clone)]
+struct SessionViews {
+    status: StatusSlot,
+    orientation: OrientationSlot,
+    error: ErrorSlot,
+}
+
 /// Supervise the device session: enumerate attached devices for the picker,
 /// connect to one, and tear down / reconnect when the selection changes.
 #[allow(clippy::too_many_arguments)]
@@ -372,9 +380,12 @@ pub async fn manage(
             Some(udid.clone()),
             repaint.clone(),
             frames.clone(),
-            status.clone(),
             clipboard.clone(),
-            orientation_view.clone(),
+            SessionViews {
+                status: status.clone(),
+                orientation: orientation_view.clone(),
+                error: error.clone(),
+            },
             in_rx,
         );
         tokio::pin!(session);
@@ -506,25 +517,33 @@ async fn fetch_device_name(dev: &UsbmuxdDevice, addr: &UsbmuxdAddr) -> Option<St
 /// Run the whole session to completion. Returns an error string suitable for the
 /// status bar if setup fails; otherwise runs until a [`InputCmd::Shutdown`] (or
 /// the UI dropping the input channel).
-pub async fn run(
+async fn run(
     udid: Option<String>,
     repaint: impl Fn() + Send + 'static,
     frames: FrameSlot,
-    status: StatusSlot,
     clipboard: ClipboardSlot,
-    orientation_view: OrientationSlot,
+    views: SessionViews,
     mut input_rx: UnboundedReceiver<InputCmd>,
 ) -> Result<(), String> {
-    status.set("connecting to device...");
+    views.status.set("connecting to device...");
+    let requested_udid = udid.clone().unwrap_or_default();
     let (provider, connection) = connect_provider(udid).await?;
-    let device_identity = read_device_identity(&*provider).await;
-    if let Some(identity) = &device_identity {
+    let device_details = read_device_details(&*provider, requested_udid).await;
+    if let Some(details) = &device_details {
         tracing::info!(
-            product_type = %identity.product_type,
-            product_version = %identity.product_version,
+            product_type = %details.product_type,
+            product_version = %details.product_version,
             "connected device identity"
         );
     }
+
+    let installation_proxy = match InstallationProxyClient::connect(&*provider).await {
+        Ok(client) => Some(client),
+        Err(error) => {
+            tracing::warn!("installation proxy unavailable; app list fallback disabled: {error:?}");
+            None
+        }
+    };
 
     let proxy = CoreDeviceProxy::connect(&*provider)
         .await
@@ -546,21 +565,36 @@ pub async fn run(
     // associates our RTCP feedback with the stream; otherwise it's ignored.
     let our_ssrc = uuid::Uuid::new_v4().as_u128() as u32;
 
-    status.set("starting screen media stream...");
-    let media = start_screen_media_stream(
+    views.status.set("starting screen media stream...");
+    let media = match start_screen_media_stream(
         &mut adapter,
         &mut handshake,
         our_ssrc,
-        device_identity.as_ref(),
+        device_details.as_ref(),
         connection,
     )
-    .await?;
+    .await
+    {
+        Ok(media) => media,
+        Err(error) => {
+            tracing::warn!("screen control unavailable; keeping device management session alive");
+            views.error.set(Some(error));
+            views.status.set("device management connected");
+            management_input_loop(
+                DeviceManagement::fallback(device_details, installation_proxy),
+                &mut input_rx,
+            )
+            .await;
+            views.status.set("stopping...");
+            return Ok(());
+        }
+    };
 
     // HID surfaces only authenticate once the media stream is up; give backboardd
     // a moment to re-match them before connecting.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    status.set("connecting HID...");
+    views.status.set("connecting HID...");
     let mut touch = UniversalHidClient::connect_rsd(&mut adapter, &mut handshake)
         .await
         .map_err(|e| format!("no universalhidservice: {e:?}"))?;
@@ -596,7 +630,7 @@ pub async fn run(
         .await
     {
         Ok(mut client) => {
-            if let Err(error) = refresh_interface_orientation(&mut client, &orientation_view).await
+            if let Err(error) = refresh_interface_orientation(&mut client, &views.orientation).await
             {
                 tracing::warn!("could not read initial device interface orientation: {error:?}");
             }
@@ -610,11 +644,19 @@ pub async fn run(
         }
     };
 
+    let app_service = match AppServiceClient::connect_rsd(&mut adapter, &mut handshake).await {
+        Ok(client) => Some(client),
+        Err(error) => {
+            tracing::warn!("no CoreDevice AppService; app management disabled: {error:?}");
+            None
+        }
+    };
+
     // video UDP -> depacketize -> ffmpeg stdin ; ffmpeg stdout -> frames.
     let (mut child, ffmpeg_in, ffmpeg_out, ffmpeg_err) =
         decode::spawn_ffmpeg().map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
 
-    status.set("connected");
+    views.status.set("connected");
 
     // A stable CNAME for our RTCP SDES (identifies this receiver endpoint).
     let cname = format!("devicehub@{}", adapter.host_ip());
@@ -648,7 +690,7 @@ pub async fn run(
     // sends per-frame RTCP ACKs the encoder depends on and must not stall on
     // ffmpeg's stdin backpressure (which spikes under heavy motion).
     let (hevc_tx, hevc_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let orientation_watch_view = orientation_view.clone();
+    let orientation_watch_view = views.orientation.clone();
     let orientation_task = async move {
         match springboard {
             Some(client) => watch_interface_orientation(client, orientation_watch_view).await,
@@ -676,10 +718,17 @@ pub async fn run(
         ) => {}
         _ = clipboard_task(pasteboard, clipboard, &mut adapter, &mut handshake) => {}
         _ = orientation_task => {}
-        _ = input_loop(&mut touch, &mut indigo, &mut orientation, &orientation_view, &mut input_rx) => {}
+        _ = input_loop(
+            &mut touch,
+            &mut indigo,
+            &mut orientation,
+            &views.orientation,
+            DeviceManagement::new(device_details, app_service, installation_proxy),
+            &mut input_rx,
+        ) => {}
     }
 
-    status.set("stopping...");
+    views.status.set("stopping...");
     display.stop_media_stream().await.ok();
     child.start_kill().ok();
     // `proxy`, `adapter`, `handshake` drop here, tearing down the tunnel.
@@ -692,16 +741,169 @@ async fn input_loop(
     indigo: &mut IndigoHidClient<Box<dyn ReadWrite>>,
     orientation: &mut Option<OrientationServiceClient<Box<dyn ReadWrite>>>,
     orientation_view: &OrientationSlot,
+    mut management: DeviceManagement,
     input_rx: &mut UnboundedReceiver<InputCmd>,
 ) {
     while let Some(cmd) = input_rx.recv().await {
         if matches!(cmd, InputCmd::Shutdown) {
             break;
         }
+        let Some(cmd) = management.handle(cmd).await else {
+            continue;
+        };
         if let Err(e) = dispatch(touch, indigo, orientation, orientation_view, cmd).await {
             tracing::warn!("input dispatch failed: {e:?}");
         }
     }
+}
+
+async fn management_input_loop(
+    mut management: DeviceManagement,
+    input_rx: &mut UnboundedReceiver<InputCmd>,
+) {
+    while let Some(command) = input_rx.recv().await {
+        if matches!(command, InputCmd::Shutdown) {
+            break;
+        }
+        let _ = management.handle(command).await;
+    }
+}
+
+struct DeviceManagement {
+    details: Option<DeviceDetails>,
+    app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
+    installation_proxy: Option<InstallationProxyClient>,
+}
+
+impl DeviceManagement {
+    fn new(
+        details: Option<DeviceDetails>,
+        app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
+        installation_proxy: Option<InstallationProxyClient>,
+    ) -> Self {
+        Self {
+            details,
+            app_service,
+            installation_proxy,
+        }
+    }
+
+    fn fallback(
+        details: Option<DeviceDetails>,
+        installation_proxy: Option<InstallationProxyClient>,
+    ) -> Self {
+        Self::new(details, None, installation_proxy)
+    }
+
+    async fn handle(&mut self, command: InputCmd) -> Option<InputCmd> {
+        match command {
+            InputCmd::GetDeviceDetails(reply) => {
+                let result = self
+                    .details
+                    .clone()
+                    .ok_or_else(|| "device metadata is unavailable".to_string());
+                let _ = reply.send(result);
+                None
+            }
+            InputCmd::ListApps(reply) => {
+                let result =
+                    list_device_apps(self.app_service.as_mut(), self.installation_proxy.as_mut())
+                        .await;
+                let _ = reply.send(result);
+                None
+            }
+            InputCmd::LaunchApp { bundle_id, reply } => {
+                let result = match self.app_service.as_mut() {
+                    Some(client) => client
+                        .launch_application(bundle_id, &[], true, false, None, None, None)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| format!("unable to launch app: {error:?}")),
+                    None => Err("app launch requires the CoreDevice AppService".to_string()),
+                };
+                let _ = reply.send(result);
+                None
+            }
+            other => Some(other),
+        }
+    }
+}
+
+async fn list_device_apps(
+    app_service: Option<&mut AppServiceClient<Box<dyn ReadWrite>>>,
+    installation_proxy: Option<&mut InstallationProxyClient>,
+) -> Result<Vec<DeviceApp>, String> {
+    if let Some(client) = app_service {
+        match client.list_apps(false, true, false, false, false).await {
+            Ok(entries) => {
+                return Ok(sort_device_apps(
+                    entries
+                        .into_iter()
+                        .map(|entry| DeviceApp {
+                            bundle_id: entry.bundle_identifier,
+                            name: entry.name,
+                            version: entry.version,
+                            bundle_version: entry.bundle_version,
+                            is_removable: entry.is_removable,
+                            is_first_party: entry.is_first_party,
+                            is_developer_app: entry.is_developer_app,
+                        })
+                        .collect(),
+                ));
+            }
+            Err(error) => tracing::warn!(
+                "CoreDevice AppService list failed; using installation proxy: {error:?}"
+            ),
+        }
+    }
+
+    let client =
+        installation_proxy.ok_or_else(|| "app listing services are unavailable".to_string())?;
+    let entries = client
+        .get_apps(Some("User"), None)
+        .await
+        .map_err(|error| format!("unable to list apps: {error:?}"))?;
+    Ok(sort_device_apps(
+        entries
+            .into_iter()
+            .filter_map(|(bundle_id, value)| device_app_from_installation(bundle_id, &value))
+            .collect(),
+    ))
+}
+
+fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Option<DeviceApp> {
+    let fields = value.as_dictionary()?;
+    let string = |key: &str| {
+        fields
+            .get(key)
+            .and_then(plist::Value::as_string)
+            .map(ToOwned::to_owned)
+    };
+    let boolean = |key: &str| fields.get(key).and_then(plist::Value::as_boolean);
+    let name = string("CFBundleDisplayName")
+        .or_else(|| string("CFBundleName"))
+        .unwrap_or_else(|| bundle_id.clone());
+    let signer = string("SignerIdentity").unwrap_or_default();
+    Some(DeviceApp {
+        bundle_id,
+        name,
+        version: string("CFBundleShortVersionString"),
+        bundle_version: string("CFBundleVersion"),
+        is_removable: boolean("IsRemovable").unwrap_or(true),
+        is_first_party: signer.contains("Apple iPhone OS Application Signing"),
+        is_developer_app: boolean("IsXcodeManaged").unwrap_or(false)
+            || signer.contains("Apple Development"),
+    })
+}
+
+fn sort_device_apps(mut apps: Vec<DeviceApp>) -> Vec<DeviceApp> {
+    apps.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.bundle_id.cmp(&right.bundle_id))
+    });
+    apps
 }
 
 /// How often we poll the host clipboard for host -> device changes (arboard has no
@@ -1104,6 +1306,9 @@ async fn dispatch(
             }
             Ok(())
         }
+        InputCmd::GetDeviceDetails(_) | InputCmd::ListApps(_) | InputCmd::LaunchApp { .. } => {
+            Ok(())
+        }
         InputCmd::Shutdown => Ok(()),
     }
 }
@@ -1435,36 +1640,43 @@ struct ScreenMediaStream {
     rtcp_udp: Option<UdpSocketHandle>,
 }
 
-#[derive(Debug)]
-struct DeviceIdentity {
-    product_type: String,
-    product_version: String,
-}
-
-async fn read_device_identity(provider: &dyn IdeviceProvider) -> Option<DeviceIdentity> {
+async fn read_device_details(
+    provider: &dyn IdeviceProvider,
+    requested_udid: String,
+) -> Option<DeviceDetails> {
     let mut lockdown = LockdownClient::connect(provider).await.ok()?;
-    let product_type = lockdown
-        .get_value(Some("ProductType"), None)
+    let values = lockdown.get_value(None, None).await.ok()?;
+    let values = values.as_dictionary()?;
+    let string = |key: &str| {
+        values
+            .get(key)
+            .and_then(plist::Value::as_string)
+            .map(ToOwned::to_owned)
+    };
+    let integer = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
+    let total_disk_capacity = lockdown
+        .get_value(Some("TotalDiskCapacity"), Some("com.apple.disk_usage"))
         .await
-        .ok()?
-        .as_string()?
-        .to_string();
-    let product_version = lockdown
-        .get_value(Some("ProductVersion"), None)
-        .await
-        .ok()?
-        .as_string()?
-        .to_string();
-    Some(DeviceIdentity {
-        product_type,
-        product_version,
+        .ok()
+        .and_then(|value| value.as_unsigned_integer())
+        .or_else(|| integer("TotalDiskCapacity"));
+    Some(DeviceDetails {
+        udid: string("UniqueDeviceID").unwrap_or(requested_udid),
+        name: string("DeviceName").unwrap_or_else(|| "iOS Device".to_string()),
+        product_type: string("ProductType").unwrap_or_else(|| "Unknown".to_string()),
+        product_version: string("ProductVersion").unwrap_or_else(|| "Unknown".to_string()),
+        build_version: string("BuildVersion"),
+        hardware_model: string("HardwareModel"),
+        serial_number: string("SerialNumber"),
+        ecid: integer("UniqueChipID").map(|value| value.to_string()),
+        total_disk_capacity,
     })
 }
 
 fn format_media_start_error(
     stream: &str,
     error: IdeviceError,
-    identity: Option<&DeviceIdentity>,
+    identity: Option<&DeviceDetails>,
 ) -> String {
     let is_ios_27_gate = matches!(
         &error,
@@ -1500,7 +1712,7 @@ async fn start_screen_media_stream(
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
     our_ssrc: u32,
-    identity: Option<&DeviceIdentity>,
+    identity: Option<&DeviceDetails>,
     connection: ConnKind,
 ) -> Result<ScreenMediaStream, String> {
     let mut client = match DisplayServiceClient::connect_rsd(adapter, handshake).await {
@@ -1626,7 +1838,7 @@ async fn start_video(
     sender_ip: &str,
     session_id: uuid::Uuid,
     our_ssrc: u32,
-    identity: Option<&DeviceIdentity>,
+    identity: Option<&DeviceDetails>,
 ) -> Result<(), String> {
     let call_id = uuid::Uuid::new_v4().to_string().to_uppercase();
     let offer = build_screen_video_offer(&call_id, &call_info(), our_ssrc)
@@ -1868,9 +2080,16 @@ mod tests {
         let error = IdeviceError::CoreDevice(CoreDeviceError::DeviceError(
             r#"Dictionary({"code": Integer(9021), "NSLocalizedDescription": String("Remote control requires iOS 27.0 or later on this device.")})"#.into(),
         ));
-        let identity = DeviceIdentity {
+        let identity = DeviceDetails {
+            udid: "phone".into(),
+            name: "Test iPhone".into(),
             product_type: "iPhone11,2".into(),
             product_version: "26.0".into(),
+            build_version: None,
+            hardware_model: None,
+            serial_number: None,
+            ecid: None,
+            total_disk_capacity: None,
         };
 
         let message = format_media_start_error("audio", error, Some(&identity));
@@ -1878,5 +2097,31 @@ mod tests {
         assert!(message.contains("iPhone11,2 running iOS 26.0"));
         assert!(message.contains("iOS 27.0 or later"));
         assert!(!message.contains("Dictionary"));
+    }
+
+    #[test]
+    fn maps_installation_proxy_metadata_without_losing_bundle_identity() {
+        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                String::from("CFBundleDisplayName"),
+                plist::Value::String("Example Game".into()),
+            ),
+            (
+                String::from("CFBundleShortVersionString"),
+                plist::Value::String("2.4".into()),
+            ),
+            (
+                String::from("CFBundleVersion"),
+                plist::Value::String("42".into()),
+            ),
+            (String::from("IsXcodeManaged"), plist::Value::Boolean(true)),
+        ]));
+
+        let app = device_app_from_installation("com.example.game".into(), &value).unwrap();
+        assert_eq!(app.bundle_id, "com.example.game");
+        assert_eq!(app.name, "Example Game");
+        assert_eq!(app.version.as_deref(), Some("2.4"));
+        assert_eq!(app.bundle_version.as_deref(), Some("42"));
+        assert!(app.is_developer_app);
     }
 }

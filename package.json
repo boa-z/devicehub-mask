@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "tauri": "tauri",
-    "tauri:dev": "cross-env CARGO_TARGET_DIR=src-tauri/target/tauri-dev tauri dev",
+    "tauri:dev": "cross-env CARGO_TARGET_DIR=target/tauri-dev tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:debug": "tauri build --debug --no-bundle"
   },

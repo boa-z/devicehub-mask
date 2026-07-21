@@ -3,6 +3,26 @@ export type Orientation = "portrait" | "portrait_upside_down" | "landscape_left"
 export type Device = { udid: string; name: string; connection: string };
 export type DeviceStatus = { status: string; active_udid: string | null; error: string | null; orientation: Orientation; devices: Device[] };
 export type StreamMetrics = { decoded_fps: number; sent_fps: number; jpeg_encode_ms: number; megabits_per_second: number };
+export type DeviceDetails = {
+  udid: string;
+  name: string;
+  product_type: string;
+  product_version: string;
+  build_version: string | null;
+  hardware_model: string | null;
+  serial_number: string | null;
+  ecid: string | null;
+  total_disk_capacity: number | null;
+};
+export type DeviceApp = {
+  bundle_id: string;
+  name: string;
+  version: string | null;
+  bundle_version: string | null;
+  is_removable: boolean;
+  is_first_party: boolean;
+  is_developer_app: boolean;
+};
 
 export type Position = { x: number; y: number };
 export type ButtonBinding = string[];

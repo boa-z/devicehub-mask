@@ -3,8 +3,10 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
+use serde::Serialize;
 
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot;
 
 use crate::hid::TouchContact;
 
@@ -97,7 +99,7 @@ pub fn clipboard_preview(text: &str, max: usize) -> String {
 ///
 /// Touch coordinates are normalized `0..=65535` across the screen
 /// (resolution-independent), so the UI needn't know the device's pixel size.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[allow(dead_code)]
 pub enum InputCmd {
     /// A tap at a normalized point.
@@ -142,6 +144,15 @@ pub enum InputCmd {
     ButtonUp(&'static str),
     /// Rotate the device 90° via the CoreDevice orientation service.
     Rotate(RotateDir),
+    /// Return metadata collected from Lockdown for the active device.
+    GetDeviceDetails(oneshot::Sender<Result<DeviceDetails, String>>),
+    /// List user-facing applications through CoreDevice AppService.
+    ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
+    /// Launch an application through CoreDevice AppService.
+    LaunchApp {
+        bundle_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Stop the media stream and tear the session down.
     Shutdown,
 }
@@ -254,6 +265,31 @@ pub struct DeviceInfo {
     pub connection: ConnKind,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceDetails {
+    pub udid: String,
+    pub name: String,
+    pub product_type: String,
+    pub product_version: String,
+    pub build_version: Option<String>,
+    pub hardware_model: Option<String>,
+    pub serial_number: Option<String>,
+    /// Decimal text avoids losing 64-bit ECID precision in JavaScript clients.
+    pub ecid: Option<String>,
+    pub total_disk_capacity: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceApp {
+    pub bundle_id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub bundle_version: Option<String>,
+    pub is_removable: bool,
+    pub is_first_party: bool,
+    pub is_developer_app: bool,
+}
+
 /// The set of currently-attached devices, published by the manager for the picker.
 #[derive(Clone, Default)]
 pub struct DeviceListSlot(Arc<Mutex<Vec<DeviceInfo>>>);
@@ -320,8 +356,14 @@ impl InputSink {
 
     /// Send a command to the live session, if any.
     pub fn send(&self, cmd: InputCmd) {
+        let _ = self.try_send(cmd);
+    }
+
+    pub fn try_send(&self, cmd: InputCmd) -> bool {
         if let Some(tx) = self.0.lock().unwrap().as_ref() {
-            let _ = tx.send(cmd);
+            tx.send(cmd).is_ok()
+        } else {
+            false
         }
     }
 }
