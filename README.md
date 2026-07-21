@@ -362,9 +362,11 @@ skips updater archives and `latest.json`. Losing or replacing the private key
 prevents existing installations from accepting future updates.
 
 At runtime the app checks the nightly endpoint shortly after startup. The
-toolbar download button also performs a manual check. An accepted update is
-downloaded, verified against the public key, installed, and followed by an app
-restart.
+automatic check can be disabled under **Application Settings > Updates**; this
+preference is stored locally under `devicehub-mask.updates.automatic`. The same
+settings section always provides a manual **Check now** button. An accepted
+update is downloaded, verified against the public key, installed, and followed
+by an app restart.
 
 ## Apple Signing And Notarization
 

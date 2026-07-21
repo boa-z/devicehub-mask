@@ -130,7 +130,9 @@ export const enUS = {
     languages: { zhCN: "Simplified Chinese", enUS: "English" },
   },
   update: {
-    check: "Check for updates",
+    automatic: "Automatically check for updates",
+    manual: "Manual update check",
+    checkNow: "Check now",
     downloading: "Downloading update...{{progress}}",
     installing: "Installing update...",
     restarting: "Update installed; restarting",

@@ -120,7 +120,9 @@ export const zhCN = {
     languages: { zhCN: "简体中文", enUS: "English" },
   },
   update: {
-    check: "检查更新",
+    automatic: "自动检查更新",
+    manual: "手动检查更新",
+    checkNow: "立即检查",
     downloading: "正在下载更新...{{progress}}",
     installing: "正在安装更新...",
     restarting: "更新安装完成，正在重启",

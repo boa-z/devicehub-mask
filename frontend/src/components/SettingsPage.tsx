@@ -1,6 +1,7 @@
 import { Select, Switch, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import { useUpdates } from "../updateContext";
 import { UpdateButton } from "./UpdateButton";
 
 type Props = {
@@ -22,6 +23,7 @@ export function SettingsPage({
 }: Props) {
   const { t, i18n } = useTranslation();
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
+  const { automatic, setAutomatic } = useUpdates();
 
   return (
     <section className="settings-page">
@@ -52,7 +54,14 @@ export function SettingsPage({
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.updates")}</Typography.Title>
-        <UpdateButton />
+        <label>
+          <span>{t("update.automatic")}</span>
+          <Switch checked={automatic} onChange={setAutomatic} />
+        </label>
+        <label>
+          <span>{t("update.manual")}</span>
+          <UpdateButton />
+        </label>
       </div>
     </section>
   );

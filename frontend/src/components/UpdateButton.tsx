@@ -2,18 +2,26 @@ import { CloudDownloadOutlined } from "@ant-design/icons";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { Button, Modal, Tooltip, message } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, Modal, message } from "antd";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { UpdateContext, type UpdateContextValue, useUpdates } from "../updateContext";
+import { readAutomaticUpdatePreference, writeAutomaticUpdatePreference } from "../updatePreferences";
 
 const progressMessageKey = "app-update-progress";
 
-export function UpdateButton() {
+export function UpdateProvider({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const translateRef = useRef(t);
   translateRef.current = t;
+  const [automatic, setAutomaticState] = useState(readAutomaticUpdatePreference);
   const [checking, setChecking] = useState(false);
   const checkingRef = useRef(false);
+
+  const setAutomatic = useCallback((enabled: boolean) => {
+    setAutomaticState(enabled);
+    writeAutomaticUpdatePreference(enabled);
+  }, []);
 
   const install = useCallback(async (update: Update) => {
     let downloaded = 0;
@@ -62,18 +70,32 @@ export function UpdateButton() {
   }, [install]);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!automatic || !isTauri()) return;
     const timer = window.setTimeout(() => void checkForUpdate(false), 3_000);
     return () => clearTimeout(timer);
-  }, [checkForUpdate]);
+  }, [automatic, checkForUpdate]);
+
+  const value: UpdateContextValue = {
+    automatic,
+    checking,
+    setAutomatic,
+    checkNow: () => void checkForUpdate(true),
+  };
+
+  return <UpdateContext.Provider value={value}>{children}</UpdateContext.Provider>;
+}
+
+export function UpdateButton() {
+  const { t } = useTranslation();
+  const { checking, checkNow } = useUpdates();
 
   return (
-    <Tooltip title={t("update.check")}>
-      <Button
-        icon={<CloudDownloadOutlined />}
-        loading={checking}
-        onClick={() => void checkForUpdate(true)}
-      />
-    </Tooltip>
+    <Button
+      icon={<CloudDownloadOutlined />}
+      loading={checking}
+      onClick={checkNow}
+    >
+      {t("update.checkNow")}
+    </Button>
   );
 }
