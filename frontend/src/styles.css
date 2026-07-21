@@ -21,6 +21,11 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .workspace.inspector-hidden { grid-template-columns: minmax(0, 1fr); }
 .stage-column { min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
 .stage-toolbar { min-height: 46px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #131718; }
+.mapping-editor-toolbar { min-height: 44px; padding: 6px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #171b1c; }
+.mapping-resolution { min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mapping-resolution .ant-tag { margin-inline-end: 0; }
+.mapping-background-controls { flex: none; }
+.mapping-background-controls .ant-segmented { min-width: 190px; }
 .stream-status { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .stream-metrics { min-width: 310px; color: #8d9997; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .stage-wrap { min-height: 0; height: 0; flex: 1; padding: 16px; display: flex; align-items: center; justify-content: center; overflow: hidden; background-color: #0c0f10; background-image: linear-gradient(45deg, #15191a 25%, transparent 25%), linear-gradient(-45deg, #15191a 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #15191a 75%), linear-gradient(-45deg, transparent 75%, #15191a 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
@@ -28,6 +33,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-viewport.is-controlling { cursor: crosshair; touch-action: none; }
 .device-viewport:focus-visible { outline: 2px solid #42b883; outline-offset: 3px; }
 .device-viewport canvas { display: block; width: 100%; height: 100%; }
+.mapping-screenshot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
 .direct-touch { position: absolute; width: 24px; height: 24px; border: 2px solid #42b883; border-radius: 50%; background: rgba(66,184,131,.25); box-shadow: 0 0 10px rgba(66,184,131,.65); transform: translate(-50%, -50%); pointer-events: none; }
 .empty-stage { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; color: #667170; font-size: 14px; }
 .empty-stage svg { font-size: 32px; }
@@ -77,6 +83,9 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .workspace { display: flex; flex-direction: column; }
   .stage-column { min-height: 68vh; }
   .stage-toolbar { align-items: flex-start; flex-direction: column; }
+  .mapping-editor-toolbar { align-items: flex-start; flex-direction: column; }
+  .mapping-resolution { white-space: normal; flex-wrap: wrap; }
+  .mapping-background-controls { width: 100%; flex-wrap: wrap; }
   .stream-status { align-items: flex-start; flex-direction: column; gap: 3px; }
   .stream-metrics { min-width: 0; white-space: normal; }
   .inspector { border-left: 0; border-top: 1px solid #303638; min-height: 340px; }

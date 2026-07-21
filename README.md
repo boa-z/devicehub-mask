@@ -316,7 +316,11 @@ adding remote or bundled fonts.
 - **Device** contains device selection, the aspect-ratio-preserving live view,
   control mode, rotation, direct touch, and hardware buttons.
 - **Keyboard Mapping** contains the live placement canvas, mapping inspector,
-  hardware shortcut bindings, and profile management.
+  hardware shortcut bindings, and profile management. Its editor reports the
+  source and contain-fitted display resolutions, can switch between the live
+  stream and a direction-correct frozen screenshot, and can save the captured
+  frame as a PNG. A frozen screenshot remains available for offline editing
+  after the device disconnects.
 - **Application Settings** contains window state and update controls.
 
 Changing pages releases every active touch, hardware button, and keyboard usage.

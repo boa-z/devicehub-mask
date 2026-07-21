@@ -26,6 +26,7 @@ import { Button, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, mes
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
+import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
 import { ProfileManager } from "./components/ProfileManager";
@@ -38,6 +39,7 @@ const emptyMetrics: StreamMetrics = { decoded_fps: 0, sent_fps: 0, jpeg_encode_m
 
 type BackendConnection = { origin: string; token: string };
 type ProfileList = { profiles: string[]; active: string };
+type CapturedScreenshot = { blob: Blob; url: string; width: number; height: number };
 
 function wsUrl(connection: BackendConnection) {
   return `${connection.origin.replace(/^http/, "ws")}/api/ws`;
@@ -73,6 +75,16 @@ function containSize(containerWidth: number, containerHeight: number, contentWid
   }
   const scale = Math.min(containerWidth / contentWidth, containerHeight / contentHeight);
   return { width: contentWidth * scale, height: contentHeight * scale };
+}
+
+function canvasPng(canvas: HTMLCanvasElement) {
+  return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+}
+
+function screenshotFilename(deviceName: string, width: number, height: number) {
+  const safeName = deviceName.trim().replace(/[<>:"/\\|?*]+/g, "-") || "iPhone";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `devicehub-mask_${safeName}_${width}x${height}_${timestamp}.png`;
 }
 
 type ControlMode = "mapping" | "keyboard";
@@ -125,6 +137,9 @@ export default function App() {
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
+  const [hasFrame, setHasFrame] = useState(false);
+  const [mappingBackgroundMode, setMappingBackgroundMode] = useState<MappingBackgroundMode>("live");
+  const [capturedScreenshot, setCapturedScreenshot] = useState<CapturedScreenshot | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -138,9 +153,14 @@ export default function App() {
   const heldHardwareRef = useRef(new Map<string, HardwareButtonName>());
   const forwardedKeyboardRef = useRef(new Map<string, number>());
   const directTouchesRef = useRef(new Map<number, TouchContact>());
+  const capturedScreenshotRef = useRef<CapturedScreenshot | null>(null);
+  const hasFrameRef = useRef(false);
 
   orientationRef.current = status.orientation;
   const mappingEditing = page === "mappings" && controlMode === "mapping" && editing;
+  const mappingFrameSize = mappingBackgroundMode === "screenshot" && capturedScreenshot
+    ? { width: capturedScreenshot.width, height: capturedScreenshot.height }
+    : frameSize;
 
   const request = useCallback((path: string, init: RequestInit = {}) => {
     if (!backend) return Promise.reject(new Error(translateRef.current("errors.backendNotReady")));
@@ -292,6 +312,10 @@ export default function App() {
               canvasContextRef.current = context;
               const size = drawFrame(canvas, context, bitmap, orientationRef.current);
               renderedFramesRef.current += 1;
+              if (!hasFrameRef.current) {
+                hasFrameRef.current = true;
+                setHasFrame(true);
+              }
               setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
             } catch (error) {
               console.warn("Unable to decode video frame", error);
@@ -318,6 +342,51 @@ export default function App() {
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
   }, [backend]);
+
+  useEffect(() => () => {
+    if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
+  }, []);
+
+  const captureMappingScreenshot = useCallback(async (selectBackground: boolean) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !hasFrame) {
+      void message.warning(t("mapping.screenshotUnavailable"));
+      return null;
+    }
+    const blob = await canvasPng(canvas);
+    if (!blob) {
+      void message.error(t("mapping.screenshotFailed"));
+      return null;
+    }
+    const next = {
+      blob,
+      url: URL.createObjectURL(blob),
+      width: canvas.width,
+      height: canvas.height,
+    };
+    const previous = capturedScreenshotRef.current;
+    capturedScreenshotRef.current = next;
+    setCapturedScreenshot(next);
+    if (selectBackground) setMappingBackgroundMode("screenshot");
+    if (previous) URL.revokeObjectURL(previous.url);
+    void message.success(t("mapping.screenshotCaptured"));
+    return next;
+  }, [hasFrame, t]);
+
+  const saveMappingScreenshot = useCallback(async () => {
+    const screenshot = mappingBackgroundMode === "live"
+      ? await captureMappingScreenshot(false)
+      : capturedScreenshotRef.current ?? await captureMappingScreenshot(false);
+    if (!screenshot) return;
+    const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
+    const link = document.createElement("a");
+    link.href = screenshot.url;
+    link.download = screenshotFilename(deviceName, screenshot.width, screenshot.height);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    void message.success(t("mapping.screenshotSaved"));
+  }, [captureMappingScreenshot, mappingBackgroundMode, status.active_udid, status.devices, t]);
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -479,7 +548,7 @@ export default function App() {
   });
   const moveMapping = (id: string, x: number, y: number) => setProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? ("position" in mapping ? { ...mapping, position: { x, y } } : { ...mapping, x, y }) as Mapping : mapping) }));
   const addMapping = (type: ScrcpyMappingType) => {
-    const next = createMapping(type, { x: 0.5, y: 0.5 }, frameSize);
+    const next = createMapping(type, { x: 0.5, y: 0.5 }, mappingFrameSize);
     const id = next.id;
     setProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
     setSelectedId(id);
@@ -613,10 +682,11 @@ export default function App() {
   };
   const selectedDevice = status.active_udid ?? undefined;
   const displayedMappings = page === "mappings" ? profile.mappings : controlProfile.mappings;
-  const aspectRatio = useMemo(() => `${frameSize.width} / ${frameSize.height}`, [frameSize]);
+  const displayedFrameSize = page === "mappings" ? mappingFrameSize : frameSize;
+  const aspectRatio = useMemo(() => `${displayedFrameSize.width} / ${displayedFrameSize.height}`, [displayedFrameSize]);
   const viewportSize = useMemo(
-    () => containSize(stageSize.width, stageSize.height, frameSize.width, frameSize.height),
-    [frameSize, stageSize],
+    () => containSize(stageSize.width, stageSize.height, displayedFrameSize.width, displayedFrameSize.height),
+    [displayedFrameSize, stageSize],
   );
   const statusText = status.error ?? (backendStatusKeys[status.status] ? t(backendStatusKeys[status.status]) : status.status);
 
@@ -660,7 +730,7 @@ export default function App() {
                   profile={profile}
                   profiles={profiles}
                   activeProfile={activeProfile}
-                  frameSize={frameSize}
+                  frameSize={mappingFrameSize}
                   onLoad={loadProfile}
                   onSave={save}
                   onActivate={activateCurrentProfile}
@@ -723,6 +793,18 @@ export default function App() {
                       })}
                     </div>
                   </div>
+                  {page === "mappings" && (
+                    <MappingBackgroundToolbar
+                      mode={mappingBackgroundMode}
+                      sourceSize={mappingFrameSize}
+                      viewportSize={viewportSize}
+                      screenshotAvailable={capturedScreenshot !== null}
+                      canCapture={hasFrame}
+                      onModeChange={setMappingBackgroundMode}
+                      onCapture={() => void captureMappingScreenshot(true)}
+                      onSave={() => void saveMappingScreenshot()}
+                    />
+                  )}
                   <div className="stage-wrap" ref={stageRef}>
                     <div
                       className={`device-viewport ${mappingEditing ? "is-editing" : "is-controlling"}`}
@@ -735,11 +817,14 @@ export default function App() {
                       onContextMenu={(event) => !mappingEditing && event.preventDefault()}
                     >
                       <canvas ref={canvasRef} />
+                      {page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot && (
+                        <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />
+                      )}
                       <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} activeIds={activeIds} onSelect={setSelectedId} onMove={moveMapping} />
                       {directTouches.map((contact) => (
                         <span key={contact.identity} className="direct-touch" style={{ left: `${contact.x * 100}%`, top: `${contact.y * 100}%` }} />
                       ))}
-                      {!status.active_udid && <div className="empty-stage"><AimOutlined /><span>{t("status.waitingForDevice")}</span></div>}
+                      {!status.active_udid && !(page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot) && <div className="empty-stage"><AimOutlined /><span>{t("status.waitingForDevice")}</span></div>}
                     </div>
                   </div>
                 </section>
