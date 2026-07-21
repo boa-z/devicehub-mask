@@ -1,7 +1,7 @@
 # DeviceHub Mask
 
 DeviceHub Mask is a Tauri 2 desktop workspace for controlling iOS games from
-macOS. It combines a React mapping editor inspired by
+macOS and Windows. It combines a React mapping editor inspired by
 [scrcpy-mask](https://github.com/AkiChase/scrcpy-mask) with the CoreDevice screen
 streaming, orientation handling, and Universal HID support developed in
 `devicehub_rs`.
@@ -11,9 +11,10 @@ transport.
 
 ## Features
 
-- Native macOS window powered by Tauri 2 and WKWebView
+- Native desktop window powered by Tauri 2, using WKWebView on macOS and
+  WebView2 on Windows
 - Live iOS screen at up to 60 FPS over CoreDevice displayservice and RTP/HEVC
-- Latest-frame 60 FPS delivery with TurboJPEG caching and decode backpressure
+- Latest-frame 60 FPS delivery with JPEG caching and decode backpressure
 - Aspect-ratio-preserving portrait and landscape rendering
 - Up to five typed Universal HID contacts in one report
 - Concurrent keyboard mappings, WASD direction pad, and direct pointer gestures
@@ -25,7 +26,8 @@ transport.
 - Always-visible hardware buttons with user-defined keyboard shortcuts
 - Desktop controls for always-on-top, fullscreen, and inspector visibility
 - Live decode, transmit, render, JPEG latency, and bandwidth diagnostics
-- Signed in-app nightly updates with download progress and automatic restart
+- Signed in-app nightly updates on macOS with download progress and automatic
+  restart
 
 ## Architecture
 
@@ -52,7 +54,8 @@ boundary.
 
 ## Requirements
 
-- macOS with Xcode Command Line Tools
+- macOS with Xcode Command Line Tools, or Windows 10/11 with WebView2 and the
+  Microsoft C++ Build Tools
 - A paired and trusted iPhone or iPad
 - Developer Mode enabled on the iOS device when required by the OS version
 - Rust stable toolchain
@@ -80,6 +83,51 @@ npm --version
 ffmpeg -version
 ```
 
+On Windows, install the Rust MSVC toolchain, Node.js, FFmpeg, and Apple's device
+support. The desktop version of iTunes installs Apple Mobile Device Service,
+which exposes the usbmuxd endpoint used by `idevice` on `127.0.0.1:27015`.
+Connect and trust the device once in iTunes before starting DeviceHub Mask. Make
+sure `ffmpeg.exe` is on `PATH`, or set `DEVICEHUB_FFMPEG` to its absolute path.
+Python 3.12 is used only by the device-preparation helper described below; it is
+not part of the application runtime.
+
+```powershell
+winget install --id Rustlang.Rustup --exact
+winget install --id OpenJS.NodeJS.LTS --exact
+winget install --id Gyan.FFmpeg --exact
+winget install --id Kitware.CMake --exact
+winget install --id NASM.NASM --exact
+winget install --id 9NP83LWLPZ9K --source msstore
+winget install --id Python.Python.3.12 --exact
+rustup default stable-msvc
+rustc --version
+node --version
+ffmpeg -version
+Get-Service "Apple Mobile Device Service"
+```
+
+Visual Studio Build Tools with the **Desktop development with C++** workload is
+also required to compile the native dependencies. The `turbojpeg` crate builds
+its bundled libjpeg-turbo source statically; CMake and NASM are build-time
+requirements, while no separate TurboJPEG DLL is needed at runtime. Release
+builds can generate the normal Windows MSI and NSIS installers through Tauri.
+
+CoreDevice display streaming works directly over USB. It does not require a
+privileged TUN adapter, tunneld, Bonjour, Wi-Fi sync, or the phone's LAN address.
+Before the first run, use the repository helper to verify Developer Mode, mount
+the Personalized Developer Disk Image, and confirm that the USB RSD endpoint
+advertises `com.apple.coredevice.displayservice`:
+
+```powershell
+.\scripts\prepare-windows-device.ps1
+```
+
+The helper creates an isolated runtime below
+`%LOCALAPPDATA%\devicehub-mask\pymobiledevice3`, installs
+`pymobiledevice3 9.38.0`, and exits after preparation and verification. It does
+not need elevation and no helper process needs to remain running. The mounted
+image may need to be prepared again after rebooting or upgrading the device.
+
 ## Get The Source
 
 ```sh
@@ -94,16 +142,16 @@ CLI. A global `cargo-tauri` installation is not required.
 ## Prepare A Device
 
 1. Connect the iOS device over USB.
-2. Unlock it and accept the macOS trust prompt.
-3. Keep the device unlocked for the first connection.
-4. Close other DeviceHub processes that may already own the CoreDevice media
+2. Unlock it and accept the computer trust prompt.
+3. Enable Developer Mode on the device.
+4. On Windows, run `.\scripts\prepare-windows-device.ps1` once.
+5. Keep the device unlocked for the first connection.
+6. Close other DeviceHub processes that may already own the CoreDevice media
    session.
 
-The device selector can show `Wi-Fi` when usbmuxd reports a paired network path;
-this does not mean iPhone Mirroring is being used. When usbmuxd exposes both USB
-and Wi-Fi records for the same UDID, DeviceHub Mask prefers Wi-Fi because current
-iOS releases allow the remote-control media negotiation over that path more
-consistently. USB remains the fallback when no paired network path is available.
+When usbmuxd reports both USB and network records for the same UDID, DeviceHub
+Mask deliberately selects USB. The iTunes **Sync with this iPhone over Wi-Fi**
+setting is unrelated to USB displayservice availability and is not required.
 
 ## Development
 
@@ -158,6 +206,18 @@ target/release/bundle/dmg/DeviceHub Mask_0.1.0_aarch64.dmg
 ```
 
 Output names can vary slightly by Tauri CLI version and host architecture.
+
+### Windows Build
+
+On Windows, build the application and the configured MSI/NSIS installers with:
+
+```powershell
+npm --prefix frontend run tauri:build
+```
+
+The installers are written below `target/release/bundle/msi` and
+`target/release/bundle/nsis`. FFmpeg and Apple Mobile Device Service remain
+runtime prerequisites and are not bundled.
 
 ### Universal macOS Build
 
@@ -392,6 +452,8 @@ to a loopback address. The API remains token-authenticated and has no web root.
 - Install ffmpeg with `brew install ffmpeg`. Packaged applications do not inherit
   the shell's `PATH`, so DeviceHub Mask also checks `/opt/homebrew/bin/ffmpeg`,
   `/usr/local/bin/ffmpeg`, and `/opt/local/bin/ffmpeg` directly.
+- On Windows, install FFmpeg with `winget install --id Gyan.FFmpeg --exact` and
+  open a new terminal before launching the application.
 - For a custom installation, launch with
   `DEVICEHUB_FFMPEG=/absolute/path/to/ffmpeg` or define that variable for the
   application process.
@@ -399,19 +461,39 @@ to a loopback address. The API remains token-authenticated and has no web root.
 - Close other CoreDevice display sessions.
 - Check the status badge and Rust logs for displayservice or RSD failures.
 
+### Display service is unavailable
+
+If the log reports that RSD did not advertise
+`com.apple.coredevice.displayservice`, the selected connection and RSD handshake
+are already working, but the device is not exposing the screen-streaming
+service. This does not mean that USB is unsupported. On Windows, keep the device
+connected and unlocked and run:
+
+```powershell
+.\scripts\prepare-windows-device.ps1
+```
+
+The helper checks Developer Mode, mounts the Personalized Developer Disk Image,
+then performs a fresh RSD handshake over USB and verifies the exact service name.
+If preparation succeeds but the service remains absent, reconnect the device. A
+persistent failure may require completing cable pairing once in Xcode 27 Device
+Hub, or may indicate an incompatible iOS beta build.
+
+The failure log includes the RSD service count and any advertised service names
+containing `display`, `screen`, `media`, or `capture`. Set
+`RUST_LOG=devicehub_mask::session=debug` to print the complete service-name list.
+
+An iPhone address such as `192.168.9.147:62078` is a Lockdown endpoint, not the
+RSD endpoint returned by CoreDeviceProxy. Supplying that address cannot replace
+device preparation or make missing services appear.
+
 ### CoreDevice error 9021 requires a newer iOS version
 
-The device can advertise separate USB and paired Wi-Fi records with the same
-UDID, so DeviceHub Mask chooses the Wi-Fi record deterministically when both
-exist. Confirm the device menu says `Wi-Fi`, keep USB attached for pairing/trust
-if needed, and enable **Show this iPhone when on Wi-Fi** in Finder. This transport
-is usbmuxd/CoreDevice, not iPhone Mirroring.
-
-If error 9021 is returned even over Wi-Fi, the device itself rejected the
-remote-control capability. Support depends on the hardware and iOS combination:
-this does not mean every device below iOS 27 is unsupported, but the rejected
-device must be updated to iOS 27 or replaced with a supported newer model. USB,
-re-pairing, ffmpeg, app signing, and repeated retries cannot bypass this check.
+If error 9021 is returned, the device itself rejected the remote-control
+capability. Support depends on the hardware and iOS combination: this does not
+mean every device below iOS 27 is unsupported, but the rejected device must be
+updated to iOS 27 or replaced with a supported newer model. Changing between USB
+and Wi-Fi, ffmpeg, app signing, and repeated retries cannot bypass this check.
 DeviceHub Mask stops the failed session and reports a concise error instead of
 printing the archived binary plist returned by CoreDevice. There is no screen-only
 fallback in the current protocol because the initial audio media session also

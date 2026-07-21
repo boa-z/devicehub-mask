@@ -516,7 +516,7 @@ pub async fn run(
     mut input_rx: UnboundedReceiver<InputCmd>,
 ) -> Result<(), String> {
     status.set("connecting to device...");
-    let provider = connect_provider(udid).await?;
+    let (provider, connection) = connect_provider(udid).await?;
     let device_identity = read_device_identity(&*provider).await;
     if let Some(identity) = &device_identity {
         tracing::info!(
@@ -552,6 +552,7 @@ pub async fn run(
         &mut handshake,
         our_ssrc,
         device_identity.as_ref(),
+        connection,
     )
     .await?;
 
@@ -1500,10 +1501,44 @@ async fn start_screen_media_stream(
     handshake: &mut RsdHandshake,
     our_ssrc: u32,
     identity: Option<&DeviceIdentity>,
+    connection: ConnKind,
 ) -> Result<ScreenMediaStream, String> {
-    let mut client = DisplayServiceClient::connect_rsd(adapter, handshake)
-        .await
-        .map_err(|e| format!("no display service: {e:?}"))?;
+    let mut client = match DisplayServiceClient::connect_rsd(adapter, handshake).await {
+        Ok(client) => client,
+        Err(IdeviceError::ServiceNotFound) => {
+            let mut related_services = handshake
+                .services
+                .keys()
+                .filter(|name| {
+                    let name = name.to_ascii_lowercase();
+                    ["display", "screen", "media", "capture"]
+                        .iter()
+                        .any(|needle| name.contains(needle))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            related_services.sort();
+            tracing::warn!(
+                connection = connection.label(),
+                service_count = handshake.services.len(),
+                ?related_services,
+                "RSD did not advertise com.apple.coredevice.displayservice"
+            );
+            tracing::debug!(services = ?handshake.services.keys().collect::<Vec<_>>(), "RSD services");
+
+            let hint = if cfg!(windows) {
+                " USB supports displayservice, but this device has not published the Device Hub service set. Keep it connected and unlocked, then run `.\\scripts\\prepare-windows-device.ps1` to verify Developer Mode and mount the Personalized Developer Disk Image."
+            } else {
+                " The device has not published the Device Hub service set. Verify Developer Mode, the Personalized Developer Disk Image, and Device Hub pairing."
+            };
+            return Err(format!(
+                "display service is unavailable on {} (RSD advertised {} services).{hint}",
+                connection.label(),
+                handshake.services.len()
+            ));
+        }
+        Err(error) => return Err(format!("no display service: {error:?}")),
+    };
 
     let audio_udp = adapter
         .bind_udp(0)
@@ -1653,7 +1688,9 @@ async fn stall_watchdog(frame_beat: Arc<Notify>, corruption: &Notify) {
 }
 
 /// Connect to the first (or named) device over usbmuxd and build a provider.
-async fn connect_provider(udid: Option<String>) -> Result<Box<dyn IdeviceProvider>, String> {
+async fn connect_provider(
+    udid: Option<String>,
+) -> Result<(Box<dyn IdeviceProvider>, ConnKind), String> {
     let mut usbmuxd = UsbmuxdConnection::default()
         .await
         .map_err(|e| format!("unable to connect to usbmuxd: {e:?}"))?;
@@ -1669,23 +1706,26 @@ async fn connect_provider(udid: Option<String>) -> Result<Box<dyn IdeviceProvide
         None => "no devices connected".to_string(),
     })?;
 
+    let connection = match &dev.connection_type {
+        Connection::Usb => ConnKind::Usb,
+        Connection::Network(_) => ConnKind::Network,
+        Connection::Unknown(_) => ConnKind::Other,
+    };
     tracing::info!(
         udid = %dev.udid,
         connection = connection_label(&dev.connection_type),
         "selected CoreDevice transport"
     );
-
-    Ok(Box::new(dev.to_provider(addr, "devicehub_rs")))
+    Ok((Box::new(dev.to_provider(addr, "devicehub_rs")), connection))
 }
 
-// iOS currently accepts the remote-control media negotiation over the paired
-// network path on more OS versions than over the USB CoreDeviceProxy path. A
-// device may be listed twice with the same UDID, so never depend on usbmuxd's
-// unstable return order. USB remains the fallback when no network path exists.
+// Prefer the cable path when usbmuxd reports the same UDID over both transports.
+// CoreDeviceProxy supports displayservice over USB directly, and the cable keeps
+// discovery independent of Bonjour and local-network multicast configuration.
 fn connection_priority(connection: &Connection) -> u8 {
     match connection {
-        Connection::Network(_) => 0,
-        Connection::Usb => 1,
+        Connection::Usb => 0,
+        Connection::Network(_) => 1,
         Connection::Unknown(_) => 2,
     }
 }
@@ -1790,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn prefers_network_transport_for_duplicate_udid() {
+    fn prefers_usb_transport_for_duplicate_udid() {
         let usb = UsbmuxdDevice {
             connection_type: Connection::Usb,
             udid: "phone".into(),
@@ -1803,7 +1843,7 @@ mod tests {
         };
 
         let selected = select_preferred_device(vec![usb, network], Some("phone")).unwrap();
-        assert!(matches!(selected.connection_type, Connection::Network(_)));
+        assert!(matches!(selected.connection_type, Connection::Usb));
     }
 
     #[test]

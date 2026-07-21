@@ -66,7 +66,7 @@ fn resolve_ffmpeg() -> std::io::Result<PathBuf> {
     Err(std::io::Error::new(
         std::io::ErrorKind::NotFound,
         format!(
-            "ffmpeg was not found; install it with `brew install ffmpeg` or set \
+            "ffmpeg was not found; install it and add it to PATH, or set \
              DEVICEHUB_FFMPEG to its absolute path (searched: {searched})"
         ),
     ))
@@ -78,7 +78,9 @@ fn ffmpeg_candidates(configured: Option<OsString>, path: Option<OsString>) -> Ve
         candidates.push(PathBuf::from(configured));
     }
     if let Some(path) = path {
-        candidates.extend(std::env::split_paths(&path).map(|directory| directory.join("ffmpeg")));
+        candidates.extend(
+            std::env::split_paths(&path).map(|directory| directory.join(ffmpeg_executable())),
+        );
     }
     for path in [
         "/opt/homebrew/bin/ffmpeg",
@@ -91,6 +93,14 @@ fn ffmpeg_candidates(configured: Option<OsString>, path: Option<OsString>) -> Ve
         }
     }
     candidates
+}
+
+fn ffmpeg_executable() -> &'static str {
+    if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    }
 }
 
 /// Read PAM frames from ffmpeg's stdout, publishing each (already RGBA) into
@@ -243,14 +253,20 @@ mod tests {
 
     #[test]
     fn configured_ffmpeg_precedes_path_and_common_locations() {
-        let candidates = ffmpeg_candidates(
-            Some(OsString::from("/custom/ffmpeg")),
-            Some(OsString::from("/first:/second")),
-        );
+        let search_path = std::env::join_paths([PathBuf::from("first"), PathBuf::from("second")])
+            .expect("build test PATH");
+        let candidates =
+            ffmpeg_candidates(Some(OsString::from("/custom/ffmpeg")), Some(search_path));
 
         assert_eq!(candidates[0], PathBuf::from("/custom/ffmpeg"));
-        assert_eq!(candidates[1], PathBuf::from("/first/ffmpeg"));
-        assert_eq!(candidates[2], PathBuf::from("/second/ffmpeg"));
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("first").join(ffmpeg_executable())
+        );
+        assert_eq!(
+            candidates[2],
+            PathBuf::from("second").join(ffmpeg_executable())
+        );
         assert!(candidates.contains(&PathBuf::from("/opt/homebrew/bin/ffmpeg")));
         assert!(candidates.contains(&PathBuf::from("/usr/local/bin/ffmpeg")));
     }

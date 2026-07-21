@@ -38,7 +38,7 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false,
-    "targets": ["app", "dmg"],
+    "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Control iOS games with configurable multi-touch mappings",
     "icon": [
