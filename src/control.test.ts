@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTouchFrame, mappingBindings, touchFramesEqual } from "./control";
+import { buildTouchFrame, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual } from "./control";
 import { createMapping, type PadCastSpellMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
 
 describe("mapping controller runtime", () => {
@@ -36,5 +36,19 @@ describe("mapping controller runtime", () => {
     expect(touchFramesEqual(frame, [{ ...frame[0], touching: false }])).toBe(false);
     expect(touchFramesEqual(frame, [{ ...frame[0], x: 0.26 }])).toBe(false);
     expect(touchFramesEqual(null, frame)).toBe(false);
+  });
+
+  it("keeps the explicit release coordinate ahead of an inactive mapping with the same id", () => {
+    expect(mergeTouchContacts(
+      [{ identity: 0, touching: false, x: 0.1, y: 0.1 }],
+      [],
+      [{ identity: 0, touching: false, x: 0.8, y: 0.7 }],
+    )).toEqual([{ identity: 0, touching: false, x: 0.8, y: 0.7 }]);
+  });
+
+  it("holds short direct taps for at least fifty milliseconds", () => {
+    expect(remainingTapDuration(100, 105)).toBe(45);
+    expect(remainingTapDuration(100, 150)).toBe(0);
+    expect(remainingTapDuration(100, 180)).toBe(0);
   });
 });

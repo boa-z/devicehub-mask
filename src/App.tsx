@@ -38,7 +38,7 @@ import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, touchFramesEqual, type TouchContact } from "./control";
+import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { logFrontend } from "./diagnostics";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
@@ -183,6 +183,8 @@ export default function App() {
   const heldHardwareRef = useRef(new Map<string, HardwareButtonName>());
   const forwardedKeyboardRef = useRef(new Map<string, number>());
   const directTouchesRef = useRef(new Map<number, TouchContact>());
+  const directTouchStartedAtRef = useRef(new Map<number, number>());
+  const directTouchReleaseTimersRef = useRef(new Map<number, number>());
   const activeIdsRef = useRef(new Set<number>());
   const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
   const capturedScreenshotRef = useRef<CapturedScreenshot | null>(null);
@@ -235,14 +237,20 @@ export default function App() {
   }, []);
 
   const sendFrame = useCallback((nextHeld = heldRef.current, released: TouchContact[] = []) => {
-    const candidates = [
-      ...buildTouchFrame(controlProfile.mappings, nextHeld, frameSize, performance.now(), heldSinceRef.current, mappingOffsetsRef.current),
-      ...directTouchesRef.current.values(),
-      ...released,
-    ];
-    const ordered = [...candidates.filter((contact) => contact.touching), ...candidates.filter((contact) => !contact.touching)];
-    const contacts = ordered.filter((contact, index, all) => all.findIndex((candidate) => candidate.identity === contact.identity) === index).slice(0, 5);
-    const nextActiveIds = new Set(contacts.filter((contact) => contact.touching).map((contact) => contact.identity));
+    const mappedContacts = buildTouchFrame(
+      controlProfile.mappings,
+      nextHeld,
+      frameSize,
+      performance.now(),
+      heldSinceRef.current,
+      mappingOffsetsRef.current,
+    );
+    const contacts = mergeTouchContacts(
+      mappedContacts,
+      [...directTouchesRef.current.values()],
+      released,
+    );
+    const nextActiveIds = new Set(mappedContacts.filter((contact) => contact.touching).map((contact) => contact.identity));
     if (nextActiveIds.size !== activeIdsRef.current.size || [...nextActiveIds].some((identity) => !activeIdsRef.current.has(identity))) {
       activeIdsRef.current = nextActiveIds;
       setActiveIds(nextActiveIds);
@@ -255,6 +263,9 @@ export default function App() {
 
   const releaseAllControls = useCallback(() => {
     const released = [...directTouchesRef.current.values()].map((contact) => ({ ...contact, touching: false }));
+    for (const timer of directTouchReleaseTimersRef.current.values()) window.clearTimeout(timer);
+    directTouchReleaseTimersRef.current.clear();
+    directTouchStartedAtRef.current.clear();
     directTouchesRef.current.clear();
     heldRef.current.clear();
     heldSinceRef.current.clear();
@@ -821,6 +832,7 @@ export default function App() {
     event.currentTarget.setPointerCapture(event.pointerId);
     const contact = { identity, touching: true, ...pointFromPointer(event) };
     directTouchesRef.current.set(event.pointerId, contact);
+    directTouchStartedAtRef.current.set(event.pointerId, performance.now());
     setDirectTouches([...directTouchesRef.current.values()]);
     sendFrame();
   };
@@ -835,11 +847,29 @@ export default function App() {
   };
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     const contact = directTouchesRef.current.get(event.pointerId);
-    if (!contact) return;
+    if (!contact || directTouchReleaseTimersRef.current.has(event.pointerId)) return;
     event.preventDefault();
-    directTouchesRef.current.delete(event.pointerId);
-    setDirectTouches([...directTouchesRef.current.values()]);
-    sendFrame(heldRef.current, [{ ...contact, touching: false, ...pointFromPointer(event) }]);
+    const pointerId = event.pointerId;
+    const finalContact = { ...contact, ...pointFromPointer(event) };
+    directTouchesRef.current.set(pointerId, finalContact);
+    const finish = () => {
+      const current = directTouchesRef.current.get(pointerId);
+      if (!current || current.identity !== finalContact.identity) return;
+      directTouchReleaseTimersRef.current.delete(pointerId);
+      directTouchStartedAtRef.current.delete(pointerId);
+      directTouchesRef.current.delete(pointerId);
+      setDirectTouches([...directTouchesRef.current.values()]);
+      sendFrame(heldRef.current, [{ ...finalContact, touching: false }]);
+    };
+    const delay = remainingTapDuration(
+      directTouchStartedAtRef.current.get(pointerId) ?? performance.now(),
+      performance.now(),
+    );
+    if (delay > 0) {
+      directTouchReleaseTimersRef.current.set(pointerId, window.setTimeout(finish, delay));
+    } else {
+      finish();
+    }
   };
   const selectedDevice = selectedUdid ?? undefined;
   const displayedMappings = page === "mappings" ? profile.mappings : controlProfile.mappings;
@@ -1020,6 +1050,7 @@ export default function App() {
                       onPointerMove={handlePointerMove}
                       onPointerUp={handlePointerUp}
                       onPointerCancel={handlePointerUp}
+                      onLostPointerCapture={handlePointerUp}
                       onContextMenu={(event) => !mappingEditing && event.preventDefault()}
                     >
                       <canvas ref={canvasRef} />

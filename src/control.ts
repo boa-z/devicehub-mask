@@ -1,6 +1,7 @@
 import { mappingPosition, type ButtonBinding, type DirectionBinding, type Mapping } from "./types";
 
 export type TouchContact = { identity: number; touching: boolean; x: number; y: number };
+export const minimumTapDurationMs = 50;
 const pressed = (held: ReadonlySet<string>, code: string) => code.length > 0 && held.has(code);
 const bound = (held: ReadonlySet<string>, keys: ButtonBinding) => keys.length > 0 && keys.every((key) => pressed(held, key));
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
@@ -76,6 +77,26 @@ export function touchFramesEqual(left: readonly TouchContact[] | null, right: re
         && contact.x === other.x
         && contact.y === other.y;
     });
+}
+
+export function mergeTouchContacts(
+  mapped: readonly TouchContact[],
+  direct: readonly TouchContact[],
+  released: readonly TouchContact[] = [],
+): TouchContact[] {
+  const current = [...mapped, ...direct];
+  const ordered = [
+    ...current.filter((contact) => contact.touching),
+    ...released,
+    ...current.filter((contact) => !contact.touching),
+  ];
+  return ordered
+    .filter((contact, index, all) => all.findIndex((candidate) => candidate.identity === contact.identity) === index)
+    .slice(0, 5);
+}
+
+export function remainingTapDuration(startedAt: number, now: number, minimum = minimumTapDurationMs) {
+  return Math.max(0, minimum - Math.max(0, now - startedAt));
 }
 
 export function mappingBindings(mapping: Mapping): string[] {
