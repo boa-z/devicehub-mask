@@ -48,7 +48,7 @@ export const enUS = {
     enterFullscreen: "Enter fullscreen",
     exitFullscreen: "Exit fullscreen",
     bandwidth: "Bandwidth {{value}} Mbps",
-    metrics: "Decode {{decoded}} · Send {{sent}} · Display {{render}} FPS · JPEG {{jpeg}} ms",
+    metrics: "Decode {{decoded}} · Send {{sent}} · Display {{render}} FPS · {{pipeline}}",
     mappingMode: "Mapping",
     keyboardMode: "Keyboard passthrough",
     edit: "Edit",

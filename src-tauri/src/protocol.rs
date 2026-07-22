@@ -1,11 +1,13 @@
 // Shared types passed between the web server and the async device session.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
 use serde::Serialize;
 
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
@@ -17,6 +19,98 @@ pub struct Frame {
     pub height: usize,
     pub rgb: Vec<u8>,
     pub jpeg: OnceLock<Result<Bytes, String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum VideoPipeline {
+    Jpeg = 0,
+    H264Qsv = 1,
+    H264Nvenc = 2,
+    H264Amf = 3,
+    H264VideoToolbox = 4,
+}
+
+impl VideoPipeline {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpeg",
+            Self::H264Qsv => "h264-qsv",
+            Self::H264Nvenc => "h264-nvenc",
+            Self::H264Amf => "h264-amf",
+            Self::H264VideoToolbox => "h264-videotoolbox",
+        }
+    }
+
+    pub fn is_h264(self) -> bool {
+        self != Self::Jpeg
+    }
+}
+
+/// Live MPEG-TS bytes and counters shared by the capture session and web clients.
+/// A zero-length message asks connected video clients to reset after a pipeline
+/// transition; MPEG-TS itself never emits an empty chunk.
+#[derive(Clone)]
+pub struct EncodedVideoStream {
+    sender: broadcast::Sender<Bytes>,
+    pipeline: Arc<AtomicU8>,
+    source_frames: Arc<AtomicU64>,
+    encoded_bytes: Arc<AtomicU64>,
+}
+
+impl Default for EncodedVideoStream {
+    fn default() -> Self {
+        let (sender, _) = broadcast::channel(256);
+        Self {
+            sender,
+            pipeline: Arc::new(AtomicU8::new(VideoPipeline::Jpeg as u8)),
+            source_frames: Arc::new(AtomicU64::new(0)),
+            encoded_bytes: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl EncodedVideoStream {
+    pub fn subscribe(&self) -> broadcast::Receiver<Bytes> {
+        self.sender.subscribe()
+    }
+
+    pub fn publish(&self, bytes: Bytes) {
+        self.encoded_bytes
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let _ = self.sender.send(bytes);
+    }
+
+    pub fn set_pipeline(&self, pipeline: VideoPipeline) {
+        let previous = self.pipeline.swap(pipeline as u8, Ordering::AcqRel);
+        if previous != pipeline as u8 {
+            tracing::info!(pipeline = pipeline.label(), "selected video pipeline");
+            if pipeline == VideoPipeline::Jpeg {
+                let _ = self.sender.send(Bytes::new());
+            }
+        }
+    }
+
+    pub fn pipeline(&self) -> VideoPipeline {
+        match self.pipeline.load(Ordering::Acquire) {
+            1 => VideoPipeline::H264Qsv,
+            2 => VideoPipeline::H264Nvenc,
+            3 => VideoPipeline::H264Amf,
+            4 => VideoPipeline::H264VideoToolbox,
+            _ => VideoPipeline::Jpeg,
+        }
+    }
+
+    pub fn note_source_frame(&self) {
+        self.source_frames.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn counters(&self) -> (u64, u64) {
+        (
+            self.source_frames.load(Ordering::Relaxed),
+            self.encoded_bytes.load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// The latest decoded frame, shared with connected WebSocket clients.
@@ -563,5 +657,21 @@ mod tests {
         let view = slot.get();
         assert_eq!(view.state, AppOperationState::Cancelled);
         assert_eq!(view.error.as_deref(), Some("device session ended"));
+    }
+
+    #[tokio::test]
+    async fn encoded_video_stream_broadcasts_data_and_resets_on_fallback() {
+        let stream = EncodedVideoStream::default();
+        let mut receiver = stream.subscribe();
+        stream.set_pipeline(VideoPipeline::H264Qsv);
+        stream.note_source_frame();
+        stream.publish(Bytes::from_static(b"transport-stream"));
+
+        assert_eq!(receiver.recv().await.unwrap(), &b"transport-stream"[..]);
+        assert_eq!(stream.counters(), (1, 16));
+        assert_eq!(stream.pipeline(), VideoPipeline::H264Qsv);
+
+        stream.set_pipeline(VideoPipeline::Jpeg);
+        assert!(receiver.recv().await.unwrap().is_empty());
     }
 }

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UdpSocket;
 use tokio::process::ChildStderr;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -44,9 +45,9 @@ use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardEvent, ClipboardSlot, ConnKind,
-    ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, ErrorSlot, FrameSlot,
-    InputCmd, InputSink, KeyMods, Orientation, OrientationSlot, ProvisioningProfile, RotateDir,
-    StatusSlot, clipboard_preview,
+    ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, EncodedVideoStream,
+    ErrorSlot, FrameSlot, InputCmd, InputSink, KeyMods, Orientation, OrientationSlot,
+    ProvisioningProfile, RotateDir, StatusSlot, VideoPipeline, clipboard_preview,
 };
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -333,6 +334,7 @@ pub async fn manage(
     initial_udid: Option<String>,
     repaint: impl Fn() + Send + Clone + 'static,
     frames: FrameSlot,
+    video_stream: EncodedVideoStream,
     status: StatusSlot,
     clipboard: ClipboardSlot,
     orientation_view: OrientationSlot,
@@ -386,6 +388,7 @@ pub async fn manage(
             Some(udid.clone()),
             repaint.clone(),
             frames.clone(),
+            video_stream.clone(),
             clipboard.clone(),
             SessionViews {
                 status: status.clone(),
@@ -528,6 +531,7 @@ async fn run(
     udid: Option<String>,
     repaint: impl Fn() + Send + 'static,
     frames: FrameSlot,
+    video_stream: EncodedVideoStream,
     clipboard: ClipboardSlot,
     views: SessionViews,
     mut input_rx: UnboundedReceiver<InputCmd>,
@@ -574,6 +578,10 @@ async fn run(
     let mut handshake = RsdHandshake::new(stream)
         .await
         .map_err(|e| format!("RSD handshake failed: {e:?}"))?;
+
+    // Probe before starting RTP so the live HEVC queue begins with a clean IDR
+    // and wall-clock timestamps, rather than a burst accumulated during probing.
+    let selected_pipeline = decode::select_video_pipeline().await;
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
     // associates our RTCP feedback with the stream; otherwise it's ignored.
@@ -672,10 +680,6 @@ async fn run(
         }
     };
 
-    // video UDP -> depacketize -> ffmpeg stdin ; ffmpeg stdout -> frames.
-    let (mut child, ffmpeg_in, ffmpeg_out, ffmpeg_err) =
-        decode::spawn_ffmpeg().map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
-
     views.status.set("connected");
 
     // A stable CNAME for our RTCP SDES (identifies this receiver endpoint).
@@ -706,10 +710,10 @@ async fn run(
     // input loop is the only one that returns normally (Shutdown / channel close);
     // when it does, the others drop, closing ffmpeg's stdin.
     //
-    // The hevc channel decouples ffmpeg writing from the RTP receive loop, which
-    // sends per-frame RTCP ACKs the encoder depends on and must not stall on
-    // ffmpeg's stdin backpressure (which spikes under heavy motion).
-    let (hevc_tx, hevc_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // Keep the device RTP clock intact across the ffmpeg boundary. A bounded
+    // queue decouples loopback forwarding from the receive loop, which must keep
+    // servicing RTCP even when the decoder briefly applies backpressure.
+    let (rtp_tx, rtp_rx) = tokio::sync::mpsc::channel::<TimedHevcAccessUnit>(256);
     let orientation_watch_view = views.orientation.clone();
     let orientation_task = async move {
         match springboard {
@@ -719,17 +723,17 @@ async fn run(
     };
 
     tokio::select! {
-        _ = video_task(video_udp.clone(), hevc_tx, rtcp.clone(), our_ssrc) => {
+        _ = video_task(
+            video_udp.clone(), rtp_tx, rtcp.clone(), our_ssrc,
+            video_stream.clone(), frame_beat.clone(),
+        ) => {
             tracing::warn!("video task ended early");
         }
-        _ = ffmpeg_writer(ffmpeg_in, hevc_rx) => {
-            tracing::warn!("ffmpeg writer ended");
-        }
-        _ = decode::read_frames(ffmpeg_out, frames, frame_beat.clone(), repaint) => {
-            tracing::warn!("decode task ended early");
-        }
-        _ = watch_decode_errors(ffmpeg_err, corruption.clone()) => {
-            tracing::warn!("ffmpeg stderr watcher ended");
+        _ = decode_supervisor(
+            rtp_rx, selected_pipeline, video_stream.clone(), frames, frame_beat.clone(),
+            corruption.clone(), repaint,
+        ) => {
+            tracing::warn!("video decode pipeline ended early");
         }
         _ = stall_watchdog(frame_beat, &corruption) => {}
         _ = rtcp_recv_task(rtcp_udp.clone(), rtcp.clone()) => {}
@@ -757,7 +761,7 @@ async fn run(
 
     views.status.set("stopping...");
     display.stop_media_stream().await.ok();
-    child.start_kill().ok();
+    video_stream.set_pipeline(VideoPipeline::Jpeg);
     // `proxy`, `adapter`, `handshake` drop here, tearing down the tunnel.
     Ok(())
 }
@@ -1582,16 +1586,111 @@ async fn type_key(
     Ok(())
 }
 
-/// Pump video RTP into ffmpeg: receive datagrams, depacketize HEVC, hand the
-/// resulting Annex-B to the ffmpeg writer. This socket also carries inbound RTCP
-/// under rtcp-mux; those datagrams are split off to [`RtcpShared::note_inbound`].
+struct TimedHevcAccessUnit {
+    timestamp: u32,
+    payload_type: u8,
+    annex_b: Vec<u8>,
+}
+
+async fn decode_supervisor(
+    mut rtp_rx: tokio::sync::mpsc::Receiver<TimedHevcAccessUnit>,
+    selected_pipeline: VideoPipeline,
+    video_stream: EncodedVideoStream,
+    frames: FrameSlot,
+    frame_beat: Arc<Notify>,
+    corruption: Arc<Notify>,
+    repaint: impl Fn(),
+) {
+    let mut pipeline = selected_pipeline;
+    loop {
+        // A newly opened decoder must start on an IRAP carrying the cached
+        // VPS/SPS/PPS. This is especially important after runtime fallback,
+        // because the queue may still contain dependent pictures from the old
+        // process.
+        corruption.notify_one();
+        let first_packet = loop {
+            let Some(access_unit) = rtp_rx.recv().await else {
+                return;
+            };
+            if access_unit_is_irap(&access_unit.annex_b) {
+                break access_unit;
+            }
+        };
+        let payload_type = first_packet.payload_type;
+        let rtp_port = match reserve_loopback_udp_port().await {
+            Ok(port) => port,
+            Err(error) => {
+                tracing::error!(%error, "failed to allocate ffmpeg RTP port");
+                return;
+            }
+        };
+        let spawned = if pipeline.is_h264() {
+            decode::spawn_ffmpeg_h264(pipeline)
+        } else {
+            decode::spawn_ffmpeg_jpeg()
+        };
+        let (mut child, ffmpeg_in, ffmpeg_out, ffmpeg_err) = match spawned {
+            Ok(process) => process,
+            Err(error) if pipeline.is_h264() => {
+                tracing::warn!(pipeline = pipeline.label(), %error, "hardware pipeline failed to start; falling back to TurboJPEG");
+                pipeline = VideoPipeline::Jpeg;
+                video_stream.set_pipeline(pipeline);
+                continue;
+            }
+            Err(error) => {
+                tracing::error!(%error, "failed to start ffmpeg JPEG fallback");
+                return;
+            }
+        };
+        video_stream.set_pipeline(pipeline);
+        let writer =
+            ffmpeg_rtp_writer(ffmpeg_in, &mut rtp_rx, first_packet, rtp_port, payload_type);
+        let reader = async {
+            if pipeline.is_h264() {
+                decode::read_mpegts(ffmpeg_out, video_stream.clone()).await;
+            } else {
+                decode::read_frames(ffmpeg_out, frames.clone(), frame_beat.clone(), &repaint).await;
+            }
+        };
+        tokio::select! {
+            _ = writer => tracing::warn!(pipeline = pipeline.label(), "ffmpeg input ended"),
+            _ = reader => tracing::warn!(pipeline = pipeline.label(), "ffmpeg output ended"),
+            _ = watch_decode_errors(ffmpeg_err, corruption.clone()) => {
+                tracing::warn!(pipeline = pipeline.label(), "ffmpeg process ended");
+            }
+        }
+        child.start_kill().ok();
+        let _ = child.wait().await;
+        if rtp_rx.is_closed() && rtp_rx.is_empty() {
+            return;
+        }
+        if pipeline.is_h264() {
+            tracing::warn!(
+                pipeline = pipeline.label(),
+                "hardware video pipeline failed at runtime; switching to TurboJPEG"
+            );
+            pipeline = VideoPipeline::Jpeg;
+            video_stream.set_pipeline(pipeline);
+            corruption.notify_one();
+            continue;
+        }
+        return;
+    }
+}
+
+/// Receive device RTP and forward complete datagrams to ffmpeg. This socket also
+/// carries inbound RTCP under rtcp-mux; those datagrams are split off to
+/// [`RtcpShared::note_inbound`]. Annex-B depacketization is diagnostic-only.
 async fn video_task(
     udp: Arc<UdpSocketHandle>,
-    hevc_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    rtp_tx: tokio::sync::mpsc::Sender<TimedHevcAccessUnit>,
     rtcp: Arc<Mutex<RtcpShared>>,
     our_ssrc: u32,
+    video_stream: EncodedVideoStream,
+    frame_beat: Arc<Notify>,
 ) {
     let mut depacketizer = HevcDepacketizer::new();
+    let mut access_unit = Vec::new();
     // Lock onto a single RTP stream (SSRC) and feed only its packets to the
     // depacketizer. A stream restart begins a new SSRC with a fresh sequence
     // number; the device doesn't reliably stop the old sender, so both streams can
@@ -1669,6 +1768,7 @@ async fn video_task(
                             pkt.ssrc,
                         );
                         depacketizer = HevcDepacketizer::new();
+                        access_unit.clear();
                         locked_ssrc = Some(pkt.ssrc);
                         last_locked = now;
                         let mut s = rtcp.lock().unwrap();
@@ -1686,6 +1786,8 @@ async fn video_task(
                     s.stats.on_packet(pkt.sequence_number);
                     if pkt.marker {
                         s.frames = s.frames.wrapping_add(1);
+                        video_stream.note_source_frame();
+                        frame_beat.notify_one();
                     }
                 }
                 // Per-frame ACK (disabled by default - see `send_frame_ack`). The
@@ -1709,17 +1811,25 @@ async fn video_task(
                     }
                 }
                 depacketizer.push(pkt.sequence_number, pkt.timestamp, pkt.payload);
-                let out = depacketizer.take_output();
-                if !out.is_empty() {
+                access_unit.extend_from_slice(&depacketizer.take_output());
+                if pkt.marker && !access_unit.is_empty() {
                     if let Some(f) = &mut dump {
+                        let out = &access_unit;
                         f.write_all(&out).await.ok();
                     }
-                    // Non-blocking hand-off so this loop never stalls on ffmpeg
-                    // backpressure and keeps ACKs timely.
-                    if hevc_tx.send(out).is_err() {
-                        tracing::info!("ffmpeg writer gone; ending video task");
+                    let access_unit = TimedHevcAccessUnit {
+                        timestamp: pkt.timestamp,
+                        payload_type: pkt.payload_type,
+                        annex_b: std::mem::take(&mut access_unit),
+                    };
+                    if rtp_tx.send(access_unit).await.is_err() {
+                        tracing::info!("ffmpeg RTP writer gone; ending video task");
                         break;
                     }
+                }
+                if rtp_tx.is_closed() {
+                    tracing::info!("ffmpeg RTP writer gone; ending video task");
+                    break;
                 }
             }
             Err(e) => {
@@ -1730,18 +1840,164 @@ async fn video_task(
     }
 }
 
-/// Drain depacketized Annex-B from [`video_task`] into ffmpeg's stdin. On its own
-/// task so ffmpeg backpressure never stalls the RTP receive loop's RTCP ACKs.
-async fn ffmpeg_writer(
+async fn reserve_loopback_udp_port() -> std::io::Result<u16> {
+    let socket = UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    Ok(socket.local_addr()?.port())
+}
+
+/// Feed ffmpeg its SDP on stdin, then forward the device RTP datagrams to the
+/// advertised loopback port. Waiting briefly after SDP EOF lets ffmpeg bind its
+/// UDP socket before the opening parameter sets and IDR are sent.
+async fn ffmpeg_rtp_writer(
     mut ffmpeg_in: ChildStdin,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    rx: &mut tokio::sync::mpsc::Receiver<TimedHevcAccessUnit>,
+    first_packet: TimedHevcAccessUnit,
+    rtp_port: u16,
+    payload_type: u8,
 ) {
-    while let Some(buf) = rx.recv().await {
-        if ffmpeg_in.write_all(&buf).await.is_err() {
-            tracing::info!("ffmpeg stdin closed; ending writer");
-            break;
+    let sdp = decode::rtp_sdp(rtp_port, payload_type);
+    if ffmpeg_in.write_all(sdp.as_bytes()).await.is_err() || ffmpeg_in.shutdown().await.is_err() {
+        tracing::warn!("ffmpeg closed before reading its RTP session description");
+        return;
+    }
+    // On Windows the child does not observe EOF until the final anonymous-pipe
+    // handle is dropped, even after AsyncWriteExt::shutdown has completed.
+    drop(ffmpeg_in);
+    let socket = match UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            tracing::warn!(%error, "failed to create ffmpeg RTP forwarding socket");
+            return;
+        }
+    };
+    let target = (std::net::Ipv4Addr::LOCALHOST, rtp_port);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let mut sequence = uuid::Uuid::new_v4().as_u128() as u16;
+    let ssrc = uuid::Uuid::new_v4().as_u128() as u32;
+    let mut current = Some(first_packet);
+    loop {
+        let access_unit = match current.take() {
+            Some(access_unit) => access_unit,
+            None => match rx.recv().await {
+                Some(access_unit) => access_unit,
+                None => break,
+            },
+        };
+        let packets = packetize_hevc_access_unit(&access_unit, payload_type, ssrc, &mut sequence);
+        for packet in packets {
+            if socket.send_to(&packet, target).await.is_err() {
+                tracing::info!("ffmpeg RTP socket closed; ending writer");
+                return;
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+const LOOPBACK_RTP_PAYLOAD: usize = 16 * 1024;
+
+fn packetize_hevc_access_unit(
+    access_unit: &TimedHevcAccessUnit,
+    payload_type: u8,
+    ssrc: u32,
+    sequence: &mut u16,
+) -> Vec<Vec<u8>> {
+    let nal_units = annex_b_nal_units(&access_unit.annex_b);
+    let mut packets = Vec::new();
+    for (nal_index, nal) in nal_units.iter().enumerate() {
+        if nal.len() < 2 {
+            continue;
+        }
+        let last_nal = nal_index + 1 == nal_units.len();
+        if nal.len() <= LOOPBACK_RTP_PAYLOAD {
+            packets.push(build_rtp_packet(
+                nal,
+                last_nal,
+                payload_type,
+                *sequence,
+                access_unit.timestamp,
+                ssrc,
+            ));
+            *sequence = sequence.wrapping_add(1);
+            continue;
+        }
+
+        let fu_indicator = [(nal[0] & 0x81) | (49 << 1), nal[1]];
+        let fu_type = (nal[0] >> 1) & 0x3f;
+        let fragments = nal[2..].chunks(LOOPBACK_RTP_PAYLOAD - 3);
+        let fragment_count = fragments.len();
+        for (fragment_index, fragment) in fragments.enumerate() {
+            let mut payload = Vec::with_capacity(fragment.len() + 3);
+            payload.extend_from_slice(&fu_indicator);
+            let start = (fragment_index == 0) as u8 * 0x80;
+            let end = (fragment_index + 1 == fragment_count) as u8 * 0x40;
+            payload.push(start | end | fu_type);
+            payload.extend_from_slice(fragment);
+            packets.push(build_rtp_packet(
+                &payload,
+                last_nal && fragment_index + 1 == fragment_count,
+                payload_type,
+                *sequence,
+                access_unit.timestamp,
+                ssrc,
+            ));
+            *sequence = sequence.wrapping_add(1);
         }
     }
+    packets
+}
+
+fn build_rtp_packet(
+    payload: &[u8],
+    marker: bool,
+    payload_type: u8,
+    sequence: u16,
+    timestamp: u32,
+    ssrc: u32,
+) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(12 + payload.len());
+    packet.extend_from_slice(&[0x80, payload_type | if marker { 0x80 } else { 0 }]);
+    packet.extend_from_slice(&sequence.to_be_bytes());
+    packet.extend_from_slice(&timestamp.to_be_bytes());
+    packet.extend_from_slice(&ssrc.to_be_bytes());
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn annex_b_nal_units(stream: &[u8]) -> Vec<&[u8]> {
+    let mut starts = Vec::new();
+    let mut index = 0;
+    while index + 3 <= stream.len() {
+        let start_len = if stream.get(index..index + 4) == Some(&[0, 0, 0, 1]) {
+            4
+        } else if stream[index..index + 3] == [0, 0, 1] {
+            3
+        } else {
+            index += 1;
+            continue;
+        };
+        starts.push((index, start_len));
+        index += start_len;
+    }
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(position, (start, start_len))| {
+            let nal_start = start + start_len;
+            let nal_end = starts
+                .get(position + 1)
+                .map_or(stream.len(), |(next, _)| *next);
+            (nal_start < nal_end).then_some(&stream[nal_start..nal_end])
+        })
+        .collect()
+}
+
+fn access_unit_is_irap(stream: &[u8]) -> bool {
+    annex_b_nal_units(stream).into_iter().any(|nal| {
+        nal.first()
+            .is_some_and(|byte| (16..=23).contains(&((byte >> 1) & 0x3f)))
+    })
 }
 
 /// Receive inbound RTCP on the dedicated RTCP socket (non-mux case). Records
@@ -2103,11 +2359,34 @@ async fn start_video(
 async fn watch_decode_errors(stderr: ChildStderr, corruption: Arc<Notify>) {
     let mut reader = BufReader::new(stderr);
     let mut line = String::new();
+    let mut log_window = Instant::now();
+    let mut emitted = 0_u32;
+    let mut suppressed = 0_u32;
     loop {
         line.clear();
         match reader.read_line(&mut line).await {
-            Ok(0) => break, // ffmpeg exited
+            Ok(0) => {
+                if suppressed > 0 {
+                    tracing::warn!(target: "ffmpeg", suppressed, "additional ffmpeg warnings suppressed");
+                }
+                break;
+            }
             Ok(_) => {
+                let message = line.trim();
+                if log_window.elapsed() >= Duration::from_secs(1) {
+                    if suppressed > 0 {
+                        tracing::warn!(target: "ffmpeg", suppressed, "additional ffmpeg warnings suppressed");
+                    }
+                    log_window = Instant::now();
+                    emitted = 0;
+                    suppressed = 0;
+                }
+                if !message.is_empty() && emitted < 8 {
+                    tracing::warn!(target: "ffmpeg", "{message}");
+                    emitted += 1;
+                } else if !message.is_empty() {
+                    suppressed += 1;
+                }
                 if line.contains("Could not find ref")
                     || line.contains("Error constructing")
                     || line.contains("error while decoding")
@@ -2253,6 +2532,36 @@ fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn loopback_rtp_packetization_preserves_annex_b_and_timestamp() {
+        let mut annex_b = vec![0, 0, 0, 1, 39 << 1, 1, 0xaa, 0xbb];
+        annex_b.extend_from_slice(&[0, 0, 0, 1, 1 << 1, 1]);
+        annex_b.extend(std::iter::repeat_n(0xcc, LOOPBACK_RTP_PAYLOAD * 2));
+        let access_unit = TimedHevcAccessUnit {
+            timestamp: 0x1234_5678,
+            payload_type: 100,
+            annex_b: annex_b.clone(),
+        };
+        let mut sequence = 65534;
+        let packets = packetize_hevc_access_unit(
+            &access_unit,
+            access_unit.payload_type,
+            0xdead_beef,
+            &mut sequence,
+        );
+
+        assert!(packets.len() >= 4);
+        let mut depacketizer = HevcDepacketizer::new();
+        for (index, packet) in packets.iter().enumerate() {
+            let parsed = RtpPacket::parse(packet).unwrap();
+            assert_eq!(parsed.timestamp, access_unit.timestamp);
+            assert_eq!(parsed.payload_type, access_unit.payload_type);
+            assert_eq!(parsed.marker, index + 1 == packets.len());
+            depacketizer.push(parsed.sequence_number, parsed.timestamp, parsed.payload);
+        }
+        assert_eq!(depacketizer.take_output(), annex_b);
+    }
 
     #[test]
     fn maps_springboard_interface_orientations() {

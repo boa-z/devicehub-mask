@@ -74,6 +74,7 @@ fn spawn_backend(
 
     let thread = std::thread::Builder::new()
         .name("devicehub-coredevice".into())
+        .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -81,6 +82,7 @@ fn spawn_backend(
                 .expect("build CoreDevice runtime");
             runtime.block_on(async move {
                 let frames = FrameSlot::default();
+                let video_stream = crate::protocol::EncodedVideoStream::default();
                 let status = StatusSlot::default();
                 let clipboard = ClipboardSlot::default();
                 let orientation = OrientationSlot::default();
@@ -94,6 +96,7 @@ fn spawn_backend(
                     initial_udid,
                     || {},
                     frames.clone(),
+                    video_stream.clone(),
                     status.clone(),
                     clipboard,
                     orientation.clone(),
@@ -107,6 +110,7 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         frames,
+                        video_stream,
                         status,
                         orientation,
                         devices,
@@ -116,6 +120,7 @@ fn spawn_backend(
                         input,
                         control: thread_control.clone(),
                         profile_dir: Arc::new(profile_dir),
+                        api_token: Arc::from(server_token.clone()),
                     },
                     server_token,
                 );

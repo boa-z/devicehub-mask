@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Path, Request, State, WebSocketUpgrade};
+use axum::extract::{Path, Query, Request, State, WebSocketUpgrade};
 use axum::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
@@ -22,13 +22,15 @@ use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    ActiveSlot, AppOperationSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameSlot,
-    InputCmd, InputSink, Orientation, OrientationSlot, RotateDir, StatusSlot, norm, unrotate_norm,
+    ActiveSlot, AppOperationSlot, ControlCmd, DeviceListSlot, EncodedVideoStream, ErrorSlot, Frame,
+    FrameSlot, InputCmd, InputSink, Orientation, OrientationSlot, RotateDir, StatusSlot, norm,
+    unrotate_norm,
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub frames: FrameSlot,
+    pub video_stream: EncodedVideoStream,
     pub status: StatusSlot,
     pub orientation: OrientationSlot,
     pub devices: DeviceListSlot,
@@ -38,6 +40,7 @@ pub struct AppState {
     pub input: InputSink,
     pub control: UnboundedSender<ControlCmd>,
     pub profile_dir: Arc<PathBuf>,
+    pub api_token: Arc<str>,
 }
 
 #[derive(Serialize)]
@@ -62,6 +65,7 @@ struct StreamMetricsView {
     sent_fps: f64,
     jpeg_encode_ms: f64,
     megabits_per_second: f64,
+    pipeline: &'static str,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -100,7 +104,7 @@ struct ProfileList {
 struct ApiToken(Arc<str>);
 
 pub fn router(state: AppState, token: String) -> Router {
-    Router::new()
+    let private = Router::new()
         .route("/api/status", get(status))
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
@@ -122,7 +126,11 @@ pub fn router(state: AppState, token: String) -> Router {
         .layer(from_fn_with_state(
             ApiToken(Arc::from(token)),
             authorize_private_api,
-        ))
+        ));
+    let video = Router::new().route("/api/video", get(video_upgrade));
+    Router::new()
+        .merge(private)
+        .merge(video)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -653,6 +661,49 @@ fn collect_mapping_keys<'a>(value: &'a serde_json::Value, keys: &mut HashSet<&'a
     }
 }
 
+#[derive(Deserialize)]
+struct VideoQuery {
+    token: String,
+}
+
+async fn video_upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<VideoQuery>,
+) -> Response {
+    if !video_token_authorized(&query.token, state.api_token.as_ref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    ws.on_upgrade(move |socket| video_websocket(socket, state.video_stream))
+        .into_response()
+}
+
+fn video_token_authorized(query_token: &str, api_token: &str) -> bool {
+    query_token == api_token
+}
+
+async fn video_websocket(mut socket: WebSocket, video_stream: EncodedVideoStream) {
+    let mut receiver = video_stream.subscribe();
+    loop {
+        match receiver.recv().await {
+            Ok(bytes) if bytes.is_empty() => break,
+            Ok(bytes) => {
+                if socket.send(Message::Binary(bytes)).await.is_err() {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!(
+                    skipped,
+                    "video websocket lagged; reconnecting at a clean stream boundary"
+                );
+                break;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.protocols(["devicehub-mask"])
         .on_upgrade(move |socket| websocket(socket, state))
@@ -704,6 +755,8 @@ async fn websocket(socket: WebSocket, state: AppState) {
         metrics_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_started = Instant::now();
         let mut metrics_frame_version = send_state.frames.version();
+        let (mut metrics_source_frames, mut metrics_encoded_bytes) =
+            send_state.video_stream.counters();
         let mut sent_frames = 0_u64;
         let mut sent_bytes = 0_u64;
         let mut encoded_frames = 0_u64;
@@ -725,6 +778,9 @@ async fn websocket(socket: WebSocket, state: AppState) {
                 }
                 _ = &mut frame_sleep => {
                     next_frame_at = tokio::time::Instant::now() + frame_period;
+                    if send_state.video_stream.pipeline().is_h264() {
+                        continue;
+                    }
                     let Some((version, frame)) = send_state.frames.latest() else {
                         continue;
                     };
@@ -752,15 +808,33 @@ async fn websocket(socket: WebSocket, state: AppState) {
                 _ = metrics_tick.tick() => {
                     let elapsed = metrics_started.elapsed().as_secs_f64().max(f64::EPSILON);
                     let version = send_state.frames.version();
+                    let pipeline = send_state.video_stream.pipeline();
+                    let (source_frames, encoded_bytes) = send_state.video_stream.counters();
+                    let h264_frames = source_frames.wrapping_sub(metrics_source_frames);
                     let metrics = StreamMetricsView {
-                        decoded_fps: version.wrapping_sub(metrics_frame_version) as f64 / elapsed,
-                        sent_fps: sent_frames as f64 / elapsed,
+                        decoded_fps: if pipeline.is_h264() {
+                            h264_frames as f64 / elapsed
+                        } else {
+                            version.wrapping_sub(metrics_frame_version) as f64 / elapsed
+                        },
+                        sent_fps: if pipeline.is_h264() {
+                            h264_frames as f64 / elapsed
+                        } else {
+                            sent_frames as f64 / elapsed
+                        },
                         jpeg_encode_ms: if encoded_frames == 0 {
                             0.0
                         } else {
                             encoding_time.as_secs_f64() * 1000.0 / encoded_frames as f64
                         },
-                        megabits_per_second: sent_bytes as f64 * 8.0 / elapsed / 1_000_000.0,
+                        megabits_per_second: if pipeline.is_h264() {
+                            encoded_bytes.wrapping_sub(metrics_encoded_bytes) as f64 * 8.0
+                                / elapsed
+                                / 1_000_000.0
+                        } else {
+                            sent_bytes as f64 * 8.0 / elapsed / 1_000_000.0
+                        },
+                        pipeline: pipeline.label(),
                     };
                     let Ok(text) = serde_json::to_string(
                         &json!({"type": "metrics", "payload": metrics}),
@@ -772,6 +846,8 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     }
                     metrics_started = Instant::now();
                     metrics_frame_version = version;
+                    metrics_source_frames = source_frames;
+                    metrics_encoded_bytes = encoded_bytes;
                     sent_frames = 0;
                     sent_bytes = 0;
                     encoded_frames = 0;
@@ -992,6 +1068,7 @@ mod tests {
         (
             AppState {
                 frames: FrameSlot::default(),
+                video_stream: EncodedVideoStream::default(),
                 status: StatusSlot::default(),
                 orientation: OrientationSlot::default(),
                 devices: DeviceListSlot::default(),
@@ -1001,6 +1078,7 @@ mod tests {
                 input,
                 control,
                 profile_dir: Arc::new(PathBuf::new()),
+                api_token: Arc::from("test-token"),
             },
             input_rx,
         )
@@ -1218,6 +1296,14 @@ mod tests {
             "devicehub-mask, secret".parse().unwrap(),
         );
         assert!(private_api_authorized(&headers, "secret"));
+    }
+
+    #[test]
+    fn video_websocket_requires_exact_query_token() {
+        assert!(video_token_authorized("secret", "secret"));
+        assert!(!video_token_authorized("", "secret"));
+        assert!(!video_token_authorized("SECRET", "secret"));
+        assert!(!video_token_authorized("secret-extra", "secret"));
     }
 
     #[tokio::test]

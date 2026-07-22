@@ -44,7 +44,7 @@ export const zhCN = {
     enterFullscreen: "进入全屏",
     exitFullscreen: "退出全屏",
     bandwidth: "带宽 {{value}} Mbps",
-    metrics: "解码 {{decoded}} · 发送 {{sent}} · 显示 {{render}} FPS · JPEG {{jpeg}} ms",
+    metrics: "解码 {{decoded}} · 发送 {{sent}} · 显示 {{render}} FPS · {{pipeline}}",
     mappingMode: "映射",
     keyboardMode: "键盘直通",
     edit: "编辑",

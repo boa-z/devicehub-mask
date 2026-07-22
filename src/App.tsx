@@ -25,6 +25,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
+import mpegts from "mpegts.js";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceInspector } from "./components/DeviceInspector";
 import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
@@ -36,7 +37,7 @@ import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, touchFrame
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
 const emptyStatus: DeviceStatus = { status: "", active_udid: null, error: null, orientation: "portrait", devices: [] };
-const emptyMetrics: StreamMetrics = { decoded_fps: 0, sent_fps: 0, jpeg_encode_ms: 0, megabits_per_second: 0 };
+const emptyMetrics: StreamMetrics = { decoded_fps: 0, sent_fps: 0, jpeg_encode_ms: 0, megabits_per_second: 0, pipeline: "jpeg" };
 
 type BackendConnection = { origin: string; token: string };
 type ProfileList = { profiles: string[]; active: string };
@@ -46,10 +47,21 @@ function wsUrl(connection: BackendConnection) {
   return `${connection.origin.replace(/^http/, "ws")}/api/ws`;
 }
 
-function drawFrame(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, bitmap: ImageBitmap, orientation: Orientation) {
+function videoWsUrl(connection: BackendConnection) {
+  return `${connection.origin.replace(/^http/, "ws")}/api/video?token=${encodeURIComponent(connection.token)}`;
+}
+
+function drawSource(
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  orientation: Orientation,
+) {
   const landscape = orientation === "landscape_left" || orientation === "landscape_right";
-  const width = landscape ? bitmap.height : bitmap.width;
-  const height = landscape ? bitmap.width : bitmap.height;
+  const width = landscape ? sourceHeight : sourceWidth;
+  const height = landscape ? sourceWidth : sourceHeight;
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -65,9 +77,13 @@ function drawFrame(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D,
     context.translate(canvas.width, canvas.height);
     context.rotate(Math.PI);
   }
-  context.drawImage(bitmap, 0, 0);
+  context.drawImage(source, 0, 0);
   context.restore();
   return { width: canvas.width, height: canvas.height };
+}
+
+function drawFrame(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, bitmap: ImageBitmap, orientation: Orientation) {
+  return drawSource(canvas, context, bitmap, bitmap.width, bitmap.height, orientation);
 }
 
 function containSize(containerWidth: number, containerHeight: number, contentWidth: number, contentHeight: number) {
@@ -145,6 +161,7 @@ export default function App() {
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const renderedFramesRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
@@ -319,7 +336,7 @@ export default function App() {
               if (disposed || socketClosed) continue;
               const canvas = canvasRef.current;
               if (!canvas) continue;
-              const context = canvasContextRef.current ?? canvas.getContext("2d", { alpha: false });
+              const context = canvasContextRef.current ?? canvas.getContext("2d", { alpha: false, desynchronized: true });
               if (!context) continue;
               canvasContextRef.current = context;
               const size = drawFrame(canvas, context, bitmap, orientationRef.current);
@@ -356,6 +373,94 @@ export default function App() {
     };
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
+  }, [backend]);
+
+  useEffect(() => {
+    if (!backend || !mpegts.isSupported()) return;
+    const video = videoRef.current;
+    if (!video) return;
+    let disposed = false;
+    let retry: number | undefined;
+    let frameCallback = 0;
+    let player: ReturnType<typeof mpegts.createPlayer> | null = null;
+
+    const destroyPlayer = () => {
+      const current = player;
+      player = null;
+      if (!current) return;
+      try { current.pause(); } catch { /* already detached */ }
+      try { current.unload(); } catch { /* already unloaded */ }
+      try { current.detachMediaElement(); } catch { /* already detached */ }
+      current.destroy();
+    };
+    const open = () => {
+      if (disposed) return;
+      destroyPlayer();
+      const next = mpegts.createPlayer({
+        type: "mpegts",
+        isLive: true,
+        hasAudio: false,
+        hasVideo: true,
+        url: videoWsUrl(backend),
+      }, {
+        enableWorker: false,
+        enableStashBuffer: false,
+        isLive: true,
+        lazyLoad: false,
+        deferLoadAfterSourceOpen: false,
+        liveBufferLatencyChasing: true,
+        liveBufferLatencyMaxLatency: 0.5,
+        liveBufferLatencyMinRemain: 0.1,
+        autoCleanupSourceBuffer: true,
+        autoCleanupMaxBackwardDuration: 2,
+        autoCleanupMinBackwardDuration: 1,
+      });
+      player = next;
+      next.on(mpegts.Events.ERROR, () => {
+        if (!disposed && retry === undefined) {
+          retry = window.setTimeout(() => { retry = undefined; open(); }, 800);
+        }
+      });
+      next.attachMediaElement(video);
+      next.load();
+      void Promise.resolve(next.play()).catch(() => undefined);
+    };
+    const renderVideoFrame = () => {
+      if (disposed) return;
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        const canvas = canvasRef.current;
+        const context = canvasContextRef.current ?? canvas?.getContext("2d", { alpha: false, desynchronized: true }) ?? null;
+        if (canvas && context) {
+          canvasContextRef.current = context;
+          const size = drawSource(
+            canvas,
+            context,
+            video,
+            video.videoWidth,
+            video.videoHeight,
+            orientationRef.current,
+          );
+          renderedFramesRef.current += 1;
+          if (!hasFrameRef.current) {
+            hasFrameRef.current = true;
+            setHasFrame(true);
+          }
+          setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
+        }
+      }
+      frameCallback = video.requestVideoFrameCallback(renderVideoFrame);
+    };
+
+    video.muted = true;
+    video.playsInline = true;
+    frameCallback = video.requestVideoFrameCallback(renderVideoFrame);
+    open();
+    return () => {
+      disposed = true;
+      if (retry !== undefined) clearTimeout(retry);
+      video.cancelVideoFrameCallback(frameCallback);
+      destroyPlayer();
+    };
   }, [backend]);
 
   useEffect(() => () => {
@@ -767,7 +872,9 @@ export default function App() {
                             decoded: streamMetrics.decoded_fps.toFixed(0),
                             sent: streamMetrics.sent_fps.toFixed(0),
                             render: renderFps.toFixed(0),
-                            jpeg: streamMetrics.jpeg_encode_ms.toFixed(1),
+                            pipeline: streamMetrics.pipeline === "jpeg"
+                              ? `TurboJPEG ${streamMetrics.jpeg_encode_ms.toFixed(1)} ms`
+                              : streamMetrics.pipeline,
                           })}
                         </Typography.Text>
                       </Tooltip>
@@ -831,6 +938,7 @@ export default function App() {
                       onPointerCancel={handlePointerUp}
                       onContextMenu={(event) => !mappingEditing && event.preventDefault()}
                     >
+                      <video ref={videoRef} className="video-source" muted playsInline />
                       <canvas ref={canvasRef} />
                       {page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot && (
                         <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />
