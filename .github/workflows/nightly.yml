@@ -75,6 +75,7 @@ jobs:
 
       - name: Verify source
         run: |
+          npm run docs:check
           npm run lint
           npm test
           npm run build
