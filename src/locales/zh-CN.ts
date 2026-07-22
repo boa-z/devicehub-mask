@@ -52,6 +52,8 @@ export const zhCN = {
     metrics: "源 {{source}} · 解码 {{decoded}} · 发送 {{sent}} · 显示 {{render}} FPS · JPEG {{jpeg}} ms",
     mappingMode: "映射",
     keyboardMode: "键盘直通",
+    showControlOverlay: "显示按键映射",
+    hideControlOverlay: "隐藏按键映射",
     edit: "编辑",
     rotateLeft: "左转",
     rotateRight: "右转",

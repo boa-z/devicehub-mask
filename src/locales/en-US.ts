@@ -56,6 +56,8 @@ export const enUS = {
     metrics: "Source {{source}} · Decode {{decoded}} · Send {{sent}} · Display {{render}} FPS · JPEG {{jpeg}} ms",
     mappingMode: "Mapping",
     keyboardMode: "Keyboard passthrough",
+    showControlOverlay: "Show key mapping overlay",
+    hideControlOverlay: "Hide key mapping overlay",
     edit: "Edit",
     rotateLeft: "Rotate left",
     rotateRight: "Rotate right",

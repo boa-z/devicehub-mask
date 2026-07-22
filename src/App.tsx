@@ -5,6 +5,8 @@ import {
   CompressOutlined,
   CustomerServiceOutlined,
   ExpandOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
   HomeOutlined,
@@ -148,6 +150,7 @@ export default function App() {
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [systemFullscreen, setSystemFullscreen] = useState(false);
   const [deviceFullscreen, setDeviceFullscreen] = useState(false);
+  const [controlOverlayVisible, setControlOverlayVisible] = useState(true);
   const [selectedUdid, setSelectedUdid] = useState<string | null>(null);
   const [inspectorVisible, setInspectorVisible] = useState(true);
   const [connected, setConnected] = useState(false);
@@ -930,6 +933,13 @@ export default function App() {
                           if (mode === "keyboard") setEditing(false);
                         }}
                       />
+                      <Tooltip title={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}>
+                        <Button
+                          aria-label={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}
+                          icon={controlOverlayVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                          onClick={() => setControlOverlayVisible((visible) => !visible)}
+                        />
+                      </Tooltip>
                       <Tooltip title={t("device.rotateLeft")}><Button icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
                       <Tooltip title={t("device.rotateRight")}><Button icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
                       {hardwareControls}
@@ -964,6 +974,15 @@ export default function App() {
                           if (mode === "keyboard") setEditing(false);
                         }}
                       />
+                      {page === "device" && (
+                        <Tooltip title={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}>
+                          <Button
+                            aria-label={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}
+                            icon={controlOverlayVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                            onClick={() => setControlOverlayVisible((visible) => !visible)}
+                          />
+                        </Tooltip>
+                      )}
                       {page === "mappings" && <><span>{t("device.edit")}</span><Switch disabled={controlMode === "keyboard"} checked={mappingEditing} onChange={(value) => { releaseAllControls(); setEditing(value); }} /></>}
                       <Tooltip title={t("device.rotateLeft")}><Button icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
                       <Tooltip title={t("device.rotateRight")}><Button icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
@@ -997,7 +1016,9 @@ export default function App() {
                       {page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot && (
                         <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />
                       )}
-                      <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} activeIds={activeIds} onSelect={setSelectedId} onMove={moveMapping} />
+                      {(page === "mappings" || controlOverlayVisible) && (
+                        <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} activeIds={activeIds} onSelect={setSelectedId} onMove={moveMapping} />
+                      )}
                       {directTouches.map((contact) => (
                         <span key={contact.identity} className="direct-touch" style={{ left: `${contact.x * 100}%`, top: `${contact.y * 100}%` }} />
                       ))}
