@@ -105,6 +105,14 @@ impl FrameSlot {
         self.0.frame.subscribe()
     }
 
+    pub fn latest(&self) -> Option<(u64, Arc<Frame>)> {
+        self.0
+            .frame
+            .borrow()
+            .clone()
+            .map(|frame| (self.version(), frame))
+    }
+
     pub fn version(&self) -> u64 {
         self.0.version.load(Ordering::Relaxed)
     }

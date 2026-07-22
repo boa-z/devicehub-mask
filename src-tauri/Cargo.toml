@@ -12,6 +12,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
 bytes = "1"
 cms = "0.3.0-pre.2"
 der = "0.8.1"
@@ -19,6 +20,7 @@ futures-util = "0.3"
 idevice = { git = "https://github.com/boa-z/idevice.git", rev = "0371286", features = ["full"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 plist = "1"
+rmcp = { version = "1.7", features = ["transport-streamable-http-server"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
@@ -33,3 +35,6 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 turbojpeg = "1.4"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+rmcp = { version = "1.7", features = ["client", "reqwest", "transport-streamable-http-client-reqwest"] }

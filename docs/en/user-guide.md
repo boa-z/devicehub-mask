@@ -111,3 +111,19 @@ Automatic nightly checks can be disabled in Settings. The manual check remains
 available. An accepted update is downloaded, signature-verified, installed, and
 followed by an application restart. See [Distribution](distribution.md) for
 signing and release details.
+
+## MCP Automation
+
+While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP
+endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
+swipes, text and key input, hardware buttons, rotation, device selection and
+reconnection, virtual location, and session status.
+
+Take a screenshot before sending coordinate-based input. Pass the returned
+`image_width` and `image_height` to `tap` or `swipe` so coordinates remain
+correct when screenshots are resized. MCP reuses the desktop application's
+active device session; it does not open a second connection to the phone.
+
+The endpoint has no authentication. Keep it on loopback unless the host is on a
+trusted isolated network. Developers can change the bind address with
+`DEVICEHUB_MCP_ADDR`; see [Development](development.md).

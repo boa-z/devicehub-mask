@@ -21,6 +21,8 @@ exposed as a browser application.
   mapping editor with live or captured-screen backgrounds
 - Device metadata, application browsing and launch, IPA installation, safe app
   removal, and provisioning profile inspection
+- Built-in Streamable HTTP MCP server for screenshots, input, device switching,
+  status inspection, and DVT virtual location
 - Native Tauri 2 desktop controls, Simplified Chinese and English UI, and signed
   nightly updates
 - macOS, Windows, and Linux verification and packaging through GitHub Actions
@@ -47,6 +49,12 @@ CMake, and NASM. Run the device preparation helper once before connecting:
 
 See the [Getting Started guide](docs/en/getting-started.md) for complete
 platform-specific prerequisites and device preparation.
+
+The app also exposes MCP on `http://127.0.0.1:8009/mcp` while it is running:
+
+```sh
+claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
+```
 
 ## Documentation
 

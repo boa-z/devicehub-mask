@@ -34,6 +34,14 @@ sends normalized contacts rather than raw HID reports. Rust validates contact
 identities, the five-contact limit, coordinate ranges, and orientation before
 dispatch.
 
+The MCP service is a separate Streamable HTTP endpoint on
+`127.0.0.1:8009/mcp` by default. It shares the manager's latest-frame slot,
+input sink, device state, and control channel, so automation and the WebView use
+one CoreDevice session. Coordinate tools include the screenshot dimensions and
+are transformed through the same orientation model as direct touch. MCP has no
+authentication; binding it beyond loopback is an explicit deployment decision
+and emits a warning.
+
 ## Session Ownership
 
 The CoreDevice session runs on a dedicated Tokio runtime because several
@@ -115,6 +123,7 @@ is merged and released upstream.
 ## Security Boundaries
 
 - The private API remains loopback-only and token-authenticated.
+- MCP is loopback-only by default, is unauthenticated, and warns on non-loopback binds.
 - Frontend app metadata is never accepted as uninstall authorization.
 - HID reports are built only after backend validation.
 - Updater artifacts require a Tauri signature before installation.

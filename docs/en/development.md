@@ -39,6 +39,7 @@ debug and production builds embed frontend assets through the Tauri protocol.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DEVICEHUB_ADDR` | `127.0.0.1:0` | Private backend address; port `0` selects a random port |
+| `DEVICEHUB_MCP_ADDR` | `127.0.0.1:8009` | Streamable HTTP MCP bind address; endpoint path is `/mcp` |
 | `DEVICEHUB_PROFILE_DIR` | Tauri application data directory | Mapping profile storage |
 | `DEVICEHUB_FFMPEG` | Auto-detected | Absolute FFmpeg executable path |
 | `DEVICEHUB_VIDEO_MAX_DIMENSION` | `1920` on Windows; native elsewhere | Maximum decoded width or height; preserves aspect ratio and never upscales; `0` disables the limit |
@@ -50,6 +51,10 @@ debug and production builds embed frontend assets through the Tauri protocol.
 
 Keep `DEVICEHUB_ADDR` on a loopback address. Changing it does not remove token
 authentication, but external binding is outside the supported desktop model.
+
+The MCP endpoint has no authentication and must remain on loopback unless the
+host is on a trusted, isolated network. A non-loopback bind emits a warning. An
+MCP bind failure is non-fatal and does not stop the desktop backend or session.
 
 Runtime logs are written as JSON Lines to the platform application log
 directory, rotate daily, and retain seven files. The active filter, run ID,

@@ -2,6 +2,7 @@ mod decode;
 mod diagnostics;
 mod hid;
 mod location;
+mod mcp;
 mod protocol;
 mod provisioning;
 mod session;
@@ -126,6 +127,18 @@ fn spawn_backend(
                 let input = InputSink::default();
                 let app_operation = AppOperationSlot::default();
                 let location = LocationStatusSlot::default();
+
+                tokio::spawn(mcp::serve(
+                    frames.clone(),
+                    input.clone(),
+                    orientation.clone(),
+                    devices.clone(),
+                    active.clone(),
+                    error.clone(),
+                    status.clone(),
+                    location.clone(),
+                    thread_control.clone(),
+                ));
 
                 let manager = session::manage(
                     initial_udid,
