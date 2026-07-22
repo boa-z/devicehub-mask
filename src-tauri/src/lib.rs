@@ -1,6 +1,7 @@
 mod decode;
 mod diagnostics;
 mod hid;
+mod location;
 mod protocol;
 mod provisioning;
 mod session;
@@ -14,7 +15,7 @@ use std::time::Duration;
 
 use protocol::{
     ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, FrameSlot,
-    InputSink, OrientationSlot, StatusSlot, VideoCounters,
+    InputSink, LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -124,6 +125,7 @@ fn spawn_backend(
                 let error = ErrorSlot::default();
                 let input = InputSink::default();
                 let app_operation = AppOperationSlot::default();
+                let location = LocationStatusSlot::default();
 
                 let manager = session::manage(
                     initial_udid,
@@ -138,6 +140,7 @@ fn spawn_backend(
                     active.clone(),
                     error.clone(),
                     app_operation.clone(),
+                    location.clone(),
                     input.clone(),
                     control_rx,
                 );
@@ -151,6 +154,7 @@ fn spawn_backend(
                         active,
                         error,
                         app_operation,
+                        location,
                         input,
                         control: thread_control.clone(),
                         profile_dir: Arc::new(profile_dir),

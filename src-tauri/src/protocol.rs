@@ -124,6 +124,29 @@ impl StatusSlot {
     }
 }
 
+/// Current DVT location simulation state for the active device session.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct LocationStatus {
+    pub available: bool,
+    pub active: bool,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct LocationStatusSlot(Arc<Mutex<LocationStatus>>);
+
+impl LocationStatusSlot {
+    pub fn set(&self, status: LocationStatus) {
+        *self.0.lock().unwrap() = status;
+    }
+
+    pub fn get(&self) -> LocationStatus {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 /// A clipboard sync event, surfaced to the UI's "copied" indicator.
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -204,6 +227,16 @@ pub enum InputCmd {
     ButtonUp(&'static str),
     /// Rotate the device 90° via the CoreDevice orientation service.
     Rotate(RotateDir),
+    /// Set a fixed simulated GPS location through the active DVT session.
+    SetLocation {
+        latitude: f64,
+        longitude: f64,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Stop location simulation through the active DVT session.
+    ClearLocation {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Return metadata collected from Lockdown for the active device.
     GetDeviceDetails(oneshot::Sender<Result<DeviceDetails, String>>),
     /// List user-facing applications through CoreDevice AppService.

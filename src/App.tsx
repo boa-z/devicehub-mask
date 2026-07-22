@@ -32,6 +32,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceInspector } from "./components/DeviceInspector";
+import { LocationPage } from "./components/LocationPage";
 import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
@@ -41,7 +42,14 @@ import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, touchFrame
 import { logFrontend } from "./diagnostics";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
-const emptyStatus: DeviceStatus = { status: "", active_udid: null, error: null, orientation: "portrait", devices: [] };
+const emptyStatus: DeviceStatus = {
+  status: "",
+  active_udid: null,
+  error: null,
+  orientation: "portrait",
+  devices: [],
+  location: { available: false, active: false, latitude: null, longitude: null, error: null },
+};
 const emptyMetrics: StreamMetrics = {
   source_fps: 0,
   decoded_fps: 0,
@@ -898,6 +906,8 @@ export default function App() {
               onSystemFullscreenChange={() => void toggleSystemFullscreen()}
               onInspectorVisibleChange={setInspectorVisible}
             />
+          ) : page === "location" ? (
+            <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />
           ) : (
             <>
               {page === "mappings" && (

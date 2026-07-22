@@ -5,7 +5,7 @@ type LocaleShape<T> = { [Key in keyof T]: T[Key] extends string ? string : Local
 export const zhCN = {
   common: { confirm: "确认", cancel: "取消" },
   brand: { subtitle: "iOS 游戏控制" },
-  navigation: { label: "主导航", device: "设备", mappings: "键盘映射", settings: "应用设置" },
+  navigation: { label: "主导航", device: "设备", mappings: "键盘映射", location: "虚拟定位", settings: "应用设置" },
   status: {
     starting: "正在启动",
     backendUnavailable: "桌面后端不可用",
@@ -57,6 +57,28 @@ export const zhCN = {
     edit: "编辑",
     rotateLeft: "左转",
     rotateRight: "右转",
+  },
+  location: {
+    title: "虚拟定位",
+    subtitle: "在已连接的 iOS 17 或更高版本设备上模拟固定 GPS 位置。",
+    disconnected: "未连接设备",
+    unavailable: "不可用",
+    ready: "可用",
+    active: "模拟中",
+    coordinates: "坐标",
+    latitude: "纬度",
+    longitude: "经度",
+    apply: "应用位置",
+    stop: "停止模拟",
+    presets: "常用地点",
+    invalidCoordinates: "纬度应为 -90 至 90，经度应为 -180 至 180。",
+    applied: "虚拟位置已应用",
+    cleared: "虚拟定位已停止",
+    presetNames: {
+      cupertino: "库比蒂诺",
+      taipei: "台北",
+      tokyo: "东京",
+    },
   },
   deviceInspector: {
     info: "信息",

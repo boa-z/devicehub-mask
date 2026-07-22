@@ -23,8 +23,8 @@ use tower_http::cors::CorsLayer;
 use crate::hid::TouchContact;
 use crate::protocol::{
     ActiveSlot, AppOperationSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat,
-    FrameSlot, InputCmd, InputSink, Orientation, OrientationSlot, RotateDir, StatusSlot,
-    VideoCounters, norm, unrotate_norm,
+    FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot, Orientation,
+    OrientationSlot, RotateDir, StatusSlot, VideoCounters, norm, unrotate_norm,
 };
 
 #[derive(Clone)]
@@ -37,6 +37,7 @@ pub struct AppState {
     pub active: ActiveSlot,
     pub error: ErrorSlot,
     pub app_operation: AppOperationSlot,
+    pub location: LocationStatusSlot,
     pub input: InputSink,
     pub control: UnboundedSender<ControlCmd>,
     pub profile_dir: Arc<PathBuf>,
@@ -56,6 +57,7 @@ struct StatusView {
     error: Option<String>,
     orientation: &'static str,
     devices: Vec<DeviceView>,
+    location: LocationStatus,
 }
 
 #[derive(Serialize)]
@@ -114,6 +116,12 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
+        .route(
+            "/api/device/location",
+            get(device_location)
+                .put(set_device_location)
+                .delete(clear_device_location),
+        )
         .route("/api/device/apps", get(device_apps))
         .route("/api/device/apps/operation", get(app_operation))
         .route("/api/device/apps/install", put(install_app))
@@ -181,6 +189,7 @@ fn status_snapshot(state: &AppState) -> StatusView {
                 connection: device.connection.label(),
             })
             .collect(),
+        location: state.location.get(),
     }
 }
 
@@ -200,6 +209,82 @@ async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String
 }
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Deserialize)]
+struct SetLocationRequest {
+    latitude: f64,
+    longitude: f64,
+}
+
+async fn device_location(State(state): State<AppState>) -> Json<LocationStatus> {
+    Json(state.location.get())
+}
+
+async fn set_device_location(
+    State(state): State<AppState>,
+    Json(request): Json<SetLocationRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_coordinates(request.latitude, request.longitude)?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::SetLocation {
+        latitude: request.latitude,
+        longitude: request.longitude,
+        reply,
+    }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_location_response(response, "set location").await?;
+    Ok(StatusCode::OK)
+}
+
+async fn clear_device_location(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::ClearLocation { reply }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_location_response(response, "clear location").await?;
+    Ok(StatusCode::OK)
+}
+
+fn validate_coordinates(latitude: f64, longitude: f64) -> Result<(), (StatusCode, String)> {
+    if !latitude.is_finite()
+        || !longitude.is_finite()
+        || !(-90.0..=90.0).contains(&latitude)
+        || !(-180.0..=180.0).contains(&longitude)
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid coordinates".into()));
+    }
+    Ok(())
+}
+
+async fn await_location_response(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))
+}
 
 async fn device_details(
     State(state): State<AppState>,
@@ -1222,6 +1307,7 @@ mod tests {
                 active: ActiveSlot::default(),
                 error: ErrorSlot::default(),
                 app_operation: AppOperationSlot::default(),
+                location: LocationStatusSlot::default(),
                 input,
                 control,
                 profile_dir: Arc::new(PathBuf::new()),
@@ -1229,6 +1315,62 @@ mod tests {
             input_rx,
             control_rx,
         )
+    }
+
+    #[test]
+    fn location_coordinates_accept_boundaries_and_reject_invalid_values() {
+        assert!(validate_coordinates(-90.0, -180.0).is_ok());
+        assert!(validate_coordinates(90.0, 180.0).is_ok());
+        for (latitude, longitude) in [
+            (90.000_001, 0.0),
+            (0.0, 180.000_001),
+            (f64::NAN, 0.0),
+            (0.0, f64::INFINITY),
+        ] {
+            assert_eq!(
+                validate_coordinates(latitude, longitude).unwrap_err().0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn set_location_endpoint_dispatches_to_the_device_session() {
+        let (state, mut input_rx) = test_state();
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            set_device_location(
+                State(request_state),
+                Json(SetLocationRequest {
+                    latitude: 25.033,
+                    longitude: 121.5654,
+                }),
+            )
+            .await
+        });
+
+        let InputCmd::SetLocation {
+            latitude,
+            longitude,
+            reply,
+        } = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected set location command");
+        };
+        assert_eq!((latitude, longitude), (25.033, 121.5654));
+        reply.send(Ok(())).unwrap();
+        assert_eq!(request.await.unwrap().unwrap(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn clear_location_endpoint_dispatches_to_the_device_session() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(clear_device_location(State(state)));
+        let InputCmd::ClearLocation { reply } = input_rx.recv().await.unwrap() else {
+            panic!("expected clear location command");
+        };
+        reply.send(Ok(())).unwrap();
+        assert_eq!(request.await.unwrap().unwrap(), StatusCode::OK);
     }
 
     #[tokio::test]
