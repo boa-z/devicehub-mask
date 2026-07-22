@@ -1,4 +1,5 @@
 mod decode;
+mod diagnostics;
 mod hid;
 mod protocol;
 mod provisioning;
@@ -40,6 +41,31 @@ fn backend_connection(state: tauri::State<'_, BackendHandle>) -> BackendConnecti
     }
 }
 
+#[tauri::command]
+fn diagnostics_status(
+    state: tauri::State<'_, diagnostics::Diagnostics>,
+) -> diagnostics::DiagnosticsStatus {
+    state.status()
+}
+
+#[tauri::command]
+fn set_debug_logging(
+    enabled: bool,
+    state: tauri::State<'_, diagnostics::Diagnostics>,
+) -> Result<diagnostics::DiagnosticsStatus, String> {
+    state.set_debug_enabled(enabled)
+}
+
+#[tauri::command]
+fn open_log_directory(state: tauri::State<'_, diagnostics::Diagnostics>) -> Result<(), String> {
+    state.open_log_directory()
+}
+
+#[tauri::command]
+fn frontend_log(event: diagnostics::FrontendLogEvent) -> Result<(), String> {
+    diagnostics::record_frontend_event(event)
+}
+
 impl BackendHandle {
     fn stop(&self) {
         let _ = self.control.send(ControlCmd::Quit);
@@ -50,15 +76,6 @@ impl BackendHandle {
             let _ = thread.join();
         }
     }
-}
-
-fn init_tracing() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "devicehub_mask=info,devicehub_mask::session=info".into()),
-        )
-        .try_init();
 }
 
 fn spawn_backend(
@@ -177,15 +194,24 @@ fn spawn_backend(
 pub fn run() {
     use tauri::Manager;
 
-    init_tracing();
     let initial_udid = std::env::args().nth(1);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![backend_connection])
+        .invoke_handler(tauri::generate_handler![
+            backend_connection,
+            diagnostics_status,
+            set_debug_logging,
+            open_log_directory,
+            frontend_log
+        ])
         .setup(move |app| {
+            let log_directory = app.path().app_log_dir()?;
+            let diagnostics =
+                diagnostics::Diagnostics::init(log_directory).map_err(std::io::Error::other)?;
+            app.manage(diagnostics);
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or(app.path().app_data_dir()?.join("profiles"));
@@ -199,6 +225,7 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
+            tracing::info!("application exiting");
             app_handle.state::<BackendHandle>().stop();
         }
     });

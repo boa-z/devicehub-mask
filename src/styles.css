@@ -105,6 +105,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .settings-section { max-width: 760px; padding: 20px 0; border-bottom: 1px solid #303638; }
 .settings-section h5 { margin: 0 0 14px; }
 .settings-section label { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.diagnostics-detail { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 8px 16px; margin: 8px 0 12px; }
+.diagnostics-detail code { overflow-wrap: anywhere; }
 .language-select { width: 220px; }
 @media (max-width: 800px) {
   html, body, #root { overflow: auto; }

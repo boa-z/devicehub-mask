@@ -29,6 +29,19 @@ The default random loopback port avoids normal conflicts. Stop stale
 CoreDevice session. Keep `DEVICEHUB_ADDR` bound to loopback. The API has no web
 root and always requires its launch token.
 
+## Collect Runtime Logs
+
+Open Settings > Diagnostics and select **Open log directory**. Logs are JSON
+Lines files, rotate daily, and retain the latest seven files. Enable detailed
+Debug logging only while reproducing the problem, then disable it before
+performance measurements. Include the Run ID from the settings page when
+sharing excerpts from one application run. Tokens, clipboard contents, video
+frames, and raw HID reports are not written by the diagnostics bridge.
+
+If the UI cannot open, use `DEVICEHUB_LOG=devicehub_mask=debug` when launching
+from a terminal. Do not use an unrestricted global `trace` filter for long
+captures.
+
 ## FFmpeg Is Missing or No Frames Appear
 
 - macOS: `brew install ffmpeg`. Packaged apps also search

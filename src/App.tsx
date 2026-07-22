@@ -33,6 +33,7 @@ import { MappingOverlay } from "./components/MappingOverlay";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, touchFramesEqual, type TouchContact } from "./control";
+import { logFrontend } from "./diagnostics";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
 const emptyStatus: DeviceStatus = { status: "", active_udid: null, error: null, orientation: "portrait", devices: [] };
@@ -246,8 +247,14 @@ export default function App() {
 
   useEffect(() => {
     invoke<BackendConnection>("backend_connection")
-      .then(setBackend)
-      .catch((error) => setStatus({ ...emptyStatus, status: translateRef.current("status.backendUnavailable"), error: String(error) }));
+      .then((connection) => {
+        logFrontend("info", "backend", "connection_ready", "Private backend connection acquired");
+        setBackend(connection);
+      })
+      .catch((error) => {
+        logFrontend("error", "backend", "connection_failed", error);
+        setStatus({ ...emptyStatus, status: translateRef.current("status.backendUnavailable"), error: String(error) });
+      });
     Promise.all([appWindow.isAlwaysOnTop(), appWindow.isFullscreen()])
       .then(([top, full]) => { setAlwaysOnTop(top); setFullscreen(full); })
       .catch(() => undefined);
@@ -294,8 +301,19 @@ export default function App() {
       let pendingFrame: Blob | null = null;
       let decoding = false;
       socket.binaryType = "blob";
-      socket.onopen = () => { socketRef.current = socket; setConnected(true); };
-      socket.onclose = () => {
+      socket.onopen = () => {
+        logFrontend("info", "websocket", "opened", "Video and control socket connected");
+        socketRef.current = socket;
+        setConnected(true);
+      };
+      socket.onerror = () => logFrontend("warn", "websocket", "transport_error", "WebSocket transport error");
+      socket.onclose = (event) => {
+        logFrontend(
+          disposed ? "debug" : "warn",
+          "websocket",
+          "closed",
+          `code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`,
+        );
         socketClosed = true;
         pendingFrame = null;
         lastSentTouchFrameRef.current = null;
@@ -330,7 +348,7 @@ export default function App() {
               }
               setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
             } catch (error) {
-              console.warn("Unable to decode video frame", error);
+              logFrontend("warn", "video", "decode_frame", error);
             } finally {
               bitmap?.close();
               if (socket.readyState === WebSocket.OPEN) {

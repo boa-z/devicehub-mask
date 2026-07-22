@@ -28,6 +28,16 @@ npm run tauri:build:debug
 `devicehub-mask`、`devicehub_rs` 和 FFmpeg 进程。`DEVICEHUB_ADDR` 应保持监听回环
 地址。API 没有网页根路径，并始终要求启动令牌。
 
+## 收集运行日志
+
+进入“设置 > 诊断”，点击“打开日志目录”。日志采用 JSON Lines 格式，按日轮转并保留最近
+7 个文件。只在复现问题时开启详细 Debug，进行性能测试前应关闭。分享同一次运行的日志
+片段时请附上设置页中的运行 ID。诊断桥接不会写入令牌、剪贴板内容、视频帧或原始 HID
+report。
+
+如果 UI 无法打开，可以从终端使用 `DEVICEHUB_LOG=devicehub_mask=debug` 启动。长时间采集
+不要使用不受限的全局 `trace` 过滤器。
+
 ## 找不到 FFmpeg 或没有画面
 
 - macOS：运行 `brew install ffmpeg`。打包应用不会继承终端 `PATH`，因此也会直接检查

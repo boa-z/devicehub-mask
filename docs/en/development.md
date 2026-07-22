@@ -42,11 +42,25 @@ debug and production builds embed frontend assets through the Tauri protocol.
 | `DEVICEHUB_PROFILE_DIR` | Tauri application data directory | Mapping profile storage |
 | `DEVICEHUB_FFMPEG` | Auto-detected | Absolute FFmpeg executable path |
 | `DEVICEHUB_VIDEO_MAX_DIMENSION` | `1920` on Windows; native elsewhere | Maximum decoded width or height; preserves aspect ratio and never upscales; `0` disables the limit |
-| `RUST_LOG` | DeviceHub info logging | Rust tracing filter |
+| `DEVICEHUB_LOG` | DeviceHub info logging | Preferred Rust tracing filter; overrides `RUST_LOG` |
+| `RUST_LOG` | DeviceHub info logging | Standard tracing filter fallback |
 | `DEVICEHUB_HID_DUMP` | Unset | Export the Universal HID service plist for protocol diagnostics |
 
 Keep `DEVICEHUB_ADDR` on a loopback address. Changing it does not remove token
 authentication, but external binding is outside the supported desktop model.
+
+Runtime logs are written as JSON Lines to the platform application log
+directory, rotate daily, and retain seven files. The active filter, run ID,
+dropped-line count, Debug switch, and an action to open the directory are in
+Settings > Diagnostics. The Debug switch affects only the current run. Set an
+explicit filter when narrower trace logging is required, for example:
+
+```sh
+DEVICEHUB_LOG=devicehub_mask=info,devicehub_mask::session=trace npm run tauri:dev
+```
+
+An environment filter takes precedence over the Settings switch. Invalid
+filters are rejected and the application falls back to the default filter.
 
 ## Validation
 

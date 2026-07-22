@@ -11,7 +11,12 @@
     "core:window:allow-set-fullscreen",
     "dialog:allow-open",
     "process:allow-restart",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/boa-z/devicehub-mask" }
+      ]
+    },
     "updater:default"
   ]
 }

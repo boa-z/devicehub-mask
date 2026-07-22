@@ -1,10 +1,11 @@
-import { GithubOutlined } from "@ant-design/icons";
+import { BugOutlined, FolderOpenOutlined, GithubOutlined } from "@ant-design/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Button, Select, Switch, Typography } from "antd";
+import { Button, Select, Space, Switch, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import { openLogDirectory, readDiagnosticsStatus, setDebugLogging, type DiagnosticsStatus } from "../diagnostics";
 import { useUpdates } from "../updateContext";
 import { UpdateButton } from "./UpdateButton";
 
@@ -29,7 +30,41 @@ export function SettingsPage({
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
   const { automatic, setAutomatic } = useUpdates();
   const [version, setVersion] = useState("-");
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   useEffect(() => { void getVersion().then(setVersion); }, []);
+  useEffect(() => {
+    void readDiagnosticsStatus()
+      .then(setDiagnostics)
+      .catch((error) => message.error(t("settings.diagnosticsUnavailable", { error: String(error) })));
+  }, [t]);
+
+  const changeDebugLogging = async (enabled: boolean) => {
+    setDiagnosticsBusy(true);
+    try {
+      setDiagnostics(await setDebugLogging(enabled));
+    } catch (error) {
+      message.error(t("settings.diagnosticsUnavailable", { error: String(error) }));
+    } finally {
+      setDiagnosticsBusy(false);
+    }
+  };
+
+  const showLogDirectory = async () => {
+    try {
+      await openLogDirectory();
+    } catch (error) {
+      message.error(t("settings.diagnosticsUnavailable", { error: String(error) }));
+    }
+  };
+
+  const openRepository = async () => {
+    try {
+      await openUrl("https://github.com/boa-z/devicehub-mask");
+    } catch (error) {
+      message.error(t("settings.openRepositoryFailed", { error: String(error) }));
+    }
+  };
 
   return (
     <section className="settings-page">
@@ -69,10 +104,40 @@ export function SettingsPage({
           <UpdateButton />
         </label>
       </div>
+      <div className="settings-section diagnostics-settings">
+        <Typography.Title level={5}>{t("settings.diagnostics")}</Typography.Title>
+        <label>
+          <span>{t("settings.debugLogging")}</span>
+          <Switch
+            checked={diagnostics?.debug_enabled ?? false}
+            disabled={!diagnostics || diagnostics.custom_filter}
+            loading={diagnosticsBusy}
+            onChange={(enabled) => void changeDebugLogging(enabled)}
+          />
+        </label>
+        {diagnostics?.custom_filter && (
+          <Typography.Text type="warning">{t("settings.customLogFilter")}</Typography.Text>
+        )}
+        <label>
+          <span>{t("settings.logFiles")}</span>
+          <Button icon={<FolderOpenOutlined />} disabled={!diagnostics?.file_logging} onClick={() => void showLogDirectory()}>
+            {t("settings.openLogDirectory")}
+          </Button>
+        </label>
+        <div className="diagnostics-detail">
+          <Typography.Text type="secondary">{t("settings.logFilter")}</Typography.Text>
+          <Typography.Text code copyable>{diagnostics?.filter ?? "-"}</Typography.Text>
+          <Typography.Text type="secondary">{t("settings.runId")}</Typography.Text>
+          <Typography.Text code copyable>{diagnostics?.run_id ?? "-"}</Typography.Text>
+          <Typography.Text type="secondary">{t("settings.droppedLogs")}</Typography.Text>
+          <Typography.Text>{diagnostics?.dropped_log_lines ?? 0}</Typography.Text>
+        </div>
+        <Space><BugOutlined /><Typography.Text type="secondary">{t("settings.debugLoggingHint")}</Typography.Text></Space>
+      </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.about")}</Typography.Title>
         <label><span>{t("settings.version")}</span><Typography.Text code>{version}</Typography.Text></label>
-        <label><span>{t("settings.repository")}</span><Button icon={<GithubOutlined />} onClick={() => void openUrl("https://github.com/boa-z/devicehub-mask")}>{t("settings.openGithub")}</Button></label>
+        <label><span>{t("settings.repository")}</span><Button icon={<GithubOutlined />} onClick={() => void openRepository()}>{t("settings.openGithub")}</Button></label>
       </div>
     </section>
   );

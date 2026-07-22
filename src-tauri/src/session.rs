@@ -2151,7 +2151,10 @@ async fn connect_provider(
         .await
         .map_err(|e| format!("unable to list devices: {e:?}"))?;
     let dev = select_preferred_device(devs, udid.as_deref()).ok_or_else(|| match udid {
-        Some(udid) => format!("device {udid} not found"),
+        Some(udid) => format!(
+            "requested device ({}) not found",
+            crate::diagnostics::device_id_fingerprint(&udid)
+        ),
         None => "no devices connected".to_string(),
     })?;
 
@@ -2161,7 +2164,7 @@ async fn connect_provider(
         Connection::Unknown(_) => ConnKind::Other,
     };
     tracing::info!(
-        udid = %dev.udid,
+        device_id = %crate::diagnostics::device_id_fingerprint(&dev.udid),
         connection = connection_label(&dev.connection_type),
         "selected CoreDevice transport"
     );
