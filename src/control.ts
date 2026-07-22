@@ -66,6 +66,18 @@ export function buildTouchFrame(mappings: Mapping[], held: ReadonlySet<string>, 
   return [...unique.values()];
 }
 
+export function touchFramesEqual(left: readonly TouchContact[] | null, right: readonly TouchContact[]) {
+  return left !== null
+    && left.length === right.length
+    && left.every((contact, index) => {
+      const other = right[index];
+      return contact.identity === other.identity
+        && contact.touching === other.touching
+        && contact.x === other.x
+        && contact.y === other.y;
+    });
+}
+
 export function mappingBindings(mapping: Mapping): string[] {
   if (mapping.type === "touch") return [mapping.key];
   if (mapping.type === "dpad") return Object.values(mapping.keys);

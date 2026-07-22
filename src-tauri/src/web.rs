@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
@@ -666,6 +668,7 @@ enum ClientMessage {
     KeyboardDown { usage: u64 },
     KeyboardUp { usage: u64 },
     Rotate { direction: RotateRequest },
+    FramePresented,
 }
 
 #[derive(Deserialize)]
@@ -686,6 +689,8 @@ enum RotateRequest {
 async fn websocket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
+    let frame_pacer = Arc::new(FramePacer::new());
+    let send_pacer = frame_pacer.clone();
     let send_task = tokio::spawn(async move {
         let mut last_frame_version = 0;
         let mut last_status = String::new();
@@ -723,7 +728,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     let Some((version, frame)) = send_state.frames.latest() else {
                         continue;
                     };
-                    if version == last_frame_version {
+                    if version == last_frame_version || !send_pacer.try_acquire() {
                         continue;
                     }
                     last_frame_version = version;
@@ -731,6 +736,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     let encode_started = Instant::now();
                     let encoded = tokio::task::spawn_blocking(move || encode_jpeg(&frame)).await;
                     let Ok(Ok(jpeg)) = encoded else {
+                        send_pacer.release();
                         continue;
                     };
                     if !cached {
@@ -778,7 +784,11 @@ async fn websocket(socket: WebSocket, state: AppState) {
     let mut pressed_keyboard = HashSet::new();
     while let Some(Ok(message)) = receiver.next().await {
         match message {
-            Message::Text(text) => handle_client_message(&state, &text, &mut pressed_keyboard),
+            Message::Text(text) => {
+                if handle_client_message(&state, &text, &mut pressed_keyboard) {
+                    frame_pacer.release();
+                }
+            }
             Message::Close(_) => break,
             _ => {}
         }
@@ -787,29 +797,78 @@ async fn websocket(socket: WebSocket, state: AppState) {
     send_all_up(&state, &pressed_keyboard);
 }
 
+const FRAME_CREDIT_LEASE: Duration = Duration::from_millis(500);
+
+struct FramePacer(Mutex<Option<Instant>>);
+
+impl FramePacer {
+    fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    fn try_acquire(&self) -> bool {
+        let mut acquired_at = self.0.lock().expect("frame pacer lock poisoned");
+        if acquired_at.is_some_and(|at| at.elapsed() < FRAME_CREDIT_LEASE) {
+            return false;
+        }
+        *acquired_at = Some(Instant::now());
+        true
+    }
+
+    fn release(&self) {
+        *self.0.lock().expect("frame pacer lock poisoned") = None;
+    }
+}
+
+thread_local! {
+    static JPEG_COMPRESSOR: RefCell<Option<turbojpeg::Compressor>> = const { RefCell::new(None) };
+}
+
 fn encode_jpeg(frame: &Frame) -> Result<bytes::Bytes, String> {
     frame
         .jpeg
         .get_or_init(|| {
             let image = turbojpeg::Image {
-                pixels: frame.rgba.as_slice(),
+                pixels: frame.rgb.as_slice(),
                 width: frame.width,
-                pitch: frame.width * 4,
+                pitch: frame.width * 3,
                 height: frame.height,
-                format: turbojpeg::PixelFormat::RGBA,
+                format: turbojpeg::PixelFormat::RGB,
             };
-            let encoded = turbojpeg::compress(image, 80, turbojpeg::Subsamp::Sub2x2)
-                .map_err(|error| error.to_string())?;
-            Ok(bytes::Bytes::copy_from_slice(&encoded))
+            JPEG_COMPRESSOR.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.is_none() {
+                    let mut compressor =
+                        turbojpeg::Compressor::new().map_err(|error| error.to_string())?;
+                    compressor
+                        .set_quality(80)
+                        .map_err(|error| error.to_string())?;
+                    compressor
+                        .set_subsamp(turbojpeg::Subsamp::Sub2x2)
+                        .map_err(|error| error.to_string())?;
+                    *slot = Some(compressor);
+                }
+                slot.as_mut()
+                    .expect("JPEG compressor initialized")
+                    .compress_to_vec(image)
+                    .map(bytes::Bytes::from)
+                    .map_err(|error| error.to_string())
+            })
         })
         .clone()
 }
 
-fn handle_client_message(state: &AppState, text: &str, pressed_keyboard: &mut HashSet<u64>) {
+/// Returns true when the WebView has consumed its outstanding video frame.
+fn handle_client_message(
+    state: &AppState,
+    text: &str,
+    pressed_keyboard: &mut HashSet<u64>,
+) -> bool {
     let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
-        return;
+        return false;
     };
     match message {
+        ClientMessage::FramePresented => return true,
         ClientMessage::MultiTouch { contacts } => {
             if let Some(contacts) = validate_contacts(contacts, state.orientation.get()) {
                 state.input.send(InputCmd::MultiTouchFrame(contacts));
@@ -847,6 +906,7 @@ fn handle_client_message(state: &AppState, text: &str, pressed_keyboard: &mut Ha
             }))
         }
     }
+    false
 }
 
 fn validate_contacts(
@@ -950,7 +1010,7 @@ mod tests {
         Frame {
             width: 2,
             height: 1,
-            rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+            rgb: vec![255, 0, 0, 0, 255, 0],
             jpeg: std::sync::OnceLock::new(),
         }
     }
@@ -975,6 +1035,32 @@ mod tests {
         assert_eq!(slot.version(), 1);
         slot.publish(Arc::new(test_frame()));
         assert_eq!(slot.version(), 2);
+    }
+
+    #[test]
+    fn frame_pacer_allows_only_one_frame_until_presented() {
+        let pacer = FramePacer::new();
+        assert!(pacer.try_acquire());
+        assert!(!pacer.try_acquire());
+        pacer.release();
+        assert!(pacer.try_acquire());
+    }
+
+    #[test]
+    fn expired_frame_credit_does_not_stall_stream() {
+        let pacer = FramePacer(Mutex::new(Some(Instant::now() - FRAME_CREDIT_LEASE)));
+        assert!(pacer.try_acquire());
+        assert!(!pacer.try_acquire());
+    }
+
+    #[test]
+    fn frame_presented_message_releases_video_credit() {
+        let (state, _input_rx) = test_state();
+        assert!(handle_client_message(
+            &state,
+            r#"{"type":"frame_presented"}"#,
+            &mut HashSet::new(),
+        ));
     }
 
     #[test]

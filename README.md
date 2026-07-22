@@ -236,6 +236,7 @@ Useful environment variables:
 | `DEVICEHUB_ADDR` | `127.0.0.1:0` | Private backend bind address (`0` selects a random port) |
 | `DEVICEHUB_PROFILE_DIR` | Tauri application data directory | Mapping profile storage |
 | `DEVICEHUB_FFMPEG` | auto-detected | Absolute path to the ffmpeg executable |
+| `DEVICEHUB_VIDEO_MAX_DIMENSION` | `1920` on Windows, native elsewhere | Maximum decoded video width or height; preserves aspect ratio and never upscales (`0` disables the limit) |
 | `RUST_LOG` | DeviceHub info logging | Rust log filter |
 | `DEVICEHUB_HID_DUMP` | unset | Export the Universal HID service plist |
 
@@ -636,6 +637,18 @@ Touch coordinates are normalized in that exact displayed space.
 - Continue profiling decode, frame transport, and WebView presentation on
   Windows, with platform-specific metrics kept visible in the device workspace
 - Close remaining scrcpy-mask mapping editor and runtime compatibility gaps
+
+## Windows Performance
+
+The Windows video path limits its decoded long edge to 1920 pixels by default,
+uses RGB24 between FFmpeg and the backend, and allows only one JPEG frame to be
+in flight per WebView. This keeps backend send FPS close to display FPS instead
+of spending CPU encoding frames WebView2 cannot present. The 60 FPS ceiling is
+unchanged, and scaling always preserves the device aspect ratio.
+
+Use the live Decode / Send / Display FPS and JPEG latency metrics to identify the
+bottleneck. Set `DEVICEHUB_VIDEO_MAX_DIMENSION` to a lower value such as `1280`
+on slower systems, or to `0` to diagnose at native device resolution.
 
 ## Credits
 

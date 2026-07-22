@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTouchFrame, mappingBindings } from "./control";
+import { buildTouchFrame, mappingBindings, touchFramesEqual } from "./control";
 import { createMapping, type PadCastSpellMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
 
 describe("mapping controller runtime", () => {
@@ -28,5 +28,13 @@ describe("mapping controller runtime", () => {
     const mapping = { ...createMapping("PadCastSpell", { x: 0.5, y: 0.5 }), bind: ["Space"], pad_bind: { type: "Button", up: ["KeyW"], down: [], left: [], right: [] } } as PadCastSpellMapping;
     expect(mappingBindings(mapping)).toEqual(["Space", "KeyW"]);
     expect(mapping.bind).toEqual(["Space"]);
+  });
+
+  it("detects duplicate HID frames without hiding phase or coordinate changes", () => {
+    const frame = [{ identity: 1, touching: true, x: 0.25, y: 0.75 }];
+    expect(touchFramesEqual(frame, [{ ...frame[0] }])).toBe(true);
+    expect(touchFramesEqual(frame, [{ ...frame[0], touching: false }])).toBe(false);
+    expect(touchFramesEqual(frame, [{ ...frame[0], x: 0.26 }])).toBe(false);
+    expect(touchFramesEqual(null, frame)).toBe(false);
   });
 });

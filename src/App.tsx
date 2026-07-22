@@ -32,7 +32,7 @@ import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, type TouchContact } from "./control";
+import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, touchFramesEqual, type TouchContact } from "./control";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
 const emptyStatus: DeviceStatus = { status: "", active_udid: null, error: null, orientation: "portrait", devices: [] };
@@ -155,6 +155,8 @@ export default function App() {
   const heldHardwareRef = useRef(new Map<string, HardwareButtonName>());
   const forwardedKeyboardRef = useRef(new Map<string, number>());
   const directTouchesRef = useRef(new Map<number, TouchContact>());
+  const activeIdsRef = useRef(new Set<number>());
+  const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
   const capturedScreenshotRef = useRef<CapturedScreenshot | null>(null);
   const hasFrameRef = useRef(false);
 
@@ -185,10 +187,15 @@ export default function App() {
     ];
     const ordered = [...candidates.filter((contact) => contact.touching), ...candidates.filter((contact) => !contact.touching)];
     const contacts = ordered.filter((contact, index, all) => all.findIndex((candidate) => candidate.identity === contact.identity) === index).slice(0, 5);
-    setActiveIds(new Set(contacts.filter((contact) => contact.touching).map((contact) => contact.identity)));
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: "multi_touch", contacts }));
+    const nextActiveIds = new Set(contacts.filter((contact) => contact.touching).map((contact) => contact.identity));
+    if (nextActiveIds.size !== activeIdsRef.current.size || [...nextActiveIds].some((identity) => !activeIdsRef.current.has(identity))) {
+      activeIdsRef.current = nextActiveIds;
+      setActiveIds(nextActiveIds);
     }
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN || touchFramesEqual(lastSentTouchFrameRef.current, contacts)) return;
+    socket.send(JSON.stringify({ type: "multi_touch", contacts }));
+    lastSentTouchFrameRef.current = contacts;
   }, [controlProfile.mappings, frameSize]);
 
   const releaseAllControls = useCallback(() => {
@@ -291,6 +298,9 @@ export default function App() {
       socket.onclose = () => {
         socketClosed = true;
         pendingFrame = null;
+        lastSentTouchFrameRef.current = null;
+        activeIdsRef.current = new Set();
+        setActiveIds(new Set());
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
         setStreamMetrics(emptyMetrics);
@@ -323,6 +333,9 @@ export default function App() {
               console.warn("Unable to decode video frame", error);
             } finally {
               bitmap?.close();
+              if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: "frame_presented" }));
+              }
             }
           }
         } finally {

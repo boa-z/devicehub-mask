@@ -11,11 +11,11 @@ use tokio::sync::oneshot;
 
 use crate::hid::TouchContact;
 
-/// A decoded screen frame. `rgba` is `width * height * 4` bytes, top-down, non-premultiplied.
+/// A decoded screen frame. `rgb` is `width * height * 3` bytes, top-down RGB24.
 pub struct Frame {
     pub width: usize,
     pub height: usize,
-    pub rgba: Vec<u8>,
+    pub rgb: Vec<u8>,
     pub jpeg: OnceLock<Result<Bytes, String>>,
 }
 

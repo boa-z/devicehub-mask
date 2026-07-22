@@ -1,8 +1,7 @@
 // HEVC decode via an `ffmpeg` subprocess: Annex-B in on stdin, PAM (P7) frames
 // out on stdout. PAM is self-describing (size in every header, so resolution
-// changes need no extra signalling) and, unlike PPM, carries an alpha channel —
-// so we ask ffmpeg for `rgba` directly and publish its bytes verbatim, with no
-// per-pixel RGB→RGBA expansion pass on our side.
+// changes need no extra signalling). The stream has no useful alpha channel, so
+// RGB24 saves 25% of pipe and memory bandwidth compared with RGBA.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -19,13 +18,27 @@ use crate::protocol::{Frame, FrameSlot};
 /// stderr is piped so the session can watch it for decode errors.
 pub fn spawn_ffmpeg() -> std::io::Result<(Child, ChildStdin, ChildStdout, ChildStderr)> {
     let ffmpeg = resolve_ffmpeg()?;
-    tracing::info!(path = %ffmpeg.display(), "using ffmpeg");
-    let mut child = Command::new(ffmpeg)
+    let max_dimension = configured_max_dimension(
+        std::env::var_os("DEVICEHUB_VIDEO_MAX_DIMENSION"),
+        cfg!(windows),
+    );
+    tracing::info!(path = %ffmpeg.display(), ?max_dimension, "using ffmpeg");
+    let mut command = Command::new(ffmpeg);
+    command
         // Do *not* add `-fflags nobuffer`: it makes ffmpeg skip the opening IDR +
         // parameter sets, so every P-frame fails with "Could not find ref".
         .args(["-flags", "low_delay"])
         .args(["-hwaccel", "auto"])
-        .args(["-f", "hevc", "-i", "pipe:0"])
+        .args(["-f", "hevc", "-i", "pipe:0"]);
+    if let Some(max_dimension) = max_dimension {
+        command.args([
+            "-vf",
+            &format!(
+                "scale=w='min(iw,{max_dimension})':h='min(ih,{max_dimension})':force_original_aspect_ratio=decrease:force_divisible_by=2"
+            ),
+        ]);
+    }
+    let mut child = command
         .args([
             "-an",
             "-f",
@@ -33,7 +46,7 @@ pub fn spawn_ffmpeg() -> std::io::Result<(Child, ChildStdin, ChildStdout, ChildS
             "-vcodec",
             "pam",
             "-pix_fmt",
-            "rgba",
+            "rgb24",
         ])
         .arg("pipe:1")
         .args(["-loglevel", "error"])
@@ -47,6 +60,31 @@ pub fn spawn_ffmpeg() -> std::io::Result<(Child, ChildStdin, ChildStdout, ChildS
     let stdout = child.stdout.take().expect("ffmpeg stdout piped");
     let stderr = child.stderr.take().expect("ffmpeg stderr piped");
     Ok((child, stdin, stdout, stderr))
+}
+
+fn configured_max_dimension(configured: Option<OsString>, windows: bool) -> Option<u32> {
+    let fallback = windows.then_some(1920);
+    let Some(configured) = configured else {
+        return fallback;
+    };
+    let Some(value) = configured
+        .to_str()
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        tracing::warn!(
+            ?configured,
+            "ignoring invalid DEVICEHUB_VIDEO_MAX_DIMENSION"
+        );
+        return fallback;
+    };
+    match value {
+        0 => None,
+        value if value >= 320 => Some(value),
+        value => {
+            tracing::warn!(value, "ignoring invalid DEVICEHUB_VIDEO_MAX_DIMENSION");
+            fallback
+        }
+    }
 }
 
 fn resolve_ffmpeg() -> std::io::Result<PathBuf> {
@@ -131,14 +169,17 @@ pub async fn read_frames(
                 // screen is still a healthy stream.
                 beat.notify_one();
 
-                if last.as_ref().is_some_and(|p| p.rgba == read_buf) {
+                if last
+                    .as_ref()
+                    .is_some_and(|previous| previous.rgb == read_buf)
+                {
                     continue;
                 }
 
                 let frame = Arc::new(Frame {
                     width,
                     height,
-                    rgba: std::mem::take(&mut read_buf),
+                    rgb: std::mem::take(&mut read_buf),
                     jpeg: OnceLock::new(),
                 });
                 read_buf = pool.pop().unwrap_or_default();
@@ -147,7 +188,7 @@ pub async fn read_frames(
                     && let Ok(frame) = Arc::try_unwrap(prev)
                     && pool.len() < 2
                 {
-                    pool.push(frame.rgba);
+                    pool.push(frame.rgb);
                 }
                 repaint();
             }
@@ -163,15 +204,15 @@ pub async fn read_frames(
     }
 }
 
-/// Read a single binary PAM (P7) image into `rgba` as a raw top-down RGBA raster,
+/// Read a single binary PAM (P7) image into `rgb` as a raw top-down RGB24 raster,
 /// reusing its allocation. Returns the dimensions, or `Ok(None)` at clean EOF.
 ///
 /// PAM headers are line-oriented: `P7`, then `KEY VALUE` lines (`WIDTH`,
 /// `HEIGHT`, `DEPTH`, `MAXVAL`, `TUPLTYPE`) in any order, terminated by `ENDHDR`,
-/// then the raster. We require the 4-channel/8-bit layout ffmpeg emits for `rgba`.
+/// then the raster. We require the 3-channel/8-bit layout ffmpeg emits for `rgb24`.
 async fn read_pam<R: AsyncReadExt + AsyncBufReadExt + Unpin>(
     r: &mut R,
-    rgba: &mut Vec<u8>,
+    rgb: &mut Vec<u8>,
 ) -> std::io::Result<Option<(usize, usize)>> {
     let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidData, msg);
 
@@ -217,17 +258,17 @@ async fn read_pam<R: AsyncReadExt + AsyncBufReadExt + Unpin>(
             .ok_or_else(|| invalid(format!("bad PAM header line: {text:?}")))?;
     }
 
-    if depth != 4 || maxval != 255 {
+    if depth != 3 || maxval != 255 {
         return Err(invalid(format!(
-            "expected 8-bit 4-channel PAM, got depth={depth} maxval={maxval}"
+            "expected 8-bit 3-channel PAM, got depth={depth} maxval={maxval}"
         )));
     }
     if width == 0 || height == 0 {
         return Err(invalid(format!("bad PAM dimensions {width}x{height}")));
     }
 
-    rgba.resize(width * height * depth, 0);
-    r.read_exact(rgba).await?;
+    rgb.resize(width * height * depth, 0);
+    r.read_exact(rgb).await?;
     Ok(Some((width, height)))
 }
 
@@ -269,5 +310,39 @@ mod tests {
         );
         assert!(candidates.contains(&PathBuf::from("/opt/homebrew/bin/ffmpeg")));
         assert!(candidates.contains(&PathBuf::from("/usr/local/bin/ffmpeg")));
+    }
+
+    #[test]
+    fn windows_limits_transport_resolution_unless_overridden() {
+        assert_eq!(configured_max_dimension(None, true), Some(1920));
+        assert_eq!(configured_max_dimension(None, false), None);
+        assert_eq!(
+            configured_max_dimension(Some(OsString::from("1440")), true),
+            Some(1440)
+        );
+        assert_eq!(
+            configured_max_dimension(Some(OsString::from("0")), true),
+            None
+        );
+        assert_eq!(
+            configured_max_dimension(Some(OsString::from("12")), true),
+            Some(1920)
+        );
+        assert_eq!(
+            configured_max_dimension(Some(OsString::from("invalid")), true),
+            Some(1920)
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_rgb24_pam_frame() {
+        let input =
+            b"P7\nWIDTH 2\nHEIGHT 1\nDEPTH 3\nMAXVAL 255\nTUPLTYPE RGB\nENDHDR\n\xff\0\0\0\xff\0";
+        let mut reader = tokio::io::BufReader::new(&input[..]);
+        let mut rgb = Vec::new();
+
+        assert_eq!(read_pam(&mut reader, &mut rgb).await.unwrap(), Some((2, 1)));
+        assert_eq!(rgb, [255, 0, 0, 0, 255, 0]);
+        assert_eq!(read_pam(&mut reader, &mut rgb).await.unwrap(), None);
     }
 }
