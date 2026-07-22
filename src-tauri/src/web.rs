@@ -112,6 +112,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/status", get(status))
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
+        .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
         .route("/api/device/apps", get(device_apps))
         .route("/api/device/apps/operation", get(app_operation))
@@ -190,6 +191,11 @@ async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
 
 async fn connect_device(State(state): State<AppState>, Path(udid): Path<String>) -> StatusCode {
     let _ = state.control.send(ControlCmd::Connect(udid));
+    StatusCode::ACCEPTED
+}
+
+async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String>) -> StatusCode {
+    let _ = state.control.send(ControlCmd::Reconnect(udid));
     StatusCode::ACCEPTED
 }
 
@@ -1193,10 +1199,19 @@ mod tests {
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     fn test_state() -> (AppState, UnboundedReceiver<InputCmd>) {
+        let (state, input_rx, _control_rx) = test_state_with_control();
+        (state, input_rx)
+    }
+
+    fn test_state_with_control() -> (
+        AppState,
+        UnboundedReceiver<InputCmd>,
+        UnboundedReceiver<ControlCmd>,
+    ) {
         let input = InputSink::default();
         let (input_tx, input_rx) = unbounded_channel();
         input.set(Some(input_tx));
-        let (control, _control_rx) = unbounded_channel();
+        let (control, control_rx) = unbounded_channel();
         (
             AppState {
                 frames: FrameSlot::default(),
@@ -1212,7 +1227,22 @@ mod tests {
                 profile_dir: Arc::new(PathBuf::new()),
             },
             input_rx,
+            control_rx,
         )
+    }
+
+    #[tokio::test]
+    async fn reconnect_endpoint_forces_a_new_session_for_the_selected_device() {
+        let (state, _input_rx, mut control_rx) = test_state_with_control();
+
+        assert_eq!(
+            reconnect_device(State(state), Path("device-1".into())).await,
+            StatusCode::ACCEPTED
+        );
+        assert!(matches!(
+            control_rx.recv().await,
+            Some(ControlCmd::Reconnect(udid)) if udid == "device-1"
+        ));
     }
 
     fn test_frame() -> Frame {

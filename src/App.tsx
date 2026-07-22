@@ -2,7 +2,9 @@ import {
   AimOutlined,
   ApiOutlined,
   AudioMutedOutlined,
+  CompressOutlined,
   CustomerServiceOutlined,
+  ExpandOutlined,
   FullscreenExitOutlined,
   FullscreenOutlined,
   HomeOutlined,
@@ -18,6 +20,7 @@ import {
   RotateLeftOutlined,
   RotateRightOutlined,
   SaveOutlined,
+  SyncOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
@@ -143,7 +146,9 @@ export default function App() {
   const [editing, setEditing] = useState(true);
   const [controlMode, setControlMode] = useState<ControlMode>("mapping");
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
+  const [systemFullscreen, setSystemFullscreen] = useState(false);
+  const [deviceFullscreen, setDeviceFullscreen] = useState(false);
+  const [selectedUdid, setSelectedUdid] = useState<string | null>(null);
   const [inspectorVisible, setInspectorVisible] = useState(true);
   const [connected, setConnected] = useState(false);
   const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(emptyMetrics);
@@ -173,6 +178,33 @@ export default function App() {
   const hasFrameRef = useRef(false);
 
   orientationRef.current = status.orientation;
+  useEffect(() => {
+    if (status.active_udid) setSelectedUdid(status.active_udid);
+  }, [status.active_udid]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const syncSystemFullscreen = async () => {
+      try {
+        const value = await appWindow.isFullscreen();
+        if (!disposed) {
+          setSystemFullscreen(value);
+        }
+      } catch (error) {
+        logFrontend("warn", "window", "read_system_fullscreen", error);
+      }
+    };
+    void syncSystemFullscreen();
+    void appWindow.onResized(() => void syncSystemFullscreen()).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [appWindow]);
   const mappingEditing = page === "mappings" && controlMode === "mapping" && editing;
   const mappingFrameSize = mappingBackgroundMode === "screenshot" && capturedScreenshot
     ? { width: capturedScreenshot.width, height: capturedScreenshot.height }
@@ -267,7 +299,7 @@ export default function App() {
         setStatus({ ...emptyStatus, status: translateRef.current("status.backendUnavailable"), error: String(error) });
       });
     Promise.all([appWindow.isAlwaysOnTop(), appWindow.isFullscreen()])
-      .then(([top, full]) => { setAlwaysOnTop(top); setFullscreen(full); })
+      .then(([top, full]) => { setAlwaysOnTop(top); setSystemFullscreen(full); })
       .catch(() => undefined);
   }, [appWindow]);
 
@@ -720,14 +752,39 @@ export default function App() {
       void message.error(t("errors.windowTop", { error: String(error) }));
     }
   };
-  const toggleFullscreen = async () => {
-    const next = !fullscreen;
+  const toggleSystemFullscreen = async () => {
+    const next = !systemFullscreen;
     releaseAllControls();
     try {
       await appWindow.setFullscreen(next);
-      setFullscreen(next);
+      setSystemFullscreen(next);
     } catch (error) {
-      void message.error(t("errors.fullscreen", { error: String(error) }));
+      void message.error(t("errors.systemFullscreen", { error: String(error) }));
+    }
+  };
+  const toggleDeviceFullscreen = () => {
+    releaseAllControls();
+    setDeviceFullscreen((active) => !active);
+    setPage("device");
+  };
+  const connectDevice = async (udid: string) => {
+    setSelectedUdid(udid);
+    releaseAllControls();
+    try {
+      const response = await request(`/api/devices/${encodeURIComponent(udid)}/connect`, { method: "PUT" });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    } catch (error) {
+      void message.error(t("errors.reconnectDevice", { error: String(error) }));
+    }
+  };
+  const reconnectDevice = async () => {
+    if (!selectedUdid) return;
+    releaseAllControls();
+    try {
+      const response = await request(`/api/devices/${encodeURIComponent(selectedUdid)}/reconnect`, { method: "PUT" });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    } catch (error) {
+      void message.error(t("errors.reconnectDevice", { error: String(error) }));
     }
   };
   const pointFromPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -773,7 +830,7 @@ export default function App() {
     setDirectTouches([...directTouchesRef.current.values()]);
     sendFrame(heldRef.current, [{ ...contact, touching: false, ...pointFromPointer(event) }]);
   };
-  const selectedDevice = status.active_udid ?? undefined;
+  const selectedDevice = selectedUdid ?? undefined;
   const displayedMappings = page === "mappings" ? profile.mappings : controlProfile.mappings;
   const displayedFrameSize = page === "mappings" ? mappingFrameSize : frameSize;
   const aspectRatio = useMemo(() => `${displayedFrameSize.width} / ${displayedFrameSize.height}`, [displayedFrameSize]);
@@ -782,10 +839,30 @@ export default function App() {
     [displayedFrameSize, stageSize],
   );
   const statusText = status.error ?? (backendStatusKeys[status.status] ? t(backendStatusKeys[status.status]) : status.status);
+  const hardwareControls = (
+    <div className="hardware-controls" role="toolbar" aria-label={t("hardware.toolbar")}>
+      {([
+        ["home", <HomeOutlined />],
+        ["lock", <LockOutlined />],
+        ["volume-up", <PlusOutlined />],
+        ["volume-down", <MinusOutlined />],
+        ["mute", <AudioMutedOutlined />],
+        ["siri", <CustomerServiceOutlined />],
+        ["action", <ThunderboltOutlined />],
+      ] as const).map(([name, icon]) => {
+        const label = t(`hardware.${name}`);
+        return (
+          <Tooltip key={name} title={`${label}${controlProfile.hardwareBindings[name] ? ` · ${controlProfile.hardwareBindings[name]}` : ""}`}>
+            <Button aria-label={label} icon={icon} onClick={() => command({ type: "button", name })} />
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
+    <div className={`app-shell${deviceFullscreen ? " is-device-fullscreen" : ""}`}>
+      {!deviceFullscreen && <header className="topbar">
         <div className="brand"><AimOutlined /><strong>DeviceHub Mask</strong><span>{t("brand.subtitle")}</span></div>
         <Space size={8} wrap>
           <Tag color={connected && status.active_udid ? "success" : "default"}>{statusText}</Tag>
@@ -794,26 +871,28 @@ export default function App() {
             value={selectedDevice}
             placeholder={t("device.select")}
             options={status.devices.map((device) => ({ value: device.udid, label: `${device.name} · ${device.connection}` }))}
-            onChange={(udid) => void request(`/api/devices/${encodeURIComponent(udid)}/connect`, { method: "PUT" })}
+            onChange={(udid) => void connectDevice(udid)}
           />
-          <Tooltip title={t("device.refresh")}><Button disabled={!backend} icon={<ReloadOutlined />} onClick={() => void request("/api/devices/refresh", { method: "PUT" })} /></Tooltip>
+          <Tooltip title={t("device.refresh")}><Button aria-label={t("device.refresh")} disabled={!backend} icon={<ReloadOutlined />} onClick={() => void request("/api/devices/refresh", { method: "PUT" })} /></Tooltip>
+          <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedUdid} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
           {page === "mappings" && <Tooltip title={t("device.saveMappings")}><Button icon={<SaveOutlined />} onClick={() => void save()} /></Tooltip>}
           <Tooltip title={t(alwaysOnTop ? "device.unpin" : "device.pin")}><Button type={alwaysOnTop ? "primary" : "default"} icon={alwaysOnTop ? <PushpinFilled /> : <PushpinOutlined />} onClick={() => void toggleAlwaysOnTop()} /></Tooltip>
           {page === "mappings" && <Tooltip title={t(inspectorVisible ? "device.hideInspector" : "device.showInspector")}><Button icon={inspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => setInspectorVisible((visible) => !visible)} /></Tooltip>}
-          <Tooltip title={t(fullscreen ? "device.exitFullscreen" : "device.enterFullscreen")}><Button icon={fullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleFullscreen()} /></Tooltip>
+          <Tooltip title={t("device.enterDeviceFullscreen")}><Button icon={<ExpandOutlined />} onClick={toggleDeviceFullscreen} /></Tooltip>
+          <Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>
         </Space>
-      </header>
+      </header>}
 
       <div className="desktop-body">
-        <AppNavigation page={page} onChange={(next) => { releaseAllControls(); setPage(next); }} />
+        {!deviceFullscreen && <AppNavigation page={page} onChange={(next) => { releaseAllControls(); setPage(next); }} />}
         <div className="page-content">
           {page === "settings" ? (
             <SettingsPage
               alwaysOnTop={alwaysOnTop}
-              fullscreen={fullscreen}
+              systemFullscreen={systemFullscreen}
               inspectorVisible={inspectorVisible}
               onAlwaysOnTopChange={() => void toggleAlwaysOnTop()}
-              onFullscreenChange={() => void toggleFullscreen()}
+              onSystemFullscreenChange={() => void toggleSystemFullscreen()}
               onInspectorVisibleChange={setInspectorVisible}
             />
           ) : (
@@ -834,9 +913,30 @@ export default function App() {
                   onImport={importProfile}
                 />
               )}
-              <main className={`workspace ${page === "device" ? "device-workspace" : page === "mappings" && inspectorVisible ? "" : "inspector-hidden"}`}>
+              <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" ? "device-workspace" : page === "mappings" && inspectorVisible ? "" : "inspector-hidden"}`}>
                 <section className="stage-column">
-                  <div className="stage-toolbar">
+                  {deviceFullscreen ? (
+                    <div className="device-fullscreen-toolbar" role="toolbar" aria-label={t("device.deviceFullscreenControls")}>
+                      <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedUdid} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
+                      <Segmented<ControlMode>
+                        value={controlMode}
+                        options={[
+                          { label: <Tooltip title={t("device.mappingMode")}><AimOutlined /></Tooltip>, value: "mapping" },
+                          { label: <Tooltip title={t("device.keyboardMode")}><KeyOutlined /></Tooltip>, value: "keyboard" },
+                        ]}
+                        onChange={(mode) => {
+                          releaseAllControls();
+                          setControlMode(mode);
+                          if (mode === "keyboard") setEditing(false);
+                        }}
+                      />
+                      <Tooltip title={t("device.rotateLeft")}><Button icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
+                      <Tooltip title={t("device.rotateRight")}><Button icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
+                      {hardwareControls}
+                      <Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>
+                      <Tooltip title={t("device.exitDeviceFullscreen")}><Button icon={<CompressOutlined />} onClick={toggleDeviceFullscreen} /></Tooltip>
+                    </div>
+                  ) : <div className="stage-toolbar">
                     <div className="stream-status">
                       <Space><ApiOutlined /><Typography.Text>{t(connected ? "status.websocketConnected" : "status.reconnecting")}</Typography.Text></Space>
                       <Tooltip title={t("device.bandwidth", { value: streamMetrics.megabits_per_second.toFixed(1) })}>
@@ -868,25 +968,8 @@ export default function App() {
                       <Tooltip title={t("device.rotateLeft")}><Button icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
                       <Tooltip title={t("device.rotateRight")}><Button icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
                     </Space>
-                    <div className="hardware-controls" role="toolbar" aria-label={t("hardware.toolbar")}>
-                      {([
-                        ["home", <HomeOutlined />],
-                        ["lock", <LockOutlined />],
-                        ["volume-up", <PlusOutlined />],
-                        ["volume-down", <MinusOutlined />],
-                        ["mute", <AudioMutedOutlined />],
-                        ["siri", <CustomerServiceOutlined />],
-                        ["action", <ThunderboltOutlined />],
-                      ] as const).map(([name, icon]) => {
-                        const label = t(`hardware.${name}`);
-                        return (
-                        <Tooltip key={name} title={`${label}${controlProfile.hardwareBindings[name] ? ` · ${controlProfile.hardwareBindings[name]}` : ""}`}>
-                          <Button aria-label={label} icon={icon} onClick={() => command({ type: "button", name })} />
-                        </Tooltip>
-                        );
-                      })}
-                    </div>
-                  </div>
+                    {hardwareControls}
+                  </div>}
                   {page === "mappings" && (
                     <MappingBackgroundToolbar
                       mode={mappingBackgroundMode}
@@ -934,7 +1017,7 @@ export default function App() {
                     onHardwareBindingChange={updateHardwareBinding}
                   />
                 )}
-                {page === "device" && (
+                {page === "device" && !deviceFullscreen && (
                   <DeviceInspector activeUdid={status.active_udid} request={request} />
                 )}
               </main>

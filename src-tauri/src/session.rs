@@ -703,7 +703,7 @@ pub async fn manage(
             status.set("no device - pick one from the menu");
             tokio::select! {
                 cmd = control_rx.recv() => match cmd {
-                    Some(ControlCmd::Connect(u)) => target = Some(u),
+                    Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
                     Some(ControlCmd::Refresh) => {}
                     Some(ControlCmd::Quit) | None => return,
                 },
@@ -750,6 +750,7 @@ pub async fn manage(
                 cmd = control_rx.recv() => match cmd {
                     Some(ControlCmd::Connect(u)) if u != udid => break Next::Switch(u),
                     Some(ControlCmd::Connect(_)) => {} // already on this device
+                    Some(ControlCmd::Reconnect(u)) => break Next::Switch(u),
                     Some(ControlCmd::Refresh) => {
                         device_list.set(enumerate_devices(&mut names).await);
                     }

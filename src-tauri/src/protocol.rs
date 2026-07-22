@@ -535,6 +535,8 @@ pub enum ControlCmd {
     Refresh,
     /// Tear down the current session (if any) and connect to this UDID.
     Connect(String),
+    /// Tear down the current session even when it already targets this UDID, then reconnect.
+    Reconnect(String),
     /// Tear down the current session and exit the manager
     Quit,
 }

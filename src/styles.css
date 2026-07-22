@@ -9,6 +9,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .brand span { color: #899493; font-size: 12px; }
 .device-select { width: min(300px, 28vw); }
 .desktop-body { min-height: 0; flex: 1; display: grid; grid-template-columns: 72px minmax(0, 1fr); }
+.app-shell.is-device-fullscreen .desktop-body { grid-template-columns: minmax(0, 1fr); }
 .app-navigation { min-height: 0; border-right: 1px solid #303638; background: #171b1c; overflow: hidden; }
 .app-navigation .ant-menu { width: 72px; height: 100%; border-inline-end: 0 !important; background: transparent; }
 .app-navigation .ant-menu-item { width: 48px; height: 44px; margin: 6px 12px; padding-inline: 16px !important; }
@@ -22,6 +23,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .workspace.inspector-hidden { grid-template-columns: minmax(0, 1fr); }
 .stage-column { min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
 .stage-toolbar { min-height: 46px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #131718; }
+.device-fullscreen-toolbar { min-height: 46px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: center; gap: 6px; background: #0f1213; }
+.device-fullscreen-toolbar .hardware-controls { margin-left: 6px; }
 .mapping-editor-toolbar { min-height: 44px; padding: 6px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #171b1c; }
 .mapping-resolution { min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mapping-resolution .ant-tag { margin-inline-end: 0; }
@@ -30,6 +33,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .stream-status { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .stream-metrics { min-width: 310px; color: #8d9997; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .stage-wrap { min-height: 0; height: 0; flex: 1; padding: 16px; display: flex; align-items: center; justify-content: center; overflow: hidden; background-color: #0c0f10; background-image: linear-gradient(45deg, #15191a 25%, transparent 25%), linear-gradient(-45deg, #15191a 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #15191a 75%), linear-gradient(-45deg, transparent 75%, #15191a 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
+.is-device-fullscreen .stage-wrap { padding: 8px; background: #050606; }
+.is-device-fullscreen .device-viewport { box-shadow: none; }
 .device-viewport { position: relative; flex: none; background: #050606; box-shadow: 0 0 0 1px #3b4445, 0 14px 34px rgba(0,0,0,.4); overflow: hidden; }
 .device-viewport.is-controlling { cursor: crosshair; touch-action: none; }
 .device-viewport:focus-visible { outline: 2px solid #42b883; outline-offset: 3px; }
@@ -119,6 +124,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .workspace { display: flex; flex-direction: column; }
   .stage-column { min-height: 68vh; }
   .stage-toolbar { align-items: flex-start; flex-direction: column; }
+  .device-fullscreen-toolbar { flex-wrap: wrap; }
+  .device-fullscreen-toolbar .hardware-controls { margin-left: 0; }
   .mapping-editor-toolbar { align-items: flex-start; flex-direction: column; }
   .mapping-resolution { white-space: normal; flex-wrap: wrap; }
   .mapping-background-controls { width: 100%; flex-wrap: wrap; }

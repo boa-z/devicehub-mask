@@ -17,19 +17,19 @@ import { UpdateButton } from "./UpdateButton";
 
 type Props = {
   alwaysOnTop: boolean;
-  fullscreen: boolean;
+  systemFullscreen: boolean;
   inspectorVisible: boolean;
   onAlwaysOnTopChange: () => void;
-  onFullscreenChange: () => void;
+  onSystemFullscreenChange: () => void;
   onInspectorVisibleChange: (visible: boolean) => void;
 };
 
 export function SettingsPage({
   alwaysOnTop,
-  fullscreen,
+  systemFullscreen,
   inspectorVisible,
   onAlwaysOnTopChange,
-  onFullscreenChange,
+  onSystemFullscreenChange,
   onInspectorVisibleChange,
 }: Props) {
   const { t, i18n } = useTranslation();
@@ -115,7 +115,7 @@ export function SettingsPage({
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.window")}</Typography.Title>
         <label><span>{t("settings.alwaysOnTop")}</span><Switch checked={alwaysOnTop} onChange={onAlwaysOnTopChange} /></label>
-        <label><span>{t("settings.fullscreen")}</span><Switch checked={fullscreen} onChange={onFullscreenChange} /></label>
+        <label><span>{t("settings.systemFullscreen")}</span><Switch checked={systemFullscreen} onChange={onSystemFullscreenChange} /></label>
         <label><span>{t("settings.inspector")}</span><Switch checked={inspectorVisible} onChange={onInspectorVisibleChange} /></label>
       </div>
       <div className="settings-section">
