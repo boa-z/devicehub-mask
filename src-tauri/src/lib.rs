@@ -4,6 +4,7 @@ mod hid;
 mod protocol;
 mod provisioning;
 mod session;
+mod settings;
 mod web;
 
 use std::path::PathBuf;
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use protocol::{
     ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, FrameSlot,
-    InputSink, OrientationSlot, StatusSlot,
+    InputSink, OrientationSlot, StatusSlot, VideoCounters,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -66,6 +67,21 @@ fn frontend_log(event: diagnostics::FrontendLogEvent) -> Result<(), String> {
     diagnostics::record_frontend_event(event)
 }
 
+#[tauri::command]
+fn video_settings_status(
+    state: tauri::State<'_, Arc<settings::AppSettings>>,
+) -> settings::VideoSettingsStatus {
+    state.status()
+}
+
+#[tauri::command]
+fn set_video_pixel_format(
+    video_pixel_format: protocol::FrameFormat,
+    state: tauri::State<'_, Arc<settings::AppSettings>>,
+) -> Result<settings::VideoSettingsStatus, String> {
+    state.set_video_pixel_format(video_pixel_format)
+}
+
 impl BackendHandle {
     fn stop(&self) {
         let _ = self.control.send(ControlCmd::Quit);
@@ -81,6 +97,7 @@ impl BackendHandle {
 fn spawn_backend(
     initial_udid: Option<String>,
     profile_dir: PathBuf,
+    settings: Arc<settings::AppSettings>,
 ) -> Result<BackendHandle, String> {
     let (control_tx, control_rx) = mpsc::unbounded_channel::<ControlCmd>();
     let thread_control = control_tx.clone();
@@ -98,6 +115,7 @@ fn spawn_backend(
                 .expect("build CoreDevice runtime");
             runtime.block_on(async move {
                 let frames = FrameSlot::default();
+                let video_counters = VideoCounters::default();
                 let status = StatusSlot::default();
                 let clipboard = ClipboardSlot::default();
                 let orientation = OrientationSlot::default();
@@ -109,6 +127,8 @@ fn spawn_backend(
 
                 let manager = session::manage(
                     initial_udid,
+                    settings,
+                    video_counters.clone(),
                     || {},
                     frames.clone(),
                     status.clone(),
@@ -124,6 +144,7 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         frames,
+                        video_counters,
                         status,
                         orientation,
                         devices,
@@ -205,18 +226,24 @@ pub fn run() {
             diagnostics_status,
             set_debug_logging,
             open_log_directory,
-            frontend_log
+            frontend_log,
+            video_settings_status,
+            set_video_pixel_format
         ])
         .setup(move |app| {
             let log_directory = app.path().app_log_dir()?;
             let diagnostics =
                 diagnostics::Diagnostics::init(log_directory).map_err(std::io::Error::other)?;
             app.manage(diagnostics);
+            let settings = Arc::new(settings::AppSettings::load(
+                app.path().app_config_dir()?.join("settings.json"),
+            ));
+            app.manage(settings.clone());
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or(app.path().app_data_dir()?.join("profiles"));
-            let backend =
-                spawn_backend(initial_udid, profile_dir).map_err(std::io::Error::other)?;
+            let backend = spawn_backend(initial_udid, profile_dir, settings)
+                .map_err(std::io::Error::other)?;
             app.manage(backend);
             Ok(())
         })

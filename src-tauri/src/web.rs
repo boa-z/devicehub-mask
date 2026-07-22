@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -22,13 +22,15 @@ use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    ActiveSlot, AppOperationSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameSlot,
-    InputCmd, InputSink, Orientation, OrientationSlot, RotateDir, StatusSlot, norm, unrotate_norm,
+    ActiveSlot, AppOperationSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat,
+    FrameSlot, InputCmd, InputSink, Orientation, OrientationSlot, RotateDir, StatusSlot,
+    VideoCounters, norm, unrotate_norm,
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub frames: FrameSlot,
+    pub video_counters: VideoCounters,
     pub status: StatusSlot,
     pub orientation: OrientationSlot,
     pub devices: DeviceListSlot,
@@ -58,9 +60,15 @@ struct StatusView {
 
 #[derive(Serialize)]
 struct StreamMetricsView {
+    source_fps: f64,
     decoded_fps: f64,
+    published_fps: f64,
     sent_fps: f64,
+    backend_dropped_fps: f64,
     jpeg_encode_ms: f64,
+    frame_age_ms: f64,
+    websocket_send_ms: f64,
+    presentation_ack_ms: f64,
     megabits_per_second: f64,
 }
 
@@ -661,14 +669,37 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    MultiTouch { contacts: Vec<WebContact> },
-    Button { name: String },
-    ButtonDown { name: String },
-    ButtonUp { name: String },
-    KeyboardDown { usage: u64 },
-    KeyboardUp { usage: u64 },
-    Rotate { direction: RotateRequest },
+    MultiTouch {
+        contacts: Vec<WebContact>,
+    },
+    Button {
+        name: String,
+    },
+    ButtonDown {
+        name: String,
+    },
+    ButtonUp {
+        name: String,
+    },
+    KeyboardDown {
+        usage: u64,
+    },
+    KeyboardUp {
+        usage: u64,
+    },
+    Rotate {
+        direction: RotateRequest,
+    },
     FramePresented,
+    FrontendMetrics {
+        window_ms: f64,
+        received_frames: u64,
+        replaced_frames: u64,
+        presented_frames: u64,
+        jpeg_decode_ms: f64,
+        canvas_draw_ms: f64,
+        decode_errors: u64,
+    },
 }
 
 #[derive(Deserialize)]
@@ -689,28 +720,31 @@ enum RotateRequest {
 async fn websocket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
-    let frame_pacer = Arc::new(FramePacer::new());
+    let max_in_flight_frames = configured_in_flight_frames(
+        std::env::var_os("DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES").as_deref(),
+    );
+    tracing::debug!(max_in_flight_frames, "configured video frame pipeline");
+    let frame_pacer = Arc::new(FramePacer::new(max_in_flight_frames));
     let send_pacer = frame_pacer.clone();
     let send_task = tokio::spawn(async move {
-        let mut last_frame_version = 0;
         let mut last_status = String::new();
-        // CoreDevice can deliver 60 FPS. Poll the latest-frame slot at that rate;
-        // lagging clients still drop intermediate versions instead of queueing.
-        let frame_period = Duration::from_micros(16_667);
-        let mut next_frame_at = tokio::time::Instant::now();
+        let mut frame_rx = send_state.frames.subscribe();
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
         metrics_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_started = Instant::now();
+        let mut metrics_counters = send_state.video_counters.snapshot();
         let mut metrics_frame_version = send_state.frames.version();
         let mut sent_frames = 0_u64;
         let mut sent_bytes = 0_u64;
         let mut encoded_frames = 0_u64;
         let mut encoding_time = Duration::ZERO;
+        let mut frame_age = Duration::ZERO;
+        let mut websocket_send_time = Duration::ZERO;
+        let mut skipped_for_backpressure = 0_u64;
+        let mut metrics_log_windows = 0_u8;
         loop {
-            let frame_sleep = tokio::time::sleep_until(next_frame_at);
-            tokio::pin!(frame_sleep);
             tokio::select! {
                 _ = status_tick.tick() => {
                     let snapshot = status_snapshot(&send_state);
@@ -723,17 +757,20 @@ async fn websocket(socket: WebSocket, state: AppState) {
                         }
                     }
                 }
-                _ = &mut frame_sleep => {
-                    next_frame_at = tokio::time::Instant::now() + frame_period;
-                    let Some((version, frame)) = send_state.frames.latest() else {
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let Some(frame) = frame_rx.borrow_and_update().clone() else {
                         continue;
                     };
-                    if version == last_frame_version || !send_pacer.try_acquire() {
+                    if !send_pacer.try_acquire() {
+                        skipped_for_backpressure += 1;
                         continue;
                     }
-                    last_frame_version = version;
                     let cached = frame.jpeg.get().is_some();
                     let encode_started = Instant::now();
+                    frame_age += encode_started.saturating_duration_since(frame.decoded_at);
                     let encoded = tokio::task::spawn_blocking(move || encode_jpeg(&frame)).await;
                     let Ok(Ok(jpeg)) = encoded else {
                         send_pacer.release();
@@ -745,23 +782,58 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     }
                     sent_frames += 1;
                     sent_bytes += jpeg.len() as u64;
+                    let send_started = Instant::now();
                     if sender.send(Message::Binary(jpeg)).await.is_err() {
                         break;
                     }
+                    websocket_send_time += send_started.elapsed();
                 }
                 _ = metrics_tick.tick() => {
                     let elapsed = metrics_started.elapsed().as_secs_f64().max(f64::EPSILON);
+                    let counters = send_state.video_counters.snapshot();
                     let version = send_state.frames.version();
+                    let source_frames = counters.source_frames.wrapping_sub(metrics_counters.source_frames);
+                    let decoded_frames = counters.decoded_frames.wrapping_sub(metrics_counters.decoded_frames);
+                    let published_frames = version.wrapping_sub(metrics_frame_version);
+                    let pacer = send_pacer.take_metrics();
                     let metrics = StreamMetricsView {
-                        decoded_fps: version.wrapping_sub(metrics_frame_version) as f64 / elapsed,
+                        source_fps: source_frames as f64 / elapsed,
+                        decoded_fps: decoded_frames as f64 / elapsed,
+                        published_fps: published_frames as f64 / elapsed,
                         sent_fps: sent_frames as f64 / elapsed,
+                        backend_dropped_fps: published_frames.saturating_sub(sent_frames) as f64 / elapsed,
                         jpeg_encode_ms: if encoded_frames == 0 {
                             0.0
                         } else {
                             encoding_time.as_secs_f64() * 1000.0 / encoded_frames as f64
                         },
+                        frame_age_ms: duration_average_ms(frame_age, sent_frames),
+                        websocket_send_ms: duration_average_ms(websocket_send_time, sent_frames),
+                        presentation_ack_ms: pacer.average_ack_ms,
                         megabits_per_second: sent_bytes as f64 * 8.0 / elapsed / 1_000_000.0,
                     };
+                    metrics_log_windows += 1;
+                    if metrics_log_windows >= 5 {
+                        tracing::debug!(
+                            target: "devicehub_mask::perf",
+                            decoded_fps = metrics.decoded_fps,
+                            source_fps = metrics.source_fps,
+                            published_fps = metrics.published_fps,
+                            sent_fps = metrics.sent_fps,
+                            backend_dropped_fps = metrics.backend_dropped_fps,
+                            duplicate_fps = counters.duplicate_frames.wrapping_sub(metrics_counters.duplicate_frames) as f64 / elapsed,
+                            skipped_for_backpressure,
+                            jpeg_encode_ms = metrics.jpeg_encode_ms,
+                            frame_age_ms = metrics.frame_age_ms,
+                            websocket_send_ms = metrics.websocket_send_ms,
+                            presentation_ack_ms = metrics.presentation_ack_ms,
+                            presentation_ack_max_ms = pacer.max_ack_ms,
+                            expired_frame_credits = pacer.expired_credits,
+                            megabits_per_second = metrics.megabits_per_second,
+                            "video output performance"
+                        );
+                        metrics_log_windows = 0;
+                    }
                     let Ok(text) = serde_json::to_string(
                         &json!({"type": "metrics", "payload": metrics}),
                     ) else {
@@ -771,11 +843,15 @@ async fn websocket(socket: WebSocket, state: AppState) {
                         break;
                     }
                     metrics_started = Instant::now();
+                    metrics_counters = counters;
                     metrics_frame_version = version;
                     sent_frames = 0;
                     sent_bytes = 0;
                     encoded_frames = 0;
                     encoding_time = Duration::ZERO;
+                    frame_age = Duration::ZERO;
+                    websocket_send_time = Duration::ZERO;
+                    skipped_for_backpressure = 0;
                 }
             }
         }
@@ -798,25 +874,95 @@ async fn websocket(socket: WebSocket, state: AppState) {
 }
 
 const FRAME_CREDIT_LEASE: Duration = Duration::from_millis(500);
+const DEFAULT_IN_FLIGHT_FRAMES: usize = 2;
 
-struct FramePacer(Mutex<Option<Instant>>);
+fn configured_in_flight_frames(value: Option<&std::ffi::OsStr>) -> usize {
+    match value.and_then(|value| value.to_str()) {
+        None | Some("") | Some("2") => DEFAULT_IN_FLIGHT_FRAMES,
+        Some("1") => 1,
+        Some(value) => {
+            tracing::warn!(value, "ignoring invalid DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES");
+            DEFAULT_IN_FLIGHT_FRAMES
+        }
+    }
+}
+
+fn duration_average_ms(total: Duration, samples: u64) -> f64 {
+    if samples == 0 {
+        0.0
+    } else {
+        total.as_secs_f64() * 1000.0 / samples as f64
+    }
+}
+
+#[derive(Default)]
+struct FramePacerState {
+    acquired_at: VecDeque<Instant>,
+    acknowledgements: u64,
+    total_ack_time: Duration,
+    max_ack_time: Duration,
+    expired_credits: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FramePacerMetrics {
+    average_ack_ms: f64,
+    max_ack_ms: f64,
+    expired_credits: u64,
+}
+
+struct FramePacer {
+    max_in_flight: usize,
+    state: Mutex<FramePacerState>,
+}
 
 impl FramePacer {
-    fn new() -> Self {
-        Self(Mutex::new(None))
+    fn new(max_in_flight: usize) -> Self {
+        Self {
+            max_in_flight,
+            state: Mutex::new(FramePacerState::default()),
+        }
     }
 
     fn try_acquire(&self) -> bool {
-        let mut acquired_at = self.0.lock().expect("frame pacer lock poisoned");
-        if acquired_at.is_some_and(|at| at.elapsed() < FRAME_CREDIT_LEASE) {
+        let mut state = self.state.lock().expect("frame pacer lock poisoned");
+        while state
+            .acquired_at
+            .front()
+            .is_some_and(|acquired_at| acquired_at.elapsed() >= FRAME_CREDIT_LEASE)
+        {
+            state.acquired_at.pop_front();
+            state.expired_credits = state.expired_credits.saturating_add(1);
+        }
+        if state.acquired_at.len() >= self.max_in_flight {
             return false;
         }
-        *acquired_at = Some(Instant::now());
+        state.acquired_at.push_back(Instant::now());
         true
     }
 
     fn release(&self) {
-        *self.0.lock().expect("frame pacer lock poisoned") = None;
+        let mut state = self.state.lock().expect("frame pacer lock poisoned");
+        if let Some(acquired_at) = state.acquired_at.pop_front() {
+            let elapsed = acquired_at.elapsed();
+            state.acknowledgements = state.acknowledgements.saturating_add(1);
+            state.total_ack_time += elapsed;
+            state.max_ack_time = state.max_ack_time.max(elapsed);
+        }
+    }
+
+    fn take_metrics(&self) -> FramePacerMetrics {
+        let mut state = self.state.lock().expect("frame pacer lock poisoned");
+        let metrics = FramePacerMetrics {
+            average_ack_ms: duration_average_ms(state.total_ack_time, state.acknowledgements),
+            max_ack_ms: state.max_ack_time.as_secs_f64() * 1000.0,
+            expired_credits: state.expired_credits,
+        };
+        state.acknowledgements = 0;
+        state.total_ack_time = Duration::ZERO;
+        state.max_ack_time = Duration::ZERO;
+        state.expired_credits = 0;
+        metrics
     }
 }
 
@@ -828,13 +974,6 @@ fn encode_jpeg(frame: &Frame) -> Result<bytes::Bytes, String> {
     frame
         .jpeg
         .get_or_init(|| {
-            let image = turbojpeg::Image {
-                pixels: frame.rgb.as_slice(),
-                width: frame.width,
-                pitch: frame.width * 3,
-                height: frame.height,
-                format: turbojpeg::PixelFormat::RGB,
-            };
             JPEG_COMPRESSOR.with(|slot| {
                 let mut slot = slot.borrow_mut();
                 if slot.is_none() {
@@ -848,9 +987,24 @@ fn encode_jpeg(frame: &Frame) -> Result<bytes::Bytes, String> {
                         .map_err(|error| error.to_string())?;
                     *slot = Some(compressor);
                 }
-                slot.as_mut()
-                    .expect("JPEG compressor initialized")
-                    .compress_to_vec(image)
+                let compressor = slot.as_mut().expect("JPEG compressor initialized");
+                let encoded = match frame.format {
+                    FrameFormat::Rgb24 => compressor.compress_to_vec(turbojpeg::Image {
+                        pixels: frame.pixels.as_slice(),
+                        width: frame.width,
+                        pitch: frame.width * 3,
+                        height: frame.height,
+                        format: turbojpeg::PixelFormat::RGB,
+                    }),
+                    FrameFormat::Yuv420p => compressor.compress_yuv_to_vec(turbojpeg::YuvImage {
+                        pixels: frame.pixels.as_slice(),
+                        width: frame.width,
+                        align: 1,
+                        height: frame.height,
+                        subsamp: turbojpeg::Subsamp::Sub2x2,
+                    }),
+                };
+                encoded
                     .map(bytes::Bytes::from)
                     .map_err(|error| error.to_string())
             })
@@ -869,6 +1023,39 @@ fn handle_client_message(
     };
     match message {
         ClientMessage::FramePresented => return true,
+        ClientMessage::FrontendMetrics {
+            window_ms,
+            received_frames,
+            replaced_frames,
+            presented_frames,
+            jpeg_decode_ms,
+            canvas_draw_ms,
+            decode_errors,
+        } => {
+            if valid_frontend_metrics(
+                window_ms,
+                received_frames,
+                replaced_frames,
+                presented_frames,
+                jpeg_decode_ms,
+                canvas_draw_ms,
+                decode_errors,
+            ) {
+                let elapsed = (window_ms / 1000.0).max(f64::EPSILON);
+                tracing::debug!(
+                    target: "devicehub_mask::perf",
+                    received_fps = received_frames as f64 / elapsed,
+                    presented_fps = presented_frames as f64 / elapsed,
+                    received_frames,
+                    replaced_frames,
+                    presented_frames,
+                    jpeg_decode_ms = jpeg_decode_ms / received_frames.max(1) as f64,
+                    canvas_draw_ms = canvas_draw_ms / presented_frames.max(1) as f64,
+                    decode_errors,
+                    "frontend video performance"
+                );
+            }
+        }
         ClientMessage::MultiTouch { contacts } => {
             if let Some(contacts) = validate_contacts(contacts, state.orientation.get()) {
                 state.input.send(InputCmd::MultiTouchFrame(contacts));
@@ -907,6 +1094,27 @@ fn handle_client_message(
         }
     }
     false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn valid_frontend_metrics(
+    window_ms: f64,
+    received_frames: u64,
+    replaced_frames: u64,
+    presented_frames: u64,
+    jpeg_decode_ms: f64,
+    canvas_draw_ms: f64,
+    decode_errors: u64,
+) -> bool {
+    (500.0..=60_000.0).contains(&window_ms)
+        && jpeg_decode_ms.is_finite()
+        && canvas_draw_ms.is_finite()
+        && (0.0..=window_ms * 10.0).contains(&jpeg_decode_ms)
+        && (0.0..=window_ms * 10.0).contains(&canvas_draw_ms)
+        && received_frames <= 10_000
+        && replaced_frames <= received_frames
+        && presented_frames <= received_frames
+        && decode_errors <= received_frames
 }
 
 fn validate_contacts(
@@ -992,6 +1200,7 @@ mod tests {
         (
             AppState {
                 frames: FrameSlot::default(),
+                video_counters: VideoCounters::default(),
                 status: StatusSlot::default(),
                 orientation: OrientationSlot::default(),
                 devices: DeviceListSlot::default(),
@@ -1010,7 +1219,9 @@ mod tests {
         Frame {
             width: 2,
             height: 1,
-            rgb: vec![255, 0, 0, 0, 255, 0],
+            format: FrameFormat::Rgb24,
+            pixels: vec![255, 0, 0, 0, 255, 0],
+            decoded_at: Instant::now(),
             jpeg: std::sync::OnceLock::new(),
         }
     }
@@ -1028,6 +1239,22 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_encoding_accepts_yuv420p_without_rgb_conversion() {
+        let frame = Frame {
+            width: 2,
+            height: 2,
+            format: FrameFormat::Yuv420p,
+            pixels: vec![76, 76, 76, 76, 85, 255],
+            decoded_at: Instant::now(),
+            jpeg: std::sync::OnceLock::new(),
+        };
+        let encoded = encode_jpeg(&frame).unwrap();
+        let decoded =
+            image::load_from_memory_with_format(&encoded, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+    }
+
+    #[test]
     fn frame_slot_version_advances_on_publish() {
         let slot = FrameSlot::default();
         assert_eq!(slot.version(), 0);
@@ -1037,18 +1264,64 @@ mod tests {
         assert_eq!(slot.version(), 2);
     }
 
+    #[tokio::test]
+    async fn frame_slot_notifies_with_only_the_latest_frame() {
+        let slot = FrameSlot::default();
+        let mut receiver = slot.subscribe();
+        slot.publish(Arc::new(test_frame()));
+        let latest = Arc::new(test_frame());
+        slot.publish(latest.clone());
+
+        receiver.changed().await.unwrap();
+        let received = receiver.borrow_and_update().clone().unwrap();
+        assert!(Arc::ptr_eq(&received, &latest));
+    }
+
     #[test]
-    fn frame_pacer_allows_only_one_frame_until_presented() {
-        let pacer = FramePacer::new();
+    fn frame_pacer_bounds_pipeline_until_a_frame_is_presented() {
+        let pacer = FramePacer::new(2);
+        assert!(pacer.try_acquire());
         assert!(pacer.try_acquire());
         assert!(!pacer.try_acquire());
+
         pacer.release();
         assert!(pacer.try_acquire());
+
+        pacer.release();
+        pacer.release();
+        pacer.release();
+        assert!(pacer.try_acquire());
+        assert!(pacer.try_acquire());
+        assert!(!pacer.try_acquire());
+    }
+
+    #[test]
+    fn frame_pipeline_depth_accepts_only_bounded_diagnostic_values() {
+        assert_eq!(configured_in_flight_frames(None), 2);
+        assert_eq!(
+            configured_in_flight_frames(Some(std::ffi::OsStr::new("1"))),
+            1
+        );
+        assert_eq!(
+            configured_in_flight_frames(Some(std::ffi::OsStr::new("2"))),
+            2
+        );
+        assert_eq!(
+            configured_in_flight_frames(Some(std::ffi::OsStr::new("16"))),
+            2
+        );
     }
 
     #[test]
     fn expired_frame_credit_does_not_stall_stream() {
-        let pacer = FramePacer(Mutex::new(Some(Instant::now() - FRAME_CREDIT_LEASE)));
+        let pacer = FramePacer {
+            max_in_flight: 2,
+            state: Mutex::new(FramePacerState {
+                acquired_at: VecDeque::from([Instant::now() - FRAME_CREDIT_LEASE]),
+                ..FramePacerState::default()
+            }),
+        };
+        assert!(pacer.try_acquire());
         assert!(pacer.try_acquire());
         assert!(!pacer.try_acquire());
     }
@@ -1061,6 +1334,17 @@ mod tests {
             r#"{"type":"frame_presented"}"#,
             &mut HashSet::new(),
         ));
+    }
+
+    #[test]
+    fn frontend_metrics_reject_impossible_or_unbounded_values() {
+        assert!(valid_frontend_metrics(
+            5_000.0, 300, 0, 299, 600.0, 100.0, 1
+        ));
+        assert!(!valid_frontend_metrics(
+            5_000.0, 300, 301, 299, 600.0, 100.0, 1,
+        ));
+        assert!(!valid_frontend_metrics(f64::NAN, 0, 0, 0, 0.0, 0.0, 0,));
     }
 
     #[test]

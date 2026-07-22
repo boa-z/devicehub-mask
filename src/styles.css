@@ -108,6 +108,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .diagnostics-detail { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 8px 16px; margin: 8px 0 12px; }
 .diagnostics-detail code { overflow-wrap: anywhere; }
 .language-select { width: 220px; }
+.video-format-select { width: 220px; }
 @media (max-width: 800px) {
   html, body, #root { overflow: auto; }
   .topbar { align-items: flex-start; flex-direction: column; }

@@ -85,9 +85,16 @@ audio media session 同时建立视频和 Universal HID 控制授权。
 
 观察界面的解码 / 发送 / 显示 FPS 和 JPEG 延迟：
 
-- 由于同时只有一帧 JPEG 在途，发送 FPS 应接近显示 FPS。
-- 解码 FPS 仍可能接近 60 FPS 源帧率。
+- 源 FPS 来自完整 RTP 帧 marker；解码与发布 FPS 会区分 FFmpeg 输出和重复帧抑制。
+- 发送与显示 FPS 应接近发布 FPS。最多两帧 JPEG 在途，使后端编码可与 WebView 解码重叠，
+  但不会形成无限队列。
+- Debug 性能日志还会报告 RTP 时间戳步长、源到达抖动、HEVC 排队时间、JPEG 编码、帧年龄、
+  WebSocket 写入、呈现确认、前端 JPEG 解码、Canvas 绘制和各阶段丢帧。
 - Windows 默认使用 1920 像素长边和 RGB24 传输。
+
+这些指标和 Debug 日志字段在各平台保持一致。比较 macOS、Windows 与 Linux 时，应使用
+Release 构建，并保持设备/画面内容、像素格式、解码尺寸及
+`DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` 相同；不要拿一台主机的静态画面与另一台的动态画面比较。
 
 可以降低解码限制，同时保持画面比例：
 

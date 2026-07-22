@@ -37,7 +37,18 @@ import { logFrontend } from "./diagnostics";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
 const emptyStatus: DeviceStatus = { status: "", active_udid: null, error: null, orientation: "portrait", devices: [] };
-const emptyMetrics: StreamMetrics = { decoded_fps: 0, sent_fps: 0, jpeg_encode_ms: 0, megabits_per_second: 0 };
+const emptyMetrics: StreamMetrics = {
+  source_fps: 0,
+  decoded_fps: 0,
+  published_fps: 0,
+  sent_fps: 0,
+  backend_dropped_fps: 0,
+  jpeg_encode_ms: 0,
+  frame_age_ms: 0,
+  websocket_send_ms: 0,
+  presentation_ack_ms: 0,
+  megabits_per_second: 0,
+};
 
 type BackendConnection = { origin: string; token: string };
 type ProfileList = { profiles: string[]; active: string };
@@ -300,11 +311,46 @@ export default function App() {
       let socketClosed = false;
       let pendingFrame: Blob | null = null;
       let decoding = false;
+      let metricsTimer: number | undefined;
+      let frontendMetrics = {
+        startedAt: performance.now(),
+        receivedFrames: 0,
+        replacedFrames: 0,
+        presentedFrames: 0,
+        jpegDecodeMs: 0,
+        canvasDrawMs: 0,
+        decodeErrors: 0,
+      };
+      const flushFrontendMetrics = () => {
+        const now = performance.now();
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({
+            type: "frontend_metrics",
+            window_ms: now - frontendMetrics.startedAt,
+            received_frames: frontendMetrics.receivedFrames,
+            replaced_frames: frontendMetrics.replacedFrames,
+            presented_frames: frontendMetrics.presentedFrames,
+            jpeg_decode_ms: frontendMetrics.jpegDecodeMs,
+            canvas_draw_ms: frontendMetrics.canvasDrawMs,
+            decode_errors: frontendMetrics.decodeErrors,
+          }));
+        }
+        frontendMetrics = {
+          startedAt: now,
+          receivedFrames: 0,
+          replacedFrames: 0,
+          presentedFrames: 0,
+          jpegDecodeMs: 0,
+          canvasDrawMs: 0,
+          decodeErrors: 0,
+        };
+      };
       socket.binaryType = "blob";
       socket.onopen = () => {
         logFrontend("info", "websocket", "opened", "Video and control socket connected");
         socketRef.current = socket;
         setConnected(true);
+        metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
       };
       socket.onerror = () => logFrontend("warn", "websocket", "transport_error", "WebSocket transport error");
       socket.onclose = (event) => {
@@ -315,6 +361,7 @@ export default function App() {
           `code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`,
         );
         socketClosed = true;
+        if (metricsTimer !== undefined) window.clearInterval(metricsTimer);
         pendingFrame = null;
         lastSentTouchFrameRef.current = null;
         activeIdsRef.current = new Set();
@@ -333,14 +380,19 @@ export default function App() {
             pendingFrame = null;
             let bitmap: ImageBitmap | null = null;
             try {
+              const decodeStarted = performance.now();
               bitmap = await createImageBitmap(blob);
+              frontendMetrics.jpegDecodeMs += performance.now() - decodeStarted;
               if (disposed || socketClosed) continue;
               const canvas = canvasRef.current;
               if (!canvas) continue;
               const context = canvasContextRef.current ?? canvas.getContext("2d", { alpha: false });
               if (!context) continue;
               canvasContextRef.current = context;
+              const drawStarted = performance.now();
               const size = drawFrame(canvas, context, bitmap, orientationRef.current);
+              frontendMetrics.canvasDrawMs += performance.now() - drawStarted;
+              frontendMetrics.presentedFrames += 1;
               renderedFramesRef.current += 1;
               if (!hasFrameRef.current) {
                 hasFrameRef.current = true;
@@ -348,6 +400,7 @@ export default function App() {
               }
               setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
             } catch (error) {
+              frontendMetrics.decodeErrors += 1;
               logFrontend("warn", "video", "decode_frame", error);
             } finally {
               bitmap?.close();
@@ -367,6 +420,13 @@ export default function App() {
           if (data.type === "status") setStatus(data.payload as DeviceStatus);
           if (data.type === "metrics") setStreamMetrics(data.payload as StreamMetrics);
           return;
+        }
+        frontendMetrics.receivedFrames += 1;
+        if (pendingFrame) {
+          frontendMetrics.replacedFrames += 1;
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "frame_presented" }));
+          }
         }
         pendingFrame = event.data as Blob;
         void drainFrames();
@@ -782,6 +842,7 @@ export default function App() {
                       <Tooltip title={t("device.bandwidth", { value: streamMetrics.megabits_per_second.toFixed(1) })}>
                         <Typography.Text className="stream-metrics">
                           {t("device.metrics", {
+                            source: streamMetrics.source_fps.toFixed(0),
                             decoded: streamMetrics.decoded_fps.toFixed(0),
                             sent: streamMetrics.sent_fps.toFixed(0),
                             render: renderFps.toFixed(0),

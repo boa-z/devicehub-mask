@@ -98,9 +98,19 @@ display resolution, orientation, and a screenshot.
 
 Use the live Decode / Send / Display FPS and JPEG latency metrics:
 
-- Send FPS should track Display FPS because only one JPEG frame is in flight.
-- Decode FPS may remain near the 60 FPS source rate.
+- Source FPS reports complete RTP frame markers; Decode and Published FPS separate
+  FFmpeg output from duplicate-frame suppression.
+- Send and Display FPS should track Published FPS. Up to two JPEG frames are in
+  flight so backend encoding can overlap WebView decoding without an unbounded queue.
+- Debug performance logs also report RTP timestamp deltas, source arrival jitter,
+  HEVC queue wait, JPEG encode, frame age, WebSocket write, presentation
+  acknowledgement, frontend JPEG decode, Canvas draw, and per-stage dropped frames.
 - Windows defaults to a 1920-pixel decoded long edge and RGB24 transport.
+
+These metrics and Debug log fields are platform-independent. Compare macOS,
+Windows, and Linux with Release builds, the same device/content, pixel format,
+decoded dimensions, and `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` value; do not compare
+an idle screen on one host with active motion on another.
 
 Try a smaller decode limit without changing aspect ratio:
 

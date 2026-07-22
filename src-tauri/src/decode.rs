@@ -12,17 +12,19 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Notify;
 
-use crate::protocol::{Frame, FrameSlot};
+use crate::protocol::{Frame, FrameFormat, FrameSlot, VideoCounters};
 
 /// Spawn `ffmpeg` decoding raw HEVC (Annex-B on stdin) to PAM frames on stdout.
 /// stderr is piped so the session can watch it for decode errors.
-pub fn spawn_ffmpeg() -> std::io::Result<(Child, ChildStdin, ChildStdout, ChildStderr)> {
+pub fn spawn_ffmpeg(
+    frame_format: FrameFormat,
+) -> std::io::Result<(Child, ChildStdin, ChildStdout, ChildStderr)> {
     let ffmpeg = resolve_ffmpeg()?;
     let max_dimension = configured_max_dimension(
         std::env::var_os("DEVICEHUB_VIDEO_MAX_DIMENSION"),
         cfg!(windows),
     );
-    tracing::info!(path = %ffmpeg.display(), ?max_dimension, "using ffmpeg");
+    tracing::info!(path = %ffmpeg.display(), ?max_dimension, ?frame_format, "using ffmpeg");
     let mut command = Command::new(ffmpeg);
     command
         // Do *not* add `-fflags nobuffer`: it makes ffmpeg skip the opening IDR +
@@ -30,25 +32,45 @@ pub fn spawn_ffmpeg() -> std::io::Result<(Child, ChildStdin, ChildStdout, ChildS
         .args(["-flags", "low_delay"])
         .args(["-hwaccel", "auto"])
         .args(["-f", "hevc", "-i", "pipe:0"]);
-    if let Some(max_dimension) = max_dimension {
-        command.args([
-            "-vf",
-            &format!(
-                "scale=w='min(iw,{max_dimension})':h='min(ih,{max_dimension})':force_original_aspect_ratio=decrease:force_divisible_by=2"
-            ),
-        ]);
+    let scale = max_dimension.map(|max_dimension| {
+        format!(
+            "scale=w='min(iw,{max_dimension})':h='min(ih,{max_dimension})':force_original_aspect_ratio=decrease:force_divisible_by=2"
+        )
+    });
+    match frame_format {
+        FrameFormat::Rgb24 => {
+            if let Some(scale) = &scale {
+                command.args(["-vf", scale]);
+            }
+            command.args([
+                "-an",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "pam",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ]);
+        }
+        FrameFormat::Yuv420p => {
+            let full_range_filter = match scale {
+                Some(scale) => format!("{scale}:out_range=full"),
+                None => "scale=in_range=auto:out_range=full".to_owned(),
+            };
+            command.args([
+                "-vf",
+                &full_range_filter,
+                "-an",
+                "-f",
+                "yuv4mpegpipe",
+                "-pix_fmt",
+                "yuv420p",
+                "pipe:1",
+            ]);
+        }
     }
     let mut child = command
-        .args([
-            "-an",
-            "-f",
-            "image2pipe",
-            "-vcodec",
-            "pam",
-            "-pix_fmt",
-            "rgb24",
-        ])
-        .arg("pipe:1")
         .args(["-loglevel", "error"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -147,7 +169,9 @@ fn ffmpeg_executable() -> &'static str {
 /// ends.
 pub async fn read_frames(
     stdout: ChildStdout,
+    frame_format: FrameFormat,
     slot: FrameSlot,
+    counters: VideoCounters,
     beat: Arc<Notify>,
     repaint: impl Fn(),
 ) {
@@ -156,12 +180,18 @@ pub async fn read_frames(
     let mut read_buf: Vec<u8> = Vec::new();
     let mut last: Option<Arc<Frame>> = None;
     let mut pool: Vec<Vec<u8>> = Vec::new();
+    let mut y4m_dimensions = None;
     loop {
-        match read_pam(&mut reader, &mut read_buf).await {
+        let decoded = match frame_format {
+            FrameFormat::Rgb24 => read_pam(&mut reader, &mut read_buf).await,
+            FrameFormat::Yuv420p => read_y4m(&mut reader, &mut read_buf, &mut y4m_dimensions).await,
+        };
+        match decoded {
             Ok(Some((width, height))) => {
+                counters.note_decoded_frame();
                 let dims = (width, height);
                 if last_dims != Some(dims) {
-                    tracing::info!("decoded frame size: {}x{}", dims.0, dims.1);
+                    tracing::info!(?frame_format, "decoded frame size: {}x{}", dims.0, dims.1);
                     last_dims = Some(dims);
                 }
 
@@ -171,15 +201,18 @@ pub async fn read_frames(
 
                 if last
                     .as_ref()
-                    .is_some_and(|previous| previous.rgb == read_buf)
+                    .is_some_and(|previous| previous.pixels == read_buf)
                 {
+                    counters.note_duplicate_frame();
                     continue;
                 }
 
                 let frame = Arc::new(Frame {
                     width,
                     height,
-                    rgb: std::mem::take(&mut read_buf),
+                    format: frame_format,
+                    pixels: std::mem::take(&mut read_buf),
+                    decoded_at: std::time::Instant::now(),
                     jpeg: OnceLock::new(),
                 });
                 read_buf = pool.pop().unwrap_or_default();
@@ -188,7 +221,7 @@ pub async fn read_frames(
                     && let Ok(frame) = Arc::try_unwrap(prev)
                     && pool.len() < 2
                 {
-                    pool.push(frame.rgb);
+                    pool.push(frame.pixels);
                 }
                 repaint();
             }
@@ -272,6 +305,81 @@ async fn read_pam<R: AsyncReadExt + AsyncBufReadExt + Unpin>(
     Ok(Some((width, height)))
 }
 
+async fn read_y4m<R: AsyncReadExt + AsyncBufReadExt + Unpin>(
+    reader: &mut R,
+    pixels: &mut Vec<u8>,
+    dimensions: &mut Option<(usize, usize)>,
+) -> std::io::Result<Option<(usize, usize)>> {
+    if dimensions.is_none() {
+        let mut header = Vec::new();
+        if reader.read_until(b'\n', &mut header).await? == 0 {
+            return Ok(None);
+        }
+        *dimensions = Some(parse_y4m_header(trim(&header))?);
+    }
+    let (width, height) = dimensions.expect("Y4M dimensions initialized");
+
+    let mut frame_header = Vec::new();
+    if reader.read_until(b'\n', &mut frame_header).await? == 0 {
+        return Ok(None);
+    }
+    let frame_header = trim(&frame_header);
+    if frame_header != b"FRAME" && !frame_header.starts_with(b"FRAME ") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("expected Y4M FRAME header, got {frame_header:?}"),
+        ));
+    }
+
+    let y = width
+        .checked_mul(height)
+        .ok_or_else(|| std::io::Error::other("Y4M dimensions overflow"))?;
+    let uv = (width / 2)
+        .checked_mul(height / 2)
+        .ok_or_else(|| std::io::Error::other("Y4M dimensions overflow"))?;
+    let frame_len = y
+        .checked_add(uv.saturating_mul(2))
+        .ok_or_else(|| std::io::Error::other("Y4M frame size overflow"))?;
+    pixels.resize(frame_len, 0);
+    reader.read_exact(pixels).await?;
+    Ok(Some((width, height)))
+}
+
+fn parse_y4m_header(header: &[u8]) -> std::io::Result<(usize, usize)> {
+    let invalid = |message: String| std::io::Error::new(std::io::ErrorKind::InvalidData, message);
+    let header = std::str::from_utf8(header)
+        .map_err(|error| invalid(format!("invalid Y4M header encoding: {error}")))?;
+    let mut fields = header.split_ascii_whitespace();
+    if fields.next() != Some("YUV4MPEG2") {
+        return Err(invalid(format!(
+            "expected YUV4MPEG2 header, got {header:?}"
+        )));
+    }
+    let mut width = None;
+    let mut height = None;
+    for field in fields {
+        if let Some(value) = field.strip_prefix('W') {
+            width = value.parse::<usize>().ok();
+        } else if let Some(value) = field.strip_prefix('H') {
+            height = value.parse::<usize>().ok();
+        } else if let Some(value) = field.strip_prefix('C')
+            && !matches!(value, "420" | "420jpeg" | "420mpeg2" | "420paldv")
+        {
+            return Err(invalid(format!("unsupported Y4M colorspace C{value}")));
+        }
+    }
+    let (width, height) = match (width, height) {
+        (Some(width), Some(height)) if width > 0 && height > 0 => (width, height),
+        _ => return Err(invalid(format!("missing Y4M dimensions in {header:?}"))),
+    };
+    if width % 2 != 0 || height % 2 != 0 {
+        return Err(invalid(format!(
+            "YUV420P requires even dimensions, got {width}x{height}"
+        )));
+    }
+    Ok((width, height))
+}
+
 /// Strip a trailing `\n`/`\r\n` and surrounding ASCII whitespace from a header line.
 fn trim(line: &[u8]) -> &[u8] {
     let mut s = line;
@@ -344,5 +452,34 @@ mod tests {
         assert_eq!(read_pam(&mut reader, &mut rgb).await.unwrap(), Some((2, 1)));
         assert_eq!(rgb, [255, 0, 0, 0, 255, 0]);
         assert_eq!(read_pam(&mut reader, &mut rgb).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn reads_yuv420p_y4m_frames() {
+        let input = b"YUV4MPEG2 W2 H2 F60:1 Ip A1:1 C420jpeg\nFRAME\n\x10\x20\x30\x40\x80\x90FRAME XPTS=1\n\x11\x21\x31\x41\x81\x91";
+        let mut reader = tokio::io::BufReader::new(&input[..]);
+        let mut pixels = Vec::new();
+        let mut dimensions = None;
+
+        assert_eq!(
+            read_y4m(&mut reader, &mut pixels, &mut dimensions)
+                .await
+                .unwrap(),
+            Some((2, 2))
+        );
+        assert_eq!(pixels, [0x10, 0x20, 0x30, 0x40, 0x80, 0x90]);
+        assert_eq!(
+            read_y4m(&mut reader, &mut pixels, &mut dimensions)
+                .await
+                .unwrap(),
+            Some((2, 2))
+        );
+        assert_eq!(pixels, [0x11, 0x21, 0x31, 0x41, 0x81, 0x91]);
+        assert_eq!(
+            read_y4m(&mut reader, &mut pixels, &mut dimensions)
+                .await
+                .unwrap(),
+            None
+        );
     }
 }

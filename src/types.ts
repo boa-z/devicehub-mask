@@ -2,7 +2,18 @@ export type Orientation = "portrait" | "portrait_upside_down" | "landscape_left"
 
 export type Device = { udid: string; name: string; connection: string };
 export type DeviceStatus = { status: string; active_udid: string | null; error: string | null; orientation: Orientation; devices: Device[] };
-export type StreamMetrics = { decoded_fps: number; sent_fps: number; jpeg_encode_ms: number; megabits_per_second: number };
+export type StreamMetrics = {
+  source_fps: number;
+  decoded_fps: number;
+  published_fps: number;
+  sent_fps: number;
+  backend_dropped_fps: number;
+  jpeg_encode_ms: number;
+  frame_age_ms: number;
+  websocket_send_ms: number;
+  presentation_ack_ms: number;
+  megabits_per_second: number;
+};
 export type DeviceDetails = {
   udid: string;
   name: string;

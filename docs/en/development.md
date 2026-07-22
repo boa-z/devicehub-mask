@@ -42,6 +42,8 @@ debug and production builds embed frontend assets through the Tauri protocol.
 | `DEVICEHUB_PROFILE_DIR` | Tauri application data directory | Mapping profile storage |
 | `DEVICEHUB_FFMPEG` | Auto-detected | Absolute FFmpeg executable path |
 | `DEVICEHUB_VIDEO_MAX_DIMENSION` | `1920` on Windows; native elsewhere | Maximum decoded width or height; preserves aspect ratio and never upscales; `0` disables the limit |
+| `DEVICEHUB_VIDEO_PIXEL_FORMAT` | Settings value | Override the app's video pixel-format setting with `rgb24` or experimental `yuv420p` |
+| `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` | `2` | Diagnostic A/B override for the bounded WebView frame pipeline; accepts `1` or `2` |
 | `DEVICEHUB_LOG` | DeviceHub info logging | Preferred Rust tracing filter; overrides `RUST_LOG` |
 | `RUST_LOG` | DeviceHub info logging | Standard tracing filter fallback |
 | `DEVICEHUB_HID_DUMP` | Unset | Export the Universal HID service plist for protocol diagnostics |
@@ -61,6 +63,11 @@ DEVICEHUB_LOG=devicehub_mask=info,devicehub_mask::session=trace npm run tauri:de
 
 An environment filter takes precedence over the Settings switch. Invalid
 filters are rejected and the application falls back to the default filter.
+
+Settings > Video exposes RGB24 and the experimental YUV420P path. RGB24 remains
+the default. The selection is persisted in the platform application config
+directory and applies on the next device connection. An explicit
+`DEVICEHUB_VIDEO_PIXEL_FORMAT` value makes the setting read-only for that run.
 
 ## Validation
 

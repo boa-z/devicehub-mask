@@ -58,15 +58,22 @@ upload stage as indeterminate instead of displaying invented percentages.
 
 ## Video Pipeline
 
-CoreDevice displayservice produces RTP/HEVC. FFmpeg receives Annex-B HEVC and
-emits self-describing RGB24 PAM frames. A latest-frame slot drops stale decoded
-frames rather than allowing an unbounded queue.
+CoreDevice displayservice produces RTP/HEVC. The backend assembles complete HEVC
+access units into a 16 MiB byte-bounded queue before FFmpeg; overflow discards
+dependent frames until an IRAP and requests PLI/FIR recovery. FFmpeg emits
+self-describing RGB24 PAM frames by default. The experimental YUV420P setting
+(also selectable with `DEVICEHUB_VIDEO_PIXEL_FORMAT=yuv420p`) emits YUV4MPEG2
+and sends planar YUV420P directly to TurboJPEG, avoiding the RGB conversion and
+halving decoded frame bandwidth. A `watch` channel publishes only the latest
+frame and wakes WebSocket consumers without a fixed-rate polling loop; lagging
+consumers drop stale decoded frames by construction.
 
 Axum JPEG-encodes the latest frame with a thread-local reusable TurboJPEG
-compressor. One frame is allowed in flight per WebView; the frontend acknowledges
-after image decode and canvas presentation. A 500ms credit lease prevents a lost
-acknowledgement from permanently stalling video. This keeps send FPS close to
-display FPS while retaining the 60 FPS ceiling.
+compressor. At most two frames are allowed in flight per WebView, so backend JPEG
+encoding can overlap WebView JPEG decoding without forming an unbounded queue.
+The frontend acknowledges decoded, presented, or deliberately replaced frames.
+A 500ms credit lease prevents a lost acknowledgement from permanently stalling
+video.
 
 Windows limits the decoded long edge to 1920 pixels by default. FFmpeg preserves
 aspect ratio, never upscales, and emits even dimensions. Set

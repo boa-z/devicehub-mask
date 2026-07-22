@@ -2,7 +2,7 @@
 // stream (which both sources the video AND holds open the HID auth gate), then
 // run the video pipeline and dispatch input commands to the device's HID surfaces.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -44,9 +44,9 @@ use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardEvent, ClipboardSlot, ConnKind,
-    ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, ErrorSlot, FrameSlot,
-    InputCmd, InputSink, KeyMods, Orientation, OrientationSlot, ProvisioningProfile, RotateDir,
-    StatusSlot, clipboard_preview,
+    ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, ErrorSlot, FrameFormat,
+    FrameSlot, InputCmd, InputSink, KeyMods, Orientation, OrientationSlot, ProvisioningProfile,
+    RotateDir, StatusSlot, VideoCounters, clipboard_preview,
 };
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -95,6 +95,333 @@ const VIDEO_SENDER_PORT: u16 = 50001;
 /// Keep the display rotation in sync when an app switches between portrait and
 /// landscape. The screen stream itself is always native portrait.
 const ORIENTATION_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Bound compressed video waiting for ffmpeg. This is deliberately byte-based:
+/// access-unit sizes vary dramatically between static P-frames and an IRAP.
+const HEVC_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const HEVC_AUD: &[u8] = b"\0\0\0\x01\x46\x01\x50";
+
+#[derive(Debug, Clone, Copy)]
+struct RunningStats {
+    count: u64,
+    mean: f64,
+    squared_deviations: f64,
+    min: f64,
+    max: f64,
+}
+
+impl Default for RunningStats {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            mean: 0.0,
+            squared_deviations: 0.0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        }
+    }
+}
+
+impl RunningStats {
+    fn push(&mut self, value: f64) {
+        self.count += 1;
+        let delta = value - self.mean;
+        self.mean += delta / self.count as f64;
+        self.squared_deviations += delta * (value - self.mean);
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+    }
+
+    fn mean(&self) -> Option<f64> {
+        (self.count > 0).then_some(self.mean)
+    }
+
+    fn min(&self) -> Option<f64> {
+        (self.count > 0).then_some(self.min)
+    }
+
+    fn max(&self) -> Option<f64> {
+        (self.count > 0).then_some(self.max)
+    }
+
+    fn standard_deviation(&self) -> Option<f64> {
+        (self.count > 0).then(|| (self.squared_deviations / self.count as f64).sqrt())
+    }
+}
+
+#[derive(Debug)]
+struct HevcAccessUnit {
+    bytes: Vec<u8>,
+    is_irap: bool,
+}
+
+#[derive(Debug)]
+struct QueuedHevcAccessUnit {
+    access_unit: HevcAccessUnit,
+    enqueued_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct AccessUnitAssembler {
+    pending: Vec<u8>,
+}
+
+impl AccessUnitAssembler {
+    fn push(&mut self, bytes: &[u8]) -> Vec<HevcAccessUnit> {
+        self.pending.extend_from_slice(bytes);
+        let mut completed = Vec::new();
+        loop {
+            // The depacketizer inserts an AUD before each new RTP timestamp. If
+            // pending already starts with one, search for the following AUD.
+            let search_from = usize::from(self.pending.starts_with(HEVC_AUD)) * HEVC_AUD.len();
+            let Some(relative_boundary) = find_subslice(&self.pending[search_from..], HEVC_AUD)
+            else {
+                break;
+            };
+            let boundary = search_from + relative_boundary;
+            let remaining = self.pending.split_off(boundary);
+            let access_unit = std::mem::replace(&mut self.pending, remaining);
+            if !access_unit.is_empty() {
+                completed.push(HevcAccessUnit {
+                    is_irap: annexb_contains_irap(&access_unit),
+                    bytes: access_unit,
+                });
+            }
+        }
+        completed
+    }
+
+    fn finish(&mut self) -> Option<HevcAccessUnit> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let bytes = std::mem::take(&mut self.pending);
+        Some(HevcAccessUnit {
+            is_irap: annexb_contains_irap(&bytes),
+            bytes,
+        })
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn annexb_contains_irap(bytes: &[u8]) -> bool {
+    bytes
+        .windows(5)
+        .any(|window| window[..4] == [0, 0, 0, 1] && (16..=23).contains(&((window[4] >> 1) & 0x3f)))
+}
+
+#[derive(Debug)]
+enum HevcQueuePush {
+    Enqueued,
+    Dropped,
+    NeedsKeyframe {
+        queued_bytes: usize,
+        incoming_bytes: usize,
+    },
+    Recovered {
+        dropped_access_units: u64,
+        dropped_bytes: u64,
+    },
+}
+
+#[derive(Debug)]
+struct HevcQueueState {
+    access_units: VecDeque<QueuedHevcAccessUnit>,
+    queued_bytes: usize,
+    peak_bytes: usize,
+    waiting_for_irap: bool,
+    dropped_access_units: u64,
+    dropped_bytes: u64,
+    wait_samples: u64,
+    wait_total_micros: u64,
+    wait_max_micros: u64,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct HevcQueue {
+    max_bytes: usize,
+    state: Mutex<HevcQueueState>,
+    ready: Notify,
+}
+
+impl HevcQueue {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            state: Mutex::new(HevcQueueState {
+                access_units: VecDeque::new(),
+                queued_bytes: 0,
+                peak_bytes: 0,
+                waiting_for_irap: false,
+                dropped_access_units: 0,
+                dropped_bytes: 0,
+                wait_samples: 0,
+                wait_total_micros: 0,
+                wait_max_micros: 0,
+                closed: false,
+            }),
+            ready: Notify::new(),
+        }
+    }
+
+    fn push(&self, access_unit: HevcAccessUnit) -> HevcQueuePush {
+        let incoming_bytes = access_unit.bytes.len();
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return HevcQueuePush::Dropped;
+        }
+
+        if state.waiting_for_irap {
+            if !access_unit.is_irap || incoming_bytes > self.max_bytes {
+                state.dropped_access_units = state.dropped_access_units.saturating_add(1);
+                state.dropped_bytes = state.dropped_bytes.saturating_add(incoming_bytes as u64);
+                return HevcQueuePush::Dropped;
+            }
+            state.waiting_for_irap = false;
+            let dropped_access_units = std::mem::take(&mut state.dropped_access_units);
+            let dropped_bytes = std::mem::take(&mut state.dropped_bytes);
+            state.queued_bytes = incoming_bytes;
+            state.peak_bytes = state.peak_bytes.max(state.queued_bytes);
+            state.access_units.push_back(QueuedHevcAccessUnit {
+                access_unit,
+                enqueued_at: Instant::now(),
+            });
+            drop(state);
+            self.ready.notify_one();
+            return HevcQueuePush::Recovered {
+                dropped_access_units,
+                dropped_bytes,
+            };
+        }
+
+        if incoming_bytes > self.max_bytes
+            || state.queued_bytes.saturating_add(incoming_bytes) > self.max_bytes
+        {
+            let queued_bytes = state.queued_bytes;
+            state.dropped_access_units = state
+                .dropped_access_units
+                .saturating_add(state.access_units.len() as u64);
+            state.dropped_bytes = state.dropped_bytes.saturating_add(queued_bytes as u64);
+            state.access_units.clear();
+            state.queued_bytes = 0;
+
+            if access_unit.is_irap && incoming_bytes <= self.max_bytes {
+                let dropped_access_units = std::mem::take(&mut state.dropped_access_units);
+                let dropped_bytes = std::mem::take(&mut state.dropped_bytes);
+                state.access_units.push_back(QueuedHevcAccessUnit {
+                    access_unit,
+                    enqueued_at: Instant::now(),
+                });
+                state.queued_bytes = incoming_bytes;
+                state.peak_bytes = state.peak_bytes.max(state.queued_bytes);
+                drop(state);
+                self.ready.notify_one();
+                return HevcQueuePush::Recovered {
+                    dropped_access_units,
+                    dropped_bytes,
+                };
+            }
+
+            state.waiting_for_irap = true;
+            state.dropped_access_units = state.dropped_access_units.saturating_add(1);
+            state.dropped_bytes = state.dropped_bytes.saturating_add(incoming_bytes as u64);
+            return HevcQueuePush::NeedsKeyframe {
+                queued_bytes,
+                incoming_bytes,
+            };
+        }
+
+        state.queued_bytes += incoming_bytes;
+        state.peak_bytes = state.peak_bytes.max(state.queued_bytes);
+        state.access_units.push_back(QueuedHevcAccessUnit {
+            access_unit,
+            enqueued_at: Instant::now(),
+        });
+        drop(state);
+        self.ready.notify_one();
+        HevcQueuePush::Enqueued
+    }
+
+    fn force_resync(&self) -> (u64, u64) {
+        let mut state = self.state.lock().unwrap();
+        state.dropped_access_units = state
+            .dropped_access_units
+            .saturating_add(state.access_units.len() as u64);
+        state.dropped_bytes = state
+            .dropped_bytes
+            .saturating_add(state.queued_bytes as u64);
+        state.access_units.clear();
+        state.queued_bytes = 0;
+        state.waiting_for_irap = true;
+        (state.dropped_access_units, state.dropped_bytes)
+    }
+
+    async fn pop(&self) -> Option<HevcAccessUnit> {
+        loop {
+            let notified = self.ready.notified();
+            {
+                let mut state = self.state.lock().unwrap();
+                if let Some(queued) = state.access_units.pop_front() {
+                    state.queued_bytes -= queued.access_unit.bytes.len();
+                    let wait_micros = queued.enqueued_at.elapsed().as_micros() as u64;
+                    state.wait_samples = state.wait_samples.saturating_add(1);
+                    state.wait_total_micros = state.wait_total_micros.saturating_add(wait_micros);
+                    state.wait_max_micros = state.wait_max_micros.max(wait_micros);
+                    return Some(queued.access_unit);
+                }
+                if state.closed {
+                    return None;
+                }
+            }
+            notified.await;
+        }
+    }
+
+    fn take_snapshot(&self) -> HevcQueueSnapshot {
+        let mut state = self.state.lock().unwrap();
+        let snapshot = HevcQueueSnapshot {
+            queued_access_units: state.access_units.len(),
+            queued_bytes: state.queued_bytes,
+            peak_bytes: state.peak_bytes,
+            waiting_for_irap: state.waiting_for_irap,
+            wait_ms: if state.wait_samples == 0 {
+                0.0
+            } else {
+                state.wait_total_micros as f64 / state.wait_samples as f64 / 1000.0
+            },
+            wait_max_ms: state.wait_max_micros as f64 / 1000.0,
+        };
+        state.peak_bytes = state.queued_bytes;
+        state.wait_samples = 0;
+        state.wait_total_micros = 0;
+        state.wait_max_micros = 0;
+        snapshot
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap().closed = true;
+        self.ready.notify_waiters();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HevcQueueSnapshot {
+    queued_access_units: usize,
+    queued_bytes: usize,
+    peak_bytes: usize,
+    waiting_for_irap: bool,
+    wait_ms: f64,
+    wait_max_ms: f64,
+}
 
 /// Where the device's RTCP arrives, learned at runtime (transport isn't negotiated
 /// explicitly). Until we've seen any, we send to both candidates.
@@ -326,11 +653,20 @@ struct SessionViews {
     app_operation: AppOperationSlot,
 }
 
+#[derive(Clone)]
+struct SessionVideo {
+    frame_format: FrameFormat,
+    counters: VideoCounters,
+    frames: FrameSlot,
+}
+
 /// Supervise the device session: enumerate attached devices for the picker,
 /// connect to one, and tear down / reconnect when the selection changes.
 #[allow(clippy::too_many_arguments)]
 pub async fn manage(
     initial_udid: Option<String>,
+    settings: Arc<crate::settings::AppSettings>,
+    video_counters: VideoCounters,
     repaint: impl Fn() + Send + Clone + 'static,
     frames: FrameSlot,
     status: StatusSlot,
@@ -384,8 +720,12 @@ pub async fn manage(
 
         let session = run(
             Some(udid.clone()),
+            SessionVideo {
+                frame_format: settings.video_pixel_format(),
+                counters: video_counters.clone(),
+                frames: frames.clone(),
+            },
             repaint.clone(),
-            frames.clone(),
             clipboard.clone(),
             SessionViews {
                 status: status.clone(),
@@ -526,8 +866,8 @@ async fn fetch_device_name(dev: &UsbmuxdDevice, addr: &UsbmuxdAddr) -> Option<St
 /// the UI dropping the input channel).
 async fn run(
     udid: Option<String>,
+    video: SessionVideo,
     repaint: impl Fn() + Send + 'static,
-    frames: FrameSlot,
     clipboard: ClipboardSlot,
     views: SessionViews,
     mut input_rx: UnboundedReceiver<InputCmd>,
@@ -673,8 +1013,9 @@ async fn run(
     };
 
     // video UDP -> depacketize -> ffmpeg stdin ; ffmpeg stdout -> frames.
+    let frame_format = video.frame_format;
     let (mut child, ffmpeg_in, ffmpeg_out, ffmpeg_err) =
-        decode::spawn_ffmpeg().map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+        decode::spawn_ffmpeg(frame_format).map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
 
     views.status.set("connected");
 
@@ -706,10 +1047,9 @@ async fn run(
     // input loop is the only one that returns normally (Shutdown / channel close);
     // when it does, the others drop, closing ffmpeg's stdin.
     //
-    // The hevc channel decouples ffmpeg writing from the RTP receive loop, which
-    // sends per-frame RTCP ACKs the encoder depends on and must not stall on
-    // ffmpeg's stdin backpressure (which spikes under heavy motion).
-    let (hevc_tx, hevc_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // Complete access units wait in a byte-bounded queue so ffmpeg backpressure
+    // cannot stall RTP/RTCP or grow memory without limit.
+    let hevc_queue = Arc::new(HevcQueue::new(HEVC_QUEUE_MAX_BYTES));
     let orientation_watch_view = views.orientation.clone();
     let orientation_task = async move {
         match springboard {
@@ -719,13 +1059,27 @@ async fn run(
     };
 
     tokio::select! {
-        _ = video_task(video_udp.clone(), hevc_tx, rtcp.clone(), our_ssrc) => {
+        _ = video_task(
+            video_udp.clone(),
+            hevc_queue.clone(),
+            rtcp.clone(),
+            corruption.clone(),
+            video.counters.clone(),
+            our_ssrc,
+        ) => {
             tracing::warn!("video task ended early");
         }
-        _ = ffmpeg_writer(ffmpeg_in, hevc_rx) => {
+        _ = ffmpeg_writer(ffmpeg_in, hevc_queue) => {
             tracing::warn!("ffmpeg writer ended");
         }
-        _ = decode::read_frames(ffmpeg_out, frames, frame_beat.clone(), repaint) => {
+        _ = decode::read_frames(
+            ffmpeg_out,
+            frame_format,
+            video.frames,
+            video.counters,
+            frame_beat.clone(),
+            repaint,
+        ) => {
             tracing::warn!("decode task ended early");
         }
         _ = watch_decode_errors(ffmpeg_err, corruption.clone()) => {
@@ -1587,11 +1941,14 @@ async fn type_key(
 /// under rtcp-mux; those datagrams are split off to [`RtcpShared::note_inbound`].
 async fn video_task(
     udp: Arc<UdpSocketHandle>,
-    hevc_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    hevc_queue: Arc<HevcQueue>,
     rtcp: Arc<Mutex<RtcpShared>>,
+    corruption: Arc<Notify>,
+    video_counters: VideoCounters,
     our_ssrc: u32,
 ) {
     let mut depacketizer = HevcDepacketizer::new();
+    let mut assembler = AccessUnitAssembler::default();
     // Lock onto a single RTP stream (SSRC) and feed only its packets to the
     // depacketizer. A stream restart begins a new SSRC with a fresh sequence
     // number; the device doesn't reliably stop the old sender, so both streams can
@@ -1610,6 +1967,16 @@ async fn video_task(
     // (packets since the previous marker == sequence span), never vouching for a gap.
     let mut prev_marker_seq: Option<u16> = None;
     let mut au_pkts: u32 = 0;
+    let mut metrics_started = Instant::now();
+    let mut metrics_rtp_packets = 0_u64;
+    let mut metrics_rtp_bytes = 0_u64;
+    let mut metrics_access_units = 0_u64;
+    let mut metrics_hevc_bytes = 0_u64;
+    let mut metrics_incomplete_markers = 0_u64;
+    let mut last_rtp_frame_timestamp = None;
+    let mut last_source_frame_at = None;
+    let mut rtp_timestamp_deltas = RunningStats::default();
+    let mut source_frame_intervals_ms = RunningStats::default();
 
     // DIAGNOSTIC: if `DEVICEHUB_DUMP_HEVC` is set, tee the Annex-B bytes we feed
     // ffmpeg to that path for offline decoding.
@@ -1669,6 +2036,19 @@ async fn video_task(
                             pkt.ssrc,
                         );
                         depacketizer = HevcDepacketizer::new();
+                        assembler.clear();
+                        prev_marker_seq = None;
+                        au_pkts = 0;
+                        last_rtp_frame_timestamp = None;
+                        last_source_frame_at = None;
+                        rtp_timestamp_deltas = RunningStats::default();
+                        source_frame_intervals_ms = RunningStats::default();
+                        let (dropped_access_units, dropped_bytes) = hevc_queue.force_resync();
+                        tracing::info!(
+                            dropped_access_units,
+                            dropped_bytes,
+                            "cleared HEVC queue for RTP stream migration"
+                        );
                         locked_ssrc = Some(pkt.ssrc);
                         last_locked = now;
                         let mut s = rtcp.lock().unwrap();
@@ -1680,6 +2060,8 @@ async fn video_task(
                         last_locked = now;
                     }
                 }
+                metrics_rtp_packets += 1;
+                metrics_rtp_bytes += dg.data.len() as u64;
                 {
                     let mut s = rtcp.lock().unwrap();
                     s.media_ssrc.get_or_insert(pkt.ssrc);
@@ -1688,38 +2070,130 @@ async fn video_task(
                         s.frames = s.frames.wrapping_add(1);
                     }
                 }
-                // Per-frame ACK (disabled by default - see `send_frame_ack`). The
-                // marker bit ends an access unit; we ACK only intact frames.
-                if send_frame_ack {
+                // The marker bit ends an access unit. Track packet completeness
+                // even when experimental frame ACKs are disabled: a complete
+                // marker lets us hand the AU to ffmpeg without waiting for the
+                // following frame's AUD. An early/out-of-order marker does not.
+                let belongs_to_current_au = prev_marker_seq.is_none_or(|previous| {
+                    let distance = pkt.sequence_number.wrapping_sub(previous);
+                    distance != 0 && distance < 0x8000
+                });
+                if belongs_to_current_au {
                     au_pkts = au_pkts.wrapping_add(1);
-                    if pkt.marker {
-                        let complete = match prev_marker_seq {
-                            Some(prev) => {
-                                let expected = pkt.sequence_number.wrapping_sub(prev) as u32;
-                                au_pkts >= expected
-                            }
-                            None => true,
-                        };
-                        if complete {
-                            let ack = build_frame_ack(our_ssrc, pkt.timestamp);
-                            udp.send_to(dg.source_port, ack).await.ok();
-                        }
-                        prev_marker_seq = Some(pkt.sequence_number);
-                        au_pkts = 0;
-                    }
                 }
+                let complete_access_unit = if pkt.marker {
+                    video_counters.note_source_frame();
+                    if let Some(previous) = last_rtp_frame_timestamp {
+                        let delta = pkt.timestamp.wrapping_sub(previous);
+                        if delta > 0 && delta <= 1_000_000 {
+                            rtp_timestamp_deltas.push(delta as f64);
+                        }
+                    }
+                    last_rtp_frame_timestamp = Some(pkt.timestamp);
+                    if let Some(previous) = last_source_frame_at {
+                        source_frame_intervals_ms
+                            .push(now.duration_since(previous).as_secs_f64() * 1000.0);
+                    }
+                    last_source_frame_at = Some(now);
+                    let complete = match prev_marker_seq {
+                        Some(prev) => {
+                            let expected = pkt.sequence_number.wrapping_sub(prev) as u32;
+                            au_pkts >= expected
+                        }
+                        None => true,
+                    };
+                    if send_frame_ack && complete {
+                        let ack = build_frame_ack(our_ssrc, pkt.timestamp);
+                        udp.send_to(dg.source_port, ack).await.ok();
+                    }
+                    prev_marker_seq = Some(pkt.sequence_number);
+                    au_pkts = 0;
+                    if !complete {
+                        metrics_incomplete_markers += 1;
+                    }
+                    complete
+                } else {
+                    false
+                };
                 depacketizer.push(pkt.sequence_number, pkt.timestamp, pkt.payload);
                 let out = depacketizer.take_output();
                 if !out.is_empty() {
                     if let Some(f) = &mut dump {
                         f.write_all(&out).await.ok();
                     }
-                    // Non-blocking hand-off so this loop never stalls on ffmpeg
-                    // backpressure and keeps ACKs timely.
-                    if hevc_tx.send(out).is_err() {
-                        tracing::info!("ffmpeg writer gone; ending video task");
-                        break;
+                    let mut access_units = assembler.push(&out);
+                    if complete_access_unit && let Some(access_unit) = assembler.finish() {
+                        access_units.push(access_unit);
                     }
+                    for access_unit in access_units {
+                        metrics_access_units += 1;
+                        metrics_hevc_bytes += access_unit.bytes.len() as u64;
+                        match hevc_queue.push(access_unit) {
+                            HevcQueuePush::Enqueued | HevcQueuePush::Dropped => {}
+                            HevcQueuePush::NeedsKeyframe {
+                                queued_bytes,
+                                incoming_bytes,
+                            } => {
+                                tracing::warn!(
+                                    queue_limit_bytes = HEVC_QUEUE_MAX_BYTES,
+                                    queued_bytes,
+                                    incoming_bytes,
+                                    "HEVC queue overflow; dropping until IRAP"
+                                );
+                                corruption.notify_one();
+                            }
+                            HevcQueuePush::Recovered {
+                                dropped_access_units,
+                                dropped_bytes,
+                            } => {
+                                tracing::info!(
+                                    dropped_access_units,
+                                    dropped_bytes,
+                                    "HEVC queue resumed at IRAP"
+                                );
+                            }
+                        }
+                    }
+                }
+                if metrics_started.elapsed() >= Duration::from_secs(5) {
+                    let elapsed_ms = metrics_started.elapsed().as_millis() as u64;
+                    let queue = hevc_queue.take_snapshot();
+                    let source_fps = source_frame_intervals_ms
+                        .mean()
+                        .filter(|interval| *interval > 0.0)
+                        .map(|interval| 1000.0 / interval);
+                    tracing::debug!(
+                        target: "devicehub_mask::perf",
+                        elapsed_ms,
+                        rtp_packets = metrics_rtp_packets,
+                        rtp_bytes = metrics_rtp_bytes,
+                        access_units = metrics_access_units,
+                        hevc_bytes = metrics_hevc_bytes,
+                        incomplete_markers = metrics_incomplete_markers,
+                        ?source_fps,
+                        source_frame_interval_ms = ?source_frame_intervals_ms.mean(),
+                        source_frame_interval_min_ms = ?source_frame_intervals_ms.min(),
+                        source_frame_interval_max_ms = ?source_frame_intervals_ms.max(),
+                        source_frame_jitter_ms = ?source_frame_intervals_ms.standard_deviation(),
+                        rtp_timestamp_delta_ticks = ?rtp_timestamp_deltas.mean(),
+                        rtp_timestamp_delta_min_ticks = ?rtp_timestamp_deltas.min(),
+                        rtp_timestamp_delta_max_ticks = ?rtp_timestamp_deltas.max(),
+                        queue_access_units = queue.queued_access_units,
+                        queue_bytes = queue.queued_bytes,
+                        queue_peak_bytes = queue.peak_bytes,
+                        waiting_for_irap = queue.waiting_for_irap,
+                        queue_wait_ms = queue.wait_ms,
+                        queue_wait_max_ms = queue.wait_max_ms,
+                        "video input performance"
+                    );
+                    metrics_started = Instant::now();
+                    metrics_rtp_packets = 0;
+                    metrics_rtp_bytes = 0;
+                    metrics_access_units = 0;
+                    metrics_hevc_bytes = 0;
+                    metrics_incomplete_markers = 0;
+                    rtp_timestamp_deltas = RunningStats::default();
+                    source_frame_intervals_ms = RunningStats::default();
                 }
             }
             Err(e) => {
@@ -1728,16 +2202,14 @@ async fn video_task(
             }
         }
     }
+    hevc_queue.close();
 }
 
 /// Drain depacketized Annex-B from [`video_task`] into ffmpeg's stdin. On its own
 /// task so ffmpeg backpressure never stalls the RTP receive loop's RTCP ACKs.
-async fn ffmpeg_writer(
-    mut ffmpeg_in: ChildStdin,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
-) {
-    while let Some(buf) = rx.recv().await {
-        if ffmpeg_in.write_all(&buf).await.is_err() {
+async fn ffmpeg_writer(mut ffmpeg_in: ChildStdin, hevc_queue: Arc<HevcQueue>) {
+    while let Some(access_unit) = hevc_queue.pop().await {
+        if ffmpeg_in.write_all(&access_unit.bytes).await.is_err() {
             tracing::info!("ffmpeg stdin closed; ending writer");
             break;
         }
@@ -2256,6 +2728,94 @@ fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    fn access_unit(size: usize, is_irap: bool) -> HevcAccessUnit {
+        HevcAccessUnit {
+            bytes: vec![0x5a; size],
+            is_irap,
+        }
+    }
+
+    #[test]
+    fn running_stats_reports_mean_range_and_jitter() {
+        let mut stats = RunningStats::default();
+        stats.push(10.0);
+        stats.push(20.0);
+        stats.push(30.0);
+
+        assert_eq!(stats.mean(), Some(20.0));
+        assert_eq!(stats.min(), Some(10.0));
+        assert_eq!(stats.max(), Some(30.0));
+        assert!((stats.standard_deviation().unwrap() - 8.164_965_809).abs() < 1e-6);
+    }
+
+    #[test]
+    fn assembles_access_units_across_split_aud_boundaries() {
+        let first = [0, 0, 0, 1, 0x02, 0x01, 0xaa];
+        let second = [0, 0, 0, 1, 0x26, 0x01, 0xbb];
+        let mut assembler = AccessUnitAssembler::default();
+
+        let mut first_chunk = first.to_vec();
+        first_chunk.extend_from_slice(&HEVC_AUD[..3]);
+        assert!(assembler.push(&first_chunk).is_empty());
+
+        let mut second_chunk = HEVC_AUD[3..].to_vec();
+        second_chunk.extend_from_slice(&second);
+        let completed = assembler.push(&second_chunk);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].bytes, first);
+        assert!(!completed[0].is_irap);
+
+        let completed = assembler.push(HEVC_AUD);
+        assert_eq!(completed.len(), 1);
+        assert!(completed[0].bytes.starts_with(HEVC_AUD));
+        assert!(completed[0].is_irap);
+    }
+
+    #[test]
+    fn finishes_access_unit_at_complete_rtp_marker() {
+        let irap = [0, 0, 0, 1, 0x26, 0x01, 0xbb];
+        let mut assembler = AccessUnitAssembler::default();
+
+        assert!(assembler.push(&irap).is_empty());
+        let completed = assembler.finish().unwrap();
+        assert_eq!(completed.bytes, irap);
+        assert!(completed.is_irap);
+        assert!(assembler.finish().is_none());
+    }
+
+    #[tokio::test]
+    async fn bounded_hevc_queue_recovers_only_at_irap() {
+        let queue = HevcQueue::new(10);
+        assert!(matches!(
+            queue.push(access_unit(6, false)),
+            HevcQueuePush::Enqueued
+        ));
+        assert!(matches!(
+            queue.push(access_unit(6, false)),
+            HevcQueuePush::NeedsKeyframe {
+                queued_bytes: 6,
+                incoming_bytes: 6,
+            }
+        ));
+        assert!(matches!(
+            queue.push(access_unit(2, false)),
+            HevcQueuePush::Dropped
+        ));
+        assert!(matches!(
+            queue.push(access_unit(4, true)),
+            HevcQueuePush::Recovered {
+                dropped_access_units: 3,
+                dropped_bytes: 14,
+            }
+        ));
+
+        let recovered = queue.pop().await.unwrap();
+        assert!(recovered.is_irap);
+        assert_eq!(recovered.bytes.len(), 4);
+        queue.close();
+        assert!(queue.pop().await.is_none());
+    }
 
     #[test]
     fn maps_springboard_interface_orientations() {
