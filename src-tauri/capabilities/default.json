@@ -9,6 +9,7 @@
     "core:window:allow-is-fullscreen",
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-fullscreen",
+    "dialog:allow-open",
     "process:allow-restart",
     "opener:allow-open-url",
     "updater:default"

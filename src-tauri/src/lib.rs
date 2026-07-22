@@ -11,8 +11,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use protocol::{
-    ActiveSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, FrameSlot, InputSink,
-    OrientationSlot, StatusSlot,
+    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, FrameSlot,
+    InputSink, OrientationSlot, StatusSlot,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -88,6 +88,7 @@ fn spawn_backend(
                 let active = ActiveSlot::default();
                 let error = ErrorSlot::default();
                 let input = InputSink::default();
+                let app_operation = AppOperationSlot::default();
 
                 let manager = session::manage(
                     initial_udid,
@@ -99,6 +100,7 @@ fn spawn_backend(
                     devices.clone(),
                     active.clone(),
                     error.clone(),
+                    app_operation.clone(),
                     input.clone(),
                     control_rx,
                 );
@@ -110,6 +112,7 @@ fn spawn_backend(
                         devices,
                         active,
                         error,
+                        app_operation,
                         input,
                         control: thread_control.clone(),
                         profile_dir: Arc::new(profile_dir),
@@ -177,6 +180,7 @@ pub fn run() {
     init_tracing();
     let initial_udid = std::env::args().nth(1);
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

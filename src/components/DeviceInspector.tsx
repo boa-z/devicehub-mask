@@ -1,18 +1,21 @@
 import {
   AppstoreOutlined,
   CopyOutlined,
+  DeleteOutlined,
   InfoCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
+  UploadOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Empty, Input, Segmented, Spin, Tag, Tooltip, Typography, message } from "antd";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Tooltip, Typography, message } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "../deviceInspector";
 import type { ProfileStatusFilter } from "../deviceInspector";
-import type { DeviceApp, DeviceDetails, ProvisioningProfile } from "../types";
+import type { AppOperation, DeviceApp, DeviceDetails, ProvisioningProfile } from "../types";
 
 type InspectorTab = "info" | "apps" | "profiles";
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
@@ -40,6 +43,12 @@ export function DeviceInspector({ activeUdid, request }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState<string | null>(null);
+  const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
+  const handledOperation = useRef(0);
+
+  const loadApps = useCallback(async () => {
+    setApps(await readJson<DeviceApp[]>(await request("/api/device/apps")));
+  }, [request]);
 
   const load = useCallback(async () => {
     if (!activeUdid) return;
@@ -49,7 +58,7 @@ export function DeviceInspector({ activeUdid, request }: Props) {
       if (tab === "info") {
         setDetails(await readJson<DeviceDetails>(await request("/api/device/details")));
       } else if (tab === "apps") {
-        setApps(await readJson<DeviceApp[]>(await request("/api/device/apps")));
+        await loadApps();
       } else {
         setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
       }
@@ -58,18 +67,67 @@ export function DeviceInspector({ activeUdid, request }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [activeUdid, request, tab]);
+  }, [activeUdid, loadApps, request, tab]);
 
   useEffect(() => {
     setDetails(null);
     setApps([]);
     setProfiles([]);
+    setAppOperation(null);
     setError(null);
   }, [activeUdid]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const readAppOperation = useCallback(
+    async () => readJson<AppOperation>(await request("/api/device/apps/operation")),
+    [request],
+  );
+
+  const refreshAppOperation = useCallback(async () => {
+    const operation = await readAppOperation();
+    setAppOperation(operation);
+    return operation;
+  }, [readAppOperation]);
+
+  useEffect(() => {
+    if (!activeUdid) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      let operation: AppOperation | null = null;
+      try {
+        operation = await readAppOperation();
+        if (!cancelled) setAppOperation(operation);
+      } catch {
+        // The regular inspector request path surfaces connection errors.
+      }
+      if (!cancelled) {
+        timer = setTimeout(poll, operation?.state === "running" ? 500 : 2000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeUdid, readAppOperation]);
+
+  useEffect(() => {
+    if (!appOperation || appOperation.id === 0 || appOperation.state === "running" || appOperation.state === "idle") return;
+    if (handledOperation.current === appOperation.id) return;
+    handledOperation.current = appOperation.id;
+    if (appOperation.state === "succeeded") {
+      void message.success(t(`deviceInspector.appOperationResult.${appOperation.kind ?? "install"}`));
+      if (tab === "apps") void loadApps();
+    } else if (appOperation.state === "failed") {
+      void message.error(t("deviceInspector.appOperationFailed", { error: appOperation.error ?? "" }));
+    } else {
+      void message.info(t("deviceInspector.appOperationCancelled"));
+    }
+  }, [appOperation, loadApps, t, tab]);
 
   const visibleApps = useMemo(() => filterDeviceApps(apps, query), [apps, query]);
   const visibleProfiles = useMemo(
@@ -94,6 +152,47 @@ export function DeviceInspector({ activeUdid, request }: Props) {
     await navigator.clipboard.writeText(bundleId);
     void message.success(t("deviceInspector.bundleIdCopied"));
   };
+
+  const installApp = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: t("deviceInspector.ipaFile"), extensions: ["ipa"] }],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      const response = await request("/api/device/apps/install", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selected }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await refreshAppOperation();
+    } catch (installError) {
+      void message.error(t("deviceInspector.appInstallFailed", { error: String(installError) }));
+    }
+  };
+
+  const uninstallApp = (app: DeviceApp) => {
+    Modal.confirm({
+      title: t("deviceInspector.uninstallApp"),
+      content: t("deviceInspector.uninstallConfirm", { name: app.name, bundleId: app.bundle_id }),
+      okText: t("deviceInspector.uninstall"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}`, { method: "DELETE" });
+        if (!response.ok) {
+          const failure = new Error((await response.text()) || response.statusText);
+          void message.error(t("deviceInspector.appUninstallFailed", { error: String(failure) }));
+          throw failure;
+        }
+        await refreshAppOperation();
+      },
+    });
+  };
+
+  const appMutationRunning = appOperation?.state === "running";
 
   const infoRows = details ? [
     [t("deviceInspector.name"), details.name],
@@ -144,13 +243,41 @@ export function DeviceInspector({ activeUdid, request }: Props) {
         </div>
       ) : tab === "apps" ? (
         <div className="device-apps-pane">
-          <Input
-            allowClear
-            value={query}
-            prefix={<SearchOutlined />}
-            placeholder={t("deviceInspector.searchApps")}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+          <div className="device-app-toolbar">
+            <Input
+              allowClear
+              value={query}
+              prefix={<SearchOutlined />}
+              placeholder={t("deviceInspector.searchApps")}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <Tooltip title={t("deviceInspector.installApp")}>
+              <Button icon={<UploadOutlined />} disabled={appMutationRunning} onClick={() => void installApp()} />
+            </Tooltip>
+          </div>
+          {appOperation && appOperation.id > 0 && appOperation.state !== "idle" && (
+            <div className="device-app-operation">
+              <div className="device-app-operation-label">
+                <Typography.Text ellipsis={{ tooltip: appOperation.label ?? undefined }}>
+                  {appOperation.label ?? t("deviceInspector.appOperation")}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  {appOperation.stage
+                    ? t(`deviceInspector.appOperationStages.${appOperation.stage}`)
+                    : t(`deviceInspector.appOperationStates.${appOperation.state}`)}
+                </Typography.Text>
+              </div>
+              {appOperation.state === "running" && appOperation.progress === null ? (
+                <Spin size="small" />
+              ) : (
+                <Progress
+                  size="small"
+                  percent={appOperation.progress ?? (appOperation.state === "succeeded" ? 100 : 0)}
+                  status={appOperation.state === "failed" ? "exception" : appOperation.state === "succeeded" ? "success" : "active"}
+                />
+              )}
+            </div>
+          )}
           <div className="device-app-count">{t("deviceInspector.appCount", { count: visibleApps.length })}</div>
           <div className="device-app-list">
             {visibleApps.map((app) => (
@@ -177,6 +304,17 @@ export function DeviceInspector({ activeUdid, request }: Props) {
                       onClick={() => void launch(app)}
                     />
                   </Tooltip>
+                  {app.is_removable && !app.is_first_party && (
+                    <Tooltip title={t("deviceInspector.uninstallApp")}>
+                      <Button
+                        danger
+                        size="small"
+                        icon={<DeleteOutlined />}
+                        disabled={appMutationRunning}
+                        onClick={() => uninstallApp(app)}
+                      />
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             ))}

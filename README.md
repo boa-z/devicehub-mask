@@ -22,6 +22,8 @@ transport.
 - Drag-to-place overlays and profile persistence
 - Device, keyboard mapping, and application settings workspaces
 - Live Lockdown device metadata and CoreDevice AppService app browsing/launching
+- Native IPA selection, asynchronous installation progress, and confirmed safe
+  removal of removable user applications
 - Read-only installed provisioning profile inspection through Misagent, with
   expiration, team, app identifier, development, and device-scope metadata
 - Runtime Simplified Chinese and English localization with persistent selection
@@ -59,7 +61,23 @@ Device metadata is read once through Lockdown when a session connects. App list
 and launch requests prefer a long-lived CoreDevice AppService client owned by
 that same session, so the UI does not create a second RSD tunnel for each
 operation. App listing falls back to Lockdown's Installation Proxy when the
-newer AppService is absent. Provisioning profiles are read through a long-lived
+newer AppService is absent. IPA installation and app removal run in independent
+Tokio tasks with fresh Installation Proxy connections, so long uploads and
+device-side mutations do not block video, HID, or app-list requests. Switching
+devices or ending the session aborts the active mutation. Before uninstalling,
+the backend queries the target again and requires device metadata to identify it
+as a removable, non-first-party user app; frontend state is never treated as
+authorization. The private API exposes one operation state with stage and
+device-reported progress, and the Apps tab refreshes automatically after a
+successful mutation.
+
+The current `idevice` package helper reads a selected IPA into memory before AFC
+upload and reports percentages only after Installation Proxy begins installing.
+The UI therefore shows an indeterminate **Preparing and uploading** stage rather
+than inventing upload progress. Large IPA memory use and byte-level AFC progress
+remain candidates for an upstream `idevice` streaming API.
+
+Provisioning profiles are read through a long-lived
 Misagent connection and decoded as CMS SignedData before their plist metadata is
 exposed; raw profile payloads and provisioned device identifiers never cross the
 private API. A malformed profile is isolated as an error row instead of failing
@@ -365,7 +383,9 @@ adding remote or bundled fonts.
 ### Workspace Pages
 
 - **Device** contains device selection, the aspect-ratio-preserving live view,
-  control mode, rotation, direct touch, and hardware buttons.
+  control mode, rotation, direct touch, hardware buttons, and an inspector for
+  device identity, installed apps, IPA installation/removal, and provisioning
+  profiles.
 - **Keyboard Mapping** contains the live placement canvas, mapping inspector,
   hardware shortcut bindings, and profile management. Its editor reports the
   source and contain-fitted display resolutions, can switch between the live
@@ -611,8 +631,6 @@ Touch coordinates are normalized in that exact displayed space.
 
 - Add confirmed install and removal actions to the read-only Misagent
   provisioning profile inspector
-- Add explicit app installation and removal workflows with confirmations and
-  progress reporting
 - Expand Device Hub-style controls for location, appearance, and accessibility
   when stable `idevice` service APIs are available
 - Continue profiling decode, frame transport, and WebView presentation on

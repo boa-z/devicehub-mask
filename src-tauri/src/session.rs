@@ -3,6 +3,7 @@
 // run the video pipeline and dispatch input commands to the device's HID surfaces.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -35,15 +36,17 @@ use idevice::{
     springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
     tcp::handle::{AdapterHandle, UdpSocketHandle},
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection, UsbmuxdDevice},
+    utils::installation::install_package_with_callback,
 };
 use tokio::process::ChildStdin;
 
 use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
-    ActiveSlot, ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceApp, DeviceDetails,
-    DeviceInfo, DeviceListSlot, ErrorSlot, FrameSlot, InputCmd, InputSink, KeyMods, Orientation,
-    OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot, clipboard_preview,
+    ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardEvent, ClipboardSlot, ConnKind,
+    ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, ErrorSlot, FrameSlot,
+    InputCmd, InputSink, KeyMods, Orientation, OrientationSlot, ProvisioningProfile, RotateDir,
+    StatusSlot, clipboard_preview,
 };
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -320,6 +323,7 @@ struct SessionViews {
     status: StatusSlot,
     orientation: OrientationSlot,
     error: ErrorSlot,
+    app_operation: AppOperationSlot,
 }
 
 /// Supervise the device session: enumerate attached devices for the picker,
@@ -335,6 +339,7 @@ pub async fn manage(
     device_list: DeviceListSlot,
     active: ActiveSlot,
     error: ErrorSlot,
+    app_operation: AppOperationSlot,
     input_sink: InputSink,
     mut control_rx: UnboundedReceiver<ControlCmd>,
 ) {
@@ -386,6 +391,7 @@ pub async fn manage(
                 status: status.clone(),
                 orientation: orientation_view.clone(),
                 error: error.clone(),
+                app_operation: app_operation.clone(),
             },
             in_rx,
         );
@@ -589,7 +595,13 @@ async fn run(
             views.error.set(Some(error));
             views.status.set("device management connected");
             management_input_loop(
-                DeviceManagement::fallback(device_details, installation_proxy, misagent),
+                DeviceManagement::fallback(
+                    provider,
+                    views.app_operation.clone(),
+                    device_details,
+                    installation_proxy,
+                    misagent,
+                ),
                 &mut input_rx,
             )
             .await;
@@ -731,7 +743,14 @@ async fn run(
             &mut indigo,
             &mut orientation,
             &views.orientation,
-            DeviceManagement::new(device_details, app_service, installation_proxy, misagent),
+            DeviceManagement::new(
+                provider,
+                views.app_operation.clone(),
+                device_details,
+                app_service,
+                installation_proxy,
+                misagent,
+            ),
             &mut input_rx,
         ) => {}
     }
@@ -778,20 +797,44 @@ async fn management_input_loop(
 }
 
 struct DeviceManagement {
+    provider: Arc<dyn IdeviceProvider>,
+    app_operation: AppOperationSlot,
+    operation_task: Option<ActiveAppOperation>,
     details: Option<DeviceDetails>,
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
     misagent: Option<MisagentClient>,
 }
 
+struct ActiveAppOperation {
+    id: u64,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for DeviceManagement {
+    fn drop(&mut self) {
+        if let Some(operation) = self.operation_task.take() {
+            if !operation.handle.is_finished() {
+                operation.handle.abort();
+            }
+            self.app_operation.cancel(operation.id);
+        }
+    }
+}
+
 impl DeviceManagement {
     fn new(
+        provider: Arc<dyn IdeviceProvider>,
+        app_operation: AppOperationSlot,
         details: Option<DeviceDetails>,
         app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
     ) -> Self {
         Self {
+            provider,
+            app_operation,
+            operation_task: None,
             details,
             app_service,
             installation_proxy,
@@ -800,11 +843,83 @@ impl DeviceManagement {
     }
 
     fn fallback(
+        provider: Arc<dyn IdeviceProvider>,
+        app_operation: AppOperationSlot,
         details: Option<DeviceDetails>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
     ) -> Self {
-        Self::new(details, None, installation_proxy, misagent)
+        Self::new(
+            provider,
+            app_operation,
+            details,
+            None,
+            installation_proxy,
+            misagent,
+        )
+    }
+
+    fn clear_finished_operation(&mut self) {
+        if self
+            .operation_task
+            .as_ref()
+            .is_some_and(|operation| operation.handle.is_finished())
+            && let Some(operation) = self.operation_task.take()
+        {
+            self.app_operation
+                .fail(operation.id, "app operation ended unexpectedly".into());
+        }
+    }
+
+    async fn install_app(&mut self, path: PathBuf) -> Result<(), String> {
+        self.clear_finished_operation();
+        let (path, label) = validate_ipa_path(&path).await?;
+        let id = self.app_operation.start(AppOperationKind::Install, label)?;
+        self.app_operation.update(id, "uploading", None);
+
+        let provider = self.provider.clone();
+        let operation = self.app_operation.clone();
+        let task_operation = operation.clone();
+        let handle = tokio::spawn(async move {
+            let result = install_package_with_callback(
+                provider.as_ref(),
+                path,
+                None,
+                |(progress, (operation, operation_id))| async move {
+                    operation.update(operation_id, "installing", Some(progress.min(100) as u8));
+                },
+                (task_operation, id),
+            )
+            .await;
+            match result {
+                Ok(()) => operation.succeed(id),
+                Err(error) => operation.fail(id, format!("unable to install IPA: {error:?}")),
+            }
+        });
+        self.operation_task = Some(ActiveAppOperation { id, handle });
+        Ok(())
+    }
+
+    fn uninstall_app(&mut self, bundle_id: String) -> Result<(), String> {
+        self.clear_finished_operation();
+        let id = self
+            .app_operation
+            .start(AppOperationKind::Uninstall, bundle_id.clone())?;
+        self.app_operation.update(id, "verifying", None);
+
+        let provider = self.provider.clone();
+        let operation = self.app_operation.clone();
+        let task_operation = operation.clone();
+        let handle = tokio::spawn(async move {
+            let result =
+                uninstall_user_app(provider.as_ref(), &bundle_id, task_operation.clone(), id).await;
+            match result {
+                Ok(()) => operation.succeed(id),
+                Err(error) => operation.fail(id, error),
+            }
+        });
+        self.operation_task = Some(ActiveAppOperation { id, handle });
+        Ok(())
     }
 
     async fn handle(&mut self, command: InputCmd) -> Option<InputCmd> {
@@ -841,9 +956,81 @@ impl DeviceManagement {
                 let _ = reply.send(result);
                 None
             }
+            InputCmd::InstallApp { path, reply } => {
+                let result = self.install_app(path).await;
+                let _ = reply.send(result);
+                None
+            }
+            InputCmd::UninstallApp { bundle_id, reply } => {
+                let result = self.uninstall_app(bundle_id);
+                let _ = reply.send(result);
+                None
+            }
             other => Some(other),
         }
     }
+}
+
+async fn validate_ipa_path(path: &Path) -> Result<(PathBuf, String), String> {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipa"))
+    {
+        return Err("selected file must have an .ipa extension".into());
+    }
+    let canonical = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|error| format!("unable to access IPA: {error}"))?;
+    let metadata = tokio::fs::metadata(&canonical)
+        .await
+        .map_err(|error| format!("unable to inspect IPA: {error}"))?;
+    if !metadata.is_file() {
+        return Err("selected IPA path is not a regular file".into());
+    }
+    let label = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "selected IPA has no valid file name".to_string())?
+        .to_string();
+    Ok((canonical, label))
+}
+
+async fn uninstall_user_app(
+    provider: &dyn IdeviceProvider,
+    bundle_id: &str,
+    operation: AppOperationSlot,
+    operation_id: u64,
+) -> Result<(), String> {
+    let mut client = InstallationProxyClient::connect(provider)
+        .await
+        .map_err(|error| format!("installation proxy is unavailable: {error:?}"))?;
+    let mut matches = client
+        .get_apps(Some("User"), Some(vec![bundle_id.to_string()]))
+        .await
+        .map_err(|error| format!("unable to verify app: {error:?}"))?;
+    let value = matches
+        .remove(bundle_id)
+        .ok_or_else(|| "app is not installed as a user application".to_string())?;
+    let app = device_app_from_installation(bundle_id.to_string(), &value)
+        .ok_or_else(|| "device returned invalid app metadata".to_string())?;
+    if !app.is_removable || app.is_first_party {
+        return Err("the selected app is not a removable third-party application".into());
+    }
+
+    operation.update(operation_id, "uninstalling", Some(0));
+    client
+        .uninstall_with_callback(
+            bundle_id,
+            None,
+            |(progress, (operation, id))| async move {
+                operation.update(id, "uninstalling", Some(progress.min(100) as u8));
+            },
+            (operation, operation_id),
+        )
+        .await
+        .map_err(|error| format!("unable to uninstall app: {error:?}"))
 }
 
 async fn list_provisioning_profiles(
@@ -935,8 +1122,9 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
         name,
         version: string("CFBundleShortVersionString"),
         bundle_version: string("CFBundleVersion"),
-        is_removable: boolean("IsRemovable").unwrap_or(true),
-        is_first_party: signer.contains("Apple iPhone OS Application Signing"),
+        is_removable: boolean("IsRemovable").unwrap_or(false),
+        is_first_party: boolean("IsFirstParty")
+            .unwrap_or_else(|| signer.contains("Apple iPhone OS Application Signing")),
         is_developer_app: boolean("IsXcodeManaged").unwrap_or(false)
             || signer.contains("Apple Development"),
     })
@@ -1355,7 +1543,9 @@ async fn dispatch(
         InputCmd::GetDeviceDetails(_)
         | InputCmd::ListApps(_)
         | InputCmd::ListProvisioningProfiles(_)
-        | InputCmd::LaunchApp { .. } => Ok(()),
+        | InputCmd::LaunchApp { .. }
+        | InputCmd::InstallApp { .. }
+        | InputCmd::UninstallApp { .. } => Ok(()),
         InputCmd::Shutdown => Ok(()),
     }
 }
@@ -1949,7 +2139,7 @@ async fn stall_watchdog(frame_beat: Arc<Notify>, corruption: &Notify) {
 /// Connect to the first (or named) device over usbmuxd and build a provider.
 async fn connect_provider(
     udid: Option<String>,
-) -> Result<(Box<dyn IdeviceProvider>, ConnKind), String> {
+) -> Result<(Arc<dyn IdeviceProvider>, ConnKind), String> {
     let mut usbmuxd = UsbmuxdConnection::default()
         .await
         .map_err(|e| format!("unable to connect to usbmuxd: {e:?}"))?;
@@ -1975,7 +2165,7 @@ async fn connect_provider(
         connection = connection_label(&dev.connection_type),
         "selected CoreDevice transport"
     );
-    Ok((Box::new(dev.to_provider(addr, "devicehub_rs")), connection))
+    Ok((Arc::new(dev.to_provider(addr, "devicehub_rs")), connection))
 }
 
 // Prefer the cable path when usbmuxd reports the same UDID over both transports.
@@ -2170,5 +2360,29 @@ mod tests {
         assert_eq!(app.version.as_deref(), Some("2.4"));
         assert_eq!(app.bundle_version.as_deref(), Some("42"));
         assert!(app.is_developer_app);
+        assert!(!app.is_removable);
+    }
+
+    #[tokio::test]
+    async fn validates_and_canonicalizes_ipa_files() {
+        let directory =
+            std::env::temp_dir().join(format!("devicehub-mask-ipa-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&directory).await.unwrap();
+        let ipa = directory.join("Example.IPA");
+        tokio::fs::write(&ipa, b"placeholder").await.unwrap();
+
+        let (validated, label) = validate_ipa_path(&ipa).await.unwrap();
+        assert_eq!(validated, tokio::fs::canonicalize(&ipa).await.unwrap());
+        assert_eq!(label, "Example.IPA");
+        assert!(
+            validate_ipa_path(&directory.join("Example.zip"))
+                .await
+                .is_err()
+        );
+
+        let fake_ipa_directory = directory.join("folder.ipa");
+        tokio::fs::create_dir(&fake_ipa_directory).await.unwrap();
+        assert!(validate_ipa_path(&fake_ipa_directory).await.is_err());
+        let _ = tokio::fs::remove_dir_all(directory).await;
     }
 }

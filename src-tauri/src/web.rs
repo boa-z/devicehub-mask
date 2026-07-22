@@ -9,7 +9,7 @@ use axum::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, put};
+use axum::routing::{delete, get, put};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,8 @@ use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameSlot, InputCmd, InputSink,
-    Orientation, OrientationSlot, RotateDir, StatusSlot, norm, unrotate_norm,
+    ActiveSlot, AppOperationSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameSlot,
+    InputCmd, InputSink, Orientation, OrientationSlot, RotateDir, StatusSlot, norm, unrotate_norm,
 };
 
 #[derive(Clone)]
@@ -32,6 +32,7 @@ pub struct AppState {
     pub devices: DeviceListSlot,
     pub active: ActiveSlot,
     pub error: ErrorSlot,
+    pub app_operation: AppOperationSlot,
     pub input: InputSink,
     pub control: UnboundedSender<ControlCmd>,
     pub profile_dir: Arc<PathBuf>,
@@ -103,6 +104,9 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/device/details", get(device_details))
         .route("/api/device/apps", get(device_apps))
+        .route("/api/device/apps/operation", get(app_operation))
+        .route("/api/device/apps/install", put(install_app))
+        .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
         .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
         .route(
             "/api/device/provisioning-profiles",
@@ -235,6 +239,82 @@ async fn device_apps(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(apps))
+}
+
+async fn app_operation(State(state): State<AppState>) -> Json<crate::protocol::AppOperationView> {
+    Json(state.app_operation.get())
+}
+
+#[derive(Deserialize)]
+struct InstallAppRequest {
+    path: PathBuf,
+}
+
+async fn install_app(
+    State(state): State<AppState>,
+    Json(request): Json<InstallAppRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::InstallApp {
+        path: request.path,
+        reply,
+    }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_app_operation_acceptance(response, "app install").await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn uninstall_app(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !valid_bundle_identifier(&bundle_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
+    }
+    let (reply, response) = oneshot::channel();
+    if !state
+        .input
+        .try_send(InputCmd::UninstallApp { bundle_id, reply })
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_app_operation_acceptance(response, "app uninstall").await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn await_app_operation_acceptance(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    let result = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?;
+    result.map_err(|error| {
+        let status = if error == "another app operation is already running" {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, error)
+    })
 }
 
 async fn device_provisioning_profiles(
@@ -857,6 +937,7 @@ mod tests {
                 devices: DeviceListSlot::default(),
                 active: ActiveSlot::default(),
                 error: ErrorSlot::default(),
+                app_operation: AppOperationSlot::default(),
                 input,
                 control,
                 profile_dir: Arc::new(PathBuf::new()),
@@ -1067,7 +1148,21 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            device_provisioning_profiles(State(state)).await,
+            device_provisioning_profiles(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            install_app(
+                State(state.clone()),
+                Json(InstallAppRequest {
+                    path: PathBuf::from("Example.ipa"),
+                }),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            uninstall_app(State(state), Path("com.example.app".into())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }
@@ -1083,6 +1178,58 @@ mod tests {
             ));
         }
         assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn app_uninstall_rejects_invalid_bundle_identifiers_before_dispatch() {
+        let (state, mut input_rx) = test_state();
+
+        for bundle_id in ["", "no-domain", "com.example.bad value", "com/example/app"] {
+            assert!(matches!(
+                uninstall_app(State(state.clone()), Path(bundle_id.into())).await,
+                Err((StatusCode::BAD_REQUEST, _))
+            ));
+        }
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn app_install_reports_operation_conflicts() {
+        let (state, mut input_rx) = test_state();
+        let request = install_app(
+            State(state),
+            Json(InstallAppRequest {
+                path: PathBuf::from("Example.ipa"),
+            }),
+        );
+        let respond = async move {
+            let command = input_rx.recv().await.unwrap();
+            let InputCmd::InstallApp { path, reply } = command else {
+                panic!("expected install command");
+            };
+            assert_eq!(path, PathBuf::from("Example.ipa"));
+            let _ = reply.send(Err("another app operation is already running".into()));
+        };
+
+        let (result, ()) = tokio::join!(request, respond);
+        assert!(matches!(result, Err((StatusCode::CONFLICT, _))));
+    }
+
+    #[tokio::test]
+    async fn app_operation_endpoint_returns_shared_state() {
+        let (state, _input_rx) = test_state();
+        let id = state
+            .app_operation
+            .start(
+                crate::protocol::AppOperationKind::Install,
+                "Example.ipa".into(),
+            )
+            .unwrap();
+        state.app_operation.update(id, "installing", Some(42));
+
+        let view = app_operation(State(state)).await.0;
+        assert_eq!(view.id, id);
+        assert_eq!(view.progress, Some(42));
     }
 
     #[tokio::test]

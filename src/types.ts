@@ -23,6 +23,17 @@ export type DeviceApp = {
   is_first_party: boolean;
   is_developer_app: boolean;
 };
+export type AppOperationKind = "install" | "uninstall";
+export type AppOperationState = "idle" | "running" | "succeeded" | "failed" | "cancelled";
+export type AppOperation = {
+  id: number;
+  kind: AppOperationKind | null;
+  state: AppOperationState;
+  stage: string | null;
+  progress: number | null;
+  label: string | null;
+  error: string | null;
+};
 export type ProvisioningProfile = {
   name: string;
   uuid: string;

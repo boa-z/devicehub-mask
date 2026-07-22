@@ -1,5 +1,6 @@
 // Shared types passed between the web server and the async device session.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
@@ -155,6 +156,16 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Validate and install a local IPA without blocking the HID dispatch loop.
+    InstallApp {
+        path: PathBuf,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Uninstall a removable user application without blocking HID dispatch.
+    UninstallApp {
+        bundle_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Stop the media stream and tear the session down.
     Shutdown,
 }
@@ -306,6 +317,116 @@ pub struct ProvisioningProfile {
     pub parse_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppOperationKind {
+    Install,
+    Uninstall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppOperationState {
+    Idle,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppOperationView {
+    pub id: u64,
+    pub kind: Option<AppOperationKind>,
+    pub state: AppOperationState,
+    pub stage: Option<String>,
+    pub progress: Option<u8>,
+    pub label: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Default for AppOperationView {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            kind: None,
+            state: AppOperationState::Idle,
+            stage: None,
+            progress: None,
+            label: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct AppOperationSlot(Arc<Mutex<AppOperationInner>>);
+
+#[derive(Default)]
+struct AppOperationInner {
+    next_id: u64,
+    view: AppOperationView,
+}
+
+impl AppOperationSlot {
+    pub fn start(&self, kind: AppOperationKind, label: String) -> Result<u64, String> {
+        let mut inner = self.0.lock().unwrap();
+        if inner.view.state == AppOperationState::Running {
+            return Err("another app operation is already running".into());
+        }
+        inner.next_id = inner.next_id.wrapping_add(1).max(1);
+        let id = inner.next_id;
+        inner.view = AppOperationView {
+            id,
+            kind: Some(kind),
+            state: AppOperationState::Running,
+            stage: Some("validating".into()),
+            progress: None,
+            label: Some(label),
+            error: None,
+        };
+        Ok(id)
+    }
+
+    pub fn update(&self, id: u64, stage: &str, progress: Option<u8>) {
+        let mut inner = self.0.lock().unwrap();
+        if inner.view.id == id && inner.view.state == AppOperationState::Running {
+            inner.view.stage = Some(stage.into());
+            inner.view.progress = progress.map(|value| value.min(100));
+        }
+    }
+
+    pub fn succeed(&self, id: u64) {
+        self.finish(id, AppOperationState::Succeeded, None);
+    }
+
+    pub fn fail(&self, id: u64, error: String) {
+        self.finish(id, AppOperationState::Failed, Some(error));
+    }
+
+    pub fn cancel(&self, id: u64) {
+        self.finish(
+            id,
+            AppOperationState::Cancelled,
+            Some("device session ended".into()),
+        );
+    }
+
+    fn finish(&self, id: u64, state: AppOperationState, error: Option<String>) {
+        let mut inner = self.0.lock().unwrap();
+        if inner.view.id == id && inner.view.state == AppOperationState::Running {
+            inner.view.state = state;
+            inner.view.stage = None;
+            inner.view.progress = (state == AppOperationState::Succeeded).then_some(100);
+            inner.view.error = error;
+        }
+    }
+
+    pub fn get(&self) -> AppOperationView {
+        self.0.lock().unwrap().view.clone()
+    }
+}
+
 /// The set of currently-attached devices, published by the manager for the picker.
 #[derive(Clone, Default)]
 pub struct DeviceListSlot(Arc<Mutex<Vec<DeviceInfo>>>);
@@ -381,5 +502,66 @@ impl InputSink {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_operation_tracks_progress_and_success() {
+        let slot = AppOperationSlot::default();
+        let id = slot
+            .start(AppOperationKind::Install, "Example.ipa".into())
+            .unwrap();
+
+        slot.update(id, "installing", Some(101));
+        let running = slot.get();
+        assert_eq!(running.state, AppOperationState::Running);
+        assert_eq!(running.stage.as_deref(), Some("installing"));
+        assert_eq!(running.progress, Some(100));
+
+        slot.succeed(id);
+        let completed = slot.get();
+        assert_eq!(completed.state, AppOperationState::Succeeded);
+        assert_eq!(completed.progress, Some(100));
+        assert!(completed.stage.is_none());
+    }
+
+    #[test]
+    fn app_operation_rejects_concurrency_and_ignores_stale_updates() {
+        let slot = AppOperationSlot::default();
+        let first = slot
+            .start(AppOperationKind::Install, "first.ipa".into())
+            .unwrap();
+        assert!(
+            slot.start(AppOperationKind::Uninstall, "com.example.app".into())
+                .is_err()
+        );
+        slot.fail(first, "failed".into());
+
+        let second = slot
+            .start(AppOperationKind::Uninstall, "com.example.app".into())
+            .unwrap();
+        slot.update(first, "installing", Some(50));
+        slot.succeed(first);
+        let view = slot.get();
+        assert_eq!(view.id, second);
+        assert_eq!(view.stage.as_deref(), Some("validating"));
+        assert_eq!(view.state, AppOperationState::Running);
+    }
+
+    #[test]
+    fn app_operation_can_be_cancelled() {
+        let slot = AppOperationSlot::default();
+        let id = slot
+            .start(AppOperationKind::Install, "Example.ipa".into())
+            .unwrap();
+        slot.cancel(id);
+
+        let view = slot.get();
+        assert_eq!(view.state, AppOperationState::Cancelled);
+        assert_eq!(view.error.as_deref(), Some("device session ended"));
     }
 }
