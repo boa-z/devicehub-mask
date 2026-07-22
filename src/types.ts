@@ -23,6 +23,18 @@ export type DeviceApp = {
   is_first_party: boolean;
   is_developer_app: boolean;
 };
+export type ProvisioningProfile = {
+  name: string;
+  uuid: string;
+  team_identifiers: string[];
+  application_identifier: string | null;
+  creation_date: string | null;
+  expiration_date: string | null;
+  provisioned_devices: number;
+  is_expired: boolean;
+  get_task_allow: boolean;
+  parse_error: string | null;
+};
 
 export type Position = { x: number; y: number };
 export type ButtonBinding = string[];

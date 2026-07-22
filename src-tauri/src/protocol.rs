@@ -148,6 +148,8 @@ pub enum InputCmd {
     GetDeviceDetails(oneshot::Sender<Result<DeviceDetails, String>>),
     /// List user-facing applications through CoreDevice AppService.
     ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
+    /// List installed provisioning profiles through the Mobile Installation Agent.
+    ListProvisioningProfiles(oneshot::Sender<Result<Vec<ProvisioningProfile>, String>>),
     /// Launch an application through CoreDevice AppService.
     LaunchApp {
         bundle_id: String,
@@ -288,6 +290,20 @@ pub struct DeviceApp {
     pub is_removable: bool,
     pub is_first_party: bool,
     pub is_developer_app: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProvisioningProfile {
+    pub name: String,
+    pub uuid: String,
+    pub team_identifiers: Vec<String>,
+    pub application_identifier: Option<String>,
+    pub creation_date: Option<String>,
+    pub expiration_date: Option<String>,
+    pub provisioned_devices: usize,
+    pub is_expired: bool,
+    pub get_task_allow: bool,
+    pub parse_error: Option<String>,
 }
 
 /// The set of currently-attached devices, published by the manager for the picker.

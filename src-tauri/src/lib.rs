@@ -1,6 +1,7 @@
 mod decode;
 mod hid;
 mod protocol;
+mod provisioning;
 mod session;
 mod web;
 

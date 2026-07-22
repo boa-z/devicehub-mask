@@ -104,6 +104,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/device/details", get(device_details))
         .route("/api/device/apps", get(device_apps))
         .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
+        .route(
+            "/api/device/provisioning-profiles",
+            get(device_provisioning_profiles),
+        )
         .route("/api/profiles", get(list_profiles))
         .route("/api/profiles/{name}", get(load_profile).put(save_profile))
         .route("/api/profiles/{name}/activate", put(activate_profile))
@@ -231,6 +235,37 @@ async fn device_apps(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(apps))
+}
+
+async fn device_provisioning_profiles(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::protocol::ProvisioningProfile>>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state
+        .input
+        .try_send(InputCmd::ListProvisioningProfiles(reply))
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let profiles = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "provisioning profile request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(profiles))
 }
 
 async fn launch_app(
@@ -1028,7 +1063,11 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            device_apps(State(state)).await,
+            device_apps(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            device_provisioning_profiles(State(state)).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }

@@ -4,15 +4,17 @@ import {
   InfoCircleOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
+  SafetyCertificateOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
 import { Alert, Button, Empty, Input, Segmented, Spin, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { filterDeviceApps, formatCapacity } from "../deviceInspector";
-import type { DeviceApp, DeviceDetails } from "../types";
+import { filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "../deviceInspector";
+import type { ProfileStatusFilter } from "../deviceInspector";
+import type { DeviceApp, DeviceDetails, ProvisioningProfile } from "../types";
 
-type InspectorTab = "info" | "apps";
+type InspectorTab = "info" | "apps" | "profiles";
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
 type Props = {
@@ -28,11 +30,13 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 export function DeviceInspector({ activeUdid, request }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [tab, setTab] = useState<InspectorTab>("info");
   const [details, setDetails] = useState<DeviceDetails | null>(null);
   const [apps, setApps] = useState<DeviceApp[]>([]);
+  const [profiles, setProfiles] = useState<ProvisioningProfile[]>([]);
   const [query, setQuery] = useState("");
+  const [profileStatus, setProfileStatus] = useState<ProfileStatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState<string | null>(null);
@@ -44,8 +48,10 @@ export function DeviceInspector({ activeUdid, request }: Props) {
     try {
       if (tab === "info") {
         setDetails(await readJson<DeviceDetails>(await request("/api/device/details")));
-      } else {
+      } else if (tab === "apps") {
         setApps(await readJson<DeviceApp[]>(await request("/api/device/apps")));
+      } else {
+        setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
       }
     } catch (loadError) {
       setError(String(loadError));
@@ -57,6 +63,7 @@ export function DeviceInspector({ activeUdid, request }: Props) {
   useEffect(() => {
     setDetails(null);
     setApps([]);
+    setProfiles([]);
     setError(null);
   }, [activeUdid]);
 
@@ -65,6 +72,10 @@ export function DeviceInspector({ activeUdid, request }: Props) {
   }, [load]);
 
   const visibleApps = useMemo(() => filterDeviceApps(apps, query), [apps, query]);
+  const visibleProfiles = useMemo(
+    () => filterProvisioningProfiles(profiles, query, profileStatus),
+    [profileStatus, profiles, query],
+  );
 
   const launch = async (app: DeviceApp) => {
     setLaunching(app.bundle_id);
@@ -104,8 +115,12 @@ export function DeviceInspector({ activeUdid, request }: Props) {
           options={[
             { value: "info", label: t("deviceInspector.info"), icon: <InfoCircleOutlined /> },
             { value: "apps", label: t("deviceInspector.apps"), icon: <AppstoreOutlined /> },
+            { value: "profiles", label: t("deviceInspector.profiles"), icon: <SafetyCertificateOutlined /> },
           ]}
-          onChange={setTab}
+          onChange={(next) => {
+            setTab(next);
+            setQuery("");
+          }}
         />
         <Tooltip title={t("deviceInspector.refresh")}>
           <Button icon={<ReloadOutlined />} loading={loading} disabled={!activeUdid} onClick={() => void load()} />
@@ -116,7 +131,7 @@ export function DeviceInspector({ activeUdid, request }: Props) {
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noDevice")} />
       ) : error ? (
         <Alert type="error" showIcon message={t("deviceInspector.loadFailed")} description={error} />
-      ) : loading && (tab === "info" ? !details : apps.length === 0) ? (
+      ) : loading && (tab === "info" ? !details : tab === "apps" ? apps.length === 0 : profiles.length === 0) ? (
         <div className="device-inspector-loading"><Spin /></div>
       ) : tab === "info" ? (
         <div className="device-info-list">
@@ -127,7 +142,7 @@ export function DeviceInspector({ activeUdid, request }: Props) {
             </div>
           ))}
         </div>
-      ) : (
+      ) : tab === "apps" ? (
         <div className="device-apps-pane">
           <Input
             allowClear
@@ -166,6 +181,65 @@ export function DeviceInspector({ activeUdid, request }: Props) {
               </div>
             ))}
             {visibleApps.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noApps")} />}
+          </div>
+        </div>
+      ) : (
+        <div className="device-profiles-pane">
+          <Input
+            allowClear
+            value={query}
+            prefix={<SearchOutlined />}
+            placeholder={t("deviceInspector.searchProfiles")}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <Segmented<ProfileStatusFilter>
+            block
+            size="small"
+            value={profileStatus}
+            options={[
+              { value: "all", label: t("deviceInspector.profileAll") },
+              { value: "valid", label: t("deviceInspector.profileValid") },
+              { value: "expired", label: t("deviceInspector.profileExpired") },
+              { value: "invalid", label: t("deviceInspector.profileInvalid") },
+            ]}
+            onChange={setProfileStatus}
+          />
+          <div className="device-app-count">{t("deviceInspector.profileCount", { count: visibleProfiles.length })}</div>
+          <div className="device-profile-list">
+            {visibleProfiles.map((profile) => (
+              <div className="device-profile-row" key={profile.uuid}>
+                <div className="device-profile-title">
+                  <Typography.Text strong ellipsis={{ tooltip: profile.name }}>{profile.name}</Typography.Text>
+                  {profile.parse_error ? (
+                    <Tag color="error">{t("deviceInspector.profileInvalid")}</Tag>
+                  ) : profile.is_expired ? (
+                    <Tag color="error">{t("deviceInspector.profileExpired")}</Tag>
+                  ) : (
+                    <Tag color="success">{t("deviceInspector.profileValid")}</Tag>
+                  )}
+                  {profile.get_task_allow && <Tag color="blue">{t("deviceInspector.profileDevelopment")}</Tag>}
+                </div>
+                {profile.parse_error ? (
+                  <Typography.Text type="danger" className="device-profile-error">{profile.parse_error}</Typography.Text>
+                ) : (
+                  <div className="device-profile-details">
+                    <span>{t("deviceInspector.profileAppId")}</span>
+                    <Typography.Text type="secondary">{profile.application_identifier ?? "-"}</Typography.Text>
+                    <span>{t("deviceInspector.profileUuid")}</span>
+                    <Typography.Text type="secondary">{profile.uuid}</Typography.Text>
+                    <span>{t("deviceInspector.profileTeam")}</span>
+                    <Typography.Text type="secondary">{profile.team_identifiers.join(", ") || "-"}</Typography.Text>
+                    <span>{t("deviceInspector.profileCreated")}</span>
+                    <Typography.Text type="secondary">{formatProfileDate(profile.creation_date, i18n.resolvedLanguage ?? i18n.language)}</Typography.Text>
+                    <span>{t("deviceInspector.profileExpires")}</span>
+                    <Typography.Text type="secondary">{formatProfileDate(profile.expiration_date, i18n.resolvedLanguage ?? i18n.language)}</Typography.Text>
+                    <span>{t("deviceInspector.profileDevices")}</span>
+                    <Typography.Text type="secondary">{profile.provisioned_devices}</Typography.Text>
+                  </div>
+                )}
+              </div>
+            ))}
+            {visibleProfiles.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noProfiles")} />}
           </div>
         </div>
       )}

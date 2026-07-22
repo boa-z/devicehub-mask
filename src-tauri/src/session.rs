@@ -29,6 +29,7 @@ use idevice::{
     core_device_proxy::CoreDeviceProxy,
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
+    misagent::MisagentClient,
     provider::IdeviceProvider,
     rsd::RsdHandshake,
     springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
@@ -42,7 +43,7 @@ use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceApp, DeviceDetails,
     DeviceInfo, DeviceListSlot, ErrorSlot, FrameSlot, InputCmd, InputSink, KeyMods, Orientation,
-    OrientationSlot, RotateDir, StatusSlot, clipboard_preview,
+    OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot, clipboard_preview,
 };
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -544,6 +545,13 @@ async fn run(
             None
         }
     };
+    let misagent = match MisagentClient::connect(&*provider).await {
+        Ok(client) => Some(client),
+        Err(error) => {
+            tracing::warn!("misagent unavailable; provisioning profile list disabled: {error:?}");
+            None
+        }
+    };
 
     let proxy = CoreDeviceProxy::connect(&*provider)
         .await
@@ -581,7 +589,7 @@ async fn run(
             views.error.set(Some(error));
             views.status.set("device management connected");
             management_input_loop(
-                DeviceManagement::fallback(device_details, installation_proxy),
+                DeviceManagement::fallback(device_details, installation_proxy, misagent),
                 &mut input_rx,
             )
             .await;
@@ -723,7 +731,7 @@ async fn run(
             &mut indigo,
             &mut orientation,
             &views.orientation,
-            DeviceManagement::new(device_details, app_service, installation_proxy),
+            DeviceManagement::new(device_details, app_service, installation_proxy, misagent),
             &mut input_rx,
         ) => {}
     }
@@ -773,6 +781,7 @@ struct DeviceManagement {
     details: Option<DeviceDetails>,
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
+    misagent: Option<MisagentClient>,
 }
 
 impl DeviceManagement {
@@ -780,19 +789,22 @@ impl DeviceManagement {
         details: Option<DeviceDetails>,
         app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
         installation_proxy: Option<InstallationProxyClient>,
+        misagent: Option<MisagentClient>,
     ) -> Self {
         Self {
             details,
             app_service,
             installation_proxy,
+            misagent,
         }
     }
 
     fn fallback(
         details: Option<DeviceDetails>,
         installation_proxy: Option<InstallationProxyClient>,
+        misagent: Option<MisagentClient>,
     ) -> Self {
-        Self::new(details, None, installation_proxy)
+        Self::new(details, None, installation_proxy, misagent)
     }
 
     async fn handle(&mut self, command: InputCmd) -> Option<InputCmd> {
@@ -812,6 +824,11 @@ impl DeviceManagement {
                 let _ = reply.send(result);
                 None
             }
+            InputCmd::ListProvisioningProfiles(reply) => {
+                let result = list_provisioning_profiles(self.misagent.as_mut()).await;
+                let _ = reply.send(result);
+                None
+            }
             InputCmd::LaunchApp { bundle_id, reply } => {
                 let result = match self.app_service.as_mut() {
                     Some(client) => client
@@ -827,6 +844,35 @@ impl DeviceManagement {
             other => Some(other),
         }
     }
+}
+
+async fn list_provisioning_profiles(
+    misagent: Option<&mut MisagentClient>,
+) -> Result<Vec<ProvisioningProfile>, String> {
+    let client =
+        misagent.ok_or_else(|| "provisioning profile service is unavailable".to_string())?;
+    let raw_profiles = client
+        .copy_all()
+        .await
+        .map_err(|error| format!("unable to list provisioning profiles: {error:?}"))?;
+    let now = std::time::SystemTime::now();
+    let mut profiles: Vec<_> = raw_profiles
+        .into_iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            crate::provisioning::parse_profile(&raw, now).unwrap_or_else(|error| {
+                tracing::warn!(index, "unable to parse provisioning profile: {error}");
+                crate::provisioning::unreadable_profile(index, error)
+            })
+        })
+        .collect();
+    profiles.sort_by(|left, right| {
+        left.is_expired
+            .cmp(&right.is_expired)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            .then_with(|| left.uuid.cmp(&right.uuid))
+    });
+    Ok(profiles)
 }
 
 async fn list_device_apps(
@@ -1306,9 +1352,10 @@ async fn dispatch(
             }
             Ok(())
         }
-        InputCmd::GetDeviceDetails(_) | InputCmd::ListApps(_) | InputCmd::LaunchApp { .. } => {
-            Ok(())
-        }
+        InputCmd::GetDeviceDetails(_)
+        | InputCmd::ListApps(_)
+        | InputCmd::ListProvisioningProfiles(_)
+        | InputCmd::LaunchApp { .. } => Ok(()),
         InputCmd::Shutdown => Ok(()),
     }
 }

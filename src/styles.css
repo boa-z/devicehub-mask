@@ -68,6 +68,16 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-app-tags { min-height: 18px; display: flex; gap: 4px; }
 .device-app-tags .ant-tag { margin: 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
 .device-app-actions { display: flex; gap: 4px; }
+.device-profiles-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.device-profile-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
+.device-profile-row { min-height: 112px; padding: 10px 2px; border-bottom: 1px solid #303638; display: flex; flex-direction: column; gap: 5px; }
+.device-profile-title { min-width: 0; display: flex; align-items: center; gap: 5px; }
+.device-profile-title > .ant-typography { min-width: 0; flex: 1; margin: 0; }
+.device-profile-title .ant-tag { flex: none; margin: 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
+.device-profile-details { display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr); gap: 3px 10px; font-size: 11px; }
+.device-profile-details > span { color: #7f8a89; }
+.device-profile-details > .ant-typography { text-align: right; margin: 0; overflow-wrap: anywhere; }
+.device-profile-error { font-size: 11px; overflow-wrap: anywhere; }
 .inspector-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .inspector-title h5 { margin: 0; }
 .mapping-list { margin-top: 14px; display: grid; gap: 2px; }

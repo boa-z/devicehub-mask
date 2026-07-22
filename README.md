@@ -1,7 +1,7 @@
 # DeviceHub Mask
 
 DeviceHub Mask is a Tauri 2 desktop workspace for controlling iOS games from
-macOS and Windows. It combines a React mapping editor inspired by
+macOS, Windows, and Linux. It combines a React mapping editor inspired by
 [scrcpy-mask](https://github.com/AkiChase/scrcpy-mask) with the CoreDevice screen
 streaming, orientation handling, and Universal HID support developed in
 `devicehub_rs`.
@@ -22,6 +22,8 @@ transport.
 - Drag-to-place overlays and profile persistence
 - Device, keyboard mapping, and application settings workspaces
 - Live Lockdown device metadata and CoreDevice AppService app browsing/launching
+- Read-only installed provisioning profile inspection through Misagent, with
+  expiration, team, app identifier, development, and device-scope metadata
 - Runtime Simplified Chinese and English localization with persistent selection
 - scrcpy-mask profile import/export for taps and button direction pads
 - Always-visible hardware buttons with user-defined keyboard shortcuts
@@ -57,9 +59,13 @@ Device metadata is read once through Lockdown when a session connects. App list
 and launch requests prefer a long-lived CoreDevice AppService client owned by
 that same session, so the UI does not create a second RSD tunnel for each
 operation. App listing falls back to Lockdown's Installation Proxy when the
-newer AppService is absent. If DisplayService is unavailable, the backend keeps
-this reduced management session alive instead of discarding usable Lockdown
-capabilities; screen control and app launching remain explicitly unavailable.
+newer AppService is absent. Provisioning profiles are read through a long-lived
+Misagent connection and decoded as CMS SignedData before their plist metadata is
+exposed; raw profile payloads and provisioned device identifiers never cross the
+private API. A malformed profile is isolated as an error row instead of failing
+the whole list. If DisplayService is unavailable, the backend keeps this reduced
+management session alive instead of discarding usable Lockdown capabilities;
+screen control and app launching remain explicitly unavailable.
 Device-management routes are exposed only through the authenticated private
 loopback API and return `503` while no session is active.
 
@@ -603,8 +609,8 @@ Touch coordinates are normalized in that exact displayed space.
 
 ## Roadmap
 
-- Parse and manage provisioning profiles through Misagent without exposing raw
-  mobileprovision payloads to the frontend
+- Add confirmed install and removal actions to the read-only Misagent
+  provisioning profile inspector
 - Add explicit app installation and removal workflows with confirmations and
   progress reporting
 - Expand Device Hub-style controls for location, appearance, and accessibility
