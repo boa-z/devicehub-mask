@@ -1,13 +1,9 @@
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use idevice::core_device_proxy::CoreDeviceProxy;
 use idevice::dvt::location_simulation::LocationSimulationClient;
 use idevice::dvt::remote_server::RemoteServerClient;
-use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
-use idevice::tcp::handle::AdapterHandle;
-use idevice::{IdeviceService, ReadWrite};
+use idevice::{ReadWrite, RsdService};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::protocol::{LocationStatus, LocationStatusSlot};
@@ -29,14 +25,20 @@ pub enum LocationCommand {
     },
 }
 
-pub async fn run(
-    provider: Arc<dyn IdeviceProvider>,
-    commands: mpsc::Receiver<LocationCommand>,
-    status: LocationStatusSlot,
-) {
+pub async fn connect(
+    adapter: &mut impl idevice::provider::RsdProvider,
+    handshake: &mut RsdHandshake,
+) -> Result<RemoteServerClient<Box<dyn ReadWrite>>, String> {
     let started = Instant::now();
-    let stack = match connect_in_thread(provider).await {
-        Ok(Ok(stack)) => {
+    let result = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let mut remote = RemoteServerClient::connect_rsd(adapter, handshake).await?;
+        remote.read_message(0).await?;
+        Ok::<_, idevice::IdeviceError>(remote)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(remote)) => {
             tracing::info!(
                 component = "location",
                 backend = "dvt",
@@ -44,96 +46,14 @@ pub async fn run(
                 elapsed_ms = started.elapsed().as_millis(),
                 "location simulation backend connected"
             );
-            stack
+            Ok(remote)
         }
-        Ok(Err(error)) => {
-            mark_failed(&status, error);
-            return;
-        }
-        Err(_) => {
-            mark_failed(&status, "DVT location connection worker stopped".into());
-            return;
-        }
-    };
-
-    let ConnectedStack {
-        _adapter,
-        _handshake,
-        remote,
-    } = stack;
-    run_remote(remote, commands, status).await;
-}
-
-struct ConnectedStack {
-    _adapter: AdapterHandle,
-    _handshake: RsdHandshake,
-    remote: RemoteServerClient<Box<dyn ReadWrite>>,
-}
-
-fn connect_in_thread(
-    provider: Arc<dyn IdeviceProvider>,
-) -> oneshot::Receiver<Result<ConnectedStack, String>> {
-    let (sender, receiver) = oneshot::channel();
-    let spawn = std::thread::Builder::new()
-        .name("devicehub-location-connect".into())
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
-            let result = match runtime {
-                Ok(runtime) => runtime.block_on(async {
-                    tokio::time::timeout(CONNECT_TIMEOUT, connect_stack(provider))
-                        .await
-                        .map_err(|_| "DVT location service connection timed out".to_string())?
-                }),
-                Err(error) => Err(format!("cannot start location connection worker: {error}")),
-            };
-            let _ = sender.send(result);
-        });
-    if let Err(error) = spawn {
-        tracing::warn!(
-            component = "location",
-            backend = "dvt",
-            operation = "spawn_connect",
-            error = %error,
-            "could not start location connection worker"
-        );
+        Ok(Err(error)) => Err(format!("DVT location service unavailable: {error:?}")),
+        Err(_) => Err("DVT location service connection timed out".into()),
     }
-    receiver
 }
 
-async fn connect_stack(provider: Arc<dyn IdeviceProvider>) -> Result<ConnectedStack, String> {
-    let proxy = CoreDeviceProxy::connect(&*provider)
-        .await
-        .map_err(|error| format!("CoreDevice proxy unavailable: {error:?}"))?;
-    let rsd_port = proxy.tunnel_info().server_rsd_port;
-    let adapter = proxy
-        .create_software_tunnel()
-        .map_err(|error| format!("software tunnel unavailable: {error:?}"))?;
-    let mut adapter = adapter.to_async_handle();
-    let stream = adapter
-        .connect(rsd_port)
-        .await
-        .map_err(|error| format!("RSD connection failed: {error:?}"))?;
-    let mut handshake = RsdHandshake::new(stream)
-        .await
-        .map_err(|error| format!("RSD handshake failed: {error:?}"))?;
-    let mut remote = handshake
-        .connect::<RemoteServerClient<Box<dyn ReadWrite>>>(&mut adapter)
-        .await
-        .map_err(|error| format!("DVT remote server unavailable: {error:?}"))?;
-    remote
-        .read_message(0)
-        .await
-        .map_err(|error| format!("DVT handshake failed: {error:?}"))?;
-    Ok(ConnectedStack {
-        _adapter: adapter,
-        _handshake: handshake,
-        remote,
-    })
-}
-
-async fn run_remote(
+pub async fn run(
     mut remote: RemoteServerClient<Box<dyn ReadWrite>>,
     mut commands: mpsc::Receiver<LocationCommand>,
     status: LocationStatusSlot,

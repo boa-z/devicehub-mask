@@ -923,13 +923,27 @@ async fn run(
         .map_err(|e| format!("RSD handshake failed: {e:?}"))?;
 
     views.location.set(LocationStatus::default());
-    let (location_sender, location_rx) = tokio::sync::mpsc::channel(8);
-    let location_tx = Some(location_sender);
-    let location_task = Some(tokio::spawn(location::run(
-        provider.clone(),
-        location_rx,
-        views.location.clone(),
-    )));
+    let (location_tx, location_task) = match location::connect(&mut adapter, &mut handshake).await {
+        Ok(remote) => {
+            let (sender, receiver) = tokio::sync::mpsc::channel(8);
+            let task = tokio::spawn(location::run(remote, receiver, views.location.clone()));
+            (Some(sender), Some(task))
+        }
+        Err(error) => {
+            tracing::warn!(
+                component = "location",
+                backend = "dvt",
+                operation = "connect",
+                error = %error,
+                "location simulation unavailable"
+            );
+            views.location.set(LocationStatus {
+                error: Some(error),
+                ..LocationStatus::default()
+            });
+            (None, None)
+        }
+    };
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
     // associates our RTCP feedback with the stream; otherwise it's ignored.
