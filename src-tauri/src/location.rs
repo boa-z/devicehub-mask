@@ -3,10 +3,12 @@ use std::time::{Duration, Instant};
 use idevice::dvt::location_simulation::LocationSimulationClient;
 use idevice::dvt::remote_server::RemoteServerClient;
 use idevice::rsd::RsdHandshake;
+use idevice::tcp::handle::AdapterHandle;
 use idevice::{ReadWrite, RsdService};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::protocol::{LocationStatus, LocationStatusSlot};
+use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -25,13 +27,13 @@ pub enum LocationCommand {
     },
 }
 
-pub async fn connect(
-    adapter: &mut impl idevice::provider::RsdProvider,
-    handshake: &mut RsdHandshake,
+async fn connect(
+    mut adapter: AdapterHandle,
+    mut handshake: RsdHandshake,
 ) -> Result<RemoteServerClient<Box<dyn ReadWrite>>, String> {
     let started = Instant::now();
     let result = tokio::time::timeout(CONNECT_TIMEOUT, async {
-        let mut remote = RemoteServerClient::connect_rsd(adapter, handshake).await?;
+        let mut remote = RemoteServerClient::connect_rsd(&mut adapter, &mut handshake).await?;
         remote.read_message(0).await?;
         Ok::<_, idevice::IdeviceError>(remote)
     })
@@ -53,137 +55,161 @@ pub async fn connect(
     }
 }
 
-pub async fn run(
-    mut remote: RemoteServerClient<Box<dyn ReadWrite>>,
+pub async fn supervise(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
     mut commands: mpsc::Receiver<LocationCommand>,
     status: LocationStatusSlot,
+    reporter: ServiceReporter,
+    mut shutdown: watch::Receiver<bool>,
 ) {
-    let mut client =
-        match tokio::time::timeout(CONNECT_TIMEOUT, LocationSimulationClient::new(&mut remote))
-            .await
-        {
-            Ok(Ok(client)) => client,
-            Ok(Err(error)) => {
-                mark_failed(
-                    &status,
-                    format!("DVT location channel unavailable: {error:?}"),
-                );
-                return;
-            }
-            Err(_) => {
-                mark_failed(&status, "DVT location channel timed out".into());
-                return;
+    let mut current = None::<(f64, f64)>;
+    let mut attempt = 0;
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        attempt += 1;
+        reporter.connecting(attempt);
+        let mut remote = match connect(adapter.clone(), handshake.clone()).await {
+            Ok(remote) => remote,
+            Err(error) => {
+                mark_failed(&status, error.clone());
+                reporter.retrying(attempt, error);
+                if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+                    break;
+                }
+                continue;
             }
         };
-
-    status.set(LocationStatus {
-        available: true,
-        ..LocationStatus::default()
-    });
-    tracing::info!(
-        component = "location",
-        backend = "dvt",
-        operation = "ready",
-        "location simulation backend ready"
-    );
-
-    let mut current = None::<(f64, f64)>;
-    let mut keepalive = tokio::time::interval_at(
-        tokio::time::Instant::now() + KEEPALIVE_INTERVAL,
-        KEEPALIVE_INTERVAL,
-    );
-    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    loop {
-        tokio::select! {
-            command = commands.recv() => {
-                let Some(command) = command else { break };
-                match command {
-                    LocationCommand::Set { latitude, longitude, reply } => {
-                        let started = Instant::now();
-                        match timed_set(&mut client, latitude, longitude).await {
-                            Ok(()) => {
-                                current = Some((latitude, longitude));
-                                keepalive.reset();
-                                status.set(LocationStatus {
-                                    available: true,
-                                    active: true,
-                                    latitude: Some(latitude),
-                                    longitude: Some(longitude),
-                                    error: None,
-                                });
-                                tracing::info!(
-                                    component = "location",
-                                    backend = "dvt",
-                                    operation = "set",
-                                    elapsed_ms = started.elapsed().as_millis(),
-                                    "simulated location applied"
-                                );
-                                let _ = reply.send(Ok(()));
-                            }
-                            Err(error) => {
-                                let _ = reply.send(Err(error.clone()));
-                                mark_failed(&status, error);
-                                return;
-                            }
-                        }
+        let mut client =
+            match tokio::time::timeout(CONNECT_TIMEOUT, LocationSimulationClient::new(&mut remote))
+                .await
+            {
+                Ok(Ok(client)) => client,
+                Ok(Err(error)) => {
+                    let error = format!("DVT location channel unavailable: {error:?}");
+                    mark_failed(&status, error.clone());
+                    reporter.retrying(attempt, error);
+                    if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+                        break;
                     }
-                    LocationCommand::Clear { reply } => {
-                        let started = Instant::now();
-                        match timed_clear(&mut client).await {
-                            Ok(()) => {
-                                current = None;
-                                status.set(LocationStatus {
-                                    available: true,
-                                    ..LocationStatus::default()
-                                });
-                                tracing::info!(
-                                    component = "location",
-                                    backend = "dvt",
-                                    operation = "clear",
-                                    elapsed_ms = started.elapsed().as_millis(),
-                                    "simulated location cleared"
-                                );
-                                let _ = reply.send(Ok(()));
-                            }
-                            Err(error) => {
-                                let _ = reply.send(Err(error.clone()));
-                                mark_failed(&status, error);
-                                return;
-                            }
-                        }
+                    continue;
+                }
+                Err(_) => {
+                    let error = "DVT location channel timed out".to_string();
+                    mark_failed(&status, error.clone());
+                    reporter.retrying(attempt, error);
+                    if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+                        break;
                     }
+                    continue;
                 }
+            };
+
+        if let Some((latitude, longitude)) = current
+            && let Err(error) = timed_set(&mut client, latitude, longitude).await
+        {
+            mark_failed(&status, error.clone());
+            reporter.retrying(attempt, error);
+            if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+                break;
             }
-            _ = keepalive.tick(), if current.is_some() => {
-                let (latitude, longitude) = current.expect("guarded by select condition");
-                if let Err(error) = timed_set(&mut client, latitude, longitude).await {
-                    mark_failed(&status, error);
-                    return;
-                }
-                tracing::debug!(
-                    component = "location",
-                    backend = "dvt",
-                    operation = "keepalive",
-                    "simulated location refreshed"
-                );
-            }
+            continue;
         }
-    }
-
-    if current.is_some() {
-        let started = Instant::now();
-        let cleared = tokio::time::timeout(SHUTDOWN_CLEAR_TIMEOUT, client.clear()).await;
+        status.set(LocationStatus {
+            available: true,
+            active: current.is_some(),
+            latitude: current.map(|value| value.0),
+            longitude: current.map(|value| value.1),
+            error: None,
+        });
+        reporter.ready(attempt);
         tracing::info!(
             component = "location",
             backend = "dvt",
-            operation = "shutdown_clear",
-            success = matches!(cleared, Ok(Ok(()))),
-            elapsed_ms = started.elapsed().as_millis(),
-            "location simulation shutdown cleanup finished"
+            operation = "ready",
+            attempt,
+            "location simulation backend ready"
         );
+
+        let mut keepalive = tokio::time::interval_at(
+            tokio::time::Instant::now() + KEEPALIVE_INTERVAL,
+            KEEPALIVE_INTERVAL,
+        );
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let failure = loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break None;
+                    }
+                }
+                command = commands.recv() => {
+                    let Some(command) = command else { break None };
+                    match command {
+                        LocationCommand::Set { latitude, longitude, reply } => {
+                            let started = Instant::now();
+                            match timed_set(&mut client, latitude, longitude).await {
+                                Ok(()) => {
+                                    current = Some((latitude, longitude));
+                                    keepalive.reset();
+                                    status.set(LocationStatus { available: true, active: true, latitude: Some(latitude), longitude: Some(longitude), error: None });
+                                    tracing::info!(component = "location", backend = "dvt", operation = "set", elapsed_ms = started.elapsed().as_millis(), "simulated location applied");
+                                    let _ = reply.send(Ok(()));
+                                }
+                                Err(error) => {
+                                    let _ = reply.send(Err(error.clone()));
+                                    break Some(error);
+                                }
+                            }
+                        }
+                        LocationCommand::Clear { reply } => match timed_clear(&mut client).await {
+                            Ok(()) => {
+                                current = None;
+                                status.set(LocationStatus { available: true, ..LocationStatus::default() });
+                                let _ = reply.send(Ok(()));
+                            }
+                            Err(error) => {
+                                let _ = reply.send(Err(error.clone()));
+                                break Some(error);
+                            }
+                        }
+                    }
+                }
+                _ = keepalive.tick(), if current.is_some() => {
+                    let (latitude, longitude) = current.expect("guarded by select condition");
+                    if let Err(error) = timed_set(&mut client, latitude, longitude).await {
+                        break Some(error);
+                    }
+                }
+            }
+        };
+
+        if let Some(error) = failure {
+            mark_failed(&status, error.clone());
+            reporter.retrying(attempt, error);
+            if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+                break;
+            }
+            continue;
+        }
+        if current.is_some() {
+            let started = Instant::now();
+            let cleared = tokio::time::timeout(SHUTDOWN_CLEAR_TIMEOUT, client.clear()).await;
+            tracing::info!(
+                component = "location",
+                backend = "dvt",
+                operation = "shutdown_clear",
+                success = matches!(cleared, Ok(Ok(()))),
+                elapsed_ms = started.elapsed().as_millis(),
+                "location simulation shutdown cleanup finished"
+            );
+        }
+        break;
     }
     status.set(LocationStatus::default());
+    reporter.stopped(attempt);
 }
 
 async fn timed_set<R: ReadWrite>(

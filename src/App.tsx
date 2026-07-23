@@ -36,6 +36,7 @@ import { LocationPage } from "./components/LocationPage";
 import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
+import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
@@ -938,6 +939,8 @@ export default function App() {
             />
           ) : page === "location" ? (
             <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />
+          ) : page === "performance" ? (
+            <PerformancePage activeUdid={status.active_udid} streamMetrics={streamMetrics} renderFps={renderFps} request={request} />
           ) : (
             <>
               {page === "mappings" && (

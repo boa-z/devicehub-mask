@@ -49,6 +49,20 @@ The CoreDevice session runs on a dedicated Tokio runtime because several
 boundary. The session owns display, HID, AppService, and device-state resources.
 Ending or replacing it cancels dependent work.
 
+Optional device services run under a shared supervisor inside a Tokio
+`LocalSet`. This keeps non-`Send` DVT channel objects on the CoreDevice owner
+thread while the HTTP, WebSocket, and MCP transports continue using the
+multi-thread runtime. Each service publishes a common health record with phase,
+attempt count, restart count, last error, and update time. Location, sysmontap,
+and graphics channels reconnect independently with bounded exponential backoff;
+one broken channel cannot terminate video or HID.
+
+Performance monitoring reuses cloned handles to the active software tunnel and
+creates isolated DVT channels. Sysmontap and graphics sampling are demand-driven
+by the Performance workspace, and stop when the workspace closes. Their latest
+normalized snapshot is exposed through the authenticated private API; short-term
+chart history remains frontend-local and is discarded on device changes.
+
 Lockdown metadata is read once at connection. App listing and launch prefer a
 long-lived CoreDevice AppService client in the same session, avoiding a new RSD
 tunnel per operation. Listing falls back to Installation Proxy when AppService

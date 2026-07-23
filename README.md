@@ -21,6 +21,8 @@ exposed as a browser application.
   mapping editor with live or captured-screen backgrounds
 - Device metadata, application browsing and launch, IPA installation, safe app
   removal, and provisioning profile inspection
+- On-demand iPhone CPU, process, Core Animation FPS, and GPU-memory telemetry
+  with supervised DVT service recovery
 - Built-in Streamable HTTP MCP server for screenshots, input, device switching,
   status inspection, and DVT virtual location
 - Native Tauri 2 desktop controls, Simplified Chinese and English UI, and signed

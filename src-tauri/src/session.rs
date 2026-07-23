@@ -49,6 +49,7 @@ use crate::protocol::{
     OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
+use crate::{performance, supervisor};
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
 const CLIENT_SUPPORTED_FEATURES: u64 = 140;
@@ -653,6 +654,9 @@ struct SessionViews {
     error: ErrorSlot,
     app_operation: AppOperationSlot,
     location: LocationStatusSlot,
+    performance: performance::PerformanceSlot,
+    performance_demand: performance::PerformanceDemand,
+    services: supervisor::ServiceRegistry,
 }
 
 #[derive(Clone)]
@@ -679,6 +683,9 @@ pub async fn manage(
     error: ErrorSlot,
     app_operation: AppOperationSlot,
     location: LocationStatusSlot,
+    performance: performance::PerformanceSlot,
+    performance_demand: performance::PerformanceDemand,
+    services: supervisor::ServiceRegistry,
     input_sink: InputSink,
     mut control_rx: UnboundedReceiver<ControlCmd>,
 ) {
@@ -704,6 +711,8 @@ pub async fn manage(
         let Some(udid) = target.clone() else {
             active.set(None);
             location.set(LocationStatus::default());
+            performance.reset();
+            services.clear();
             status.set("no device - pick one from the menu");
             tokio::select! {
                 cmd = control_rx.recv() => match cmd {
@@ -737,6 +746,9 @@ pub async fn manage(
                 error: error.clone(),
                 app_operation: app_operation.clone(),
                 location: location.clone(),
+                performance: performance.clone(),
+                performance_demand: performance_demand.clone(),
+                services: services.clone(),
             },
             in_rx,
         );
@@ -922,27 +934,38 @@ async fn run(
         .await
         .map_err(|e| format!("RSD handshake failed: {e:?}"))?;
 
+    views.performance.reset();
+    let mut supervisor = supervisor::ServiceSupervisor::new(views.services.clone());
+    supervisor.spawn(performance::supervise_system(
+        adapter.clone(),
+        handshake.clone(),
+        views.performance.clone(),
+        supervisor.reporter("performance.system"),
+        views.performance_demand.subscribe(),
+        supervisor.shutdown_receiver(),
+    ));
+    supervisor.spawn(performance::supervise_graphics(
+        adapter.clone(),
+        handshake.clone(),
+        views.performance.clone(),
+        supervisor.reporter("performance.graphics"),
+        views.performance_demand.subscribe(),
+        supervisor.shutdown_receiver(),
+    ));
+
     views.location.set(LocationStatus::default());
-    let (location_tx, location_task) = match location::connect(&mut adapter, &mut handshake).await {
-        Ok(remote) => {
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
-            let task = tokio::spawn(location::run(remote, receiver, views.location.clone()));
-            (Some(sender), Some(task))
-        }
-        Err(error) => {
-            tracing::warn!(
-                component = "location",
-                backend = "dvt",
-                operation = "connect",
-                error = %error,
-                "location simulation unavailable"
-            );
-            views.location.set(LocationStatus {
-                error: Some(error),
-                ..LocationStatus::default()
-            });
-            (None, None)
-        }
+    let (location_sender, location_receiver) = tokio::sync::mpsc::channel(8);
+    supervisor.spawn(location::supervise(
+        adapter.clone(),
+        handshake.clone(),
+        location_receiver,
+        views.location.clone(),
+        supervisor.reporter("location"),
+        supervisor.shutdown_receiver(),
+    ));
+    let location = LocationBridge {
+        sender: location_sender,
+        status: views.location.clone(),
     };
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
@@ -973,10 +996,11 @@ async fn run(
                     misagent,
                 ),
                 &mut input_rx,
-                location_tx.as_ref(),
+                &location,
             )
             .await;
-            stop_location_session(location_tx, location_task).await;
+            drop(location);
+            supervisor.shutdown().await;
             views.status.set("stopping...");
             return Ok(());
         }
@@ -1138,11 +1162,12 @@ async fn run(
                 misagent,
             ),
             &mut input_rx,
-            location_tx.as_ref(),
+            &location,
         ) => {}
     }
 
-    stop_location_session(location_tx, location_task).await;
+    drop(location);
+    supervisor.shutdown().await;
     views.status.set("stopping...");
     display.stop_media_stream().await.ok();
     child.start_kill().ok();
@@ -1158,7 +1183,7 @@ async fn input_loop(
     orientation_view: &OrientationSlot,
     mut management: DeviceManagement,
     input_rx: &mut UnboundedReceiver<InputCmd>,
-    location_tx: Option<&tokio::sync::mpsc::Sender<LocationCommand>>,
+    location: &LocationBridge,
 ) {
     while let Some(cmd) = input_rx.recv().await {
         if matches!(cmd, InputCmd::Shutdown) {
@@ -1167,7 +1192,7 @@ async fn input_loop(
         let Some(cmd) = management.handle(cmd).await else {
             continue;
         };
-        let Some(cmd) = forward_location_command(cmd, location_tx) else {
+        let Some(cmd) = forward_location_command(cmd, location) else {
             continue;
         };
         if let Err(e) = dispatch(touch, indigo, orientation, orientation_view, cmd).await {
@@ -1179,7 +1204,7 @@ async fn input_loop(
 async fn management_input_loop(
     mut management: DeviceManagement,
     input_rx: &mut UnboundedReceiver<InputCmd>,
-    location_tx: Option<&tokio::sync::mpsc::Sender<LocationCommand>>,
+    location: &LocationBridge,
 ) {
     while let Some(command) = input_rx.recv().await {
         if matches!(command, InputCmd::Shutdown) {
@@ -1188,14 +1213,11 @@ async fn management_input_loop(
         let Some(command) = management.handle(command).await else {
             continue;
         };
-        let _ = forward_location_command(command, location_tx);
+        let _ = forward_location_command(command, location);
     }
 }
 
-fn forward_location_command(
-    command: InputCmd,
-    location_tx: Option<&tokio::sync::mpsc::Sender<LocationCommand>>,
-) -> Option<InputCmd> {
+fn forward_location_command(command: InputCmd, location: &LocationBridge) -> Option<InputCmd> {
     let command = match command {
         InputCmd::SetLocation {
             latitude,
@@ -1210,9 +1232,10 @@ fn forward_location_command(
         other => return Some(other),
     };
 
-    let result = match location_tx {
-        Some(sender) => sender.try_send(command),
-        None => Err(tokio::sync::mpsc::error::TrySendError::Closed(command)),
+    let result = if location.status.get().available {
+        location.sender.try_send(command)
+    } else {
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(command))
     };
     if let Err(error) = result {
         let (reason, command) = match error {
@@ -1232,23 +1255,9 @@ fn forward_location_command(
     None
 }
 
-async fn stop_location_session(
-    location_tx: Option<tokio::sync::mpsc::Sender<LocationCommand>>,
-    location_task: Option<tokio::task::JoinHandle<()>>,
-) {
-    drop(location_tx);
-    let Some(mut task) = location_task else {
-        return;
-    };
-    if tokio::time::timeout(SWITCH_GRACE, &mut task).await.is_err() {
-        tracing::warn!(
-            component = "location",
-            backend = "dvt",
-            operation = "shutdown",
-            "location simulation cleanup timed out"
-        );
-        task.abort();
-    }
+struct LocationBridge {
+    sender: tokio::sync::mpsc::Sender<LocationCommand>,
+    status: LocationStatusSlot,
 }
 
 struct DeviceManagement {

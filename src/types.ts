@@ -21,6 +21,26 @@ export type StreamMetrics = {
   presentation_ack_ms: number;
   megabits_per_second: number;
 };
+export type ServicePhase = "connecting" | "ready" | "recovering" | "unavailable" | "stopped";
+export type ServiceHealth = {
+  name: string;
+  phase: ServicePhase;
+  attempts: number;
+  restarts: number;
+  last_error: string | null;
+  updated_at_ms: number;
+};
+export type PerformanceSnapshot = {
+  captured_at_ms: number;
+  system_cpu_percent: number | null;
+  process_count: number | null;
+  graphics_fps: number | null;
+  gpu_allocated_bytes: number | null;
+  gpu_in_use_bytes: number | null;
+  gpu_driver_bytes: number | null;
+  gpu_recovery_count: number | null;
+};
+export type PerformanceView = { sample: PerformanceSnapshot; services: ServiceHealth[]; sampling: boolean };
 export type DeviceDetails = {
   udid: string;
   name: string;

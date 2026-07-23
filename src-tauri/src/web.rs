@@ -26,6 +26,10 @@ use crate::protocol::{
     FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot, Orientation,
     OrientationSlot, RotateDir, StatusSlot, VideoCounters, norm, unrotate_norm,
 };
+use crate::{
+    performance::{PerformanceDemand, PerformanceSlot},
+    supervisor::ServiceRegistry,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -38,6 +42,9 @@ pub struct AppState {
     pub error: ErrorSlot,
     pub app_operation: AppOperationSlot,
     pub location: LocationStatusSlot,
+    pub performance: PerformanceSlot,
+    pub performance_demand: PerformanceDemand,
+    pub services: ServiceRegistry,
     pub input: InputSink,
     pub control: UnboundedSender<ControlCmd>,
     pub profile_dir: Arc<PathBuf>,
@@ -72,6 +79,13 @@ struct StreamMetricsView {
     websocket_send_ms: f64,
     presentation_ack_ms: f64,
     megabits_per_second: f64,
+}
+
+#[derive(Serialize)]
+struct PerformanceView {
+    sample: crate::performance::PerformanceSnapshot,
+    services: Vec<crate::supervisor::ServiceHealth>,
+    sampling: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -112,6 +126,11 @@ struct ApiToken(Arc<str>);
 pub fn router(state: AppState, token: String) -> Router {
     Router::new()
         .route("/api/status", get(status))
+        .route("/api/performance", get(performance))
+        .route(
+            "/api/performance/sampling",
+            put(start_performance_sampling).delete(stop_performance_sampling),
+        )
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
@@ -171,6 +190,26 @@ fn private_api_authorized(headers: &HeaderMap, token: &str) -> bool {
 
 async fn status(State(state): State<AppState>) -> Json<StatusView> {
     Json(status_snapshot(&state))
+}
+
+async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
+    Json(PerformanceView {
+        sample: state.performance.get(),
+        services: state.services.snapshot(),
+        sampling: state.performance_demand.enabled(),
+    })
+}
+
+async fn start_performance_sampling(State(state): State<AppState>) -> StatusCode {
+    state.performance.reset();
+    state.performance_demand.set(true);
+    StatusCode::NO_CONTENT
+}
+
+async fn stop_performance_sampling(State(state): State<AppState>) -> StatusCode {
+    state.performance_demand.set(false);
+    state.performance.reset();
+    StatusCode::NO_CONTENT
 }
 
 fn status_snapshot(state: &AppState) -> StatusView {
@@ -1308,6 +1347,9 @@ mod tests {
                 error: ErrorSlot::default(),
                 app_operation: AppOperationSlot::default(),
                 location: LocationStatusSlot::default(),
+                performance: PerformanceSlot::default(),
+                performance_demand: PerformanceDemand::default(),
+                services: ServiceRegistry::default(),
                 input,
                 control,
                 profile_dir: Arc::new(PathBuf::new()),
@@ -1371,6 +1413,24 @@ mod tests {
         };
         reply.send(Ok(())).unwrap();
         assert_eq!(request.await.unwrap().unwrap(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn performance_sampling_endpoint_controls_demand() {
+        let (state, _) = test_state();
+        assert!(!state.performance_demand.enabled());
+        assert_eq!(
+            start_performance_sampling(State(state.clone())).await,
+            StatusCode::NO_CONTENT
+        );
+        assert!(state.performance_demand.enabled());
+        let view = performance(State(state.clone())).await.0;
+        assert!(view.sampling);
+        assert_eq!(
+            stop_performance_sampling(State(state.clone())).await,
+            StatusCode::NO_CONTENT
+        );
+        assert!(!state.performance_demand.enabled());
     }
 
     #[tokio::test]

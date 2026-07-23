@@ -34,6 +34,19 @@ Settings contains appearance, language, window behavior, automatic update
 checking, a manual **Check now** command, the installed app version, and the
 GitHub repository link.
 
+### Performance
+
+The Performance workspace combines device-side DVT telemetry with the desktop
+video pipeline. Device metrics include system CPU, process count, Core
+Animation FPS, and GPU memory. Pipeline metrics include source, decode and
+presentation rates, transport bandwidth, JPEG encoding time, and frame age.
+
+Sampling starts only while the Performance workspace is open and stops when it
+is left, so monitoring does not add permanent device load. The service-health
+section reports whether virtual location, system monitoring, and graphics
+monitoring are connecting, ready, recovering, unavailable, or stopped. A
+service reconnect does not tear down video or input.
+
 ## Control Modes
 
 Use the **Mapping / Keyboard passthrough** segmented control above the device

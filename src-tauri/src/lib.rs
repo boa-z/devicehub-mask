@@ -3,10 +3,12 @@ mod diagnostics;
 mod hid;
 mod location;
 mod mcp;
+mod performance;
 mod protocol;
 mod provisioning;
 mod session;
 mod settings;
+mod supervisor;
 mod web;
 
 use std::path::PathBuf;
@@ -115,7 +117,8 @@ fn spawn_backend(
                 .enable_all()
                 .build()
                 .expect("build CoreDevice runtime");
-            runtime.block_on(async move {
+            let device_tasks = tokio::task::LocalSet::new();
+            runtime.block_on(device_tasks.run_until(async move {
                 let frames = FrameSlot::default();
                 let video_counters = VideoCounters::default();
                 let status = StatusSlot::default();
@@ -127,6 +130,9 @@ fn spawn_backend(
                 let input = InputSink::default();
                 let app_operation = AppOperationSlot::default();
                 let location = LocationStatusSlot::default();
+                let performance = performance::PerformanceSlot::default();
+                let performance_demand = performance::PerformanceDemand::default();
+                let services = supervisor::ServiceRegistry::default();
 
                 tokio::spawn(mcp::serve(
                     frames.clone(),
@@ -154,6 +160,9 @@ fn spawn_backend(
                     error.clone(),
                     app_operation.clone(),
                     location.clone(),
+                    performance.clone(),
+                    performance_demand.clone(),
+                    services.clone(),
                     input.clone(),
                     control_rx,
                 );
@@ -168,6 +177,9 @@ fn spawn_backend(
                         error,
                         app_operation,
                         location,
+                        performance,
+                        performance_demand,
+                        services,
                         input,
                         control: thread_control.clone(),
                         profile_dir: Arc::new(profile_dir),
@@ -209,7 +221,7 @@ fn spawn_backend(
                     _ = manager => tracing::warn!("device manager stopped"),
                 }
                 let _ = thread_control.send(ControlCmd::Quit);
-            });
+            }));
         })
         .map_err(|error| format!("cannot start CoreDevice thread: {error}"))?;
 
