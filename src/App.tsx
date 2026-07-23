@@ -49,6 +49,7 @@ import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouch
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
+import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
 const emptyStatus: DeviceStatus = {
@@ -203,7 +204,7 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const renderedFramesRef = useRef(0);
-  const lastFrameAtRef = useRef(0);
+  const lastVideoActivityAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
@@ -464,8 +465,7 @@ export default function App() {
       return;
     }
     const update = () => {
-      const lastFrameAt = lastFrameAtRef.current;
-      setStreamStalled(lastFrameAt > 0 && performance.now() - lastFrameAt > 2_500);
+      setStreamStalled(isVideoStreamStalled(performance.now(), lastVideoActivityAtRef.current));
     };
     update();
     const timer = window.setInterval(update, 1_000);
@@ -563,6 +563,7 @@ export default function App() {
       socket.onopen = () => {
         logFrontend("info", "websocket", "opened", "Video and control socket connected");
         socketRef.current = socket;
+        lastVideoActivityAtRef.current = performance.now();
         setConnected(true);
         metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
       };
@@ -582,6 +583,7 @@ export default function App() {
         setActiveIds(new Set());
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
+        lastVideoActivityAtRef.current = 0;
         canvasReadyRef.current = false;
         setCanvasReady(false);
         setStreamStalled(false);
@@ -614,7 +616,8 @@ export default function App() {
               frontendMetrics.canvasDrawMs += performance.now() - drawStarted;
               frontendMetrics.presentedFrames += 1;
               renderedFramesRef.current += 1;
-              lastFrameAtRef.current = performance.now();
+              lastVideoActivityAtRef.current = performance.now();
+              setStreamStalled(false);
               if (!canvasReadyRef.current) {
                 canvasReadyRef.current = true;
                 setCanvasReady(true);
@@ -643,10 +646,19 @@ export default function App() {
         if (typeof event.data === "string") {
           const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics };
           if (data.type === "status") setStatus(data.payload as DeviceStatus);
-          if (data.type === "metrics") setStreamMetrics(data.payload as StreamMetrics);
+          if (data.type === "metrics") {
+            const metrics = data.payload as StreamMetrics;
+            setStreamMetrics(metrics);
+            if (hasDecodedVideoActivity(metrics)) {
+              lastVideoActivityAtRef.current = performance.now();
+              setStreamStalled(false);
+            }
+          }
           return;
         }
         frontendMetrics.receivedFrames += 1;
+        lastVideoActivityAtRef.current = performance.now();
+        setStreamStalled(false);
         if (pendingFrame) {
           frontendMetrics.replacedFrames += 1;
           if (socket.readyState === WebSocket.OPEN) {
