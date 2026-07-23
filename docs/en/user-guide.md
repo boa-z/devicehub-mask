@@ -33,9 +33,11 @@ identities even when a profile stores more mappings.
 
 ### Application Settings
 
-Settings contains appearance, language, window behavior, automatic update
-checking, a manual **Check now** command, the installed app version, and the
-GitHub repository link.
+Settings contains appearance, language, window behavior, device audio, automatic
+update checking, a manual **Check now** command, the installed app version, and
+the GitHub repository link. Device audio is disabled by default; enabling it
+takes effect after reconnecting the device. Playback mute and volume apply
+immediately, and mute is also available in the Device toolbar.
 
 ### Performance
 

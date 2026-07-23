@@ -5,10 +5,15 @@ export type VideoPixelFormat = "rgb24" | "yuv420p";
 export type VideoSettingsStatus = {
   video_pixel_format: VideoPixelFormat;
   environment_override: boolean;
+  audio_enabled: boolean;
 };
 
 export function readVideoSettings() {
   return invoke<VideoSettingsStatus>("video_settings_status");
+}
+
+export function setAudioEnabled(enabled: boolean) {
+  return invoke<VideoSettingsStatus>("set_audio_enabled", { enabled });
 }
 
 export function setVideoPixelFormat(videoPixelFormat: VideoPixelFormat) {

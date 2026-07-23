@@ -9,12 +9,15 @@ use crate::protocol::FrameFormat;
 struct PersistedSettings {
     #[serde(default)]
     video_pixel_format: FrameFormat,
+    #[serde(default)]
+    audio_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct VideoSettingsStatus {
     pub video_pixel_format: FrameFormat,
     pub environment_override: bool,
+    pub audio_enabled: bool,
 }
 
 pub struct AppSettings {
@@ -68,10 +71,24 @@ impl AppSettings {
     }
 
     pub fn status(&self) -> VideoSettingsStatus {
+        let persisted = self
+            .persisted
+            .read()
+            .expect("application settings lock poisoned");
         VideoSettingsStatus {
-            video_pixel_format: self.video_pixel_format(),
+            video_pixel_format: self
+                .environment_override
+                .unwrap_or(persisted.video_pixel_format),
             environment_override: self.environment_override.is_some(),
+            audio_enabled: persisted.audio_enabled,
         }
+    }
+
+    pub fn audio_enabled(&self) -> bool {
+        self.persisted
+            .read()
+            .expect("application settings lock poisoned")
+            .audio_enabled
     }
 
     pub fn set_video_pixel_format(
@@ -85,7 +102,42 @@ impl AppSettings {
             .persisted
             .write()
             .map_err(|_| "application settings lock poisoned".to_owned())?;
-        let next = PersistedSettings { video_pixel_format };
+        let next = PersistedSettings {
+            video_pixel_format,
+            audio_enabled: persisted.audio_enabled,
+        };
+        self.save_locked(&mut persisted, next)?;
+        drop(persisted);
+        tracing::info!(
+            ?video_pixel_format,
+            "video pixel format changed; applies to next session"
+        );
+        Ok(self.status())
+    }
+
+    pub fn set_audio_enabled(&self, audio_enabled: bool) -> Result<VideoSettingsStatus, String> {
+        let mut persisted = self
+            .persisted
+            .write()
+            .map_err(|_| "application settings lock poisoned".to_owned())?;
+        let next = PersistedSettings {
+            video_pixel_format: persisted.video_pixel_format,
+            audio_enabled,
+        };
+        self.save_locked(&mut persisted, next)?;
+        drop(persisted);
+        tracing::info!(
+            audio_enabled,
+            "device audio setting changed; applies to next session"
+        );
+        Ok(self.status())
+    }
+
+    fn save_locked(
+        &self,
+        persisted: &mut PersistedSettings,
+        next: PersistedSettings,
+    ) -> Result<(), String> {
         let json = serde_json::to_vec_pretty(&next)
             .map_err(|error| format!("cannot serialize application settings: {error}"))?;
         if let Some(parent) = self.path.parent() {
@@ -99,12 +151,7 @@ impl AppSettings {
         std::fs::write(&self.path, json)
             .map_err(|error| format!("cannot write {}: {error}", self.path.display()))?;
         *persisted = next;
-        drop(persisted);
-        tracing::info!(
-            ?video_pixel_format,
-            "video pixel format changed; applies to next session"
-        );
-        Ok(self.status())
+        Ok(())
     }
 }
 
@@ -162,8 +209,23 @@ mod tests {
         let saved: PersistedSettings =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.video_pixel_format, FrameFormat::Yuv420p);
+        assert!(!saved.audio_enabled);
+
+        let status = settings.set_audio_enabled(true).unwrap();
+        assert!(status.audio_enabled);
+        let saved: PersistedSettings =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.video_pixel_format, FrameFormat::Yuv420p);
+        assert!(saved.audio_enabled);
 
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn old_settings_default_audio_to_disabled() {
+        let saved: PersistedSettings =
+            serde_json::from_str(r#"{"video_pixel_format":"rgb24"}"#).unwrap();
+        assert!(!saved.audio_enabled);
     }
 }

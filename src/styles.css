@@ -126,6 +126,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .diagnostics-detail code { overflow-wrap: anywhere; }
 .language-select { width: 220px; }
 .video-format-select { width: 220px; }
+.settings-section .ant-slider { width: 220px; margin-inline: 0; }
 .device-view-scale-select { width: 220px; }
 .device-display-controls { flex: none; }
 .device-scale-select { width: 104px; }

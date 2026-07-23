@@ -25,7 +25,7 @@ use idevice::{
             ButtonState, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, IndigoHidClient,
             TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
         },
-        is_rtcp,
+        is_rtcp, parse_answer_media_blob,
     },
     core_device_proxy::CoreDeviceProxy,
     installation_proxy::InstallationProxyClient,
@@ -43,10 +43,11 @@ use tokio::process::ChildStdin;
 use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
-    ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardEvent, ClipboardSlot, ConnKind,
-    ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, ErrorSlot, FrameFormat,
-    FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation,
-    OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
+    ActiveSlot, AppOperationKind, AppOperationSlot, AudioSlot, ClipboardEvent, ClipboardSlot,
+    ConnKind, ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, ErrorSlot,
+    FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot,
+    Orientation, OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot, VideoCounters,
+    clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
@@ -664,6 +665,8 @@ struct SessionVideo {
     frame_format: FrameFormat,
     counters: VideoCounters,
     frames: FrameSlot,
+    audio_enabled: bool,
+    audio: AudioSlot,
 }
 
 /// Supervise the device session: enumerate attached devices for the picker,
@@ -675,6 +678,7 @@ pub async fn manage(
     video_counters: VideoCounters,
     repaint: impl Fn() + Send + Clone + 'static,
     frames: FrameSlot,
+    audio: AudioSlot,
     status: StatusSlot,
     clipboard: ClipboardSlot,
     orientation_view: OrientationSlot,
@@ -737,6 +741,8 @@ pub async fn manage(
                 frame_format: settings.video_pixel_format(),
                 counters: video_counters.clone(),
                 frames: frames.clone(),
+                audio_enabled: settings.audio_enabled(),
+                audio: audio.clone(),
             },
             repaint.clone(),
             clipboard.clone(),
@@ -1078,9 +1084,7 @@ async fn run(
     // A stable CNAME for our RTCP SDES (identifies this receiver endpoint).
     let cname = format!("devicehub@{}", adapter.host_ip());
 
-    // Hold the audio socket bound for the stream's lifetime (dropping it unbinds
-    // the port). Keep the display client to stop the stream on teardown.
-    let _audio_udp = media.audio_udp;
+    // Keep the display client to stop the stream on teardown.
     let mut display = media.client;
 
     // Shared between the RTP receive loop and the RTCP send loop (rtcp-mux feedback
@@ -1124,6 +1128,9 @@ async fn run(
             our_ssrc,
         ) => {
             tracing::warn!("video task ended early");
+        }
+        _ = audio_task(media.audio_udp, video.audio, video.audio_enabled) => {
+            tracing::warn!("audio task ended early");
         }
         _ = ffmpeg_writer(ffmpeg_in, hevc_queue) => {
             tracing::warn!("ffmpeg writer ended");
@@ -2612,10 +2619,11 @@ async fn start_screen_media_stream(
         CLIENT_SUPPORTED_FEATURES,
         session_id,
     );
-    client
+    let audio_response = client
         .start_media_stream(audio_params)
         .await
         .map_err(|error| format_media_start_error("audio", error, identity))?;
+    log_audio_negotiation(&audio_response);
 
     // Video stream on the same session.
     start_video(
@@ -2628,6 +2636,10 @@ async fn start_screen_media_stream(
         identity,
     )
     .await?;
+    match client.get_media_stream_server_status().await {
+        Ok(status) => log_media_server_status(&status),
+        Err(error) => tracing::warn!(?error, "unable to query negotiated media stream status"),
+    }
 
     Ok(ScreenMediaStream {
         client,
@@ -2635,6 +2647,374 @@ async fn start_screen_media_stream(
         video_udp,
         rtcp_udp,
     })
+}
+
+fn log_audio_negotiation(response: &plist::Value) {
+    let response_fields = response
+        .as_dictionary()
+        .map(|dictionary| dictionary.keys().cloned().collect::<Vec<_>>());
+    let Some(answer) = find_negotiator_answer(response) else {
+        tracing::warn!(
+            ?response_fields,
+            "audio negotiation response did not contain an answer"
+        );
+        tracing::debug!(response = ?response, "unparsed audio negotiation response");
+        return;
+    };
+    let Ok(negotiation) = parse_answer_media_blob(answer) else {
+        tracing::warn!(
+            ?response_fields,
+            answer_bytes = answer.len(),
+            "unable to parse audio negotiation answer"
+        );
+        return;
+    };
+    tracing::info!(
+        audio_features = negotiation
+            .codec_features
+            .as_ref()
+            .map(|features| features.audio_features),
+        stream_groups = negotiation.stream_groups.len(),
+        "audio media negotiation accepted"
+    );
+    for (group_index, group) in negotiation.stream_groups.iter().enumerate() {
+        for payload in &group.payloads {
+            tracing::info!(
+                group_index,
+                stream_group = group.stream_group,
+                codec_type = payload.codec_type,
+                rtp_payload_type = payload.rtp_payload,
+                packet_time = payload.p_time,
+                rtcp_flags = payload.rtcp_flags,
+                media_flags = payload.media_flags,
+                profile_level_id = payload.profile_level_id,
+                rtp_sample_rate = payload.rtp_sample_rate,
+                cipher_suite = payload.cipher_suite,
+                packed_payload_bytes = payload.packed_payload.len(),
+                encoder_usage = payload.encoder_usage,
+                "negotiated audio payload"
+            );
+        }
+        for stream in &group.streams {
+            tracing::info!(
+                group_index,
+                stream_group = group.stream_group,
+                rtp_ssrc = format_args!("{:#x}", stream.rtp_ssrc),
+                stream_id = stream.stream_id,
+                audio_channels = stream.audio_channel_count,
+                stream_index = stream.stream_index,
+                required_payload_bytes = stream.required_packed_payload.len(),
+                optional_payload_bytes = stream.optional_packed_payload.len(),
+                "negotiated audio stream"
+            );
+        }
+    }
+}
+
+fn log_media_server_status(status: &plist::Value) {
+    let mut fields = Vec::new();
+    collect_plist_fields("media_status", status, &mut fields, 0);
+    tracing::info!(
+        fields = fields.len(),
+        "captured negotiated media stream status"
+    );
+    for (path, value) in fields.into_iter().take(256) {
+        tracing::debug!(target: "devicehub_mask::audio", %path, %value, "media stream status field");
+    }
+}
+
+fn collect_plist_fields(
+    path: &str,
+    value: &plist::Value,
+    fields: &mut Vec<(String, String)>,
+    depth: usize,
+) {
+    if depth > 10 || fields.len() >= 256 {
+        return;
+    }
+    match value {
+        plist::Value::Dictionary(dictionary) => {
+            for (key, value) in dictionary {
+                collect_plist_fields(&format!("{path}.{key}"), value, fields, depth + 1);
+            }
+        }
+        plist::Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                collect_plist_fields(&format!("{path}[{index}]"), value, fields, depth + 1);
+            }
+        }
+        plist::Value::Data(data) => {
+            fields.push((path.to_string(), format!("data[{}]", data.len())));
+            if let Ok(nested) = plist::from_bytes::<plist::Value>(data) {
+                collect_plist_fields(&format!("{path}.plist"), &nested, fields, depth + 1);
+            }
+        }
+        plist::Value::String(value) => {
+            let normalized_path = path.to_ascii_lowercase();
+            let sensitive = ["address", "ip", "uuid", "sessionid", "deviceid"]
+                .iter()
+                .any(|key| normalized_path.contains(key));
+            let value = if sensitive {
+                "<redacted>".to_string()
+            } else {
+                value.chars().take(160).collect()
+            };
+            fields.push((path.to_string(), value));
+        }
+        plist::Value::Boolean(value) => fields.push((path.to_string(), value.to_string())),
+        plist::Value::Real(value) => fields.push((path.to_string(), value.to_string())),
+        plist::Value::Integer(value) => fields.push((path.to_string(), format!("{value:?}"))),
+        plist::Value::Date(_) => fields.push((path.to_string(), "<date>".into())),
+        plist::Value::Uid(value) => fields.push((path.to_string(), format!("{value:?}"))),
+        _ => fields.push((path.to_string(), format!("{value:?}"))),
+    }
+}
+
+fn find_negotiator_answer(value: &plist::Value) -> Option<&[u8]> {
+    match value {
+        plist::Value::Dictionary(dictionary) => dictionary.iter().find_map(|(key, value)| {
+            if key.to_ascii_lowercase().contains("negotiatoranswer") {
+                value.as_data()
+            } else {
+                find_negotiator_answer(value)
+            }
+        }),
+        plist::Value::Array(values) => values.iter().find_map(find_negotiator_answer),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AacAuHeader {
+    header_bits: u16,
+    access_units: u16,
+    first_access_unit_bytes: u16,
+}
+
+fn parse_aac_au_header(payload: &[u8]) -> Option<AacAuHeader> {
+    let header_bits = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
+    if header_bits == 0 || header_bits % 16 != 0 {
+        return None;
+    }
+    let header_bytes = usize::from(header_bits).div_ceil(8);
+    if payload.len() < 2 + header_bytes || header_bytes < 2 {
+        return None;
+    }
+    let first = u16::from_be_bytes([payload[2], payload[3]]);
+    let first_access_unit_bytes = first >> 3;
+    let encoded_bytes = payload.len() - 2 - header_bytes;
+    if usize::from(first_access_unit_bytes) > encoded_bytes {
+        return None;
+    }
+    Some(AacAuHeader {
+        header_bits,
+        access_units: header_bits / 16,
+        first_access_unit_bytes,
+    })
+}
+
+async fn audio_task(udp: UdpSocketHandle, slot: AudioSlot, enabled: bool) {
+    if !enabled {
+        tracing::info!("device audio playback disabled; draining negotiated audio stream");
+        audio_receive_loop(&udp, None).await;
+        return;
+    }
+
+    let (mut child, stdout, stderr, rtp_address) = match decode::spawn_audio_ffmpeg().await {
+        Ok(process) => process,
+        Err(error) => {
+            tracing::warn!(%error, "cannot start device audio decoder; draining audio stream");
+            audio_receive_loop(&udp, None).await;
+            return;
+        }
+    };
+    let sender = match tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await {
+        Ok(sender) => sender,
+        Err(error) => {
+            tracing::warn!(%error, "cannot bind audio RTP forwarding socket");
+            return;
+        }
+    };
+    {
+        let output = decode::read_audio_chunks(stdout, slot);
+        let errors = watch_audio_errors(stderr);
+        let receive = audio_receive_loop(&udp, Some((&sender, rtp_address)));
+        tokio::pin!(output, errors, receive);
+        tokio::select! {
+            _ = &mut output => tracing::warn!("device audio decoder output ended"),
+            _ = &mut errors => tracing::warn!("device audio decoder stderr ended"),
+            _ = &mut receive => tracing::warn!("device audio RTP input ended"),
+            status = child.wait() => tracing::warn!(?status, "device audio decoder stopped"),
+        }
+    }
+    tracing::warn!("device audio unavailable; continuing the device session without playback");
+    audio_receive_loop(&udp, None).await;
+}
+
+async fn watch_audio_errors(stderr: ChildStderr) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::warn!(target: "devicehub_mask::audio", message = %line, "ffmpeg audio decode error");
+    }
+}
+
+async fn audio_receive_loop(
+    udp: &UdpSocketHandle,
+    forwarding: Option<(&tokio::net::UdpSocket, std::net::SocketAddr)>,
+) {
+    let mut stream: Option<(u8, u32)> = None;
+    let mut last_sequence = None;
+    let mut last_timestamp = None;
+    let mut timestamp_deltas = RunningStats::default();
+    let mut payload_sizes = RunningStats::default();
+    let mut packets = 0_u64;
+    let mut bytes = 0_u64;
+    let mut lost_packets = 0_u64;
+    let mut marker_packets = 0_u64;
+    let mut rtcp_packets = 0_u64;
+    let mut started = Instant::now();
+    loop {
+        let datagram = match udp.recv().await {
+            Ok(datagram) => datagram,
+            Err(error) => {
+                tracing::warn!(?error, "audio UDP receive failed");
+                return;
+            }
+        };
+        if is_rtcp(&datagram.data) {
+            rtcp_packets += 1;
+            continue;
+        }
+        let Some(packet) = RtpPacket::parse(&datagram.data) else {
+            continue;
+        };
+        if let Some((sender, target)) = forwarding {
+            match add_rfc3640_au_header(&datagram.data) {
+                Ok(packet) => {
+                    if let Err(error) = sender.send_to(&packet, target).await {
+                        tracing::warn!(%error, "failed to forward audio RTP packet to ffmpeg");
+                        return;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error,
+                        packet_bytes = datagram.data.len(),
+                        "dropping invalid audio RTP packet"
+                    );
+                    continue;
+                }
+            }
+        }
+        if stream != Some((packet.payload_type, packet.ssrc)) {
+            stream = Some((packet.payload_type, packet.ssrc));
+            last_sequence = None;
+            last_timestamp = None;
+            tracing::info!(
+                rtp_payload_type = packet.payload_type,
+                rtp_ssrc = format_args!("{:#x}", packet.ssrc),
+                source_port = datagram.source_port,
+                extension = packet.extension,
+                extension_profile = format_args!("{:#x}", packet.ext_profile),
+                extension_bytes = packet.ext_data.len(),
+                payload_bytes = packet.payload.len(),
+                aac_au_header = ?parse_aac_au_header(packet.payload),
+                "audio RTP stream detected"
+            );
+        }
+        if let Some(previous) = last_sequence {
+            let distance = packet.sequence_number.wrapping_sub(previous);
+            if distance > 1 && distance < 0x8000 {
+                lost_packets += u64::from(distance - 1);
+            }
+        }
+        if let Some(previous) = last_timestamp {
+            let delta = packet.timestamp.wrapping_sub(previous);
+            if delta > 0 && delta < 1_000_000 {
+                timestamp_deltas.push(delta as f64);
+            }
+        }
+        last_sequence = Some(packet.sequence_number);
+        last_timestamp = Some(packet.timestamp);
+        packets += 1;
+        bytes += datagram.data.len() as u64;
+        marker_packets += u64::from(packet.marker);
+        payload_sizes.push(packet.payload.len() as f64);
+
+        if started.elapsed() >= Duration::from_secs(5) {
+            tracing::debug!(
+                target: "devicehub_mask::audio",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                packets,
+                bytes,
+                lost_packets,
+                marker_packets,
+                rtcp_packets,
+                payload_bytes_mean = ?payload_sizes.mean(),
+                payload_bytes_min = ?payload_sizes.min(),
+                payload_bytes_max = ?payload_sizes.max(),
+                timestamp_delta_ticks = ?timestamp_deltas.mean(),
+                timestamp_delta_min_ticks = ?timestamp_deltas.min(),
+                timestamp_delta_max_ticks = ?timestamp_deltas.max(),
+                "audio RTP diagnostics"
+            );
+            packets = 0;
+            bytes = 0;
+            lost_packets = 0;
+            marker_packets = 0;
+            rtcp_packets = 0;
+            payload_sizes = RunningStats::default();
+            timestamp_deltas = RunningStats::default();
+            started = Instant::now();
+        }
+    }
+}
+
+fn add_rfc3640_au_header(packet: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if packet.len() < 12 || packet[0] >> 6 != 2 {
+        return Err("invalid RTP header");
+    }
+    let csrc_bytes = usize::from(packet[0] & 0x0f)
+        .checked_mul(4)
+        .ok_or("RTP header overflow")?;
+    let mut payload_offset = 12_usize
+        .checked_add(csrc_bytes)
+        .ok_or("RTP header overflow")?;
+    if packet.len() < payload_offset {
+        return Err("truncated RTP CSRC list");
+    }
+    if packet[0] & 0x10 != 0 {
+        if packet.len() < payload_offset + 4 {
+            return Err("truncated RTP extension header");
+        }
+        let extension_words =
+            u16::from_be_bytes([packet[payload_offset + 2], packet[payload_offset + 3]]);
+        payload_offset = payload_offset
+            .checked_add(4 + usize::from(extension_words) * 4)
+            .ok_or("RTP extension overflow")?;
+        if packet.len() < payload_offset {
+            return Err("truncated RTP extension");
+        }
+    }
+    let mut payload_end = packet.len();
+    if packet[0] & 0x20 != 0 {
+        let padding = usize::from(*packet.last().ok_or("missing RTP padding")?);
+        if padding == 0 || padding > payload_end.saturating_sub(payload_offset) {
+            return Err("invalid RTP padding");
+        }
+        payload_end -= padding;
+    }
+    let payload_len = payload_end.saturating_sub(payload_offset);
+    if payload_len == 0 || payload_len > 0x1fff {
+        return Err("AAC access unit length is outside the 13-bit RFC 3640 range");
+    }
+    let mut adapted = Vec::with_capacity(payload_offset + 4 + payload_len);
+    adapted.extend_from_slice(&packet[..payload_offset]);
+    adapted[0] &= !0x20; // output omits the source packet's RTP padding
+    adapted.extend_from_slice(&[0, 16]);
+    adapted.extend_from_slice(&((payload_len as u16) << 3).to_be_bytes());
+    adapted.extend_from_slice(&packet[payload_offset..payload_end]);
+    Ok(adapted)
 }
 
 /// The `VCCallInfoBlob` describing this (host) endpoint. The string values mirror
@@ -2894,6 +3274,57 @@ mod tests {
         assert_eq!(completed.bytes, irap);
         assert!(completed.is_irap);
         assert!(assembler.finish().is_none());
+    }
+
+    #[test]
+    fn recognizes_rfc3640_aac_access_unit_headers_without_reading_audio_data() {
+        // 16 header bits, one 13-bit AU size (4 bytes) plus a 3-bit index.
+        let payload = [0x00, 0x10, 0x00, 0x20, 1, 2, 3, 4];
+        assert_eq!(
+            parse_aac_au_header(&payload),
+            Some(AacAuHeader {
+                header_bits: 16,
+                access_units: 1,
+                first_access_unit_bytes: 4,
+            })
+        );
+        assert_eq!(parse_aac_au_header(&[0x00, 0x10, 0x01, 0x00, 1]), None);
+        assert_eq!(parse_aac_au_header(&[0x00, 0x07, 0, 0]), None);
+    }
+
+    #[test]
+    fn adds_rfc3640_header_to_raw_aac_rtp() {
+        let mut packet = vec![0x80, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4];
+        packet.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
+        let adapted = add_rfc3640_au_header(&packet).unwrap();
+        assert_eq!(&adapted[..12], &packet[..12]);
+        assert_eq!(&adapted[12..16], &[0, 16, 0, 24]);
+        assert_eq!(&adapted[16..], &[0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn preserves_rtp_extensions_and_removes_padding() {
+        let mut packet = vec![0xb1, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4];
+        packet.extend_from_slice(&[9, 8, 7, 6]); // one CSRC
+        packet.extend_from_slice(&[0xbe, 0xde, 0, 1, 1, 2, 3, 4]);
+        packet.extend_from_slice(&[0xaa, 0xbb, 0, 0, 3]);
+        let adapted = add_rfc3640_au_header(&packet).unwrap();
+        assert_eq!(adapted[0], 0x91);
+        assert_eq!(
+            &adapted[..24],
+            &[
+                0x91, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4, 9, 8, 7, 6, 0xbe, 0xde, 0, 1, 1, 2, 3, 4
+            ]
+        );
+        assert_eq!(&adapted[24..], &[0, 16, 0, 16, 0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn rejects_oversized_or_truncated_audio_rtp() {
+        let mut oversized = vec![0x80, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4];
+        oversized.resize(12 + 0x2000, 0);
+        assert!(add_rfc3640_au_header(&oversized).is_err());
+        assert!(add_rfc3640_au_header(&[0x90, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4]).is_err());
     }
 
     #[tokio::test]

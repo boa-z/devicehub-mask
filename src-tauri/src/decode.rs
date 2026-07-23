@@ -8,11 +8,68 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Notify;
 
-use crate::protocol::{Frame, FrameFormat, FrameSlot, VideoCounters};
+use crate::protocol::{
+    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioSlot, Frame, FrameFormat, FrameSlot, VideoCounters,
+};
+
+const AUDIO_CHUNK_MILLIS: usize = 20;
+
+pub async fn spawn_audio_ffmpeg()
+-> std::io::Result<(Child, ChildStdout, ChildStderr, std::net::SocketAddr)> {
+    let ffmpeg = resolve_ffmpeg()?;
+    let reservation = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let rtp_address = reservation.local_addr()?;
+    drop(reservation);
+
+    let sdp = format!(
+        "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=DeviceHub iPhone Audio\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio {} RTP/AVP 101\r\na=rtpmap:101 MPEG4-GENERIC/48000/2\r\na=fmtp:101 streamtype=5; mode=AAC-hbr; config=F8E65000; SizeLength=13; IndexLength=3; IndexDeltaLength=3; constantDuration=480\r\na=ptime:10\r\na=rtcp-mux\r\n",
+        rtp_address.port()
+    );
+    tracing::info!(path = %ffmpeg.display(), %rtp_address, "using ffmpeg AAC-ELD audio decoder");
+    let mut child = Command::new(ffmpeg)
+        .args(["-protocol_whitelist", "pipe,udp,rtp"])
+        .args(["-f", "sdp", "-i", "pipe:0"])
+        .args(["-vn", "-acodec", "pcm_s16le"])
+        .args(["-ar", "48000", "-ac", "2", "-f", "s16le", "pipe:1"])
+        .args(["-loglevel", "error"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("audio ffmpeg stdin piped");
+    stdin.write_all(sdp.as_bytes()).await?;
+    stdin.shutdown().await?;
+    let stdout = child.stdout.take().expect("audio ffmpeg stdout piped");
+    let stderr = child.stderr.take().expect("audio ffmpeg stderr piped");
+    Ok((child, stdout, stderr, rtp_address))
+}
+
+pub async fn read_audio_chunks(mut stdout: ChildStdout, slot: AudioSlot) {
+    let frames_per_chunk = AUDIO_SAMPLE_RATE as usize * AUDIO_CHUNK_MILLIS / 1_000;
+    let mut chunk = vec![0_u8; frames_per_chunk * usize::from(AUDIO_CHANNELS) * 2];
+    let mut chunks = 0_u64;
+    loop {
+        match stdout.read_exact(&mut chunk).await {
+            Ok(_) => {
+                chunks += 1;
+                slot.publish(bytes::Bytes::copy_from_slice(&chunk));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                tracing::info!(chunks, "ffmpeg audio output closed");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, chunks, "ffmpeg audio output read failed");
+                return;
+            }
+        }
+    }
+}
 
 /// Spawn `ffmpeg` decoding raw HEVC (Annex-B on stdin) to PAM frames on stdout.
 /// stderr is piped so the session can watch it for decode errors.

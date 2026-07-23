@@ -109,6 +109,19 @@ The canvas contain-fits the rotated source with one shared scale. Pointer
 coordinates are normalized in the exact displayed rectangle, which prevents
 landscape stretching and touch offset.
 
+## Audio Pipeline
+
+CoreDevice negotiates AAC-ELD at 48 kHz stereo with one 10 ms access unit per
+RTP packet. The device sends bare access units, so the backend adds RFC 3640 AU
+headers before forwarding RTP to FFmpeg. FFmpeg decodes to interleaved S16LE;
+the backend publishes bounded 20 ms PCM chunks and never waits for consumers.
+
+Audio uses a versioned `DHAP` binary WebSocket envelope while JPEG messages keep
+their existing format. The WebView schedules PCM with Web Audio, starts with a
+small jitter buffer, and resets if queued latency exceeds 250 ms. Audio is off
+by default and audio decoder failure falls back to draining the negotiated
+stream without terminating video or input.
+
 ## Input Pipeline
 
 Mapping, direct pointer, and keyboard state are combined in React. Identical

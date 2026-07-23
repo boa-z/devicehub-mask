@@ -25,6 +25,7 @@ import {
   RotateRightOutlined,
   SaveOutlined,
   SendOutlined,
+  SoundOutlined,
   StopOutlined,
   SyncOutlined,
   ThunderboltOutlined,
@@ -45,6 +46,7 @@ import { PerformanceHud } from "./components/PerformanceHud";
 import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
+import { PcmAudioPlayer, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
@@ -187,6 +189,7 @@ export default function App() {
   const [performanceView, setPerformanceView] = useState<PerformanceView | null>(null);
   const [performanceError, setPerformanceError] = useState<string | null>(null);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
+  const [audioPlayback, setAudioPlayback] = useState<DeviceAudioPreferences>(readDeviceAudioPreferences);
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
@@ -206,6 +209,7 @@ export default function App() {
   const renderedFramesRef = useRef(0);
   const lastVideoActivityAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
+  const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
@@ -230,6 +234,35 @@ export default function App() {
   useEffect(() => {
     if (status.active_udid) setSelectedUdid(status.active_udid);
   }, [status.active_udid]);
+
+  const updateAudioPlayback = useCallback((next: DeviceAudioPreferences) => {
+    setAudioPlayback(next);
+    saveDeviceAudioPreferences(next);
+    audioPlayerRef.current?.setPreferences(next);
+    if (!next.muted) void audioPlayerRef.current?.resume();
+  }, []);
+
+  useEffect(() => {
+    const player = new PcmAudioPlayer(audioPlayback);
+    audioPlayerRef.current = player;
+    return () => {
+      player.close();
+      if (audioPlayerRef.current === player) audioPlayerRef.current = null;
+    };
+    // Playback preference changes are applied through updateAudioPlayback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (audioPlayback.muted) return;
+    const unlockAudio = () => void audioPlayerRef.current?.resume();
+    window.addEventListener("pointerdown", unlockAudio, { once: true });
+    window.addEventListener("keydown", unlockAudio, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
+    };
+  }, [audioPlayback.muted]);
 
   useEffect(() => {
     let disposed = false;
@@ -559,7 +592,7 @@ export default function App() {
           decodeErrors: 0,
         };
       };
-      socket.binaryType = "blob";
+      socket.binaryType = "arraybuffer";
       socket.onopen = () => {
         logFrontend("info", "websocket", "opened", "Video and control socket connected");
         socketRef.current = socket;
@@ -588,6 +621,7 @@ export default function App() {
         setCanvasReady(false);
         setStreamStalled(false);
         setStreamMetrics(emptyMetrics);
+        audioPlayerRef.current?.reset();
         if (!disposed) retry = window.setTimeout(open, 800);
       };
       const drainFrames = async () => {
@@ -656,6 +690,17 @@ export default function App() {
           }
           return;
         }
+        const buffer = event.data as ArrayBuffer;
+        try {
+          const audio = parseAudioEnvelope(buffer);
+          if (audio) {
+            audioPlayerRef.current?.push(audio);
+            return;
+          }
+        } catch (error) {
+          logFrontend("warn", "audio", "decode_chunk", error);
+          return;
+        }
         frontendMetrics.receivedFrames += 1;
         lastVideoActivityAtRef.current = performance.now();
         setStreamStalled(false);
@@ -665,7 +710,7 @@ export default function App() {
             socket.send(JSON.stringify({ type: "frame_presented" }));
           }
         }
-        pendingFrame = event.data as Blob;
+        pendingFrame = new Blob([buffer], { type: "image/jpeg" });
         void drainFrames();
       };
     };
@@ -1309,6 +1354,14 @@ export default function App() {
       <Tooltip title={t("device.saveScreenshot")}>
         <Button aria-label={t("device.saveScreenshot")} disabled={!canvasReady} icon={<CameraOutlined />} onClick={() => void saveDeviceScreenshot()} />
       </Tooltip>
+      <Tooltip title={t(audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}>
+        <Button
+          aria-label={t(audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}
+          type={audioPlayback.muted ? "default" : "primary"}
+          icon={audioPlayback.muted ? <AudioMutedOutlined /> : <SoundOutlined />}
+          onClick={() => updateAudioPlayback({ ...audioPlayback, muted: !audioPlayback.muted })}
+        />
+      </Tooltip>
       <Tooltip title={t(recording ? "device.stopRecording" : recordingSupported ? "device.startRecording" : "device.recordingUnsupported")}>
         <Button
           aria-label={t(recording ? "device.stopRecording" : "device.startRecording")}
@@ -1407,11 +1460,13 @@ export default function App() {
               inspectorVisible={inspectorVisible}
               deviceView={deviceViewPreferences}
               performanceHud={performanceHud}
+              audioPlayback={audioPlayback}
               onAlwaysOnTopChange={() => void toggleAlwaysOnTop()}
               onSystemFullscreenChange={() => void toggleSystemFullscreen()}
               onInspectorVisibleChange={setInspectorVisible}
               onDeviceViewChange={updateDeviceViewPreferences}
               onPerformanceHudChange={updatePerformanceHud}
+              onAudioPlaybackChange={updateAudioPlayback}
             />
           ) : page === "location" ? (
             <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />

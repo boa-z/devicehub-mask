@@ -17,8 +17,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use protocol::{
-    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, FrameSlot,
-    InputSink, LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
+    ActiveSlot, AppOperationSlot, AudioSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
+    FrameSlot, InputSink, LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -91,6 +91,14 @@ fn set_video_pixel_format(
     state.set_video_pixel_format(video_pixel_format)
 }
 
+#[tauri::command]
+fn set_audio_enabled(
+    enabled: bool,
+    state: tauri::State<'_, Arc<settings::AppSettings>>,
+) -> Result<settings::VideoSettingsStatus, String> {
+    state.set_audio_enabled(enabled)
+}
+
 impl BackendHandle {
     fn stop(&self) {
         let _ = self.control.send(ControlCmd::Quit);
@@ -130,6 +138,7 @@ fn spawn_backend(
             let device_tasks = tokio::task::LocalSet::new();
             runtime.block_on(device_tasks.run_until(async move {
                 let frames = FrameSlot::default();
+                let audio = AudioSlot::default();
                 let video_counters = VideoCounters::default();
                 let status = StatusSlot::default();
                 let clipboard = ClipboardSlot::default();
@@ -162,6 +171,7 @@ fn spawn_backend(
                     video_counters.clone(),
                     || {},
                     frames.clone(),
+                    audio.clone(),
                     status.clone(),
                     clipboard,
                     orientation.clone(),
@@ -179,6 +189,7 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         frames,
+                        audio,
                         video_counters,
                         status,
                         orientation,
@@ -267,7 +278,8 @@ pub fn run() {
             open_log_directory,
             frontend_log,
             video_settings_status,
-            set_video_pixel_format
+            set_video_pixel_format,
+            set_audio_enabled
         ])
         .setup(move |app| {
             let log_directory = app.path().app_log_dir()?;

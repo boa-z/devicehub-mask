@@ -1,16 +1,18 @@
 import { BugOutlined, FolderOpenOutlined, GithubOutlined } from "@ant-design/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Button, Checkbox, Select, Space, Switch, Tag, Typography, message } from "antd";
+import { Button, Checkbox, Select, Slider, Space, Switch, Tag, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import type { DeviceAudioPreferences } from "../deviceAudio";
 import { type DeviceViewPreferences, type DeviceViewScale } from "../deviceViewPreferences";
 import { performanceHudItems, type PerformanceHudItem, type PerformanceHudPreferences } from "../performanceHudPreferences";
 import { openLogDirectory, readDiagnosticsStatus, setDebugLogging, type DiagnosticsStatus } from "../diagnostics";
 import { useUpdates } from "../updateContext";
 import {
   readVideoSettings,
+  setAudioEnabled,
   setVideoPixelFormat,
   type VideoPixelFormat,
   type VideoSettingsStatus,
@@ -23,11 +25,13 @@ type Props = {
   inspectorVisible: boolean;
   deviceView: DeviceViewPreferences;
   performanceHud: PerformanceHudPreferences;
+  audioPlayback: DeviceAudioPreferences;
   onAlwaysOnTopChange: () => void;
   onSystemFullscreenChange: () => void;
   onInspectorVisibleChange: (visible: boolean) => void;
   onDeviceViewChange: (preferences: DeviceViewPreferences) => void;
   onPerformanceHudChange: (preferences: PerformanceHudPreferences) => void;
+  onAudioPlaybackChange: (preferences: DeviceAudioPreferences) => void;
 };
 
 export function SettingsPage({
@@ -36,11 +40,13 @@ export function SettingsPage({
   inspectorVisible,
   deviceView,
   performanceHud,
+  audioPlayback,
   onAlwaysOnTopChange,
   onSystemFullscreenChange,
   onInspectorVisibleChange,
   onDeviceViewChange,
   onPerformanceHudChange,
+  onAudioPlaybackChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
@@ -67,6 +73,18 @@ export function SettingsPage({
     try {
       setVideoSettings(await setVideoPixelFormat(videoPixelFormat));
       message.success(t("settings.videoPixelFormatChanged"));
+    } catch (error) {
+      message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+    } finally {
+      setVideoSettingsBusy(false);
+    }
+  };
+
+  const changeAudioEnabled = async (enabled: boolean) => {
+    setVideoSettingsBusy(true);
+    try {
+      setVideoSettings(await setAudioEnabled(enabled));
+      message.success(t("settings.deviceAudioChanged"));
     } catch (error) {
       message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
     } finally {
@@ -176,6 +194,30 @@ export function SettingsPage({
             ? t("settings.videoPixelFormatEnvironmentOverride")
             : t("settings.videoPixelFormatHint")}
         </Typography.Text>
+      </div>
+      <div className="settings-section">
+        <Typography.Title level={5}>{t("settings.audio")}</Typography.Title>
+        <label>
+          <span>{t("settings.deviceAudioEnabled")}</span>
+          <Switch
+            checked={videoSettings?.audio_enabled ?? false}
+            disabled={!videoSettings}
+            loading={videoSettingsBusy}
+            onChange={(enabled) => void changeAudioEnabled(enabled)}
+          />
+        </label>
+        <label><span>{t("settings.deviceAudioMuted")}</span><Switch checked={audioPlayback.muted} onChange={(muted) => onAudioPlaybackChange({ ...audioPlayback, muted })} /></label>
+        <label>
+          <span>{t("settings.deviceAudioVolume")}</span>
+          <Slider
+            min={0}
+            max={100}
+            value={Math.round(audioPlayback.volume * 100)}
+            disabled={audioPlayback.muted}
+            onChange={(volume) => onAudioPlaybackChange({ ...audioPlayback, volume: volume / 100 })}
+          />
+        </label>
+        <Typography.Text type="secondary">{t("settings.deviceAudioHint")}</Typography.Text>
       </div>
       <div className="settings-section performance-hud-settings">
         <Typography.Title level={5}>{t("settings.performanceHud")}</Typography.Title>

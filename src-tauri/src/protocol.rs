@@ -8,6 +8,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -115,6 +116,68 @@ impl FrameSlot {
 
     pub fn version(&self) -> u64 {
         self.0.version.load(Ordering::Relaxed)
+    }
+}
+
+pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
+pub const AUDIO_CHANNELS: u8 = 2;
+pub const AUDIO_FORMAT_S16LE: u8 = 1;
+pub const AUDIO_ENVELOPE_HEADER_LEN: usize = 16;
+
+/// Bounded fan-out for decoded audio. Producers never wait for WebSocket clients;
+/// lagging receivers skip old chunks through `broadcast::RecvError::Lagged`.
+#[derive(Clone)]
+pub struct AudioSlot(broadcast::Sender<Bytes>);
+
+impl Default for AudioSlot {
+    fn default() -> Self {
+        let (sender, _) = broadcast::channel(32);
+        Self(sender)
+    }
+}
+
+impl AudioSlot {
+    pub fn publish(&self, pcm: Bytes) {
+        let _ = self.0.send(pcm);
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Bytes> {
+        self.0.subscribe()
+    }
+}
+
+pub fn encode_audio_envelope(pcm: Bytes) -> Bytes {
+    let bytes_per_frame = usize::from(AUDIO_CHANNELS) * 2;
+    let frame_count = pcm.len() / bytes_per_frame;
+    let mut framed = Vec::with_capacity(AUDIO_ENVELOPE_HEADER_LEN + pcm.len());
+    framed.extend_from_slice(b"DHAP");
+    framed.push(1); // envelope version
+    framed.push(AUDIO_FORMAT_S16LE);
+    framed.push(AUDIO_CHANNELS);
+    framed.push(0);
+    framed.extend_from_slice(&AUDIO_SAMPLE_RATE.to_le_bytes());
+    framed.extend_from_slice(&(frame_count as u32).to_le_bytes());
+    framed.extend_from_slice(&pcm);
+    framed.into()
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+
+    #[test]
+    fn audio_envelope_describes_pcm_payload() {
+        let encoded = encode_audio_envelope(Bytes::from(vec![0_u8; 3_840]));
+        assert_eq!(&encoded[..4], b"DHAP");
+        assert_eq!(encoded[4], 1);
+        assert_eq!(encoded[5], AUDIO_FORMAT_S16LE);
+        assert_eq!(encoded[6], 2);
+        assert_eq!(
+            u32::from_le_bytes(encoded[8..12].try_into().unwrap()),
+            48_000
+        );
+        assert_eq!(u32::from_le_bytes(encoded[12..16].try_into().unwrap()), 960);
+        assert_eq!(encoded.len(), AUDIO_ENVELOPE_HEADER_LEN + 3_840);
     }
 }
 
