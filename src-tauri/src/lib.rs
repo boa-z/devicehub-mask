@@ -3,6 +3,7 @@ mod app_icons;
 mod audio_output;
 mod crash_reports;
 mod decode;
+mod developer_mode;
 mod device_conditions;
 mod device_events;
 mod device_logs;

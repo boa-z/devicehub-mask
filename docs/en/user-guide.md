@@ -23,9 +23,12 @@ The tab also reads the device's activation state through MobileActivationd,
 using its Lockdown fallback when necessary. Only a normalized state reaches the
 UI; activation records and blobs are not requested. An unactivated device shows
 a warning because developer and management services may remain unavailable.
-It also queries Developer Mode through MobileImageMounter. When disabled, the
-tab points to the required iPhone setting because DVT diagnostics and
-performance services depend on it.
+It queries Developer Mode through AMFI with a MobileImageMounter fallback. When
+disabled, the Info warning can ask AMFI to reveal the option under **Settings >
+Privacy & Security > Developer Mode**. This preparation does not enable
+Developer Mode, restart the device, or accept the device-side confirmation;
+those steps remain explicit user actions because DVT diagnostics and performance
+services depend on the resulting trusted state.
 
 The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri,
 and Action. Always-on-top, inspector visibility, and fullscreen controls are in

@@ -165,6 +165,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
         .route("/api/device/name", put(rename_device))
+        .route(
+            "/api/device/developer-mode/reveal",
+            put(reveal_developer_mode),
+        )
         .route("/api/device/screenshot", get(device_screenshot))
         .route("/api/device/text/paste", put(paste_device_text))
         .route("/api/device/restart", put(restart_device))
@@ -685,6 +689,36 @@ async fn rename_device(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(RenameDeviceResponse { name }))
+}
+
+async fn reveal_developer_mode(
+    State(state): State<AppState>,
+) -> Result<Json<crate::developer_mode::DeveloperModePreparation>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeveloperMode(
+        crate::developer_mode::DeveloperModeCommand::RevealOption { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let result = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "developer mode preparation request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(result))
 }
 
 async fn device_screenshot(
@@ -3094,6 +3128,25 @@ mod tests {
             Err((StatusCode::BAD_REQUEST, _))
         ));
         assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn developer_mode_reveal_dispatches_a_typed_amfi_command() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(reveal_developer_mode(State(state)));
+        let InputCmd::DeveloperMode(crate::developer_mode::DeveloperModeCommand::RevealOption {
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("unexpected command");
+        };
+        reply
+            .send(Ok(crate::developer_mode::DeveloperModePreparation {
+                already_enabled: false,
+            }))
+            .unwrap();
+        let response = request.await.unwrap().unwrap().0;
+        assert!(!response.already_enabled);
     }
 
     #[tokio::test]

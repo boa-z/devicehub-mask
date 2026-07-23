@@ -315,7 +315,11 @@ export const enUS = {
     },
     developerMode: "Developer Mode",
     developerModeDisabled: "Developer Mode is disabled",
-    developerModeHint: "Enable it on the iPhone under Settings > Privacy & Security > Developer Mode, then restart the device when prompted. DVT diagnostics and performance tools require it.",
+    developerModeHint: "Make the option available, then enable it on the iPhone under Settings > Privacy & Security > Developer Mode and restart when prompted. DVT diagnostics and performance tools require it.",
+    revealDeveloperMode: "Show in Settings",
+    developerModeRevealed: "Developer Mode is now available in Settings on the device.",
+    developerModeAlreadyEnabled: "Developer Mode is already enabled.",
+    developerModeRevealFailed: "Unable to prepare Developer Mode: {{error}}",
     developerModeStates: {
       enabled: "Enabled",
       disabled: "Disabled",

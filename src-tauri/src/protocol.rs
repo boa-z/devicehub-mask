@@ -291,6 +291,8 @@ pub enum InputCmd {
         name: String,
         reply: oneshot::Sender<Result<String, String>>,
     },
+    /// Prepare the device-side Developer Mode workflow through AMFI.
+    DeveloperMode(crate::developer_mode::DeveloperModeCommand),
     /// List user-facing applications through CoreDevice AppService.
     ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
     /// Read one validated PNG application icon through SpringBoardServices.

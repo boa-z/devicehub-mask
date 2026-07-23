@@ -128,6 +128,7 @@ export function DeviceInspector({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
+  const [developerModeBusy, setDeveloperModeBusy] = useState(false);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const handledOperation = useRef(0);
@@ -172,6 +173,7 @@ export function DeviceInspector({
     setRenameOpen(false);
     setRenameValue("");
     setRenameBusy(false);
+    setDeveloperModeBusy(false);
     setError(null);
   }, [activeUdid]);
 
@@ -429,6 +431,26 @@ export function DeviceInspector({
   };
 
   const normalizedDeviceName = normalizeDeviceNameInput(renameValue);
+  const prepareDeveloperMode = async () => {
+    if (developerModeBusy) return;
+    setDeveloperModeBusy(true);
+    try {
+      const response = await request("/api/device/developer-mode/reveal", { method: "PUT" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      const result = await response.json() as { already_enabled: boolean };
+      if (result.already_enabled) {
+        void message.success(t("deviceInspector.developerModeAlreadyEnabled"));
+        await load();
+      } else {
+        void message.success(t("deviceInspector.developerModeRevealed"));
+      }
+    } catch (prepareError) {
+      void message.error(t("deviceInspector.developerModeRevealFailed", { error: String(prepareError) }));
+    } finally {
+      setDeveloperModeBusy(false);
+    }
+  };
+
   const renameDevice = async () => {
     if (!normalizedDeviceName || renameBusy) return;
     setRenameBusy(true);
@@ -536,6 +558,15 @@ export function DeviceInspector({
               showIcon
               message={t("deviceInspector.developerModeDisabled")}
               description={t("deviceInspector.developerModeHint")}
+              action={(
+                <Button
+                  size="small"
+                  loading={developerModeBusy}
+                  onClick={() => void prepareDeveloperMode()}
+                >
+                  {t("deviceInspector.revealDeveloperMode")}
+                </Button>
+              )}
             />
           )}
           <div className="device-info-list">

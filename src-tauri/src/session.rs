@@ -45,6 +45,7 @@ use tokio::process::ChildStdin;
 
 use crate::audio_output::AudioOutput;
 use crate::decode;
+use crate::developer_mode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardContentKind, ClipboardEvent,
@@ -1745,6 +1746,10 @@ impl DeviceManagement {
                 });
                 None
             }
+            InputCmd::DeveloperMode(command) => {
+                developer_mode::execute(self.provider.clone(), command);
+                None
+            }
             InputCmd::ListApps(reply) => {
                 let result =
                     list_device_apps(self.app_service.as_mut(), self.installation_proxy.as_mut())
@@ -2728,6 +2733,7 @@ async fn dispatch(
         }
         InputCmd::GetDeviceDetails(_)
         | InputCmd::RenameDevice { .. }
+        | InputCmd::DeveloperMode(_)
         | InputCmd::ListApps(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
@@ -3319,6 +3325,20 @@ fn device_storage_from_disk_usage(values: &plist::Dictionary) -> Option<DeviceSt
 }
 
 async fn read_developer_mode_status(provider: &dyn IdeviceProvider) -> Result<bool, String> {
+    match tokio::time::timeout(
+        Duration::from_millis(1_500),
+        developer_mode::read_status(provider),
+    )
+    .await
+    {
+        Ok(Ok(enabled)) => return Ok(enabled),
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "AMFI developer mode status unavailable; falling back to MobileImageMounter");
+        }
+        Err(_) => tracing::debug!(
+            "AMFI developer mode status timed out; falling back to MobileImageMounter"
+        ),
+    }
     let mut mounter = ImageMounter::connect(provider)
         .await
         .map_err(|error| format!("cannot connect mobile image mounter: {error:?}"))?;

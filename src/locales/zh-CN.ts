@@ -304,7 +304,11 @@ export const zhCN = {
     },
     developerMode: "开发者模式",
     developerModeDisabled: "开发者模式尚未启用",
-    developerModeHint: "请在 iPhone 的“设置 > 隐私与安全性 > 开发者模式”中启用，并按提示重新启动设备。DVT 调试与性能工具依赖此功能。",
+    developerModeHint: "请先让该选项显示，再前往 iPhone 的“设置 > 隐私与安全性 > 开发者模式”中启用，并按提示重新启动设备。DVT 调试与性能工具依赖此功能。",
+    revealDeveloperMode: "在设置中显示",
+    developerModeRevealed: "开发者模式选项现已显示在设备设置中。",
+    developerModeAlreadyEnabled: "开发者模式已经启用。",
+    developerModeRevealFailed: "无法准备开发者模式：{{error}}",
     developerModeStates: {
       enabled: "已启用",
       disabled: "未启用",

@@ -77,7 +77,8 @@ required.
 
 1. Connect the device over USB.
 2. Unlock it and accept the trust prompt.
-3. Enable Developer Mode.
+3. Enable Developer Mode. If its Settings option is absent, connect once and
+   use **Show in Settings** in the Device Info warning first.
 4. On Windows, run `./scripts/prepare-windows-device.ps1` once.
 5. Keep the device unlocked for the first connection.
 6. Close other applications that may own the CoreDevice media session.

@@ -63,9 +63,15 @@ cannot terminate video or HID.
 
 Device-detail refresh reads activation state through MobileActivationd in
 parallel with Lockdown metadata, DiagnosticsRelay battery data, and
-MobileImageMounter Developer Mode status. The backend reduces vendor strings to
-a fixed public enum and does not request activation records, certificates, or
-activation-info payloads.
+AMFI Developer Mode status with a MobileImageMounter fallback. The backend
+reduces vendor strings to a fixed public enum and does not request activation
+records, certificates, or activation-info payloads.
+
+Developer Mode preparation is a separate authenticated command. It opens a
+fresh paired AMFI service, rechecks the device state, and sends only AMFI action
+0 when disabled so the option appears in Settings. It never sends the rebooting
+enable action or the device-confirmation action. Both the device call and API
+reply have bounded deadlines.
 
 Device rename accepts only a bounded, non-empty, control-free Unicode name. The
 session repeats validation, opens paired Lockdown, writes `DeviceName`, and reads
