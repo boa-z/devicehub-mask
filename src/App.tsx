@@ -236,6 +236,11 @@ export default function App() {
     return fetch(`${backend.origin}${path}`, { ...init, headers });
   }, [backend]);
 
+  const bindCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
+    canvasRef.current = canvas;
+    canvasContextRef.current = null;
+  }, []);
+
   const updatePerformanceHud = useCallback((preferences: PerformanceHudPreferences) => {
     setPerformanceHud(preferences);
     savePerformanceHudPreferences(preferences);
@@ -510,7 +515,10 @@ export default function App() {
               if (disposed || socketClosed) continue;
               const canvas = canvasRef.current;
               if (!canvas) continue;
-              const context = canvasContextRef.current ?? canvas.getContext("2d", { alpha: false });
+              const cachedContext = canvasContextRef.current;
+              const context = cachedContext?.canvas === canvas
+                ? cachedContext
+                : canvas.getContext("2d", { alpha: false });
               if (!context) continue;
               canvasContextRef.current = context;
               const drawStarted = performance.now();
@@ -1127,7 +1135,7 @@ export default function App() {
                       onLostPointerCapture={handlePointerUp}
                       onContextMenu={(event) => !mappingEditing && event.preventDefault()}
                     >
-                      <canvas ref={canvasRef} />
+                      <canvas ref={bindCanvas} />
                       {page === "device" && performanceHud.enabled && (
                         <PerformanceHud items={performanceHud.items} view={performanceView} streamMetrics={streamMetrics} renderFps={renderFps} />
                       )}
