@@ -22,10 +22,10 @@ use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    ActiveSlot, AppOperationSlot, AudioSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
-    Frame, FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot,
-    Orientation, OrientationSlot, RotateDir, StatusSlot, VideoCounters, encode_audio_envelope,
-    norm, unrotate_norm, validate_device_name, validate_paste_text,
+    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame,
+    FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot, Orientation,
+    OrientationSlot, RotateDir, StatusSlot, VideoCounters, norm, unrotate_norm,
+    validate_device_name, validate_paste_text,
 };
 use crate::{
     performance::{PerformanceDemand, PerformanceSlot},
@@ -35,7 +35,6 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub frames: FrameSlot,
-    pub audio: AudioSlot,
     pub clipboard: ClipboardSlot,
     pub device_events: crate::device_events::DeviceEventSlot,
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
@@ -1748,7 +1747,6 @@ async fn websocket(socket: WebSocket, state: AppState) {
     let send_task = tokio::spawn(async move {
         let mut last_status = String::new();
         let mut frame_rx = send_state.frames.subscribe();
-        let mut audio_rx = send_state.audio.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
         let mut device_event_rx = send_state.device_events.subscribe();
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
@@ -1809,25 +1807,6 @@ async fn websocket(socket: WebSocket, state: AppState) {
                         break;
                     }
                     websocket_send_time += send_started.elapsed();
-                }
-                audio = audio_rx.recv() => {
-                    match audio {
-                        Ok(pcm) => {
-                            let framed = encode_audio_envelope(pcm);
-                            match tokio::time::timeout(
-                                Duration::from_millis(50),
-                                sender.send(Message::Binary(framed)),
-                            ).await {
-                                Ok(Ok(())) => {}
-                                Ok(Err(_)) => break,
-                                Err(_) => tracing::debug!("dropping audio chunk due to WebSocket backpressure"),
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            tracing::debug!(skipped, "WebSocket audio receiver skipped stale chunks");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
                 }
                 clipboard = clipboard_rx.recv() => {
                     match clipboard {
@@ -2291,7 +2270,6 @@ mod tests {
         (
             AppState {
                 frames: FrameSlot::default(),
-                audio: AudioSlot::default(),
                 clipboard: ClipboardSlot::default(),
                 device_events: crate::device_events::DeviceEventSlot::default(),
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),

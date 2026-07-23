@@ -213,15 +213,17 @@ landscape stretching and touch offset.
 
 CoreDevice negotiates AAC-ELD at 48 kHz stereo with one 10 ms access unit per
 RTP packet. The device sends bare access units, so the backend adds RFC 3640 AU
-headers before forwarding RTP to FFmpeg. FFmpeg decodes to interleaved S16LE;
-the backend publishes bounded 20 ms PCM chunks and never waits for consumers.
+headers before forwarding RTP to FFmpeg. FFmpeg decodes to interleaved S16LE
+and publishes bounded 20 ms PCM chunks to a dedicated native output thread.
+Rodio converts the stream to the host's default output format. The queue is
+bounded and stale audio is cleared above 240 ms, so output backpressure cannot
+delay RTP, video, or input. PCM does not pass through the WebSocket or WebView.
 
-Audio uses a versioned `DHAP` binary WebSocket envelope while JPEG messages keep
-their existing format. The WebView schedules PCM with Web Audio, starts with a
-small jitter buffer, and resets if queued latency exceeds 250 ms. Audio is off
-by default. A runtime decoder exit triggers a bounded-backoff restart while stale
-RTP is drained; a decoder that cannot be started falls back to draining the
-negotiated stream without terminating video or input.
+Audio is off by default. Mute and volume are persisted by the backend and apply
+directly to native output without depending on browser autoplay policy or page
+visibility. Output-device failures and runtime decoder exits use bounded retry;
+a decoder that cannot start drains the negotiated stream without terminating
+video or input.
 
 ## Input Pipeline
 

@@ -12,8 +12,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Notify;
 
+use crate::audio_output::AudioOutput;
 use crate::protocol::{
-    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioSlot, Frame, FrameFormat, FrameSlot, VideoCounters,
+    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, Frame, FrameFormat, FrameSlot, VideoCounters,
 };
 
 const AUDIO_CHUNK_MILLIS: usize = 20;
@@ -93,7 +94,7 @@ pub async fn spawn_audio_ffmpeg()
     Ok((child, stdout, stderr, rtp_address))
 }
 
-pub async fn read_audio_chunks(mut stdout: ChildStdout, slot: AudioSlot) {
+pub async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioOutput) {
     let frames_per_chunk = AUDIO_SAMPLE_RATE as usize * AUDIO_CHUNK_MILLIS / 1_000;
     let mut chunk = vec![0_u8; frames_per_chunk * usize::from(AUDIO_CHANNELS) * 2];
     let mut chunks = 0_u64;
@@ -122,7 +123,7 @@ pub async fn read_audio_chunks(mut stdout: ChildStdout, slot: AudioSlot) {
                     );
                     signal = AudioSignalWindow::default();
                 }
-                slot.publish(bytes::Bytes::copy_from_slice(&chunk));
+                output.publish(bytes::Bytes::copy_from_slice(&chunk));
             }
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
                 tracing::info!(chunks, "ffmpeg audio output closed");

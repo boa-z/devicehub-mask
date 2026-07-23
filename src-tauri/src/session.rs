@@ -43,14 +43,15 @@ use idevice::{
 };
 use tokio::process::ChildStdin;
 
+use crate::audio_output::AudioOutput;
 use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
-    ActiveSlot, AppOperationKind, AppOperationSlot, AudioSlot, ClipboardContentKind,
-    ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceActivationState, DeviceApp,
-    DeviceBattery, DeviceDetails, DeviceInfo, DeviceListSlot, DeviceStorage, ErrorSlot,
-    FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot,
-    Orientation, OrientationSlot, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
+    ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardContentKind, ClipboardEvent,
+    ClipboardSlot, ConnKind, ControlCmd, DeviceActivationState, DeviceApp, DeviceBattery,
+    DeviceDetails, DeviceInfo, DeviceListSlot, DeviceStorage, ErrorSlot, FrameFormat, FrameSlot,
+    InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
+    RotateDir, StatusSlot, VideoCounters, clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
@@ -703,7 +704,7 @@ struct SessionVideo {
     frames: FrameSlot,
     audio_enabled: bool,
     clipboard_sync_enabled: bool,
-    audio: AudioSlot,
+    audio: AudioOutput,
 }
 
 /// Supervise the device session: enumerate attached devices for the picker,
@@ -715,7 +716,7 @@ pub async fn manage(
     video_counters: VideoCounters,
     repaint: impl Fn() + Send + Clone + 'static,
     frames: FrameSlot,
-    audio: AudioSlot,
+    audio: AudioOutput,
     status: StatusSlot,
     clipboard: ClipboardSlot,
     device_events: crate::device_events::DeviceEventSlot,
@@ -3716,7 +3717,7 @@ fn parse_aac_au_header(payload: &[u8]) -> Option<AacAuHeader> {
     })
 }
 
-async fn audio_task(udp: UdpSocketHandle, slot: AudioSlot, enabled: bool) {
+async fn audio_task(udp: UdpSocketHandle, output: AudioOutput, enabled: bool) {
     if !enabled {
         tracing::info!("device audio playback disabled; draining negotiated audio stream");
         audio_receive_loop(&udp, None).await;
@@ -3742,12 +3743,12 @@ async fn audio_task(udp: UdpSocketHandle, slot: AudioSlot, enabled: bool) {
             }
         };
         let decoder_started = Instant::now();
-        let output = decode::read_audio_chunks(stdout, slot.clone());
+        let decoded_output = decode::read_audio_chunks(stdout, output.clone());
         let errors = watch_audio_errors(stderr);
         let receive = audio_receive_loop(&udp, Some((&sender, rtp_address)));
-        tokio::pin!(output, errors, receive);
+        tokio::pin!(decoded_output, errors, receive);
         let exit_reason = tokio::select! {
-            _ = &mut output => "output-ended",
+            _ = &mut decoded_output => "output-ended",
             _ = &mut errors => "stderr-ended",
             _ = &mut receive => {
                 tracing::warn!("device audio RTP input ended");

@@ -228,6 +228,7 @@ export const enUS = {
     deviceAudioEnabled: "Device audio enabled; reconnecting the device.",
     deviceAudioEnabledReconnectManually: "Device audio enabled. Reconnect the device to start playback.",
     deviceAudioEnableFailed: "Unable to enable device audio: {{error}}",
+    deviceAudioOutputUnavailable: "The default system audio output is unavailable; playback will keep retrying",
     clipboardKinds: { text: "Text", image: "Image" },
     clipboardSynced: {
       fromDevice: "{{kind}} copied from device: {{preview}}",

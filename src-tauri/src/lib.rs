@@ -1,5 +1,6 @@
 mod app_documents;
 mod app_icons;
+mod audio_output;
 mod crash_reports;
 mod decode;
 mod device_conditions;
@@ -26,8 +27,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use protocol::{
-    ActiveSlot, AppOperationSlot, AudioSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
-    FrameSlot, InputSink, LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
+    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, FrameSlot,
+    InputSink, LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -109,6 +110,25 @@ fn set_audio_enabled(
 }
 
 #[tauri::command]
+fn set_audio_playback(
+    muted: bool,
+    volume: f32,
+    settings: tauri::State<'_, Arc<settings::AppSettings>>,
+    output: tauri::State<'_, audio_output::AudioOutput>,
+) -> Result<settings::VideoSettingsStatus, String> {
+    let status = settings.set_audio_playback(muted, volume)?;
+    output.set_preferences(status.audio_muted, status.audio_volume)?;
+    Ok(status)
+}
+
+#[tauri::command]
+fn audio_output_status(
+    output: tauri::State<'_, audio_output::AudioOutput>,
+) -> audio_output::AudioOutputStatus {
+    output.status()
+}
+
+#[tauri::command]
 fn set_clipboard_sync_enabled(
     enabled: bool,
     state: tauri::State<'_, Arc<settings::AppSettings>>,
@@ -132,6 +152,7 @@ fn spawn_backend(
     initial_udid: Option<String>,
     profile_dir: PathBuf,
     settings: Arc<settings::AppSettings>,
+    audio: audio_output::AudioOutput,
 ) -> Result<BackendHandle, String> {
     let (control_tx, control_rx) = mpsc::unbounded_channel::<ControlCmd>();
     let thread_control = control_tx.clone();
@@ -155,7 +176,6 @@ fn spawn_backend(
             let device_tasks = tokio::task::LocalSet::new();
             runtime.block_on(device_tasks.run_until(async move {
                 let frames = FrameSlot::default();
-                let audio = AudioSlot::default();
                 let video_counters = VideoCounters::default();
                 let status = StatusSlot::default();
                 let clipboard = ClipboardSlot::default();
@@ -216,7 +236,6 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         frames,
-                        audio,
                         clipboard,
                         device_events,
                         network_capture,
@@ -313,6 +332,8 @@ pub fn run() {
             video_settings_status,
             set_video_pixel_format,
             set_audio_enabled,
+            set_audio_playback,
+            audio_output_status,
             set_clipboard_sync_enabled
         ])
         .setup(move |app| {
@@ -323,11 +344,18 @@ pub fn run() {
             let settings = Arc::new(settings::AppSettings::load(
                 app.path().app_config_dir()?.join("settings.json"),
             ));
+            let audio_settings = settings.status();
+            let audio_output = audio_output::AudioOutput::spawn(
+                audio_settings.audio_muted,
+                audio_settings.audio_volume,
+            )
+            .map_err(std::io::Error::other)?;
+            app.manage(audio_output.clone());
             app.manage(settings.clone());
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or(app.path().app_data_dir()?.join("profiles"));
-            let backend = spawn_backend(initial_udid, profile_dir, settings)
+            let backend = spawn_backend(initial_udid, profile_dir, settings, audio_output)
                 .map_err(std::io::Error::other)?;
             app.manage(backend);
             Ok(())

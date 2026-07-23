@@ -20,7 +20,6 @@ import {
   PushpinFilled,
   PushpinOutlined,
   PlusOutlined,
-  PlayCircleOutlined,
   ReloadOutlined,
   RotateLeftOutlined,
   RotateRightOutlined,
@@ -48,7 +47,7 @@ import { PerformanceHud } from "./components/PerformanceHud";
 import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, shouldAttemptAudioResumeOnLifecycle, shouldReuseAudioResumeAttempt, type DeviceAudioPreferences } from "./deviceAudio";
+import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { parsePngDimensions } from "./deviceScreenshot";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
@@ -57,7 +56,7 @@ import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
-import { readVideoSettings, setAudioEnabled } from "./videoSettings";
+import { readAudioOutputStatus, readVideoSettings, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./videoSettings";
 
 const emptyStatus: DeviceStatus = {
   status: "",
@@ -194,10 +193,10 @@ export default function App() {
   const [performanceView, setPerformanceView] = useState<PerformanceView | null>(null);
   const [performanceError, setPerformanceError] = useState<string | null>(null);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
-  const [audioPlayback, setAudioPlayback] = useState<DeviceAudioPreferences>(readDeviceAudioPreferences);
+  const [audioPlayback, setAudioPlaybackPreferences] = useState<DeviceAudioPreferences>(defaultDeviceAudioPreferences);
   const [deviceAudioEnabled, setDeviceAudioEnabled] = useState<boolean | null>(null);
   const [deviceAudioBusy, setDeviceAudioBusy] = useState(false);
-  const [audioPlaybackSuspended, setAudioPlaybackSuspended] = useState(false);
+  const [audioOutputState, setAudioOutputState] = useState<AudioOutputStatus["state"] | null>(null);
   const [clipboardEvent, setClipboardEvent] = useState<ClipboardEvent | null>(null);
   const [deviceEvent, setDeviceEvent] = useState<DeviceEvent | null>(null);
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
@@ -221,13 +220,7 @@ export default function App() {
   const renderedFramesRef = useRef(0);
   const lastVideoActivityAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
-  const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
-  const audioResumePromiseRef = useRef<Promise<boolean> | null>(null);
-  const audioResumeUserGestureRef = useRef(false);
-  const audioResumeGenerationRef = useRef(0);
-  const audioAutoResumeAttemptedRef = useRef(false);
-  const audioReceptionLoggedRef = useRef(false);
-  const audioPlaybackSuspendedRef = useRef(false);
+  const audioPlaybackGenerationRef = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
@@ -253,129 +246,71 @@ export default function App() {
     if (status.active_udid) setSelectedUdid(status.active_udid);
   }, [status.active_udid]);
 
-  const markAudioPlaybackSuspended = useCallback((suspended: boolean) => {
-    if (audioPlaybackSuspendedRef.current === suspended) return;
-    audioPlaybackSuspendedRef.current = suspended;
-    setAudioPlaybackSuspended(suspended);
-  }, []);
-
-  const resumeDeviceAudio = useCallback((userGesture = false) => {
-    // WebKit may leave a resume() requested outside a user gesture pending.
-    // A real gesture must issue a fresh call while its activation is still live.
-    if (audioResumePromiseRef.current
-      && shouldReuseAudioResumeAttempt(audioResumeUserGestureRef.current, userGesture)) {
-      return audioResumePromiseRef.current;
+  const updateAudioPlayback = useCallback(async (next: DeviceAudioPreferences) => {
+    const previous = audioPlayback;
+    const generation = audioPlaybackGenerationRef.current + 1;
+    audioPlaybackGenerationRef.current = generation;
+    setAudioPlaybackPreferences(next);
+    try {
+      const settings = await setAudioPlayback(next.muted, next.volume);
+      if (audioPlaybackGenerationRef.current === generation) {
+        setAudioPlaybackPreferences({
+          muted: settings.audio_muted,
+          volume: settings.audio_volume,
+        });
+      }
+    } catch (error) {
+      if (audioPlaybackGenerationRef.current === generation) {
+        setAudioPlaybackPreferences(previous);
+        void message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+      }
+      logFrontend("warn", "audio", "set_playback", error);
     }
-    const generation = audioResumeGenerationRef.current + 1;
-    audioResumeGenerationRef.current = generation;
-    const attempt = (async () => {
-      try {
-        const resumed = await audioPlayerRef.current?.resume(userGesture) ?? false;
-        if (audioResumeGenerationRef.current === generation) {
-          markAudioPlaybackSuspended(!resumed);
-          if (resumed) {
-            logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
-          } else {
-            const contextState = audioPlayerRef.current?.contextState() ?? "unavailable";
-            const userActivation = navigator.userActivation?.isActive ?? false;
-            logFrontend(
-              "warn",
-              "audio",
-              "playback_resume_blocked",
-              `context=${contextState}; gesture=${userGesture}; user_activation=${userActivation}; visibility=${document.visibilityState}`,
-            );
-          }
-        }
-        return resumed;
-      } catch (error) {
-        if (audioResumeGenerationRef.current === generation) {
-          markAudioPlaybackSuspended(true);
-          logFrontend("warn", "audio", "resume_failed", error);
-        }
-        return false;
-      }
-    })();
-    audioResumePromiseRef.current = attempt;
-    audioResumeUserGestureRef.current = userGesture;
-    void attempt.finally(() => {
-      if (audioResumePromiseRef.current === attempt) {
-        audioResumePromiseRef.current = null;
-        audioResumeUserGestureRef.current = false;
-      }
-    });
-    return attempt;
-  }, [markAudioPlaybackSuspended]);
-
-  const updateAudioPlayback = useCallback((next: DeviceAudioPreferences, userGesture = false) => {
-    setAudioPlayback(next);
-    saveDeviceAudioPreferences(next);
-    audioPlayerRef.current?.setPreferences(next);
-    if (!next.muted) void resumeDeviceAudio(userGesture);
-  }, [resumeDeviceAudio]);
-
-  useEffect(() => {
-    const player = new PcmAudioPlayer(audioPlayback);
-    audioPlayerRef.current = player;
-    return () => {
-      player.close();
-      if (audioPlayerRef.current === player) audioPlayerRef.current = null;
-    };
-    // Playback preference changes are applied through updateAudioPlayback.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [audioPlayback, t]);
 
   useEffect(() => {
     void readVideoSettings()
-      .then((settings) => {
+      .then(async (settings) => {
+        let playbackSettings = settings;
+        const legacy = readLegacyDeviceAudioPreferences();
+        if (legacy) {
+          try {
+            playbackSettings = await setAudioPlayback(legacy.muted, legacy.volume);
+            clearLegacyDeviceAudioPreferences();
+            logFrontend("info", "audio", "migrate_playback", "Migrated Web Audio preferences to native playback");
+          } catch (error) {
+            logFrontend("warn", "audio", "migrate_playback", error);
+          }
+        }
         setDeviceAudioEnabled(settings.audio_enabled);
-        const player = audioPlayerRef.current;
-        markAudioPlaybackSuspended(
-          settings.audio_enabled && (player?.isAudible() ?? false) && !(player?.isRunning() ?? false),
-        );
+        setAudioPlaybackPreferences({
+          muted: playbackSettings.audio_muted,
+          volume: playbackSettings.audio_volume,
+        });
       })
       .catch((error) => logFrontend("warn", "audio", "read_settings", error));
-  }, [markAudioPlaybackSuspended]);
+  }, []);
 
   useEffect(() => {
-    if (deviceAudioEnabled !== true || audioPlayback.muted) return;
-    const unlockAudio = () => {
-      const player = audioPlayerRef.current;
-      if (shouldAttemptAudioResume(deviceAudioEnabled, audioPlayback.muted, player?.isRunning() ?? false)) {
-        void resumeDeviceAudio(true);
-      }
+    if (deviceAudioEnabled !== true) {
+      setAudioOutputState(null);
+      return;
+    }
+    let disposed = false;
+    const refresh = () => {
+      void readAudioOutputStatus()
+        .then((status) => {
+          if (!disposed) setAudioOutputState(status.state);
+        })
+        .catch((error) => logFrontend("warn", "audio", "read_output_status", error));
     };
-    window.addEventListener("pointerdown", unlockAudio);
-    window.addEventListener("keydown", unlockAudio);
+    refresh();
+    const timer = window.setInterval(refresh, 2_000);
     return () => {
-      window.removeEventListener("pointerdown", unlockAudio);
-      window.removeEventListener("keydown", unlockAudio);
+      disposed = true;
+      window.clearInterval(timer);
     };
-  }, [audioPlayback.muted, deviceAudioEnabled, resumeDeviceAudio]);
-
-  useEffect(() => {
-    const resumeAfterLifecycleChange = () => {
-      const player = audioPlayerRef.current;
-      if (shouldAttemptAudioResumeOnLifecycle(
-        deviceAudioEnabled,
-        audioPlayback.muted,
-        player?.isRunning() ?? false,
-        document.visibilityState,
-      )) {
-        void resumeDeviceAudio();
-      }
-    };
-    const resumeAfterVisibilityChange = () => {
-      if (document.visibilityState === "visible") resumeAfterLifecycleChange();
-    };
-    window.addEventListener("focus", resumeAfterLifecycleChange);
-    window.addEventListener("pageshow", resumeAfterLifecycleChange);
-    document.addEventListener("visibilitychange", resumeAfterVisibilityChange);
-    return () => {
-      window.removeEventListener("focus", resumeAfterLifecycleChange);
-      window.removeEventListener("pageshow", resumeAfterLifecycleChange);
-      document.removeEventListener("visibilitychange", resumeAfterVisibilityChange);
-    };
-  }, [audioPlayback.muted, deviceAudioEnabled, resumeDeviceAudio]);
+  }, [deviceAudioEnabled]);
 
   useEffect(() => {
     if (!clipboardEvent) return;
@@ -754,10 +689,6 @@ export default function App() {
         setCanvasReady(false);
         setStreamStalled(false);
         setStreamMetrics(emptyMetrics);
-        audioPlayerRef.current?.reset();
-        markAudioPlaybackSuspended(false);
-        audioAutoResumeAttemptedRef.current = false;
-        audioReceptionLoggedRef.current = false;
         if (!disposed) retry = window.setTimeout(open, 800);
       };
       const drainFrames = async () => {
@@ -829,33 +760,6 @@ export default function App() {
           return;
         }
         const buffer = event.data as ArrayBuffer;
-        try {
-          const audio = parseAudioEnvelope(buffer);
-          if (audio) {
-            const player = audioPlayerRef.current;
-            const scheduled = player?.push(audio) ?? false;
-            markAudioPlaybackSuspended(!scheduled);
-            if (scheduled) {
-              audioAutoResumeAttemptedRef.current = false;
-            } else if (player?.isAudible() && !audioAutoResumeAttemptedRef.current) {
-              audioAutoResumeAttemptedRef.current = true;
-              void resumeDeviceAudio();
-            }
-            if (!audioReceptionLoggedRef.current) {
-              audioReceptionLoggedRef.current = true;
-              logFrontend(
-                scheduled ? "info" : "warn",
-                "audio",
-                scheduled ? "playback_started" : "playback_suspended",
-                `${audio.sampleRate} Hz, ${audio.channels} channels, ${audio.frames} frames; context=${player?.contextState() ?? "unavailable"}; visibility=${document.visibilityState}`,
-              );
-            }
-            return;
-          }
-        } catch (error) {
-          logFrontend("warn", "audio", "decode_chunk", error);
-          return;
-        }
         frontendMetrics.receivedFrames += 1;
         lastVideoActivityAtRef.current = performance.now();
         setStreamStalled(false);
@@ -871,7 +775,7 @@ export default function App() {
     };
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
-  }, [backend, markAudioPlaybackSuspended, resumeDeviceAudio]);
+  }, [backend]);
 
   useEffect(() => {
     if (deviceEvent?.kind === "device_name_changed") {
@@ -1419,39 +1323,28 @@ export default function App() {
     }
   };
   const toggleDeviceAudio = async () => {
-    const action = deviceAudioControlAction(deviceAudioEnabled, audioPlayback.muted, audioPlaybackSuspended);
+    const action = deviceAudioControlAction(deviceAudioEnabled, audioPlayback.muted);
     if (action === "unavailable" || deviceAudioBusy) return;
     if (action !== "enable") {
       if (action === "unmute") {
-        updateAudioPlayback({ ...audioPlayback, muted: false }, true);
-      } else if (action === "resume") {
-        setDeviceAudioBusy(true);
-        const resumed = await resumeDeviceAudio(true);
-        setDeviceAudioBusy(false);
-        if (resumed) void message.success(t("device.deviceAudioPlaybackStarted"));
-        else void message.warning(t("device.deviceAudioPlaybackStillSuspended"));
+        await updateAudioPlayback({ ...audioPlayback, muted: false });
       } else if (action === "mute") {
-        updateAudioPlayback({ ...audioPlayback, muted: true });
+        await updateAudioPlayback({ ...audioPlayback, muted: true });
       }
       return;
     }
-    // WKWebView only permits Web Audio activation while the original user
-    // gesture is still on the stack. Prime playback before the settings invoke
-    // and reconnect cross an async boundary.
-    const playbackActivation = resumeDeviceAudio(true);
     setDeviceAudioBusy(true);
     try {
       const settings = await setAudioEnabled(true);
       setDeviceAudioEnabled(settings.audio_enabled);
-      updateAudioPlayback({ ...audioPlayback, muted: false });
-      const playbackReady = await playbackActivation;
+      await updateAudioPlayback({ ...audioPlayback, muted: false });
       const reconnecting = await reconnectDevice();
       void message.success(t(reconnecting ? "device.deviceAudioEnabled" : "device.deviceAudioEnabledReconnectManually"));
       logFrontend(
-        playbackReady ? "info" : "warn",
+        "info",
         "audio",
         "enabled",
-        `${reconnecting ? "Reconnect requested" : "Manual reconnect required"}; Web Audio ${playbackReady ? "running" : "suspended"}`,
+        reconnecting ? "Reconnect requested; native playback enabled" : "Manual reconnect required; native playback enabled",
       );
     } catch (error) {
       void message.error(t("device.deviceAudioEnableFailed", { error: String(error) }));
@@ -1583,13 +1476,13 @@ export default function App() {
   const audioControlAction = deviceAudioControlAction(
     deviceAudioEnabled,
     audioPlayback.muted,
-    audioPlaybackSuspended,
   );
-  const audioControlLabel = t({
+  const audioControlLabel = audioOutputState === "unavailable"
+    ? t("device.deviceAudioOutputUnavailable")
+    : t({
     unavailable: "device.startDeviceAudioPlayback",
     enable: "device.enableDeviceAudio",
     unmute: "device.unmuteDeviceAudio",
-    resume: "device.startDeviceAudioPlayback",
     mute: "device.muteDeviceAudio",
   }[audioControlAction]);
   const deviceDisplayControls = (
@@ -1623,14 +1516,13 @@ export default function App() {
       <Tooltip title={audioControlLabel}>
         <Button
           aria-label={audioControlLabel}
-          type={audioControlAction === "resume" || (deviceAudioEnabled && !audioPlayback.muted) ? "primary" : "default"}
+          type={deviceAudioEnabled && !audioPlayback.muted ? "primary" : "default"}
+          danger={audioOutputState === "unavailable"}
           disabled={deviceAudioEnabled === null}
           loading={deviceAudioBusy}
-          icon={audioControlAction === "resume"
-            ? <PlayCircleOutlined />
-            : deviceAudioEnabled && !audioPlayback.muted
-              ? <SoundOutlined />
-              : <AudioMutedOutlined />}
+          icon={deviceAudioEnabled && !audioPlayback.muted
+            ? <SoundOutlined />
+            : <AudioMutedOutlined />}
           onClick={() => void toggleDeviceAudio()}
         />
       </Tooltip>
@@ -1735,7 +1627,7 @@ export default function App() {
               onInspectorVisibleChange={setInspectorVisible}
               onDeviceViewChange={updateDeviceViewPreferences}
               onPerformanceHudChange={updatePerformanceHud}
-              onAudioPlaybackChange={(preferences) => updateAudioPlayback(preferences, true)}
+              onAudioPlaybackChange={(preferences) => void updateAudioPlayback(preferences)}
               onAudioEnabledChange={setDeviceAudioEnabled}
             />
           ) : page === "location" ? (

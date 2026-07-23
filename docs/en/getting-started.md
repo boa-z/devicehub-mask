@@ -55,7 +55,7 @@ Ubuntu and Debian need the Tauri WebKitGTK and native build packages:
 
 ```sh
 sudo apt-get install build-essential cmake nasm pkg-config libssl-dev \
-  libudev-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  libudev-dev libasound2-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
   librsvg2-dev patchelf ffmpeg
 ```
 

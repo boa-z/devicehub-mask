@@ -59,6 +59,7 @@ export function SettingsPage({
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [videoSettings, setVideoSettings] = useState<VideoSettingsStatus | null>(null);
   const [videoSettingsBusy, setVideoSettingsBusy] = useState(false);
+  const [audioVolumeDraft, setAudioVolumeDraft] = useState<number | null>(null);
   useEffect(() => { void getVersion().then(setVersion); }, []);
   useEffect(() => {
     void readDiagnosticsStatus()
@@ -232,9 +233,13 @@ export function SettingsPage({
           <Slider
             min={0}
             max={100}
-            value={Math.round(audioPlayback.volume * 100)}
+            value={audioVolumeDraft ?? Math.round(audioPlayback.volume * 100)}
             disabled={audioPlayback.muted}
-            onChange={(volume) => onAudioPlaybackChange({ ...audioPlayback, volume: volume / 100 })}
+            onChange={setAudioVolumeDraft}
+            onChangeComplete={(volume) => {
+              setAudioVolumeDraft(null);
+              onAudioPlaybackChange({ ...audioPlayback, volume: volume / 100 });
+            }}
           />
         </label>
         <Typography.Text type="secondary">{t("settings.deviceAudioHint")}</Typography.Text>
