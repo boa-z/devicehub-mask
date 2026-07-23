@@ -43,6 +43,9 @@ The Performance workspace combines device-side DVT telemetry with the desktop
 video pipeline. Device metrics include system CPU, process count, Core
 Animation FPS, and GPU memory. Pipeline metrics include source, decode and
 presentation rates, transport bandwidth, JPEG encoding time, and frame age.
+System CPU is the iPhone-wide percentage derived from DVT's aggregate
+`CPU_TotalLoad` divided by the device's reported logical CPU count; it is not
+desktop-host CPU usage or a per-process value.
 
 Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health

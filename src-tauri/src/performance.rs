@@ -44,16 +44,29 @@ impl PerformanceSlot {
         *self.0.lock().unwrap() = PerformanceSnapshot::default();
     }
 
-    fn update_system(&self, sample: &SysmontapSample) {
+    fn update_system(&self, sample: &SysmontapSample, cpu_count: u32) {
         let mut snapshot = self.0.lock().unwrap();
         snapshot.captured_at_ms = unix_millis();
-        snapshot.process_count = sample.processes.as_ref().map(|value| value.len() as u32);
-        snapshot.system_cpu_percent = sample
+        if let Some(processes) = sample.processes.as_ref() {
+            snapshot.process_count = Some(processes.len() as u32);
+        }
+        let raw_cpu_total_load = sample
             .system_cpu_usage
             .as_ref()
             .and_then(|cpu| cpu.get("CPU_TotalLoad"))
-            .and_then(numeric_value)
-            .map(normalize_percent);
+            .and_then(numeric_value);
+        let normalized_cpu_load =
+            raw_cpu_total_load.and_then(|value| normalize_aggregate_cpu_percent(value, cpu_count));
+        if let Some(cpu) = sample.system_cpu_usage.as_ref() {
+            tracing::debug!(
+                raw_cpu_total_load,
+                cpu_count,
+                normalized_cpu_load,
+                fields = ?cpu.keys().collect::<Vec<_>>(),
+                "received DVT system CPU sample"
+            );
+            snapshot.system_cpu_percent = normalized_cpu_load;
+        }
     }
 
     fn update_graphics(&self, sample: &idevice::dvt::graphics::GraphicsSample) {
@@ -181,15 +194,20 @@ async fn run_system_once(
     attempt: u32,
 ) -> Result<(), String> {
     let mut remote = connect_remote(adapter, handshake).await?;
-    let (process_attributes, system_attributes) = tokio::time::timeout(SETUP_TIMEOUT, async {
-        let mut device_info = DeviceInfoClient::new(&mut remote).await?;
-        let process = device_info.sysmon_process_attributes().await?;
-        let system = device_info.sysmon_system_attributes().await?;
-        Ok::<_, idevice::IdeviceError>((process, system))
-    })
-    .await
-    .map_err(|_| "DVT sysmontap attribute query timed out".to_string())?
-    .map_err(|error| format!("DVT sysmontap attribute query failed: {error:?}"))?;
+    let (process_attributes, system_attributes, cpu_count) =
+        tokio::time::timeout(SETUP_TIMEOUT, async {
+            let mut device_info = DeviceInfoClient::new(&mut remote).await?;
+            let process = device_info.sysmon_process_attributes().await?;
+            let system = device_info.sysmon_system_attributes().await?;
+            let hardware = device_info.hardware_information().await?;
+            Ok::<_, idevice::IdeviceError>((process, system, cpu_count(&hardware)))
+        })
+        .await
+        .map_err(|_| "DVT sysmontap attribute query timed out".to_string())?
+        .map_err(|error| format!("DVT sysmontap attribute query failed: {error:?}"))?;
+    let cpu_count = cpu_count.ok_or_else(|| {
+        "DVT hardware information did not report a valid logical CPU count".to_string()
+    })?;
     let mut client = SysmontapClient::new(&mut remote)
         .await
         .map_err(|error| format!("DVT sysmontap channel failed: {error:?}"))?;
@@ -221,7 +239,7 @@ async fn run_system_once(
                 }
             }
             sample = client.next_sample() => match sample {
-                Ok(sample) => slot.update_system(&sample),
+                Ok(sample) => slot.update_system(&sample, cpu_count),
                 Err(error) => return Err(format!("DVT sysmontap stream failed: {error:?}")),
             }
         }
@@ -292,8 +310,32 @@ fn numeric_value(value: &Value) -> Option<f64> {
     }
 }
 
-fn normalize_percent(value: f64) -> f64 {
-    if value <= 1.0 { value * 100.0 } else { value }.clamp(0.0, 100.0)
+fn cpu_count(hardware: &plist::Dictionary) -> Option<u32> {
+    ["numberOfCpus", "numberOfPhysicalCpus"]
+        .into_iter()
+        .filter_map(|key| hardware.get(key))
+        .filter_map(numeric_u32)
+        .find(|count| (1..=256).contains(count))
+}
+
+fn numeric_u32(value: &Value) -> Option<u32> {
+    match value {
+        Value::Integer(value) => value
+            .as_unsigned()
+            .and_then(|value| u32::try_from(value).ok())
+            .or_else(|| {
+                value
+                    .as_signed()
+                    .and_then(|value| u32::try_from(value).ok())
+            }),
+        _ => None,
+    }
+}
+
+fn normalize_aggregate_cpu_percent(value: f64, cpu_count: u32) -> Option<f64> {
+    let normalized = value / f64::from(cpu_count);
+    (value.is_finite() && cpu_count > 0 && (0.0..=100.0).contains(&normalized))
+        .then_some(normalized)
 }
 
 async fn wait_until_enabled(
@@ -332,10 +374,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cpu_load_accepts_fractional_and_percentage_values() {
-        assert_eq!(normalize_percent(0.42), 42.0);
-        assert_eq!(normalize_percent(42.0), 42.0);
-        assert_eq!(normalize_percent(140.0), 100.0);
+    fn aggregate_cpu_load_is_normalized_by_device_cpu_count() {
+        assert_eq!(normalize_aggregate_cpu_percent(240.0, 6), Some(40.0));
+        assert_eq!(normalize_aggregate_cpu_percent(600.0, 6), Some(100.0));
+        assert_eq!(normalize_aggregate_cpu_percent(601.0, 6), None);
+        assert_eq!(normalize_aggregate_cpu_percent(42.0, 0), None);
+        assert_eq!(normalize_aggregate_cpu_percent(f64::NAN, 6), None);
+    }
+
+    #[test]
+    fn logical_cpu_count_falls_back_to_physical_count() {
+        let mut hardware = plist::Dictionary::new();
+        hardware.insert("numberOfPhysicalCpus".into(), Value::Integer(6.into()));
+        assert_eq!(cpu_count(&hardware), Some(6));
+
+        hardware.insert("numberOfCpus".into(), Value::Integer(8.into()));
+        assert_eq!(cpu_count(&hardware), Some(8));
+
+        hardware.insert("numberOfCpus".into(), Value::Integer(0.into()));
+        assert_eq!(cpu_count(&hardware), Some(6));
+    }
+
+    #[test]
+    fn partial_system_samples_preserve_the_latest_metrics() {
+        let slot = PerformanceSlot::default();
+        let mut cpu = plist::Dictionary::new();
+        cpu.insert("CPU_TotalLoad".into(), Value::Real(240.0));
+        let mut processes = plist::Dictionary::new();
+        processes.insert("1".into(), Value::Array(Vec::new()));
+        slot.update_system(
+            &SysmontapSample {
+                processes: Some(processes),
+                system: None,
+                system_cpu_usage: Some(cpu),
+            },
+            6,
+        );
+        slot.update_system(
+            &SysmontapSample {
+                processes: None,
+                system: None,
+                system_cpu_usage: None,
+            },
+            6,
+        );
+
+        let snapshot = slot.get();
+        assert_eq!(snapshot.system_cpu_percent, Some(40.0));
+        assert_eq!(snapshot.process_count, Some(1));
     }
 
     #[test]
