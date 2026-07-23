@@ -73,7 +73,7 @@ const emptyMetrics: StreamMetrics = {
 };
 
 type BackendConnection = { origin: string; token: string };
-type ProfileList = { profiles: string[]; active: string };
+type ProfileList = { profiles: string[]; active: string; app_bindings: Record<string, string>; binding_conflicts: string[] };
 type CapturedScreenshot = { blob: Blob; url: string; width: number; height: number };
 
 function wsUrl(connection: BackendConnection) {
@@ -167,6 +167,8 @@ export default function App() {
   const [controlProfile, setControlProfile] = useState<Profile>(profile);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [activeProfile, setActiveProfile] = useState("default");
+  const [appProfileBindings, setAppProfileBindings] = useState<Record<string, string>>({});
+  const [appBindingConflicts, setAppBindingConflicts] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>("move");
   const [editing, setEditing] = useState(true);
   const [controlMode, setControlMode] = useState<ControlMode>("mapping");
@@ -890,6 +892,7 @@ export default function App() {
       ...loaded,
       name,
       hardwareBindings: { ...defaultHardwareBindings, ...loaded.hardwareBindings },
+      bundleIdentifiers: Array.isArray(loaded.bundleIdentifiers) ? loaded.bundleIdentifiers : [],
     } as Profile;
   }, [request]);
 
@@ -905,8 +908,26 @@ export default function App() {
     const list = await response.json() as ProfileList;
     setProfiles(list.profiles);
     setActiveProfile(list.active);
+    setAppProfileBindings(list.app_bindings ?? {});
+    setAppBindingConflicts(list.binding_conflicts ?? []);
     return list;
   }, [request]);
+
+  const activateProfileForApp = useCallback(async (bundleId: string) => {
+    const target = appProfileBindings[bundleId];
+    if (!target || target === activeProfile) return;
+    try {
+      const loaded = await readProfile(target);
+      releaseAllControls();
+      const response = await request(`/api/profiles/${encodeURIComponent(target)}/activate`, { method: "PUT" });
+      if (!response.ok) throw new Error(translateRef.current("errors.activateProfile", { status: response.status }));
+      setActiveProfile(target);
+      setControlProfile(loaded);
+      void message.success(translateRef.current("profile.autoActivated", { profile: target }));
+    } catch (error) {
+      void message.warning(translateRef.current("profile.autoActivateFailed", { error: String(error) }));
+    }
+  }, [activeProfile, appProfileBindings, readProfile, releaseAllControls, request]);
 
   const writeProfile = useCallback(async (name: string, value: Profile) => {
     const response = await request(`/api/profiles/${encodeURIComponent(name)}`, {
@@ -1001,7 +1022,7 @@ export default function App() {
     await loadProfile(name);
   };
   const duplicateProfile = async (name: string) => {
-    await writeProfile(name, { ...profile, name });
+    await writeProfile(name, { ...profile, name, bundleIdentifiers: [] });
     await refreshProfiles();
     await loadProfile(name);
   };
@@ -1323,6 +1344,7 @@ export default function App() {
                   profile={profile}
                   profiles={profiles}
                   activeProfile={activeProfile}
+                  bindingConflicts={appBindingConflicts}
                   frameSize={mappingFrameSize}
                   onLoad={loadProfile}
                   onSave={save}
@@ -1331,6 +1353,7 @@ export default function App() {
                   onDuplicate={duplicateProfile}
                   onRename={renameProfile}
                   onDelete={deleteCurrentProfile}
+                  onBundleIdentifiersChange={(bundleIdentifiers) => setProfile((current) => ({ ...current, bundleIdentifiers }))}
                   onImport={importProfile}
                 />
               )}
@@ -1471,7 +1494,7 @@ export default function App() {
                   />
                 )}
                 {page === "device" && !deviceFullscreen && (
-                  <DeviceInspector activeUdid={status.active_udid} request={request} />
+                  <DeviceInspector activeUdid={status.active_udid} request={request} onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)} />
                 )}
               </main>
             </>

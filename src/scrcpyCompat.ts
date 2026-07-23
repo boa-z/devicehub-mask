@@ -63,7 +63,7 @@ export function importScrcpyMaskConfig(value: unknown, profileName: string, opti
     const mapping = raw && importMapping(raw, width, height);
     if (mapping) mappings.push(mapping); else skipped += 1;
   }
-  return { profile: { version: 1, name: profileName, hardwareBindings: { ...defaultHardwareBindings }, mappings }, imported: mappings.length, skipped };
+  return { profile: { version: 1, name: profileName, hardwareBindings: { ...defaultHardwareBindings }, bundleIdentifiers: [], mappings }, imported: mappings.length, skipped };
 }
 
 function exportTouch(mapping: TouchMapping, width: number, height: number) {

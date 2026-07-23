@@ -4,6 +4,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  LinkOutlined,
   PlusOutlined,
   SaveOutlined,
   UploadOutlined,
@@ -20,6 +21,7 @@ type Props = {
   profile: Profile;
   profiles: string[];
   activeProfile: string;
+  bindingConflicts: string[];
   frameSize: { width: number; height: number };
   onLoad: (name: string) => Promise<void>;
   onSave: () => Promise<void>;
@@ -28,6 +30,7 @@ type Props = {
   onDuplicate: (name: string) => Promise<void>;
   onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
+  onBundleIdentifiersChange: (bundleIdentifiers: string[]) => void;
   onImport: (profile: Profile, imported: number, skipped: number) => Promise<void>;
 };
 
@@ -50,6 +53,7 @@ export function ProfileManager({
   profile,
   profiles,
   activeProfile,
+  bindingConflicts,
   frameSize,
   onLoad,
   onSave,
@@ -58,12 +62,16 @@ export function ProfileManager({
   onDuplicate,
   onRename,
   onDelete,
+  onBundleIdentifiersChange,
   onImport,
 }: Props) {
   const { t } = useTranslation();
   const fileRef = useRef<HTMLInputElement>(null);
   const [dialog, setDialog] = useState<DialogKind | null>(null);
   const [nextName, setNextName] = useState("");
+  const [appDialog, setAppDialog] = useState(false);
+  const [nextBundleIdentifiers, setNextBundleIdentifiers] = useState<string[]>([]);
+  const hasBindingConflict = profile.bundleIdentifiers.some((bundleId) => bindingConflicts.includes(bundleId));
 
   const openDialog = (kind: DialogKind) => {
     setDialog(kind);
@@ -124,6 +132,7 @@ export function ProfileManager({
           name,
           mappings: native.mappings,
           hardwareBindings: { ...defaultHardwareBindings, ...native.hardwareBindings },
+          bundleIdentifiers: Array.isArray(native.bundleIdentifiers) ? native.bundleIdentifiers : [],
         } as Profile, native.mappings.length, 0);
         return;
       }
@@ -152,6 +161,17 @@ export function ProfileManager({
         <Tooltip title={t("profile.duplicate")}><Button icon={<CopyOutlined />} onClick={() => openDialog("duplicate")} /></Tooltip>
         <Tooltip title={t("profile.rename")}><Button icon={<EditOutlined />} onClick={() => openDialog("rename")} /></Tooltip>
         <Tooltip title={t("profile.delete")}><Button danger disabled={activeProfile === profile.name} icon={<DeleteOutlined />} onClick={confirmDelete} /></Tooltip>
+        <Tooltip title={t(hasBindingConflict ? "profile.appBindingConflict" : "profile.appBindings")}>
+          <Button
+            danger={hasBindingConflict}
+            type={profile.bundleIdentifiers.length > 0 ? "primary" : "default"}
+            icon={<LinkOutlined />}
+            onClick={() => {
+              setNextBundleIdentifiers(profile.bundleIdentifiers);
+              setAppDialog(true);
+            }}
+          />
+        </Tooltip>
         <Tooltip title={t("profile.importJson")}><Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()} /></Tooltip>
         <Dropdown
           menu={{
@@ -181,6 +201,33 @@ export function ProfileManager({
         onCancel={() => setDialog(null)}
       >
         <Input value={nextName} onChange={(event) => setNextName(event.target.value)} autoFocus />
+      </Modal>
+      <Modal
+        open={appDialog}
+        title={t("profile.appBindingsTitle")}
+        okText={t("common.confirm")}
+        cancelText={t("common.cancel")}
+        onOk={() => {
+          const normalized = [...new Set(nextBundleIdentifiers.map((value) => value.trim()).filter(Boolean))];
+          const invalid = normalized.some((value) => value.length > 255 || !value.includes(".") || !/^[A-Za-z0-9.-]+$/.test(value));
+          if (invalid || normalized.length > 32) {
+            void message.error(t("profile.invalidAppBindings"));
+            return;
+          }
+          onBundleIdentifiersChange(normalized);
+          setAppDialog(false);
+        }}
+        onCancel={() => setAppDialog(false)}
+      >
+        <Select
+          mode="tags"
+          className="profile-app-bindings"
+          value={nextBundleIdentifiers}
+          tokenSeparators={[",", " "]}
+          placeholder={t("profile.appBindingsPlaceholder")}
+          onChange={setNextBundleIdentifiers}
+        />
+        <p className="profile-app-bindings-hint">{t("profile.appBindingsHint")}</p>
       </Modal>
     </div>
   );

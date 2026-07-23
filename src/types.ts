@@ -169,8 +169,8 @@ export const hardwareButtons = [{ name: "home" }, { name: "lock" }, { name: "vol
 export type HardwareButtonName = (typeof hardwareButtons)[number]["name"];
 export type HardwareBindings = Record<HardwareButtonName, string>;
 export const defaultHardwareBindings: HardwareBindings = { home: "", lock: "", "volume-up": "", "volume-down": "", mute: "", siri: "", action: "" };
-export type Profile = { version: 1; name: string; mappings: Mapping[]; hardwareBindings: HardwareBindings };
-export const defaultProfile: Profile = { version: 1, name: "default", hardwareBindings: { ...defaultHardwareBindings }, mappings: [
+export type Profile = { version: 1; name: string; mappings: Mapping[]; hardwareBindings: HardwareBindings; bundleIdentifiers: string[] };
+export const defaultProfile: Profile = { version: 1, name: "default", hardwareBindings: { ...defaultHardwareBindings }, bundleIdentifiers: [], mappings: [
   { id: "move", type: "dpad", label: "Move", contactId: 0, x: 0.23, y: 0.73, radius: 0.1, keys: { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD" } },
   { id: "skill-1", type: "touch", label: "Skill 1", contactId: 1, x: 0.78, y: 0.72, key: "Space" },
   { id: "skill-2", type: "touch", label: "Skill 2", contactId: 2, x: 0.87, y: 0.59, key: "KeyJ" },

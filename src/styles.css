@@ -17,6 +17,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .profile-manager { min-height: 48px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; gap: 8px; background: #131718; }
 .profile-manager > .ant-select { width: min(260px, 30vw); }
 .profile-manager > .ant-space { margin-left: auto; }
+.profile-app-bindings { width: 100%; }
+.profile-app-bindings-hint { margin: 10px 0 0; color: #899493; font-size: 12px; }
 .file-input { display: none; }
 .workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
 .workspace.device-workspace { grid-template-columns: minmax(0, 1fr) 360px; }

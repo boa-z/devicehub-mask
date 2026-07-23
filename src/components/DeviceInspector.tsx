@@ -23,6 +23,7 @@ type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type Props = {
   activeUdid: string | null;
   request: Request;
+  onAppLaunched?: (bundleId: string) => void;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -32,7 +33,7 @@ async function readJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function DeviceInspector({ activeUdid, request }: Props) {
+export function DeviceInspector({ activeUdid, request, onAppLaunched }: Props) {
   const { t, i18n } = useTranslation();
   const [tab, setTab] = useState<InspectorTab>("info");
   const [details, setDetails] = useState<DeviceDetails | null>(null);
@@ -141,6 +142,7 @@ export function DeviceInspector({ activeUdid, request }: Props) {
       const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/launch`, { method: "PUT" });
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("deviceInspector.appLaunched", { name: app.name }));
+      onAppLaunched?.(app.bundle_id);
     } catch (launchError) {
       void message.error(t("deviceInspector.appLaunchFailed", { error: String(launchError) }));
     } finally {

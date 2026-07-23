@@ -43,7 +43,7 @@ describe("scrcpy-mask compatibility", () => {
   });
 
   it("exports legacy DeviceHub mappings as scrcpy-mask controllers", () => {
-    const profile: Profile = { version: 1, name: "legacy", hardwareBindings: { home: "", lock: "", "volume-up": "", "volume-down": "", mute: "", siri: "", action: "" }, mappings: [{ id: "tap", type: "touch", label: "Tap", contactId: 0, x: 0.5, y: 0.5, key: "MetaLeft" }] };
+    const profile: Profile = { version: 1, name: "legacy", hardwareBindings: { home: "", lock: "", "volume-up": "", "volume-down": "", mute: "", siri: "", action: "" }, bundleIdentifiers: [], mappings: [{ id: "tap", type: "touch", label: "Tap", contactId: 0, x: 0.5, y: 0.5, key: "MetaLeft" }] };
     expect(exportScrcpyMaskConfig(profile, 1000, 500).mappings[0]).toMatchObject({ type: "SingleTap", bind: ["SuperLeft"], position: { x: 500, y: 250 } });
   });
 });

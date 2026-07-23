@@ -93,6 +93,8 @@ struct Profile {
     version: u8,
     name: String,
     mappings: Vec<serde_json::Value>,
+    #[serde(default, rename = "bundleIdentifiers")]
+    bundle_identifiers: Vec<String>,
     #[serde(default = "default_hardware_bindings", rename = "hardwareBindings")]
     hardware_bindings: BTreeMap<String, String>,
 }
@@ -118,6 +120,8 @@ fn default_hardware_bindings() -> BTreeMap<String, String> {
 struct ProfileList {
     profiles: Vec<String>,
     active: String,
+    app_bindings: BTreeMap<String, String>,
+    binding_conflicts: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -590,7 +594,36 @@ async fn list_profiles(State(state): State<AppState>) -> Result<Json<ProfileList
             .cloned()
             .unwrap_or_else(|| "default".into())
     };
-    Ok(Json(ProfileList { profiles, active }))
+    let mut app_bindings = BTreeMap::new();
+    let mut binding_conflicts = HashSet::new();
+    for name in &profiles {
+        let Ok(bytes) = tokio::fs::read(profile_path(&state, name)?).await else {
+            continue;
+        };
+        let Ok(profile) = serde_json::from_slice::<Profile>(&bytes) else {
+            continue;
+        };
+        if validate_profile(&profile).is_err() {
+            continue;
+        }
+        for bundle_id in profile.bundle_identifiers {
+            if binding_conflicts.contains(&bundle_id) {
+                continue;
+            }
+            if app_bindings.insert(bundle_id.clone(), name.clone()).is_some() {
+                app_bindings.remove(&bundle_id);
+                binding_conflicts.insert(bundle_id);
+            }
+        }
+    }
+    let mut binding_conflicts = binding_conflicts.into_iter().collect::<Vec<_>>();
+    binding_conflicts.sort();
+    Ok(Json(ProfileList {
+        profiles,
+        active,
+        app_bindings,
+        binding_conflicts,
+    }))
 }
 
 async fn load_profile(
@@ -666,10 +699,17 @@ fn validate_profile(profile: &Profile) -> Result<(), StatusCode> {
         || profile.name.is_empty()
         || profile.mappings.len() > 512
         || profile.hardware_bindings.len() != HARDWARE_BUTTON_NAMES.len()
+        || profile.bundle_identifiers.len() > 32
         || HARDWARE_BUTTON_NAMES
             .iter()
             .any(|name| !profile.hardware_bindings.contains_key(*name))
     {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let mut bundle_identifiers = HashSet::new();
+    if profile.bundle_identifiers.iter().any(|bundle_id| {
+        !valid_bundle_identifier(bundle_id) || !bundle_identifiers.insert(bundle_id.as_str())
+    }) {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
     let mut ids = HashSet::new();
@@ -1638,6 +1678,7 @@ mod tests {
             version: 1,
             name: "duplicate".into(),
             mappings: Vec::new(),
+            bundle_identifiers: Vec::new(),
             hardware_bindings: default_hardware_bindings(),
         };
         profile
@@ -1659,6 +1700,7 @@ mod tests {
                 "id": "touch", "type": "touch", "label": "Touch",
                 "contactId": 0, "x": 0.5, "y": 0.5, "key": "KeyH"
             })],
+            bundle_identifiers: Vec::new(),
             hardware_bindings: default_hardware_bindings(),
         };
         profile
@@ -1871,6 +1913,11 @@ mod tests {
             version: 1,
             name: name.into(),
             mappings: Vec::new(),
+            bundle_identifiers: if name == "game" {
+                vec!["com.example.game".into()]
+            } else {
+                Vec::new()
+            },
             hardware_bindings: default_hardware_bindings(),
         };
 
@@ -1895,6 +1942,27 @@ mod tests {
         let list = list_profiles(State(state.clone())).await.unwrap().0;
         assert_eq!(list.profiles, vec!["default", "game"]);
         assert_eq!(list.active, "game");
+        assert_eq!(
+            list.app_bindings.get("com.example.game").map(String::as_str),
+            Some("game")
+        );
+        assert!(list.binding_conflicts.is_empty());
+
+        let mut duplicate = profile("duplicate");
+        duplicate.bundle_identifiers = vec!["com.example.game".into()];
+        save_profile(
+            State(state.clone()),
+            Path("duplicate".into()),
+            Json(duplicate),
+        )
+        .await
+        .unwrap();
+        let conflicted = list_profiles(State(state.clone())).await.unwrap().0;
+        assert!(!conflicted.app_bindings.contains_key("com.example.game"));
+        assert_eq!(conflicted.binding_conflicts, vec!["com.example.game"]);
+        let _ = delete_profile(State(state.clone()), Path("duplicate".into()))
+            .await
+            .unwrap();
         assert!(matches!(
             delete_profile(State(state.clone()), Path("game".into())).await,
             Err(StatusCode::CONFLICT)
