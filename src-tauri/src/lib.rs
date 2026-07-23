@@ -1,3 +1,4 @@
+mod app_documents;
 mod app_icons;
 mod crash_reports;
 mod decode;

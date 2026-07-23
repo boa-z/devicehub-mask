@@ -1023,6 +1023,17 @@ async fn run(
         app_icon_receiver,
         supervisor.shutdown_receiver(),
     ));
+    let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
+    supervisor.spawn(crate::app_documents::serve(
+        adapter.clone(),
+        handshake.clone(),
+        app_documents_receiver,
+        supervisor.shutdown_receiver(),
+    ));
+    let app_management_services = AppManagementServices {
+        icons: app_icon_sender,
+        documents: app_documents_sender,
+    };
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
     // associates our RTCP feedback with the stream; otherwise it's ignored.
@@ -1050,7 +1061,7 @@ async fn run(
                     device_details,
                     installation_proxy,
                     misagent,
-                    app_icon_sender,
+                    app_management_services,
                 ),
                 &mut input_rx,
                 &location,
@@ -1218,7 +1229,7 @@ async fn run(
                 app_service,
                 installation_proxy,
                 misagent,
-                app_icon_sender,
+                app_management_services,
             ),
             &mut input_rx,
             &location,
@@ -1319,6 +1330,32 @@ struct LocationBridge {
     status: LocationStatusSlot,
 }
 
+struct AppManagementServices {
+    icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
+    documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
+}
+
+fn reject_app_document_command(command: crate::app_documents::AppDocumentCommand, reason: &str) {
+    use crate::app_documents::AppDocumentCommand;
+
+    match command {
+        AppDocumentCommand::List { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        AppDocumentCommand::Export { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        AppDocumentCommand::Import { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        AppDocumentCommand::CreateDirectory { reply, .. }
+        | AppDocumentCommand::Rename { reply, .. }
+        | AppDocumentCommand::Delete { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+    }
+}
+
 struct DeviceManagement {
     provider: Arc<dyn IdeviceProvider>,
     power: DevicePowerSlot,
@@ -1328,7 +1365,7 @@ struct DeviceManagement {
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
     misagent: Option<MisagentClient>,
-    app_icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
+    services: AppManagementServices,
 }
 
 struct ActiveAppOperation {
@@ -1355,7 +1392,7 @@ impl DeviceManagement {
         app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
-        app_icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
+        services: AppManagementServices,
     ) -> Self {
         Self {
             provider,
@@ -1366,7 +1403,7 @@ impl DeviceManagement {
             app_service,
             installation_proxy,
             misagent,
-            app_icons,
+            services,
         }
     }
 
@@ -1376,7 +1413,7 @@ impl DeviceManagement {
         details: Option<DeviceDetails>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
-        app_icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
+        services: AppManagementServices,
     ) -> Self {
         Self::new(
             provider,
@@ -1385,7 +1422,7 @@ impl DeviceManagement {
             None,
             installation_proxy,
             misagent,
-            app_icons,
+            services,
         )
     }
 
@@ -1496,7 +1533,7 @@ impl DeviceManagement {
             }
             InputCmd::GetAppIcon { bundle_id, reply } => {
                 let command = crate::app_icons::AppIconCommand { bundle_id, reply };
-                if let Err(error) = self.app_icons.try_send(command) {
+                if let Err(error) = self.services.icons.try_send(command) {
                     let (reason, command) = match error {
                         tokio::sync::mpsc::error::TrySendError::Full(command) => {
                             ("app icon service is busy", command)
@@ -1506,6 +1543,20 @@ impl DeviceManagement {
                         }
                     };
                     let _ = command.reply.send(Err(reason.into()));
+                }
+                None
+            }
+            InputCmd::AppDocuments(command) => {
+                if let Err(error) = self.services.documents.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("application document service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("application document service is unavailable", command)
+                        }
+                    };
+                    reject_app_document_command(command, reason);
                 }
                 None
             }
@@ -1712,11 +1763,27 @@ async fn list_provisioning_profiles(
 
 async fn list_device_apps(
     app_service: Option<&mut AppServiceClient<Box<dyn ReadWrite>>>,
-    installation_proxy: Option<&mut InstallationProxyClient>,
+    mut installation_proxy: Option<&mut InstallationProxyClient>,
 ) -> Result<Vec<DeviceApp>, String> {
     if let Some(client) = app_service {
         match client.list_apps(false, true, false, false, false).await {
             Ok(entries) => {
+                let document_apps = match installation_proxy.as_deref_mut() {
+                    Some(client) => match client.get_apps(Some("User"), None).await {
+                        Ok(apps) => apps
+                            .iter()
+                            .filter(|(_, value)| installation_supports_documents(value))
+                            .map(|(bundle_id, _)| bundle_id.clone())
+                            .collect::<std::collections::HashSet<_>>(),
+                        Err(error) => {
+                            tracing::warn!(
+                                "app document capability metadata unavailable: {error:?}"
+                            );
+                            std::collections::HashSet::new()
+                        }
+                    },
+                    None => std::collections::HashSet::new(),
+                };
                 let processes = match client.list_processes().await {
                     Ok(processes) => Some(processes),
                     Err(error) => {
@@ -1727,24 +1794,29 @@ async fn list_device_apps(
                 return Ok(sort_device_apps(
                     entries
                         .into_iter()
-                        .map(|entry| DeviceApp {
-                            is_running: processes.as_ref().map(|processes| {
-                                processes.iter().any(|process| {
-                                    process.executable_url.as_ref().is_some_and(|executable| {
-                                        process_executable_belongs_to_app(
-                                            &entry.path,
-                                            &executable.relative,
-                                        )
+                        .map(|entry| {
+                            let documents_available =
+                                document_apps.contains(&entry.bundle_identifier);
+                            DeviceApp {
+                                is_running: processes.as_ref().map(|processes| {
+                                    processes.iter().any(|process| {
+                                        process.executable_url.as_ref().is_some_and(|executable| {
+                                            process_executable_belongs_to_app(
+                                                &entry.path,
+                                                &executable.relative,
+                                            )
+                                        })
                                     })
-                                })
-                            }),
-                            bundle_id: entry.bundle_identifier,
-                            name: entry.name,
-                            version: entry.version,
-                            bundle_version: entry.bundle_version,
-                            is_removable: entry.is_removable,
-                            is_first_party: entry.is_first_party,
-                            is_developer_app: entry.is_developer_app,
+                                }),
+                                bundle_id: entry.bundle_identifier,
+                                name: entry.name,
+                                version: entry.version,
+                                bundle_version: entry.bundle_version,
+                                is_removable: entry.is_removable,
+                                is_first_party: entry.is_first_party,
+                                is_developer_app: entry.is_developer_app,
+                                documents_available,
+                            }
                         })
                         .collect(),
                 ));
@@ -1792,7 +1864,21 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
             .unwrap_or_else(|| signer.contains("Apple iPhone OS Application Signing")),
         is_developer_app: boolean("IsXcodeManaged").unwrap_or(false)
             || signer.contains("Apple Development"),
+        documents_available: installation_supports_documents(value),
         is_running: None,
+    })
+}
+
+fn installation_supports_documents(value: &plist::Value) -> bool {
+    value.as_dictionary().is_some_and(|fields| {
+        ["UIFileSharingEnabled", "UISupportsDocumentBrowser"]
+            .into_iter()
+            .any(|key| {
+                fields
+                    .get(key)
+                    .and_then(plist::Value::as_boolean)
+                    .unwrap_or(false)
+            })
     })
 }
 
@@ -2258,6 +2344,7 @@ async fn dispatch(
         InputCmd::GetDeviceDetails(_)
         | InputCmd::ListApps(_)
         | InputCmd::GetAppIcon { .. }
+        | InputCmd::AppDocuments(_)
         | InputCmd::RestartDevice(_)
         | InputCmd::ShutdownDevice(_)
         | InputCmd::ListProvisioningProfiles(_)
@@ -3868,6 +3955,10 @@ mod tests {
                 plist::Value::String("42".into()),
             ),
             (String::from("IsXcodeManaged"), plist::Value::Boolean(true)),
+            (
+                String::from("UIFileSharingEnabled"),
+                plist::Value::Boolean(true),
+            ),
         ]));
 
         let app = device_app_from_installation("com.example.game".into(), &value).unwrap();
@@ -3876,6 +3967,7 @@ mod tests {
         assert_eq!(app.version.as_deref(), Some("2.4"));
         assert_eq!(app.bundle_version.as_deref(), Some("42"));
         assert!(app.is_developer_app);
+        assert!(app.documents_available);
         assert!(!app.is_removable);
         assert_eq!(app.is_running, None);
     }

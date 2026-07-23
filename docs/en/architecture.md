@@ -86,6 +86,14 @@ client-supplied DiagnosticsRelay operation. Each opens an independent relay
 connection in a bounded task, so waiting for the device acknowledgement does
 not stall HID dispatch. The frontend requires a device-named confirmation.
 
+App Documents uses a dedicated supervised House Arrest worker over a cloned RSD
+tunnel. Each command vends only the selected application's Documents root and
+opens a fresh AFC session. Remote paths reject traversal and separators in item
+names. Downloads and uploads stream between AFC and host files; downloads use a
+rollback-capable local replacement, while uploads write a uniquely named remote
+temporary file and rename it only after the stream closes. Uploads do not
+silently replace an existing item, and deletes are non-recursive.
+
 IPA installation and app removal use independent Tokio tasks and fresh
 Installation Proxy connections so uploads do not block video, HID, or app-list
 requests. The backend re-queries an uninstall target and permits only removable,

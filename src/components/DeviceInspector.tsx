@@ -6,6 +6,7 @@ import {
   DisconnectOutlined,
   DownloadOutlined,
   FileTextOutlined,
+  FolderOpenOutlined,
   InfoCircleOutlined,
   LinkOutlined,
   PlayCircleOutlined,
@@ -20,6 +21,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { AppDocumentsModal } from "./AppDocumentsModal";
 import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate } from "../deviceInspector";
 import type { ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, ProvisioningProfile } from "../types";
@@ -121,6 +123,7 @@ export function DeviceInspector({
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
+  const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const handledOperation = useRef(0);
 
   const loadApps = useCallback(async () => {
@@ -157,6 +160,7 @@ export function DeviceInspector({
     setCrashReports([]);
     setCrashReportsTruncated(false);
     setAppOperation(null);
+    setDocumentsApp(null);
     setError(null);
   }, [activeUdid]);
 
@@ -390,6 +394,7 @@ export function DeviceInspector({
   ] : [];
 
   return (
+    <>
     <aside className="device-inspector">
       <div className="device-inspector-header">
         <Segmented<InspectorTab>
@@ -522,6 +527,11 @@ export function DeviceInspector({
                   <Tooltip title={t("deviceInspector.copyBundleId")}>
                     <Button size="small" icon={<CopyOutlined />} onClick={() => void copyBundleId(app.bundle_id)} />
                   </Tooltip>
+                  {app.documents_available && (
+                    <Tooltip title={t("deviceInspector.appDocuments")}>
+                      <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setDocumentsApp(app)} />
+                    </Tooltip>
+                  )}
                   <Tooltip title={t(app.is_running ? "deviceInspector.restartApp" : "deviceInspector.launchApp")}>
                     <Button
                       size="small"
@@ -661,5 +671,7 @@ export function DeviceInspector({
         </div>
       )}
     </aside>
+    <AppDocumentsModal app={documentsApp} request={request} onClose={() => setDocumentsApp(null)} />
+    </>
   );
 }

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Path, Request, State, WebSocketUpgrade};
+use axum::extract::{Path, Query, Request, State, WebSocketUpgrade};
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
@@ -161,6 +161,26 @@ pub fn router(state: AppState, token: String) -> Router {
         )
         .route("/api/device/apps", get(device_apps))
         .route("/api/device/apps/{bundle_id}/icon", get(device_app_icon))
+        .route(
+            "/api/device/apps/{bundle_id}/documents",
+            get(app_documents).delete(delete_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/export",
+            put(export_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/import",
+            put(import_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/directory",
+            put(create_app_document_directory),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/rename",
+            put(rename_app_document),
+        )
         .route("/api/device/apps/operation", get(app_operation))
         .route("/api/device/apps/install", put(install_app))
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
@@ -318,6 +338,7 @@ async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CRASH_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 
 #[derive(Deserialize)]
 struct SetLocationRequest {
@@ -542,6 +563,217 @@ async fn device_app_icon(
         ],
         icon,
     ))
+}
+
+#[derive(Deserialize)]
+struct AppDocumentQuery {
+    #[serde(default = "app_document_root")]
+    path: String,
+}
+
+fn app_document_root() -> String {
+    "/".into()
+}
+
+#[derive(Deserialize)]
+struct ExportAppDocumentRequest {
+    path: String,
+    destination: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct ImportAppDocumentRequest {
+    directory: String,
+    source: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct CreateAppDocumentDirectoryRequest {
+    directory: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RenameAppDocumentRequest {
+    path: String,
+    name: String,
+}
+
+async fn app_documents(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+    Query(query): Query<AppDocumentQuery>,
+) -> Result<Json<crate::app_documents::AppDocumentList>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::List {
+            bundle_id,
+            path: query.path,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_app_document_response(response, "application document listing").await?,
+    ))
+}
+
+async fn export_app_document(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<ExportAppDocumentRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Export {
+            bundle_id,
+            path: request.path,
+            destination: request.destination,
+            reply,
+        },
+    )?;
+    let bytes_written =
+        await_app_document_response(response, "application document export").await?;
+    Ok(Json(json!({ "bytes_written": bytes_written })))
+}
+
+async fn import_app_document(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<ImportAppDocumentRequest>,
+) -> Result<Json<crate::app_documents::AppDocumentEntry>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Import {
+            bundle_id,
+            directory: request.directory,
+            source: request.source,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_app_document_response(response, "application document upload").await?,
+    ))
+}
+
+async fn create_app_document_directory(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<CreateAppDocumentDirectoryRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::CreateDirectory {
+            bundle_id,
+            directory: request.directory,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_app_document_response(response, "application directory creation").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rename_app_document(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<RenameAppDocumentRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Rename {
+            bundle_id,
+            path: request.path,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_app_document_response(response, "application document rename").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_app_document(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+    Query(query): Query<AppDocumentQuery>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Delete {
+            bundle_id,
+            path: query.path,
+            reply,
+        },
+    )?;
+    await_app_document_response(response, "application document deletion").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn validate_app_document_bundle(bundle_id: &str) -> Result<(), (StatusCode, String)> {
+    if valid_bundle_identifier(bundle_id) {
+        Ok(())
+    } else {
+        Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()))
+    }
+}
+
+fn dispatch_app_document_command(
+    state: &AppState,
+    command: crate::app_documents::AppDocumentCommand,
+) -> Result<(), (StatusCode, String)> {
+    if state.input.try_send(InputCmd::AppDocuments(command)) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ))
+    }
+}
+
+async fn await_app_document_response<T>(
+    response: oneshot::Receiver<Result<T, String>>,
+    operation: &str,
+) -> Result<T, (StatusCode, String)> {
+    tokio::time::timeout(APP_DOCUMENT_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| {
+            let status = if error == "an application document with this name already exists" {
+                StatusCode::CONFLICT
+            } else if error.starts_with("invalid ")
+                || error.contains("root cannot be modified")
+                || error.contains("must be a regular file")
+                || error.contains("only regular application documents")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, error)
+        })
 }
 
 async fn app_operation(State(state): State<AppState>) -> Json<crate::protocol::AppOperationView> {
@@ -789,9 +1021,13 @@ fn valid_bundle_identifier(bundle_id: &str) -> bool {
     !bundle_id.is_empty()
         && bundle_id.len() <= 255
         && bundle_id.contains('.')
-        && bundle_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        && bundle_id.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 fn profile_path(state: &AppState, name: &str) -> Result<PathBuf, StatusCode> {
@@ -2153,6 +2389,15 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            app_documents(
+                State(state.clone()),
+                Path("com.example.game".into()),
+                Query(AppDocumentQuery { path: "/".into() }),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             restart_device(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -2220,6 +2465,155 @@ mod tests {
         let response = request.await.unwrap().unwrap().into_response();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
+    }
+
+    #[tokio::test]
+    async fn app_document_endpoints_dispatch_typed_commands() {
+        use crate::app_documents::{
+            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList,
+        };
+
+        let (state, mut input_rx) = test_state();
+        let list = tokio::spawn(app_documents(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Query(AppDocumentQuery {
+                path: "/Saves".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::List {
+                bundle_id,
+                path,
+                reply,
+            }) => {
+                assert_eq!(bundle_id, "com.example.game");
+                assert_eq!(path, "/Saves");
+                reply
+                    .send(Ok(AppDocumentList {
+                        path,
+                        entries: Vec::new(),
+                        truncated: false,
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(list.await.unwrap().unwrap().0.path, "/Saves");
+
+        let upload = tokio::spawn(import_app_document(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Json(ImportAppDocumentRequest {
+                directory: "/Saves".into(),
+                source: PathBuf::from("slot.dat"),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Import {
+                directory,
+                source,
+                reply,
+                ..
+            }) => {
+                assert_eq!(directory, "/Saves");
+                assert_eq!(source, PathBuf::from("slot.dat"));
+                reply
+                    .send(Ok(AppDocumentEntry {
+                        name: "slot.dat".into(),
+                        path: "/Saves/slot.dat".into(),
+                        kind: AppDocumentKind::File,
+                        size_bytes: 42,
+                        modified: "2026-07-24T00:00:00Z".into(),
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(upload.await.unwrap().unwrap().0.size_bytes, 42);
+
+        let create = tokio::spawn(create_app_document_directory(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Json(CreateAppDocumentDirectoryRequest {
+                directory: "/".into(),
+                name: "Saves".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::CreateDirectory { name, reply, .. }) => {
+                assert_eq!(name, "Saves");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(create.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let rename = tokio::spawn(rename_app_document(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Json(RenameAppDocumentRequest {
+                path: "/Saves/slot.dat".into(),
+                name: "slot-2.dat".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Rename { name, reply, .. }) => {
+                assert_eq!(name, "slot-2.dat");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(rename.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let delete = tokio::spawn(delete_app_document(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Query(AppDocumentQuery {
+                path: "/Saves/slot-2.dat".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Delete { path, reply, .. }) => {
+                assert_eq!(path, "/Saves/slot-2.dat");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(delete.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let export = tokio::spawn(export_app_document(
+            State(state),
+            Path("com.example.game".into()),
+            Json(ExportAppDocumentRequest {
+                path: "/Saves/slot-2.dat".into(),
+                destination: PathBuf::from("slot-2.dat"),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Export {
+                destination, reply, ..
+            }) => {
+                assert_eq!(destination, PathBuf::from("slot-2.dat"));
+                reply.send(Ok(84)).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(export.await.unwrap().unwrap().0["bytes_written"], 84);
+    }
+
+    #[tokio::test]
+    async fn app_document_conflicts_are_reported_as_http_conflicts() {
+        let (reply, response) = oneshot::channel::<Result<(), String>>();
+        reply
+            .send(Err(
+                "an application document with this name already exists".into()
+            ))
+            .unwrap();
+        assert!(matches!(
+            await_app_document_response(response, "upload").await,
+            Err((StatusCode::CONFLICT, _))
+        ));
     }
 
     #[tokio::test]

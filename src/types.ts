@@ -84,7 +84,20 @@ export type DeviceApp = {
   is_removable: boolean;
   is_first_party: boolean;
   is_developer_app: boolean;
+  documents_available: boolean;
   is_running: boolean | null;
+};
+export type AppDocumentEntry = {
+  name: string;
+  path: string;
+  kind: "file" | "directory" | "other";
+  size_bytes: number;
+  modified: string;
+};
+export type AppDocumentList = {
+  path: string;
+  entries: AppDocumentEntry[];
+  truncated: boolean;
 };
 export type DeviceCrashReport = {
   path: string;

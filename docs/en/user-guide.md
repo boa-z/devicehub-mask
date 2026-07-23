@@ -131,6 +131,13 @@ App icons are read on demand from SpringBoardServices as their rows approach the
 visible area. If an icon is unavailable, the list keeps its letter fallback and
 all management actions remain usable.
 
+The folder button on an application opens its **App Documents** workspace when
+the application exposes Documents through iOS File Sharing. You can browse
+folders, upload a new local file, download a regular file, create folders,
+rename items, and delete files or empty folders. Uploads never overwrite an
+existing name; rename the existing item or the local file first. House Arrest
+confines every operation to that application's vended Documents root.
+
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or
 remove operation. IPA upload progress is indeterminate until Installation Proxy

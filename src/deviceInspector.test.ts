@@ -11,6 +11,7 @@ const apps: DeviceApp[] = [
     is_removable: true,
     is_first_party: false,
     is_developer_app: true,
+    documents_available: true,
     is_running: true,
   },
   {
@@ -21,6 +22,7 @@ const apps: DeviceApp[] = [
     is_removable: true,
     is_first_party: false,
     is_developer_app: false,
+    documents_available: false,
     is_running: null,
   },
 ];

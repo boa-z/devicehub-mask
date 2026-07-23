@@ -94,7 +94,25 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-app-meta > .ant-typography { margin: 0; }
 .device-app-tags { min-height: 18px; display: flex; gap: 4px; }
 .device-app-tags .ant-tag { margin: 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
-.device-app-actions { display: flex; gap: 4px; }
+.device-app-actions { width: 80px; display: grid; grid-template-columns: repeat(3, 24px); justify-content: end; gap: 4px; }
+.app-documents-modal .ant-modal-body { min-height: min(520px, 70vh); display: flex; flex-direction: column; gap: 10px; }
+.app-documents-toolbar { display: grid; grid-template-columns: 32px minmax(0, 1fr) repeat(3, 32px); align-items: center; gap: 6px; }
+.app-documents-toolbar > .ant-btn { width: 32px; padding-inline: 0; }
+.app-documents-toolbar .ant-breadcrumb { min-width: 0; overflow: hidden; }
+.app-documents-toolbar .ant-breadcrumb ol { flex-wrap: nowrap; }
+.app-documents-toolbar .ant-breadcrumb-link { min-width: 0; }
+.app-documents-toolbar .ant-breadcrumb-link .ant-btn { max-width: 150px; padding-inline: 4px; overflow: hidden; text-overflow: ellipsis; }
+.app-documents-loading { flex: 1; display: grid; place-items: center; }
+.app-document-list { min-height: 0; max-height: min(460px, 60vh); overflow-y: auto; border-top: 1px solid #303638; }
+.app-document-row { min-height: 48px; padding: 7px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 24px minmax(0, 1fr) 72px 152px 104px; align-items: center; gap: 8px; }
+.app-document-kind { color: #8ba5a1; font-size: 17px; text-align: center; }
+.app-document-name { min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.app-document-name:disabled { cursor: default; }
+.app-document-name .ant-typography { max-width: 100%; margin: 0; }
+.app-document-size, .app-document-date { margin: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-document-size { text-align: right; font-variant-numeric: tabular-nums; }
+.app-document-actions { min-width: 104px; display: flex; justify-content: flex-end; gap: 3px; }
+.app-document-actions .ant-btn { width: 24px; height: 24px; padding: 0; }
 .device-profiles-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .device-profile-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
 .device-profile-row { min-height: 112px; padding: 10px 2px; border-bottom: 1px solid #303638; display: flex; flex-direction: column; gap: 5px; }
@@ -265,4 +283,12 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .location-fields, .location-presets { grid-template-columns: minmax(0, 1fr); }
   .inspector { border-left: 0; border-top: 1px solid #303638; min-height: 340px; }
   .device-inspector { border-left: 0; border-top: 1px solid #303638; min-height: 420px; }
+  .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 68px 104px; }
+  .app-document-date { display: none; }
+}
+
+@media (max-width: 620px) {
+  .app-documents-toolbar .ant-breadcrumb-link .ant-btn { max-width: 88px; }
+  .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 104px; }
+  .app-document-size { display: none; }
 }

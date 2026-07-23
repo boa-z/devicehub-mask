@@ -317,6 +317,8 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
+    /// Access one application's vended Documents root through House Arrest.
+    AppDocuments(crate::app_documents::AppDocumentCommand),
     /// Restart the active device through DiagnosticsRelay.
     RestartDevice(oneshot::Sender<Result<(), String>>),
     /// Shut down the active device through DiagnosticsRelay.
@@ -504,6 +506,7 @@ pub struct DeviceApp {
     pub is_removable: bool,
     pub is_first_party: bool,
     pub is_developer_app: bool,
+    pub documents_available: bool,
     /// `None` means the process list was unavailable for this request.
     pub is_running: Option<bool>,
 }

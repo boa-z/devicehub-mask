@@ -21,7 +21,8 @@ exposed as a browser application.
   mapping editor with live or captured-screen backgrounds
 - Device metadata, application browsing, running-state detection, launch,
   restart and stop controls, native app icons, IPA installation, safe app
-  removal, confirmed device restart and shutdown, and
+  removal, sandboxed App Documents browsing and transfer, confirmed device
+  restart and shutdown, and
   provisioning profile inspection, plus bounded crash-report browsing and export
 - On-demand live iPhone syslog console with bounded in-memory buffering, search,
   pause, copy and service recovery status
