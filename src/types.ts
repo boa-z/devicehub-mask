@@ -79,6 +79,7 @@ export type DeviceDetails = {
   serial_number: string | null;
   ecid: string | null;
   total_disk_capacity: number | null;
+  developer_mode_enabled: boolean | null;
   battery: DeviceBattery | null;
 };
 export type DeviceBattery = {

@@ -370,6 +370,9 @@ export function DeviceInspector({
     [t("deviceInspector.hardwareModel"), details.hardware_model ?? "-"],
     [t("deviceInspector.serialNumber"), details.serial_number ?? "-"],
     [t("deviceInspector.ecid"), details.ecid?.toString() ?? "-"],
+    [t("deviceInspector.developerMode"), details.developer_mode_enabled == null
+      ? t("deviceInspector.developerModeStates.unknown")
+      : t(`deviceInspector.developerModeStates.${details.developer_mode_enabled ? "enabled" : "disabled"}`)],
     [t("deviceInspector.batteryLevel"), details.battery?.level_percent == null ? "-" : `${details.battery.level_percent}%`],
     [t("deviceInspector.batteryState"), details.battery?.fully_charged
       ? t("deviceInspector.batteryStates.full")
@@ -424,6 +427,14 @@ export function DeviceInspector({
         <div className="device-inspector-loading"><Spin /></div>
       ) : tab === "info" ? (
         <div className="device-info-pane">
+          {details?.developer_mode_enabled === false && (
+            <Alert
+              type="warning"
+              showIcon
+              message={t("deviceInspector.developerModeDisabled")}
+              description={t("deviceInspector.developerModeHint")}
+            />
+          )}
           <div className="device-info-list">
             {infoRows.map(([label, value]) => (
               <div className="device-info-row" key={label}>

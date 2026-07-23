@@ -33,6 +33,7 @@ use idevice::{
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     misagent::MisagentClient,
+    mobile_image_mounter::ImageMounter,
     provider::IdeviceProvider,
     rsd::RsdHandshake,
     springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
@@ -1564,12 +1565,17 @@ impl DeviceManagement {
                 };
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    match tokio::time::timeout(
-                        Duration::from_secs(3),
-                        read_device_battery(provider.as_ref()),
-                    )
-                    .await
-                    {
+                    let (battery_result, developer_mode_result) = tokio::join!(
+                        tokio::time::timeout(
+                            Duration::from_secs(3),
+                            read_device_battery(provider.as_ref()),
+                        ),
+                        tokio::time::timeout(
+                            Duration::from_secs(3),
+                            read_developer_mode_status(provider.as_ref()),
+                        ),
+                    );
+                    match battery_result {
                         Ok(Ok(battery)) => {
                             tracing::debug!(
                                 level_percent = ?battery.level_percent,
@@ -1584,6 +1590,18 @@ impl DeviceManagement {
                         }
                         Err(_) => {
                             tracing::warn!("device battery diagnostics timed out");
+                        }
+                    }
+                    match developer_mode_result {
+                        Ok(Ok(enabled)) => {
+                            tracing::debug!(enabled, "developer mode status refreshed");
+                            details.developer_mode_enabled = Some(enabled);
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "developer mode status unavailable");
+                        }
+                        Err(_) => {
+                            tracing::warn!("developer mode status timed out");
                         }
                     }
                     let _ = reply.send(Ok(details));
@@ -3042,8 +3060,19 @@ async fn read_device_details(
         serial_number: string("SerialNumber"),
         ecid: integer("UniqueChipID").map(|value| value.to_string()),
         total_disk_capacity,
+        developer_mode_enabled: None,
         battery: None,
     })
+}
+
+async fn read_developer_mode_status(provider: &dyn IdeviceProvider) -> Result<bool, String> {
+    let mut mounter = ImageMounter::connect(provider)
+        .await
+        .map_err(|error| format!("cannot connect mobile image mounter: {error:?}"))?;
+    mounter
+        .query_developer_mode_status()
+        .await
+        .map_err(|error| format!("cannot query developer mode: {error:?}"))
 }
 
 async fn read_device_battery(provider: &dyn IdeviceProvider) -> Result<DeviceBattery, String> {
@@ -3843,6 +3872,18 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn reads_developer_mode_status_from_hardware() {
+        let (provider, _) = connect_provider(None)
+            .await
+            .expect("connect device provider");
+        let enabled = read_developer_mode_status(provider.as_ref())
+            .await
+            .expect("query developer mode");
+        eprintln!("developer mode enabled: {enabled}");
+    }
+
     #[test]
     fn device_power_slot_rejects_concurrent_commands_and_releases_on_drop() {
         let slot = DevicePowerSlot::default();
@@ -4064,6 +4105,7 @@ mod tests {
             serial_number: None,
             ecid: None,
             total_disk_capacity: None,
+            developer_mode_enabled: None,
             battery: None,
         };
 

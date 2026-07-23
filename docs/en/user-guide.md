@@ -15,6 +15,9 @@ The inspector's Info tab refreshes privacy-safe battery diagnostics through
 Diagnostics Relay: charge level and state, cycle count, full-charge versus
 design capacity, voltage/current, remaining time, and power-adapter rating.
 Battery and adapter serial numbers are never returned by the private API.
+It also queries Developer Mode through MobileImageMounter. When disabled, the
+tab points to the required iPhone setting because DVT diagnostics and
+performance services depend on it.
 
 The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri,
 and Action. Always-on-top, inspector visibility, and fullscreen controls are in
