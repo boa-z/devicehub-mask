@@ -232,6 +232,27 @@ export function DeviceInspector({
     [t("deviceInspector.hardwareModel"), details.hardware_model ?? "-"],
     [t("deviceInspector.serialNumber"), details.serial_number ?? "-"],
     [t("deviceInspector.ecid"), details.ecid?.toString() ?? "-"],
+    [t("deviceInspector.batteryLevel"), details.battery?.level_percent == null ? "-" : `${details.battery.level_percent}%`],
+    [t("deviceInspector.batteryState"), details.battery?.fully_charged
+      ? t("deviceInspector.batteryStates.full")
+      : details.battery?.is_charging
+        ? t("deviceInspector.batteryStates.charging")
+        : details.battery?.external_connected
+          ? t("deviceInspector.batteryStates.connected")
+          : details.battery ? t("deviceInspector.batteryStates.discharging") : "-"],
+    [t("deviceInspector.batteryHealth"), details.battery?.health_percent == null
+      ? "-"
+      : `${details.battery.health_percent.toFixed(1)}% (${details.battery.full_charge_capacity_mah ?? "-"}/${details.battery.design_capacity_mah ?? "-"} mAh)`],
+    [t("deviceInspector.batteryCycles"), details.battery?.cycle_count?.toString() ?? "-"],
+    [t("deviceInspector.batteryElectrical"), details.battery?.voltage_mv == null && details.battery?.instant_amperage_ma == null
+      ? "-"
+      : `${details.battery.voltage_mv == null ? "-" : (details.battery.voltage_mv / 1000).toFixed(2)} V · ${details.battery.instant_amperage_ma ?? "-"} mA`],
+    [t("deviceInspector.powerAdapter"), details.battery?.adapter_name || details.battery?.adapter_watts != null
+      ? [details.battery?.adapter_name, details.battery?.adapter_watts == null ? null : `${details.battery.adapter_watts} W`].filter(Boolean).join(" · ")
+      : "-"],
+    [t("deviceInspector.batteryTimeRemaining"), details.battery?.time_remaining_minutes == null
+      ? "-"
+      : t("deviceInspector.minutes", { count: details.battery.time_remaining_minutes })],
   ] : [];
 
   return (

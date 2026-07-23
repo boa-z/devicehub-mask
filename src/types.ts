@@ -51,6 +51,22 @@ export type DeviceDetails = {
   serial_number: string | null;
   ecid: string | null;
   total_disk_capacity: number | null;
+  battery: DeviceBattery | null;
+};
+export type DeviceBattery = {
+  level_percent: number | null;
+  is_charging: boolean | null;
+  external_connected: boolean | null;
+  fully_charged: boolean | null;
+  cycle_count: number | null;
+  voltage_mv: number | null;
+  instant_amperage_ma: number | null;
+  design_capacity_mah: number | null;
+  full_charge_capacity_mah: number | null;
+  health_percent: number | null;
+  time_remaining_minutes: number | null;
+  adapter_watts: number | null;
+  adapter_name: string | null;
 };
 export type DeviceApp = {
   bundle_id: string;

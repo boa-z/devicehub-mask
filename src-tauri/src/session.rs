@@ -28,6 +28,7 @@ use idevice::{
         is_rtcp, parse_answer_media_blob,
     },
     core_device_proxy::CoreDeviceProxy,
+    diagnostics_relay::DiagnosticsRelayClient,
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     misagent::MisagentClient,
@@ -44,10 +45,10 @@ use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, AudioSlot, ClipboardEvent, ClipboardSlot,
-    ConnKind, ControlCmd, DeviceApp, DeviceDetails, DeviceInfo, DeviceListSlot, ErrorSlot,
-    FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot,
-    Orientation, OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot, VideoCounters,
-    clipboard_preview,
+    ConnKind, ControlCmd, DeviceApp, DeviceBattery, DeviceDetails, DeviceInfo, DeviceListSlot,
+    ErrorSlot, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus,
+    LocationStatusSlot, Orientation, OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot,
+    VideoCounters, clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
@@ -1396,11 +1397,36 @@ impl DeviceManagement {
     async fn handle(&mut self, command: InputCmd) -> Option<InputCmd> {
         match command {
             InputCmd::GetDeviceDetails(reply) => {
-                let result = self
-                    .details
-                    .clone()
-                    .ok_or_else(|| "device metadata is unavailable".to_string());
-                let _ = reply.send(result);
+                let Some(mut details) = self.details.clone() else {
+                    let _ = reply.send(Err("device metadata is unavailable".to_string()));
+                    return None;
+                };
+                let provider = self.provider.clone();
+                tokio::spawn(async move {
+                    match tokio::time::timeout(
+                        Duration::from_secs(3),
+                        read_device_battery(provider.as_ref()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(battery)) => {
+                            tracing::debug!(
+                                level_percent = ?battery.level_percent,
+                                is_charging = ?battery.is_charging,
+                                cycle_count = ?battery.cycle_count,
+                                "device battery diagnostics refreshed"
+                            );
+                            details.battery = Some(battery);
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "device battery diagnostics unavailable");
+                        }
+                        Err(_) => {
+                            tracing::warn!("device battery diagnostics timed out");
+                        }
+                    }
+                    let _ = reply.send(Ok(details));
+                });
                 None
             }
             InputCmd::ListApps(reply) => {
@@ -2498,7 +2524,85 @@ async fn read_device_details(
         serial_number: string("SerialNumber"),
         ecid: integer("UniqueChipID").map(|value| value.to_string()),
         total_disk_capacity,
+        battery: None,
     })
+}
+
+async fn read_device_battery(provider: &dyn IdeviceProvider) -> Result<DeviceBattery, String> {
+    let mut diagnostics = DiagnosticsRelayClient::connect(provider)
+        .await
+        .map_err(|error| format!("cannot connect diagnostics relay: {error:?}"))?;
+    let values = diagnostics
+        .ioregistry(None, Some("AppleSmartBattery"), None)
+        .await
+        .map_err(|error| format!("cannot query AppleSmartBattery: {error:?}"))?
+        .ok_or_else(|| "AppleSmartBattery returned no data".to_string())?;
+    Ok(device_battery_from_ioregistry(&values))
+}
+
+fn device_battery_from_ioregistry(values: &plist::Dictionary) -> DeviceBattery {
+    let unsigned = |dictionary: &plist::Dictionary, key: &str| {
+        dictionary
+            .get(key)
+            .and_then(plist::Value::as_unsigned_integer)
+    };
+    let signed = |dictionary: &plist::Dictionary, key: &str| {
+        dictionary
+            .get(key)
+            .and_then(plist::Value::as_signed_integer)
+    };
+    let boolean = |dictionary: &plist::Dictionary, key: &str| {
+        dictionary.get(key).and_then(|value| {
+            value
+                .as_boolean()
+                .or_else(|| value.as_unsigned_integer().map(|value| value != 0))
+        })
+    };
+    let battery_data = values
+        .get("BatteryData")
+        .and_then(plist::Value::as_dictionary);
+    let adapter = values
+        .get("AdapterDetails")
+        .and_then(plist::Value::as_dictionary);
+    let charger_data = values
+        .get("ChargerData")
+        .and_then(plist::Value::as_dictionary);
+    let design_capacity_mah = battery_data.and_then(|data| unsigned(data, "DesignCapacity"));
+    let full_charge_capacity_mah =
+        battery_data.and_then(|data| unsigned(data, "FullChargeCapacity"));
+    let health_percent = design_capacity_mah
+        .filter(|capacity| *capacity > 0)
+        .zip(full_charge_capacity_mah)
+        .map(|(design, full)| (full as f64 * 100.0 / design as f64).clamp(0.0, 100.0));
+
+    DeviceBattery {
+        level_percent: unsigned(values, "CurrentCapacity")
+            .or_else(|| battery_data.and_then(|data| unsigned(data, "CurrentCapacity")))
+            .filter(|value| *value <= 100)
+            .map(|value| value as u8),
+        is_charging: boolean(values, "IsCharging")
+            .or_else(|| charger_data.and_then(|data| boolean(data, "IsCharging"))),
+        external_connected: boolean(values, "ExternalConnected")
+            .or_else(|| boolean(values, "AppleRawExternalConnected")),
+        fully_charged: boolean(values, "FullyCharged")
+            .or_else(|| battery_data.and_then(|data| boolean(data, "FullyCharged"))),
+        cycle_count: unsigned(values, "CycleCount"),
+        voltage_mv: unsigned(values, "Voltage")
+            .or_else(|| unsigned(values, "AppleRawBatteryVoltage")),
+        instant_amperage_ma: signed(values, "InstantAmperage")
+            .or_else(|| signed(values, "Amperage")),
+        design_capacity_mah,
+        full_charge_capacity_mah,
+        health_percent,
+        time_remaining_minutes: unsigned(values, "TimeRemaining")
+            .or_else(|| unsigned(values, "AvgTimeToEmpty"))
+            .filter(|minutes| *minutes <= 7 * 24 * 60),
+        adapter_watts: adapter.and_then(|details| unsigned(details, "Watts")),
+        adapter_name: adapter
+            .and_then(|details| details.get("Name"))
+            .and_then(plist::Value::as_string)
+            .map(ToOwned::to_owned),
+    }
 }
 
 fn format_media_start_error(
@@ -3433,6 +3537,7 @@ mod tests {
             serial_number: None,
             ecid: None,
             total_disk_capacity: None,
+            battery: None,
         };
 
         let message = format_media_start_error("audio", error, Some(&identity));
@@ -3440,6 +3545,78 @@ mod tests {
         assert!(message.contains("iPhone11,2 running iOS 26.0"));
         assert!(message.contains("iOS 27.0 or later"));
         assert!(!message.contains("Dictionary"));
+    }
+
+    #[test]
+    fn normalizes_battery_diagnostics_without_exposing_serials() {
+        let battery_data = plist::Dictionary::from_iter([
+            (
+                String::from("DesignCapacity"),
+                plist::Value::Integer(4325.into()),
+            ),
+            (
+                String::from("FullChargeCapacity"),
+                plist::Value::Integer(3482.into()),
+            ),
+        ]);
+        let adapter = plist::Dictionary::from_iter([
+            (
+                String::from("Name"),
+                plist::Value::String("20W USB-C Power Adapter".into()),
+            ),
+            (String::from("Watts"), plist::Value::Integer(20.into())),
+            (
+                String::from("SerialString"),
+                plist::Value::String("must-not-leak".into()),
+            ),
+        ]);
+        let values = plist::Dictionary::from_iter([
+            (
+                String::from("CurrentCapacity"),
+                plist::Value::Integer(52.into()),
+            ),
+            (String::from("IsCharging"), plist::Value::Boolean(true)),
+            (
+                String::from("ExternalConnected"),
+                plist::Value::Boolean(true),
+            ),
+            (String::from("FullyCharged"), plist::Value::Boolean(false)),
+            (
+                String::from("CycleCount"),
+                plist::Value::Integer(1554.into()),
+            ),
+            (String::from("Voltage"), plist::Value::Integer(4009.into())),
+            (
+                String::from("InstantAmperage"),
+                plist::Value::Integer(2153.into()),
+            ),
+            (
+                String::from("TimeRemaining"),
+                plist::Value::Integer(146.into()),
+            ),
+            (
+                String::from("BatteryData"),
+                plist::Value::Dictionary(battery_data),
+            ),
+            (
+                String::from("AdapterDetails"),
+                plist::Value::Dictionary(adapter),
+            ),
+        ]);
+
+        let battery = device_battery_from_ioregistry(&values);
+        assert_eq!(battery.level_percent, Some(52));
+        assert_eq!(battery.is_charging, Some(true));
+        assert_eq!(battery.cycle_count, Some(1554));
+        assert_eq!(battery.voltage_mv, Some(4009));
+        assert_eq!(battery.instant_amperage_ma, Some(2153));
+        assert_eq!(battery.adapter_watts, Some(20));
+        assert_eq!(
+            battery.adapter_name.as_deref(),
+            Some("20W USB-C Power Adapter")
+        );
+        assert!((battery.health_percent.unwrap() - 80.508_670_52).abs() < 1e-6);
+        assert!(!format!("{battery:?}").contains("must-not-leak"));
     }
 
     #[test]

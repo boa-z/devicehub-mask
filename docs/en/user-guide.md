@@ -11,6 +11,11 @@ view, control mode, rotation, direct touch, hardware buttons, and the device
 inspector. The inspector exposes Lockdown metadata, installed apps, IPA
 installation and removal, and provisioning profiles.
 
+The inspector's Info tab refreshes privacy-safe battery diagnostics through
+Diagnostics Relay: charge level and state, cycle count, full-charge versus
+design capacity, voltage/current, remaining time, and power-adapter rating.
+Battery and adapter serial numbers are never returned by the private API.
+
 The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri,
 and Action. Always-on-top, inspector visibility, and fullscreen controls are in
 the title toolbar. Hiding the inspector gives the device view more room without
