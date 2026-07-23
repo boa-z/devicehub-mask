@@ -24,6 +24,8 @@ exposed as a browser application.
   removal, sandboxed App Documents browsing and transfer, confirmed device
   restart and shutdown, and
   provisioning profile inspection, plus bounded crash-report browsing and export
+- Optional bidirectional text and image clipboard synchronization through the
+  CoreDevice Pasteboard Service
 - On-demand live iPhone syslog console with bounded in-memory buffering, search,
   pause, copy and service recovery status
 - On-demand normalized iPhone CPU, top-process CPU and memory rankings, Core

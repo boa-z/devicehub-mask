@@ -38,11 +38,13 @@ identities even when a profile stores more mappings.
 
 ### Application Settings
 
-Settings contains appearance, language, window behavior, device audio, automatic
+Settings contains appearance, language, window behavior, device audio, clipboard synchronization, automatic
 update checking, a manual **Check now** command, the installed app version, and
 the GitHub repository link. Device audio is disabled by default; enabling it
 takes effect after reconnecting the device. Playback mute and volume apply
-immediately, and mute is also available in the Device toolbar.
+immediately, and mute is also available in the Device toolbar. Clipboard synchronization is also disabled
+by default and takes effect after reconnecting. When enabled, text and images copied on either the host or
+device replace the clipboard on the other side.
 
 The Device Info tab includes confirmed **Restart device** and **Shut down
 device** actions. Both end the current control session. Restart reconnects only

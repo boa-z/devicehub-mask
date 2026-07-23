@@ -94,6 +94,12 @@ rollback-capable local replacement, while uploads write a uniquely named remote
 temporary file and rename it only after the stream closes. Uploads do not
 silently replace an existing item, and deletes are non-recursive.
 
+Clipboard synchronization connects CoreDevice Pasteboard Service only when its
+persisted opt-in setting is enabled for a newly connected session. Device changes
+are push-driven when available, while host changes use a bounded-rate poll with
+echo suppression. The disabled default performs no clipboard access or background
+clipboard transfer.
+
 IPA installation and app removal use independent Tokio tasks and fresh
 Installation Proxy connections so uploads do not block video, HID, or app-list
 requests. The backend re-queries an uninstall target and permits only removable,

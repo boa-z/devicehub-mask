@@ -103,6 +103,14 @@ fn set_audio_enabled(
     state.set_audio_enabled(enabled)
 }
 
+#[tauri::command]
+fn set_clipboard_sync_enabled(
+    enabled: bool,
+    state: tauri::State<'_, Arc<settings::AppSettings>>,
+) -> Result<settings::VideoSettingsStatus, String> {
+    state.set_clipboard_sync_enabled(enabled)
+}
+
 impl BackendHandle {
     fn stop(&self) {
         let _ = self.control.send(ControlCmd::Quit);
@@ -289,7 +297,8 @@ pub fn run() {
             frontend_log,
             video_settings_status,
             set_video_pixel_format,
-            set_audio_enabled
+            set_audio_enabled,
+            set_clipboard_sync_enabled
         ])
         .setup(move |app| {
             let log_directory = app.path().app_log_dir()?;

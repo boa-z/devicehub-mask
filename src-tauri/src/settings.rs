@@ -11,6 +11,8 @@ struct PersistedSettings {
     video_pixel_format: FrameFormat,
     #[serde(default)]
     audio_enabled: bool,
+    #[serde(default)]
+    clipboard_sync_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -18,6 +20,7 @@ pub struct VideoSettingsStatus {
     pub video_pixel_format: FrameFormat,
     pub environment_override: bool,
     pub audio_enabled: bool,
+    pub clipboard_sync_enabled: bool,
 }
 
 pub struct AppSettings {
@@ -56,7 +59,9 @@ impl AppSettings {
         tracing::info!(
             video_pixel_format = ?status.video_pixel_format,
             environment_override = status.environment_override,
-            "video settings loaded"
+            audio_enabled = status.audio_enabled,
+            clipboard_sync_enabled = status.clipboard_sync_enabled,
+            "application settings loaded"
         );
         settings
     }
@@ -81,6 +86,7 @@ impl AppSettings {
                 .unwrap_or(persisted.video_pixel_format),
             environment_override: self.environment_override.is_some(),
             audio_enabled: persisted.audio_enabled,
+            clipboard_sync_enabled: persisted.clipboard_sync_enabled,
         }
     }
 
@@ -89,6 +95,13 @@ impl AppSettings {
             .read()
             .expect("application settings lock poisoned")
             .audio_enabled
+    }
+
+    pub fn clipboard_sync_enabled(&self) -> bool {
+        self.persisted
+            .read()
+            .expect("application settings lock poisoned")
+            .clipboard_sync_enabled
     }
 
     pub fn set_video_pixel_format(
@@ -105,6 +118,7 @@ impl AppSettings {
         let next = PersistedSettings {
             video_pixel_format,
             audio_enabled: persisted.audio_enabled,
+            clipboard_sync_enabled: persisted.clipboard_sync_enabled,
         };
         self.save_locked(&mut persisted, next)?;
         drop(persisted);
@@ -123,12 +137,35 @@ impl AppSettings {
         let next = PersistedSettings {
             video_pixel_format: persisted.video_pixel_format,
             audio_enabled,
+            clipboard_sync_enabled: persisted.clipboard_sync_enabled,
         };
         self.save_locked(&mut persisted, next)?;
         drop(persisted);
         tracing::info!(
             audio_enabled,
             "device audio setting changed; applies to next session"
+        );
+        Ok(self.status())
+    }
+
+    pub fn set_clipboard_sync_enabled(
+        &self,
+        clipboard_sync_enabled: bool,
+    ) -> Result<VideoSettingsStatus, String> {
+        let mut persisted = self
+            .persisted
+            .write()
+            .map_err(|_| "application settings lock poisoned".to_owned())?;
+        let next = PersistedSettings {
+            video_pixel_format: persisted.video_pixel_format,
+            audio_enabled: persisted.audio_enabled,
+            clipboard_sync_enabled,
+        };
+        self.save_locked(&mut persisted, next)?;
+        drop(persisted);
+        tracing::info!(
+            clipboard_sync_enabled,
+            "clipboard sync setting changed; applies to next session"
         );
         Ok(self.status())
     }
@@ -210,6 +247,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.video_pixel_format, FrameFormat::Yuv420p);
         assert!(!saved.audio_enabled);
+        assert!(!saved.clipboard_sync_enabled);
 
         let status = settings.set_audio_enabled(true).unwrap();
         assert!(status.audio_enabled);
@@ -218,14 +256,27 @@ mod tests {
         assert_eq!(saved.video_pixel_format, FrameFormat::Yuv420p);
         assert!(saved.audio_enabled);
 
+        let status = settings.set_clipboard_sync_enabled(true).unwrap();
+        assert!(status.clipboard_sync_enabled);
+        let saved: PersistedSettings =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.video_pixel_format, FrameFormat::Yuv420p);
+        assert!(saved.audio_enabled);
+        assert!(saved.clipboard_sync_enabled);
+
+        let status = settings.set_audio_enabled(false).unwrap();
+        assert!(!status.audio_enabled);
+        assert!(status.clipboard_sync_enabled);
+
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(directory).unwrap();
     }
 
     #[test]
-    fn old_settings_default_audio_to_disabled() {
+    fn old_settings_default_optional_streams_to_disabled() {
         let saved: PersistedSettings =
             serde_json::from_str(r#"{"video_pixel_format":"rgb24"}"#).unwrap();
         assert!(!saved.audio_enabled);
+        assert!(!saved.clipboard_sync_enabled);
     }
 }

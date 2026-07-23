@@ -6,6 +6,7 @@ export type VideoSettingsStatus = {
   video_pixel_format: VideoPixelFormat;
   environment_override: boolean;
   audio_enabled: boolean;
+  clipboard_sync_enabled: boolean;
 };
 
 export function readVideoSettings() {
@@ -14,6 +15,10 @@ export function readVideoSettings() {
 
 export function setAudioEnabled(enabled: boolean) {
   return invoke<VideoSettingsStatus>("set_audio_enabled", { enabled });
+}
+
+export function setClipboardSyncEnabled(enabled: boolean) {
+  return invoke<VideoSettingsStatus>("set_clipboard_sync_enabled", { enabled });
 }
 
 export function setVideoPixelFormat(videoPixelFormat: VideoPixelFormat) {

@@ -696,6 +696,7 @@ struct SessionVideo {
     counters: VideoCounters,
     frames: FrameSlot,
     audio_enabled: bool,
+    clipboard_sync_enabled: bool,
     audio: AudioSlot,
 }
 
@@ -775,6 +776,7 @@ pub async fn manage(
                 counters: video_counters.clone(),
                 frames: frames.clone(),
                 audio_enabled: settings.audio_enabled(),
+                clipboard_sync_enabled: settings.clipboard_sync_enabled(),
                 audio: audio.clone(),
             },
             repaint.clone(),
@@ -1087,14 +1089,22 @@ async fn run(
         .await
         .map_err(|e| format!("no hid.indigo: {e:?}"))?;
 
-    // Clipboard sync is best-effort: run without it if the service is unavailable.
-    let pasteboard = match PasteboardServiceClient::connect_rsd(&mut adapter, &mut handshake).await
-    {
-        Ok(c) => Some(c),
-        Err(e) => {
-            tracing::warn!("no pasteboardservice; clipboard sync disabled: {e:?}");
-            None
+    // Clipboard access is opt-in because synchronization reads and replaces the
+    // host and device clipboards. Run without it when disabled or unavailable.
+    let pasteboard = if video.clipboard_sync_enabled {
+        match PasteboardServiceClient::connect_rsd(&mut adapter, &mut handshake).await {
+            Ok(client) => {
+                tracing::info!("clipboard sync enabled for this device session");
+                Some(client)
+            }
+            Err(error) => {
+                tracing::warn!(?error, "no pasteboardservice; clipboard sync unavailable");
+                None
+            }
         }
+    } else {
+        tracing::info!("clipboard sync disabled for this device session");
+        None
     };
 
     // Orientation control is best-effort too: run without rotate if unavailable.

@@ -13,6 +13,7 @@ import { useUpdates } from "../updateContext";
 import {
   readVideoSettings,
   setAudioEnabled,
+  setClipboardSyncEnabled,
   setVideoPixelFormat,
   type VideoPixelFormat,
   type VideoSettingsStatus,
@@ -92,6 +93,18 @@ export function SettingsPage({
       setVideoSettings(settings);
       onAudioEnabledChange(settings.audio_enabled);
       message.success(t("settings.deviceAudioChanged"));
+    } catch (error) {
+      message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+    } finally {
+      setVideoSettingsBusy(false);
+    }
+  };
+
+  const changeClipboardSyncEnabled = async (enabled: boolean) => {
+    setVideoSettingsBusy(true);
+    try {
+      setVideoSettings(await setClipboardSyncEnabled(enabled));
+      message.success(t("settings.clipboardSyncChanged"));
     } catch (error) {
       message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
     } finally {
@@ -225,6 +238,19 @@ export function SettingsPage({
           />
         </label>
         <Typography.Text type="secondary">{t("settings.deviceAudioHint")}</Typography.Text>
+      </div>
+      <div className="settings-section">
+        <Typography.Title level={5}>{t("settings.clipboard")}</Typography.Title>
+        <label>
+          <span>{t("settings.clipboardSyncEnabled")}</span>
+          <Switch
+            checked={videoSettings?.clipboard_sync_enabled ?? false}
+            disabled={!videoSettings}
+            loading={videoSettingsBusy}
+            onChange={(enabled) => void changeClipboardSyncEnabled(enabled)}
+          />
+        </label>
+        <Typography.Text type="secondary">{t("settings.clipboardSyncHint")}</Typography.Text>
       </div>
       <div className="settings-section performance-hud-settings">
         <Typography.Title level={5}>{t("settings.performanceHud")}</Typography.Title>
