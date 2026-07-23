@@ -32,6 +32,13 @@ function byteRate(value: number | null | undefined) {
   return `${value.toFixed(0)} B/s`;
 }
 
+function energyScore(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "--";
+  if (value >= 100) return value.toFixed(1);
+  if (value >= 10) return value.toFixed(2);
+  return value.toFixed(3);
+}
+
 function Sparkline({ values, ceiling }: { values: number[]; ceiling?: number }) {
   const points = useMemo(() => {
     if (values.length === 0) return "";
@@ -168,6 +175,39 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
                 <td>{bytes(process.memory_bytes)}</td>
               </tr>)}
               {processes.length === 0 && <tr className="performance-process-empty"><td colSpan={4}>{t("performance.waitingProcesses")}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="performance-section">
+        <div className="performance-process-header">
+          <div>
+            <Typography.Title level={5}>{t("performance.processEnergy")}</Typography.Title>
+            <Typography.Text type="secondary">{t("performance.processEnergyHint")}</Typography.Text>
+          </div>
+        </div>
+        <div className="performance-process-table-wrap">
+          <table className="performance-process-table performance-energy-table">
+            <colgroup><col /><col /><col /><col /><col /><col /></colgroup>
+            <thead><tr>
+              <th>{t("performance.processName")}</th>
+              <th>{t("performance.pid")}</th>
+              <th>{t("performance.energyTotal")}</th>
+              <th>{t("performance.energyCpu")}</th>
+              <th>{t("performance.energyGpu")}</th>
+              <th>{t("performance.energyNetwork")}</th>
+            </tr></thead>
+            <tbody>
+              {(sample?.energy_processes ?? []).map((process) => <tr key={process.pid}>
+                <td><span title={process.name}>{process.name}</span></td>
+                <td>{process.pid}</td>
+                <td>{energyScore(process.total_score)}</td>
+                <td>{energyScore(process.cpu_score)}</td>
+                <td>{energyScore(process.gpu_score)}</td>
+                <td>{energyScore(process.networking_score)}</td>
+              </tr>)}
+              {(sample?.energy_processes?.length ?? 0) === 0 && <tr className="performance-process-empty"><td colSpan={6}>{t("performance.waitingEnergy")}</td></tr>}
             </tbody>
           </table>
         </div>

@@ -1012,6 +1012,14 @@ async fn run(
         views.performance_demand.subscribe(),
         supervisor.shutdown_receiver(),
     ));
+    supervisor.spawn(performance::supervise_energy(
+        adapter.clone(),
+        handshake.clone(),
+        views.performance.clone(),
+        supervisor.reporter("performance.energy"),
+        views.performance_demand.subscribe(),
+        supervisor.shutdown_receiver(),
+    ));
 
     views.location.set(LocationStatus::default());
     let (location_sender, location_receiver) = tokio::sync::mpsc::channel(8);

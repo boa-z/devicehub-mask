@@ -57,12 +57,12 @@ Optional device services run under a shared supervisor inside a Tokio
 thread while the HTTP, WebSocket, and MCP transports continue using the
 multi-thread runtime. Each service publishes a common health record with phase,
 attempt count, restart count, last error, and update time. Location, sysmontap,
-graphics, and network-monitor channels reconnect independently with bounded
-exponential backoff; one broken channel cannot terminate video or HID.
+graphics, network-monitor, and energy-monitor channels reconnect independently
+with bounded exponential backoff; one broken channel cannot terminate video or HID.
 
 Performance monitoring reuses cloned handles to the active software tunnel and
-creates isolated DVT connections. Sysmontap, graphics, and network sampling are
-demand-driven by the Performance workspace or selected HUD metrics, and stop
+creates isolated DVT connections. Sysmontap, graphics, network, and energy sampling
+are demand-driven by the Performance workspace or selected HUD metrics, and stop
 when neither needs them. NetworkMonitor uses its own RemoteServer connection;
 one-second receive/send rates are derived from per-connection counter deltas.
 Connections expire after one minute without updates and the tracker has a fixed
@@ -73,6 +73,10 @@ Sysmontap process arrays are decoded against the attribute order negotiated for
 that session rather than fixed field indices. Per-process CPU is divided by the
 reported logical CPU count; the snapshot retains the union of the ten highest
 CPU and ten largest physical-footprint processes, bounded to twenty rows.
+EnergyMonitor follows at most the first sixteen processes from that bounded list
+on another RemoteServer connection. It updates the device subscription when the
+PID set changes, cancels sampling on demand loss, and exposes Apple's relative
+total, CPU, GPU, networking, display, location, and app-state energy scores.
 
 Lockdown metadata is read once at connection. App listing and lifecycle control
 prefer a long-lived CoreDevice AppService client in the same session, avoiding
@@ -194,10 +198,10 @@ are explicitly unavailable rather than hiding the whole device.
 
 ## Dependency Pin
 
-The `idevice` dependency is temporarily pinned to reviewed revision `0371286`
-from the project fork. It includes `requireContainerAccess=false`, required by
-the iOS 27 AppService request decoder. Replace this pin after an equivalent fix
-is merged and released upstream.
+The `idevice` dependency is temporarily pinned to reviewed revision `a64b886`
+from the project fork. It includes the iOS 27 CoreDevice fixes and typed DVT
+NetworkMonitor and EnergyMonitor clients used by the performance workspace.
+Replace this pin after equivalent fixes are merged and released upstream.
 
 ## Security Boundaries
 

@@ -57,8 +57,12 @@ turned on manually.
 The Performance workspace combines device-side DVT telemetry with the desktop
 video pipeline. Device metrics include system CPU, process count, Core
 Animation FPS, GPU memory, aggregate network receive/send rates, and connections
-observed during the last minute. Pipeline metrics include source, decode and
-presentation rates, transport bandwidth, JPEG encoding time, and frame age.
+observed during the last minute. The process-energy table breaks down the
+relative Apple Instruments energy score for up to sixteen current CPU and
+memory leaders into CPU, GPU, and network components. These scores are useful
+for comparison over the same session but are not watts. Pipeline metrics include
+source, decode and presentation rates, transport bandwidth, JPEG encoding time,
+and frame age.
 System CPU is the iPhone-wide percentage derived from DVT's aggregate
 `CPU_TotalLoad` divided by the device's reported logical CPU count; it is not
 desktop-host CPU usage or a per-process value.
@@ -70,8 +74,8 @@ device's total processing capacity rather than one fully occupied core.
 Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health
 section reports whether virtual location, system monitoring, graphics monitoring,
-and network monitoring are connecting, ready, recovering, unavailable, or stopped. A
-service reconnect does not tear down video or input.
+network monitoring, and energy monitoring are connecting, ready, recovering,
+unavailable, or stopped. A service reconnect does not tear down video or input.
 
 ## Control Modes
 

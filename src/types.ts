@@ -41,12 +41,24 @@ export type ProcessPerformance = {
   cpu_percent: number | null;
   memory_bytes: number | null;
 };
+export type ProcessEnergy = {
+  pid: number;
+  name: string;
+  total_score: number;
+  cpu_score: number;
+  gpu_score: number;
+  networking_score: number;
+  display_score: number;
+  location_score: number;
+  app_state_score: number;
+};
 export type PerformanceSnapshot = {
   captured_at_ms: number;
   system_cpu_percent: number | null;
   process_count: number | null;
   logical_cpu_count: number | null;
   top_processes: ProcessPerformance[];
+  energy_processes: ProcessEnergy[];
   graphics_fps: number | null;
   gpu_allocated_bytes: number | null;
   gpu_in_use_bytes: number | null;

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use idevice::dvt::device_info::DeviceInfoClient;
+use idevice::dvt::energy_monitor::{EnergyMonitorClient, EnergySample};
 use idevice::dvt::graphics::GraphicsClient;
 use idevice::dvt::network_monitor::{NetworkEvent, NetworkMonitorClient};
 use idevice::dvt::remote_server::RemoteServerClient;
@@ -22,6 +23,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(8);
 const SAMPLE_INTERVAL_MS: u32 = 1_000;
 const TOP_PROCESSES_PER_METRIC: usize = 10;
+const MAX_ENERGY_PROCESSES: usize = 16;
+const ENERGY_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const ENERGY_OPERATION_TIMEOUT: Duration = Duration::from_secs(4);
 const NETWORK_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const NETWORK_CONNECTION_TTL: Duration = Duration::from_secs(60);
 const MAX_NETWORK_CONNECTIONS: usize = 16_384;
@@ -34,6 +38,19 @@ pub struct ProcessPerformance {
     pub memory_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProcessEnergy {
+    pub pid: u32,
+    pub name: String,
+    pub total_score: f64,
+    pub cpu_score: f64,
+    pub gpu_score: f64,
+    pub networking_score: f64,
+    pub display_score: f64,
+    pub location_score: f64,
+    pub app_state_score: f64,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PerformanceSnapshot {
     pub captured_at_ms: u64,
@@ -41,6 +58,7 @@ pub struct PerformanceSnapshot {
     pub process_count: Option<u32>,
     pub logical_cpu_count: Option<u32>,
     pub top_processes: Vec<ProcessPerformance>,
+    pub energy_processes: Vec<ProcessEnergy>,
     pub graphics_fps: Option<f64>,
     pub gpu_allocated_bytes: Option<u64>,
     pub gpu_in_use_bytes: Option<u64>,
@@ -111,6 +129,56 @@ impl PerformanceSlot {
         snapshot.network_rx_bytes_per_second = Some(sample.rx_bytes_per_second);
         snapshot.network_tx_bytes_per_second = Some(sample.tx_bytes_per_second);
         snapshot.network_recent_connections = Some(sample.recent_connections);
+    }
+
+    fn energy_targets(&self) -> Vec<u32> {
+        let snapshot = self.0.lock().unwrap();
+        let mut seen = HashSet::with_capacity(MAX_ENERGY_PROCESSES);
+        let mut pids = snapshot
+            .top_processes
+            .iter()
+            .map(|process| process.pid)
+            .filter(|pid| *pid > 0 && seen.insert(*pid))
+            .take(MAX_ENERGY_PROCESSES)
+            .collect::<Vec<_>>();
+        pids.sort_unstable();
+        pids
+    }
+
+    fn update_energy(&self, samples: Vec<EnergySample>) {
+        let mut snapshot = self.0.lock().unwrap();
+        let names = snapshot
+            .top_processes
+            .iter()
+            .map(|process| (process.pid, process.name.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut processes = samples
+            .into_iter()
+            .filter(|sample| sample.pid > 0 && names.contains_key(&sample.pid))
+            .map(|sample| ProcessEnergy {
+                pid: sample.pid,
+                name: names
+                    .get(&sample.pid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("pid {}", sample.pid)),
+                total_score: energy_score(sample.total_energy),
+                cpu_score: energy_score(sample.cpu_energy),
+                gpu_score: energy_score(sample.gpu_energy),
+                networking_score: energy_score(sample.networking_energy),
+                display_score: energy_score(sample.display_energy),
+                location_score: energy_score(sample.location_energy),
+                app_state_score: energy_score(sample.appstate_energy),
+            })
+            .collect::<Vec<_>>();
+        processes.sort_by(|left, right| {
+            right
+                .total_score
+                .total_cmp(&left.total_score)
+                .then_with(|| left.pid.cmp(&right.pid))
+        });
+        processes.truncate(MAX_ENERGY_PROCESSES);
+        snapshot.captured_at_ms = unix_millis();
+        snapshot.energy_processes = processes;
     }
 }
 
@@ -354,6 +422,46 @@ pub async fn supervise_network(
     reporter.stopped(attempt);
 }
 
+pub async fn supervise_energy(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    slot: PerformanceSlot,
+    reporter: ServiceReporter,
+    mut enabled: watch::Receiver<bool>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut attempt = 0;
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        if !wait_until_enabled(&mut enabled, &mut shutdown, &reporter, attempt).await {
+            break;
+        }
+        attempt += 1;
+        reporter.connecting(attempt);
+        let result = run_energy_once(
+            adapter.clone(),
+            handshake.clone(),
+            slot.clone(),
+            &mut shutdown,
+            &mut enabled,
+            &reporter,
+            attempt,
+        )
+        .await;
+        if *shutdown.borrow() {
+            break;
+        }
+        let Some(error) = result.err() else { continue };
+        reporter.retrying(attempt, error);
+        if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+            break;
+        }
+    }
+    reporter.stopped(attempt);
+}
+
 async fn run_system_once(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
@@ -502,6 +610,92 @@ async fn run_network_once(
     }
 }
 
+async fn run_energy_once(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    slot: PerformanceSlot,
+    shutdown: &mut watch::Receiver<bool>,
+    enabled: &mut watch::Receiver<bool>,
+    reporter: &ServiceReporter,
+    attempt: u32,
+) -> Result<(), String> {
+    let mut remote = connect_remote(adapter, handshake).await?;
+    let mut client = EnergyMonitorClient::new(&mut remote)
+        .await
+        .map_err(|error| format!("DVT energy monitor channel failed: {error:?}"))?;
+    reporter.ready(attempt);
+    let mut sampled_pids = Vec::new();
+    let mut tick = tokio::time::interval(ENERGY_SAMPLE_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick.tick().await;
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    stop_energy_sampling(&mut client, &sampled_pids).await;
+                    return Ok(());
+                }
+            }
+            changed = enabled.changed() => {
+                if changed.is_err() || !*enabled.borrow() {
+                    stop_energy_sampling(&mut client, &sampled_pids).await;
+                    slot.update_energy(Vec::new());
+                    return Ok(());
+                }
+            }
+            _ = tick.tick() => {
+                let targets = slot.energy_targets();
+                if targets != sampled_pids {
+                    let removed = sampled_pids
+                        .iter()
+                        .copied()
+                        .filter(|pid| targets.binary_search(pid).is_err())
+                        .collect::<Vec<_>>();
+                    let added = targets
+                        .iter()
+                        .copied()
+                        .filter(|pid| sampled_pids.binary_search(pid).is_err())
+                        .collect::<Vec<_>>();
+                    stop_energy_sampling(&mut client, &removed).await;
+                    if !added.is_empty() {
+                        // Clear device-side state left by an interrupted prior session.
+                        stop_energy_sampling(&mut client, &added).await;
+                        tokio::time::timeout(
+                            ENERGY_OPERATION_TIMEOUT,
+                            client.start_sampling(&added),
+                        )
+                        .await
+                        .map_err(|_| "DVT energy sampling setup timed out".to_string())?
+                        .map_err(|error| format!("DVT energy sampling setup failed: {error:?}"))?;
+                    }
+                    sampled_pids = targets;
+                    if sampled_pids.is_empty() {
+                        slot.update_energy(Vec::new());
+                    }
+                }
+                if !sampled_pids.is_empty() {
+                    let bytes = tokio::time::timeout(
+                        ENERGY_OPERATION_TIMEOUT,
+                        client.sample_attributes(&sampled_pids),
+                    )
+                    .await
+                    .map_err(|_| "DVT energy sample timed out".to_string())?
+                    .map_err(|error| format!("DVT energy sample failed: {error:?}"))?;
+                    let samples = EnergySample::from_bytes(&bytes)
+                        .map_err(|error| format!("DVT energy sample decode failed: {error:?}"))?;
+                    slot.update_energy(samples);
+                }
+            }
+        }
+    }
+}
+
+async fn stop_energy_sampling<R: ReadWrite>(client: &mut EnergyMonitorClient<'_, R>, pids: &[u32]) {
+    if !pids.is_empty() {
+        let _ = tokio::time::timeout(ENERGY_OPERATION_TIMEOUT, client.stop_sampling(pids)).await;
+    }
+}
+
 async fn connect_remote(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
@@ -523,6 +717,14 @@ fn numeric_value(value: &Value) -> Option<f64> {
             .map(|value| value as f64)
             .or_else(|| value.as_unsigned().map(|value| value as f64)),
         _ => None,
+    }
+}
+
+fn energy_score(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -855,6 +1057,70 @@ mod tests {
     }
 
     #[test]
+    fn energy_sampling_tracks_ranked_processes_and_sanitizes_scores() {
+        let slot = PerformanceSlot::default();
+        {
+            let mut snapshot = slot.0.lock().unwrap();
+            snapshot.top_processes = (0..20)
+                .map(|index| ProcessPerformance {
+                    pid: 100 - index,
+                    name: format!("rank-{index}"),
+                    cpu_percent: Some(f64::from(20 - index)),
+                    memory_bytes: None,
+                })
+                .collect();
+        }
+        let targets = slot.energy_targets();
+        assert_eq!(targets.len(), MAX_ENERGY_PROCESSES);
+        assert!(targets.contains(&100));
+        assert!(targets.contains(&85));
+        assert!(!targets.contains(&84));
+
+        slot.update_energy(vec![
+            EnergySample {
+                pid: 100,
+                timestamp: 1,
+                total_energy: 5.0,
+                cpu_energy: f64::NAN,
+                gpu_energy: -2.0,
+                networking_energy: 1.5,
+                display_energy: 0.5,
+                location_energy: 0.0,
+                appstate_energy: f64::INFINITY,
+            },
+            EnergySample {
+                pid: 99,
+                timestamp: 1,
+                total_energy: 8.0,
+                cpu_energy: 3.0,
+                gpu_energy: 2.0,
+                networking_energy: 1.0,
+                display_energy: 1.0,
+                location_energy: 0.5,
+                appstate_energy: 0.5,
+            },
+            EnergySample {
+                pid: 777,
+                timestamp: 1,
+                total_energy: 99.0,
+                cpu_energy: 99.0,
+                gpu_energy: 0.0,
+                networking_energy: 0.0,
+                display_energy: 0.0,
+                location_energy: 0.0,
+                appstate_energy: 0.0,
+            },
+        ]);
+        let snapshot = slot.get();
+        assert_eq!(snapshot.energy_processes.len(), 2);
+        assert_eq!(snapshot.energy_processes[0].pid, 99);
+        assert_eq!(snapshot.energy_processes[0].name, "rank-1");
+        assert_eq!(snapshot.energy_processes[1].cpu_score, 0.0);
+        assert_eq!(snapshot.energy_processes[1].gpu_score, 0.0);
+        assert_eq!(snapshot.energy_processes[1].app_state_score, 0.0);
+    }
+
+    #[test]
     fn network_rates_use_connection_deltas_and_expire_stale_entries() {
         use idevice::dvt::network_monitor::{ConnectionDetectionEvent, ConnectionUpdateEvent};
 
@@ -1052,5 +1318,81 @@ mod tests {
             "received network delta for serial {serial} after {detections} detections and {updates} updates: rx={rx_delta} tx={tx_delta}"
         );
         client.stop_monitoring().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn receives_energy_sample_from_hardware() {
+        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
+        let device = usbmuxd
+            .get_devices()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("no connected device");
+        let provider =
+            device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-energy-monitor-test");
+        let proxy = CoreDeviceProxy::connect(&provider).await.unwrap();
+        let rsd_port = proxy.tunnel_info().server_rsd_port;
+        let adapter = proxy.create_software_tunnel().unwrap();
+        let mut adapter = adapter.to_async_handle();
+        let stream = adapter.connect(rsd_port).await.unwrap();
+        let mut handshake = RsdHandshake::new(stream).await.unwrap();
+        let mut energy_adapter = adapter.clone();
+        let mut energy_handshake = handshake.clone();
+        let mut remote = RemoteServerClient::connect_rsd(&mut adapter, &mut handshake)
+            .await
+            .unwrap();
+        let process = {
+            let mut info = DeviceInfoClient::new(&mut remote).await.unwrap();
+            let processes = info.running_processes().await.unwrap();
+            processes
+                .iter()
+                .find(|process| process.is_application && process.pid > 0)
+                .or_else(|| processes.iter().find(|process| process.pid > 1))
+                .cloned()
+                .expect("no running process found")
+        };
+        drop(remote);
+
+        let mut energy_remote =
+            RemoteServerClient::connect_rsd(&mut energy_adapter, &mut energy_handshake)
+                .await
+                .unwrap();
+        let mut client = EnergyMonitorClient::new(&mut energy_remote).await.unwrap();
+        client.start_sampling(&[process.pid]).await.unwrap();
+        let observations = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut observations = Vec::new();
+            while observations.len() < 3 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let bytes = client.sample_attributes(&[process.pid]).await.unwrap();
+                let samples = EnergySample::from_bytes(&bytes).unwrap();
+                if let Some(sample) = samples.into_iter().find(|sample| {
+                    sample.pid == process.pid && (sample.timestamp > 0 || sample.total_energy > 0.0)
+                }) && observations
+                    .last()
+                    .is_none_or(|previous: &EnergySample| sample.timestamp > previous.timestamp)
+                {
+                    observations.push(sample);
+                }
+            }
+            observations
+        })
+        .await
+        .expect("energy sample timestamp did not advance");
+        assert!(observations.iter().all(|sample| sample.pid == process.pid));
+        assert!(
+            observations
+                .iter()
+                .all(|sample| sample.total_energy.is_finite())
+        );
+        assert!(
+            observations
+                .windows(2)
+                .all(|samples| samples[1].timestamp > samples[0].timestamp)
+        );
+        println!("received energy samples for {process:?}: {observations:#?}");
+        client.stop_sampling(&[process.pid]).await.unwrap();
     }
 }
