@@ -985,6 +985,11 @@ async fn run(
     views.performance.reset();
     views.device_logs.reset();
     let mut supervisor = supervisor::ServiceSupervisor::new(views.services.clone());
+    supervisor.spawn(crate::heartbeat::supervise(
+        provider.clone(),
+        supervisor.reporter("device.heartbeat"),
+        supervisor.shutdown_receiver(),
+    ));
     supervisor.spawn(crate::device_logs::supervise(
         provider.clone(),
         views.device_logs.clone(),

@@ -98,6 +98,7 @@ export const enUS = {
     waitingServices: "Waiting for device services...",
     services: {
       "location": "Virtual location",
+      "device.heartbeat": "Device heartbeat",
       "device.logs": "Device logs",
       "performance.system": "System monitor",
       "performance.graphics": "Graphics monitor",

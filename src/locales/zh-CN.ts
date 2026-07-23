@@ -87,6 +87,7 @@ export const zhCN = {
     waitingServices: "正在等待设备服务...",
     services: {
       "location": "虚拟定位",
+      "device.heartbeat": "设备心跳",
       "device.logs": "设备日志",
       "performance.system": "系统监控",
       "performance.graphics": "图形监控",

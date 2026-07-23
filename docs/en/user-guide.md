@@ -104,10 +104,13 @@ it can contain addresses, protocol metadata, and unencrypted application data.
 
 Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health
-section reports whether virtual location, device conditions, system monitoring,
-graphics monitoring, network monitoring, energy monitoring, and packet capture
-are connecting, ready, recovering, unavailable, or stopped. A service reconnect
-does not tear down video or input.
+section reports whether device heartbeat, virtual location, device conditions,
+system monitoring, graphics monitoring, network monitoring, energy monitoring,
+and packet capture are connecting, ready, recovering, unavailable, or stopped.
+The heartbeat responds to the device's Lockdown keep-alive requests throughout
+the active session; sleep, timeout, or transport failures are recovered under
+the same bounded supervisor. A service reconnect does not tear down video or
+input.
 
 ## Control Modes
 

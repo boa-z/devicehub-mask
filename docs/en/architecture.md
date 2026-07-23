@@ -169,6 +169,12 @@ The private API returns at most 500 entries per poll and reports cursor gaps.
 Device log content is never forwarded to the application tracing subsystem or
 persisted automatically.
 
+A supervised Lockdown heartbeat runs for the lifetime of every active device
+session. It answers each device `Marco` request with `Polo`, bounds device-provided
+wait intervals, and reconnects after sleep, timeout, or transport failure. The
+heartbeat is optional and cannot prevent video, input, or management startup;
+its lifecycle is exposed through the shared service-health registry.
+
 ## Video Pipeline
 
 CoreDevice displayservice produces RTP/HEVC. The backend assembles complete HEVC

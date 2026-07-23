@@ -6,6 +6,7 @@ mod device_conditions;
 mod device_events;
 mod device_logs;
 mod diagnostics;
+mod heartbeat;
 mod hid;
 mod location;
 mod mcp;
