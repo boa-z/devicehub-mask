@@ -38,6 +38,7 @@ pub struct AppState {
     pub audio: AudioSlot,
     pub clipboard: ClipboardSlot,
     pub device_events: crate::device_events::DeviceEventSlot,
+    pub network_capture: crate::network_capture::NetworkCaptureSlot,
     pub video_counters: VideoCounters,
     pub status: StatusSlot,
     pub orientation: OrientationSlot,
@@ -92,6 +93,7 @@ struct PerformanceView {
     sample: crate::performance::PerformanceSnapshot,
     services: Vec<crate::supervisor::ServiceHealth>,
     sampling: bool,
+    network_capture: crate::network_capture::NetworkCaptureStatus,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -140,6 +142,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route(
             "/api/performance/sampling",
             put(start_performance_sampling).delete(stop_performance_sampling),
+        )
+        .route(
+            "/api/performance/network-capture",
+            put(start_network_capture).delete(stop_network_capture),
         )
         .route(
             "/api/device/logs",
@@ -243,6 +249,81 @@ async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
         sample: state.performance.get(),
         services: state.services.snapshot(),
         sampling: state.performance_demand.enabled(),
+        network_capture: state.network_capture.get(),
+    })
+}
+
+#[derive(Deserialize)]
+struct StartNetworkCaptureRequest {
+    destination: PathBuf,
+    duration_seconds: u64,
+}
+
+async fn start_network_capture(
+    State(state): State<AppState>,
+    Json(request): Json<StartNetworkCaptureRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    crate::network_capture::validate_request(&request.destination, request.duration_seconds)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::NetworkCapture(
+        crate::network_capture::NetworkCaptureCommand::Start {
+            destination: request.destination,
+            duration_seconds: request.duration_seconds,
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_network_capture_command(response, "start packet capture").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn stop_network_capture(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::NetworkCapture(
+        crate::network_capture::NetworkCaptureCommand::Stop { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_network_capture_command(response, "stop packet capture").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn await_network_capture_command(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    let result = tokio::time::timeout(Duration::from_secs(15), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?;
+    result.map_err(|error| {
+        let status = if error.contains("already running") || error.contains("no packet capture") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
+        (status, error)
     })
 }
 
@@ -2012,6 +2093,7 @@ mod tests {
                 audio: AudioSlot::default(),
                 clipboard: ClipboardSlot::default(),
                 device_events: crate::device_events::DeviceEventSlot::default(),
+                network_capture: crate::network_capture::NetworkCaptureSlot::default(),
                 video_counters: VideoCounters::default(),
                 status: StatusSlot::default(),
                 orientation: OrientationSlot::default(),
@@ -2106,6 +2188,56 @@ mod tests {
             StatusCode::NO_CONTENT
         );
         assert!(!state.performance_demand.enabled());
+    }
+
+    #[tokio::test]
+    async fn network_capture_endpoints_validate_and_dispatch_commands() {
+        let (state, mut input_rx) = test_state();
+        let destination = std::env::temp_dir().join(format!(
+            "devicehub-mask-web-test-{}.pcap",
+            uuid::Uuid::new_v4()
+        ));
+        let invalid = start_network_capture(
+            State(state.clone()),
+            Json(StartNetworkCaptureRequest {
+                destination: destination.clone(),
+                duration_seconds: 0,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+
+        let start = tokio::spawn(start_network_capture(
+            State(state.clone()),
+            Json(StartNetworkCaptureRequest {
+                destination: destination.clone(),
+                duration_seconds: 30,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::NetworkCapture(crate::network_capture::NetworkCaptureCommand::Start {
+                destination: actual,
+                duration_seconds,
+                reply,
+            }) => {
+                assert_eq!(actual, destination);
+                assert_eq!(duration_seconds, 30);
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let stop = tokio::spawn(stop_network_capture(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::NetworkCapture(crate::network_capture::NetworkCaptureCommand::Stop {
+                reply,
+            }) => reply.send(Ok(())).unwrap(),
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

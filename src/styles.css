@@ -223,6 +223,13 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .performance-process-empty td { color: #899493; text-align: center; }
 .performance-section-title { display: grid; grid-template-columns: minmax(0, 1fr) 90px; align-items: end; }
 .performance-section-title > span { color: #899493; font-size: 11px; text-align: center; }
+.performance-capture-controls { justify-content: flex-end; }
+.performance-capture-controls .ant-select { min-width: 112px; }
+.performance-capture-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.performance-capture-grid > div { border-right: 1px solid #303638; border-bottom: 0; }
+.performance-capture-grid > div:nth-child(3n) { border-right: 1px solid #303638; }
+.performance-capture-grid > div:nth-child(4n) { border-right: 0; }
+.performance-section > .ant-alert { margin-top: 14px; }
 .performance-service-list { border-top: 1px solid #303638; }
 .performance-service-row { min-height: 60px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: minmax(0, 1fr) 90px 110px; align-items: center; gap: 12px; }
 .performance-service-row > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -278,11 +285,14 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .performance-metric:nth-last-child(-n+2) { border-bottom: 0; }
   .performance-process-header { align-items: stretch; flex-direction: column; }
   .performance-process-header .ant-segmented { align-self: flex-start; }
+  .performance-capture-controls { align-self: flex-start; justify-content: flex-start; }
   .performance-transport-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .performance-transport-grid > div:nth-child(3n) { border-right: 1px solid #303638; }
   .performance-transport-grid > div:nth-child(2n) { border-right: 0; }
   .performance-transport-grid > div:nth-last-child(-n+3) { border-bottom: 1px solid #303638; }
   .performance-transport-grid > div:nth-last-child(-n+2) { border-bottom: 0; }
+  .performance-capture-grid > div:nth-child(3n) { border-right: 1px solid #303638; }
+  .performance-capture-grid > div:nth-child(2n) { border-right: 0; }
   .location-fields, .location-presets { grid-template-columns: minmax(0, 1fr); }
   .inspector { border-left: 0; border-top: 1px solid #303638; min-height: 340px; }
   .device-inspector { border-left: 0; border-top: 1px solid #303638; min-height: 420px; }

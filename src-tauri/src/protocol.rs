@@ -354,6 +354,8 @@ pub enum InputCmd {
     },
     /// Capture a lossless PNG directly through CoreDevice ScreenCaptureService.
     TakeScreenshot(oneshot::Sender<Result<Vec<u8>, String>>),
+    /// Start or stop a bounded pcapd capture owned by the active device session.
+    NetworkCapture(crate::network_capture::NetworkCaptureCommand),
     /// Access one application's vended Documents root through House Arrest.
     AppDocuments(crate::app_documents::AppDocumentCommand),
     /// Restart the active device through DiagnosticsRelay.

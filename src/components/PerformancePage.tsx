@@ -1,8 +1,10 @@
-import { DashboardOutlined } from "@ant-design/icons";
-import { Alert, Segmented, Tag, Typography } from "antd";
+import { DashboardOutlined, DownloadOutlined, StopOutlined } from "@ant-design/icons";
+import { save } from "@tauri-apps/plugin-dialog";
+import { Alert, Button, Segmented, Select, Space, Tag, Typography, message } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sortProcesses, type ProcessSort } from "../processPerformance";
+import { networkCaptureDurations, networkCaptureFilename, networkCaptureRunning } from "../networkCapture";
 import type { PerformanceSnapshot, PerformanceView, ServiceHealth, StreamMetrics } from "../types";
 
 type Props = {
@@ -11,6 +13,8 @@ type Props = {
   renderFps: number;
   view: PerformanceView | null;
   error: string | null;
+  deviceName: string;
+  request: (path: string, init?: RequestInit) => Promise<Response>;
 };
 
 const HISTORY_LIMIT = 120;
@@ -30,6 +34,13 @@ function byteRate(value: number | null | undefined) {
   if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(2)} MB/s`;
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KB/s`;
   return `${value.toFixed(0)} B/s`;
+}
+
+function fileSize(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "--";
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value.toFixed(0)} B`;
 }
 
 function energyScore(value: number | null | undefined) {
@@ -74,10 +85,12 @@ function ServiceRow({ service }: { service: ServiceHealth }) {
   );
 }
 
-export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, error }: Props) {
+export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, error, deviceName, request }: Props) {
   const { t } = useTranslation();
   const [history, setHistory] = useState<PerformanceSnapshot[]>([]);
   const [processSort, setProcessSort] = useState<ProcessSort>("cpu");
+  const [captureDuration, setCaptureDuration] = useState<number>(30);
+  const [captureBusy, setCaptureBusy] = useState(false);
 
   useEffect(() => {
     setHistory([]);
@@ -99,6 +112,46 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
     () => sortProcesses(sample?.top_processes ?? [], processSort),
     [processSort, sample?.top_processes],
   );
+  const capture = view?.network_capture;
+  const captureIsRunning = capture ? networkCaptureRunning(capture) : false;
+  const captureStatus = capture
+    ? `${t(`performance.captureStates.${capture.state}`)}${capture.stop_reason ? ` · ${t(`performance.captureReasons.${capture.stop_reason}`)}` : ""}`
+    : t("performance.captureStates.idle");
+
+  const startCapture = async () => {
+    const destination = await save({
+      defaultPath: networkCaptureFilename(deviceName),
+      filters: [{ name: "PCAP", extensions: ["pcap"] }],
+    });
+    if (!destination) return;
+    setCaptureBusy(true);
+    try {
+      const response = await request("/api/performance/network-capture", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destination, duration_seconds: captureDuration }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      void message.success(t("performance.captureStarted"));
+    } catch (captureError) {
+      void message.error(t("performance.captureStartFailed", { error: String(captureError) }));
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
+  const stopCapture = async () => {
+    setCaptureBusy(true);
+    try {
+      const response = await request("/api/performance/network-capture", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      void message.success(t("performance.captureSaved"));
+    } catch (captureError) {
+      void message.error(t("performance.captureStopFailed", { error: String(captureError) }));
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
 
   return (
     <main className="performance-page">
@@ -136,6 +189,43 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.networkSend")}</span><strong>{byteRate(sample?.network_tx_bytes_per_second)}</strong></div>
           <div><span>{t("performance.networkConnections")}</span><strong>{sample?.network_recent_connections ?? "--"}</strong></div>
         </div>
+      </section>
+
+      <section className="performance-section">
+        <div className="performance-process-header">
+          <div>
+            <Typography.Title level={5}>{t("performance.packetCapture")}</Typography.Title>
+            <Typography.Text type="secondary">{t("performance.packetCaptureHint")}</Typography.Text>
+          </div>
+          <Space wrap className="performance-capture-controls">
+            <Select<number>
+              aria-label={t("performance.captureDuration")}
+              value={captureDuration}
+              disabled={!activeUdid || captureIsRunning || captureBusy}
+              options={networkCaptureDurations.map((seconds) => ({
+                value: seconds,
+                label: t("performance.captureSeconds", { count: seconds }),
+              }))}
+              onChange={setCaptureDuration}
+            />
+            {captureIsRunning ? (
+              <Button danger icon={<StopOutlined />} loading={captureBusy} onClick={() => void stopCapture()}>
+                {t("performance.stopCapture")}
+              </Button>
+            ) : (
+              <Button type="primary" icon={<DownloadOutlined />} disabled={!activeUdid} loading={captureBusy} onClick={() => void startCapture()}>
+                {t("performance.startCapture")}
+              </Button>
+            )}
+          </Space>
+        </div>
+        <div className="performance-transport-grid performance-capture-grid">
+          <div><span>{t("performance.captureStatus")}</span><strong>{captureStatus}</strong></div>
+          <div><span>{t("performance.capturePackets")}</span><strong>{capture?.packet_count ?? 0}</strong></div>
+          <div><span>{t("performance.captureSize")}</span><strong>{fileSize(capture?.bytes_written)}</strong></div>
+          <div><span>{t("performance.captureElapsed")}</span><strong>{((capture?.elapsed_ms ?? 0) / 1000).toFixed(1)} s</strong></div>
+        </div>
+        {capture?.error && <Alert type="warning" showIcon message={t("performance.captureFailed")} description={capture.error} />}
       </section>
 
       <section className="performance-section">

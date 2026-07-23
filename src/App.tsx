@@ -1735,7 +1735,15 @@ export default function App() {
           ) : page === "location" ? (
             <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />
           ) : page === "performance" ? (
-            <PerformancePage activeUdid={status.active_udid} streamMetrics={streamMetrics} renderFps={renderFps} view={performanceView} error={performanceError} />
+            <PerformancePage
+              activeUdid={status.active_udid}
+              deviceName={status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone"}
+              streamMetrics={streamMetrics}
+              renderFps={renderFps}
+              view={performanceView}
+              error={performanceError}
+              request={request}
+            />
           ) : page === "logs" ? (
             <DeviceLogsPage activeUdid={status.active_udid} request={request} />
           ) : (

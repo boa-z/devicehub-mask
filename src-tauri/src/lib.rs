@@ -8,6 +8,7 @@ mod diagnostics;
 mod hid;
 mod location;
 mod mcp;
+mod network_capture;
 mod performance;
 mod protocol;
 mod provisioning;
@@ -157,6 +158,7 @@ fn spawn_backend(
                 let status = StatusSlot::default();
                 let clipboard = ClipboardSlot::default();
                 let device_events = device_events::DeviceEventSlot::default();
+                let network_capture = network_capture::NetworkCaptureSlot::default();
                 let orientation = OrientationSlot::default();
                 let devices = DeviceListSlot::default();
                 let active = ActiveSlot::default();
@@ -192,6 +194,7 @@ fn spawn_backend(
                     status.clone(),
                     clipboard.clone(),
                     device_events.clone(),
+                    network_capture.clone(),
                     orientation.clone(),
                     devices.clone(),
                     active.clone(),
@@ -212,6 +215,7 @@ fn spawn_backend(
                         audio,
                         clipboard,
                         device_events,
+                        network_capture,
                         video_counters,
                         status,
                         orientation,

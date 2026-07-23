@@ -78,7 +78,9 @@ on another RemoteServer connection. It updates the device subscription when the
 PID set changes, cancels sampling on demand loss, and exposes Apple's relative
 total, CPU, GPU, networking, display, location, and app-state energy scores.
 
-Lockdown metadata is read once at connection. App listing and lifecycle control
+Lockdown metadata is read at connection and refreshed for Device Info requests,
+so push notifications for storage or device-name changes surface current values.
+App listing and lifecycle control
 prefer a long-lived CoreDevice AppService client in the same session, avoiding
 a new RSD tunnel per operation. Process URLs are matched only when their direct
 parent is the selected app bundle; stop resolves fresh device state and sends a
@@ -91,6 +93,14 @@ PNG headers and dimensions, limits each response to 4 MiB, and uses a 256-entry,
 Native screenshots use a separate bounded CoreDevice ScreenCaptureService
 channel. The worker accepts one queued request, validates the PNG and dimensions,
 and caps the response at 32 MiB; capture never occupies the HID dispatch loop.
+
+Device packet capture is a separate, user-initiated pcapd worker over a cloned
+RSD tunnel. It writes normalized Ethernet records directly to a same-directory
+temporary host file, caps packets at the negotiated 256 KiB snapshot size and
+the complete capture at 256 MiB, then atomically replaces the selected `.pcap`
+destination. Stop, timeout, stream failure, and session shutdown all finalize
+the writer. Only bounded counters and state reach the private API; packet bytes
+never enter WebView or MCP transports.
 
 Restart and shutdown are separate fixed private-API commands rather than a
 client-supplied DiagnosticsRelay operation. Each opens an independent relay

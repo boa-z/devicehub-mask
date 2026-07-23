@@ -691,6 +691,7 @@ struct SessionViews {
     device_log_demand: crate::device_logs::DeviceLogDemand,
     services: supervisor::ServiceRegistry,
     device_events: crate::device_events::DeviceEventSlot,
+    network_capture: crate::network_capture::NetworkCaptureSlot,
 }
 
 #[derive(Clone)]
@@ -716,6 +717,7 @@ pub async fn manage(
     status: StatusSlot,
     clipboard: ClipboardSlot,
     device_events: crate::device_events::DeviceEventSlot,
+    network_capture: crate::network_capture::NetworkCaptureSlot,
     orientation_view: OrientationSlot,
     device_list: DeviceListSlot,
     active: ActiveSlot,
@@ -797,6 +799,7 @@ pub async fn manage(
                 device_log_demand: device_log_demand.clone(),
                 services: services.clone(),
                 device_events: device_events.clone(),
+                network_capture: network_capture.clone(),
             },
             in_rx,
         );
@@ -1067,10 +1070,20 @@ async fn run(
         screen_capture_receiver,
         supervisor.shutdown_receiver(),
     ));
+    let (network_capture_sender, network_capture_receiver) = tokio::sync::mpsc::channel(4);
+    supervisor.spawn(crate::network_capture::serve(
+        adapter.clone(),
+        handshake.clone(),
+        network_capture_receiver,
+        views.network_capture.clone(),
+        supervisor.reporter("network.capture"),
+        supervisor.shutdown_receiver(),
+    ));
     let device_management_services = DeviceManagementServices {
         icons: app_icon_sender,
         documents: app_documents_sender,
         screen_capture: screen_capture_sender,
+        network_capture: network_capture_sender,
     };
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
@@ -1419,6 +1432,20 @@ struct DeviceManagementServices {
     icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
+    network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
+}
+
+fn reject_network_capture_command(
+    command: crate::network_capture::NetworkCaptureCommand,
+    reason: &str,
+) {
+    use crate::network_capture::NetworkCaptureCommand;
+
+    match command {
+        NetworkCaptureCommand::Start { reply, .. } | NetworkCaptureCommand::Stop { reply } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+    }
 }
 
 fn reject_app_document_command(command: crate::app_documents::AppDocumentCommand, reason: &str) {
@@ -1671,6 +1698,20 @@ impl DeviceManagement {
                         }
                     };
                     let _ = command.reply.send(Err(reason.into()));
+                }
+                None
+            }
+            InputCmd::NetworkCapture(command) => {
+                if let Err(error) = self.services.network_capture.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("packet capture service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("packet capture service is unavailable", command)
+                        }
+                    };
+                    reject_network_capture_command(command, reason);
                 }
                 None
             }
@@ -2614,6 +2655,7 @@ async fn dispatch(
         | InputCmd::ListApps(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
+        | InputCmd::NetworkCapture(_)
         | InputCmd::AppDocuments(_)
         | InputCmd::RestartDevice(_)
         | InputCmd::ShutdownDevice(_)

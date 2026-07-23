@@ -72,7 +72,23 @@ export type PerformanceSnapshot = {
   network_tx_bytes_per_second: number | null;
   network_recent_connections: number | null;
 };
-export type PerformanceView = { sample: PerformanceSnapshot; services: ServiceHealth[]; sampling: boolean };
+export type NetworkCaptureState = "idle" | "starting" | "capturing" | "completed" | "failed";
+export type NetworkCaptureStopReason = "user_requested" | "duration_limit" | "size_limit" | "session_ended" | "stream_ended";
+export type NetworkCaptureStatus = {
+  state: NetworkCaptureState;
+  packet_count: number;
+  bytes_written: number;
+  elapsed_ms: number;
+  duration_seconds: number | null;
+  stop_reason: NetworkCaptureStopReason | null;
+  error: string | null;
+};
+export type PerformanceView = {
+  sample: PerformanceSnapshot;
+  services: ServiceHealth[];
+  sampling: boolean;
+  network_capture: NetworkCaptureStatus;
+};
 export type DeviceDetails = {
   udid: string;
   name: string;

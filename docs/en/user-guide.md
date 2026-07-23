@@ -81,10 +81,18 @@ physical-memory processes. Switch between CPU and Memory sorting. Process CPU
 uses the same logical-core normalization as system CPU, so 100% represents the
 device's total processing capacity rather than one fully occupied core.
 
+Packet Capture starts an explicit, time-bounded `pcapd` session and writes a
+standard `.pcap` file directly to the path selected by the native save dialog.
+It can be stopped early, closes automatically after at most five minutes, and
+stops before the file exceeds 256 MiB. Partial traffic is finalized into a valid
+PCAP when the device session ends or the capture stream fails. Packet contents
+never pass through the WebView or MCP server. Treat the saved file as sensitive:
+it can contain addresses, protocol metadata, and unencrypted application data.
+
 Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health
 section reports whether virtual location, system monitoring, graphics monitoring,
-network monitoring, and energy monitoring are connecting, ready, recovering,
+network monitoring, energy monitoring, and packet capture are connecting, ready, recovering,
 unavailable, or stopped. A service reconnect does not tear down video or input.
 
 ## Control Modes
