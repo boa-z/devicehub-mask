@@ -27,8 +27,8 @@ exposed as a browser application.
   plus bounded crash-report browsing and export
 - One-shot Unicode text paste and optional bidirectional text/image clipboard
   synchronization through the CoreDevice Pasteboard Service
-- On-demand live iPhone syslog console with bounded in-memory buffering, search,
-  pause, copy and service recovery status
+- On-demand structured iPhone Unified Log console with level/context filtering,
+  supervised SyslogRelay fallback, bounded buffering, copy and recovery status
 - On-demand normalized iPhone CPU, top-process CPU, memory and relative energy
   rankings, Core Animation FPS, GPU-memory, and device network telemetry with
   supervised DVT service recovery, device-wide DVT network/thermal condition

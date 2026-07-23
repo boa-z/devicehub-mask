@@ -6,9 +6,10 @@ import {
   PauseOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Empty, Input, Switch, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Empty, Input, Select, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { deviceLogContext, filterDeviceLogs, formatDeviceLogLine, type DeviceLogLevelFilter } from "../deviceLogs";
 import type { DeviceLogEntry, DeviceLogsView } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
@@ -24,6 +25,7 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
   const { t, i18n } = useTranslation();
   const [entries, setEntries] = useState<DeviceLogEntry[]>([]);
   const [query, setQuery] = useState("");
+  const [level, setLevel] = useState<DeviceLogLevelFilter>("all");
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [view, setView] = useState<DeviceLogsView | null>(null);
@@ -104,12 +106,10 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
     };
   }, [activeUdid, paused, request]);
 
-  const visibleEntries = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    return needle
-      ? entries.filter((entry) => entry.message.toLocaleLowerCase().includes(needle))
-      : entries;
-  }, [entries, query]);
+  const visibleEntries = useMemo(
+    () => filterDeviceLogs(entries, query, level),
+    [entries, level, query],
+  );
 
   useEffect(() => {
     if (!autoScroll || paused) return;
@@ -133,7 +133,7 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
   const copyVisible = async () => {
     try {
       await navigator.clipboard.writeText(visibleEntries.map((entry) =>
-        `${timeFormatter.format(new Date(entry.received_at_ms))} ${entry.message}`).join("\n"));
+        formatDeviceLogLine(entry, timeFormatter.format(new Date(entry.received_at_ms)))).join("\n"));
       void message.success(t("deviceLogs.copied", { count: visibleEntries.length }));
     } catch (copyError) {
       void message.error(t("deviceLogs.copyFailed", { error: String(copyError) }));
@@ -155,7 +155,10 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
           <Typography.Title level={3}><FileTextOutlined />{t("deviceLogs.title")}</Typography.Title>
           <Typography.Text type="secondary">{t("deviceLogs.subtitle")}</Typography.Text>
         </div>
-        <Tag color={paused ? "warning" : statusColor}>{statusLabel}</Tag>
+        <div className="device-logs-status">
+          {view?.source && <Tag>{t(`deviceLogs.sources.${view.source}`)}</Tag>}
+          <Tag color={paused ? "warning" : statusColor}>{statusLabel}</Tag>
+        </div>
       </header>
 
       {!activeUdid && <Alert type="info" showIcon message={t("deviceLogs.connectDevice")} />}
@@ -171,6 +174,15 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
             prefix={<SearchOutlined />}
             placeholder={t("deviceLogs.search")}
             onChange={(event) => setQuery(event.target.value)}
+          />
+          <Select<DeviceLogLevelFilter>
+            value={level}
+            aria-label={t("deviceLogs.levelFilter")}
+            options={(["all", "notice", "info", "debug", "error", "fault"] as const).map((value) => ({
+              value,
+              label: t(`deviceLogs.levels.${value}`),
+            }))}
+            onChange={setLevel}
           />
           <Tooltip title={t(paused ? "deviceLogs.resume" : "deviceLogs.pause")}>
             <Button
@@ -196,6 +208,12 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
           {visibleEntries.map((entry) => (
             <div className="device-log-row" key={entry.sequence}>
               <time>{timeFormatter.format(new Date(entry.received_at_ms))}</time>
+              <span className={`device-log-level is-${entry.level ?? "raw"}`}>
+                {entry.level ? t(`deviceLogs.levels.${entry.level}`) : t("deviceLogs.levels.raw")}
+              </span>
+              <span className="device-log-context" title={deviceLogContext(entry)}>
+                {deviceLogContext(entry) || "-"}
+              </span>
               <pre>{entry.message}</pre>
             </div>
           ))}

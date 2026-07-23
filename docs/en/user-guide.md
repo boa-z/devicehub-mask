@@ -206,9 +206,13 @@ non-file entries, or reports larger than 128 MiB.
 
 ## Device Logs
 
-The Device Logs workspace displays the active iPhone's live SyslogRelay stream.
-It supports live search, pausing the display, automatic scrolling, copying the
-visible result, and clearing the bounded in-memory buffer. Collection starts
+The Device Logs workspace prefers the active iPhone's structured Unified Log
+stream and falls back to SyslogRelay when that service is unavailable. Unified
+Log entries include level, process, PID, subsystem, category, and source file
+when the device supplies them. Search covers both the message and this context,
+and the level filter can isolate notice, info, debug, error, or fault entries.
+The workspace also supports pausing the display, automatic scrolling, copying
+the visible result, and clearing the bounded in-memory buffer. Collection starts
 only while this workspace is open and stops after leaving it. A warning appears
 if high log volume causes older entries to leave the buffer.
 

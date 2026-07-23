@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use idevice::IdeviceService;
+use idevice::os_trace_relay::{LogLevel, OsTraceRelayClient, OsTraceRelayReceiver};
 use idevice::provider::IdeviceProvider;
 use idevice::syslog_relay::SyslogRelayClient;
 use serde::Serialize;
@@ -15,13 +16,47 @@ use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_ENTRIES: usize = 2_000;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_METADATA_BYTES: usize = 512;
 pub const MAX_BATCH_ENTRIES: usize = 500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceLogSource {
+    Unified,
+    Syslog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceLogLevel {
+    Notice,
+    Info,
+    Debug,
+    Error,
+    Fault,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceLogEntry {
     pub sequence: u64,
     pub received_at_ms: u64,
     pub message: String,
+    pub level: Option<DeviceLogLevel>,
+    pub process: Option<String>,
+    pub pid: Option<u32>,
+    pub subsystem: Option<String>,
+    pub category: Option<String>,
+    pub filename: Option<String>,
+}
+
+#[derive(Default)]
+struct DeviceLogMetadata {
+    level: Option<DeviceLogLevel>,
+    process: Option<String>,
+    pid: Option<u32>,
+    subsystem: Option<String>,
+    category: Option<String>,
+    filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,12 +67,14 @@ pub struct DeviceLogBatch {
     pub cursor_lagged: bool,
     pub has_more: bool,
     pub streaming: bool,
+    pub source: Option<DeviceLogSource>,
 }
 
 #[derive(Default)]
 struct DeviceLogBuffer {
     entries: VecDeque<DeviceLogEntry>,
     next_sequence: u64,
+    source: Option<DeviceLogSource>,
 }
 
 #[derive(Clone, Default)]
@@ -45,6 +82,10 @@ pub struct DeviceLogSlot(Arc<Mutex<DeviceLogBuffer>>);
 
 impl DeviceLogSlot {
     pub fn publish(&self, message: String) {
+        self.publish_structured(message, DeviceLogMetadata::default());
+    }
+
+    fn publish_structured(&self, message: String, metadata: DeviceLogMetadata) {
         let message = sanitize_message(&message);
         if message.is_empty() {
             return;
@@ -56,6 +97,12 @@ impl DeviceLogSlot {
             sequence,
             received_at_ms: unix_millis(),
             message,
+            level: metadata.level,
+            process: sanitize_optional_metadata(metadata.process),
+            pid: metadata.pid,
+            subsystem: sanitize_optional_metadata(metadata.subsystem),
+            category: sanitize_optional_metadata(metadata.category),
+            filename: sanitize_optional_metadata(metadata.filename),
         });
         while buffer.entries.len() > MAX_ENTRIES {
             buffer.entries.pop_front();
@@ -93,11 +140,22 @@ impl DeviceLogSlot {
             cursor_lagged: cursor_fell_behind,
             has_more: available > limit,
             streaming,
+            source: buffer.source,
         }
+    }
+
+    pub fn set_source(&self, source: Option<DeviceLogSource>) {
+        self.0.lock().unwrap().source = source;
     }
 
     pub fn clear(&self) {
         self.0.lock().unwrap().entries.clear();
+    }
+
+    pub fn reset(&self) {
+        let mut buffer = self.0.lock().unwrap();
+        buffer.entries.clear();
+        buffer.source = None;
     }
 }
 
@@ -155,13 +213,16 @@ pub async fn supervise(
             break;
         }
         let Some(error) = result.err() else {
+            slot.set_source(None);
             continue;
         };
+        slot.set_source(None);
         reporter.retrying(attempt, error);
         if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
             break;
         }
     }
+    slot.set_source(None);
     reporter.stopped(attempt);
 }
 
@@ -173,6 +234,28 @@ async fn run_once(
     enabled: &mut watch::Receiver<bool>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
+    let unified = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let client = OsTraceRelayClient::connect(provider.as_ref()).await?;
+        client.start_trace(None).await
+    })
+    .await;
+    match unified {
+        Ok(Ok(receiver)) => {
+            slot.set_source(Some(DeviceLogSource::Unified));
+            reporter.ready(attempt);
+            return run_unified(receiver, slot, enabled, shutdown).await;
+        }
+        Ok(Err(error)) => {
+            tracing::info!(
+                ?error,
+                "unified device log unavailable; falling back to syslog relay"
+            );
+        }
+        Err(_) => {
+            tracing::info!("unified device log connection timed out; falling back to syslog relay");
+        }
+    }
+
     let mut client = tokio::time::timeout(
         CONNECT_TIMEOUT,
         SyslogRelayClient::connect(provider.as_ref()),
@@ -180,6 +263,7 @@ async fn run_once(
     .await
     .map_err(|_| "device syslog connection timed out".to_string())?
     .map_err(|error| format!("device syslog connection failed: {error:?}"))?;
+    slot.set_source(Some(DeviceLogSource::Syslog));
     reporter.ready(attempt);
     loop {
         tokio::select! {
@@ -198,6 +282,49 @@ async fn run_once(
                 Err(error) => return Err(format!("device syslog stream failed: {error:?}")),
             }
         }
+    }
+}
+
+async fn run_unified(
+    mut receiver: OsTraceRelayReceiver,
+    slot: DeviceLogSlot,
+    enabled: &mut watch::Receiver<bool>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), String> {
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+            changed = enabled.changed() => {
+                if changed.is_err() || !*enabled.borrow() {
+                    return Ok(());
+                }
+            }
+            log = receiver.next() => match log {
+                Ok(log) => slot.publish_structured(log.message, DeviceLogMetadata {
+                    level: Some(device_log_level(log.level)),
+                    process: Some(log.image_name),
+                    pid: Some(log.pid),
+                    subsystem: log.label.as_ref().map(|label| label.subsystem.clone()),
+                    category: log.label.as_ref().map(|label| label.category.clone()),
+                    filename: Some(log.filename),
+                }),
+                Err(error) => return Err(format!("unified device log stream failed: {error:?}")),
+            }
+        }
+    }
+}
+
+fn device_log_level(level: LogLevel) -> DeviceLogLevel {
+    match level {
+        LogLevel::Notice => DeviceLogLevel::Notice,
+        LogLevel::Info => DeviceLogLevel::Info,
+        LogLevel::Debug => DeviceLogLevel::Debug,
+        LogLevel::Error => DeviceLogLevel::Error,
+        LogLevel::Fault => DeviceLogLevel::Fault,
     }
 }
 
@@ -235,6 +362,29 @@ fn sanitize_message(message: &str) -> String {
             sanitized.push(character);
         } else if !sanitized.ends_with(' ') {
             sanitized.push(' ');
+        }
+    }
+    sanitized.trim().to_owned()
+}
+
+fn sanitize_optional_metadata(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| sanitize_metadata(&value))
+        .filter(|value| !value.is_empty())
+}
+
+fn sanitize_metadata(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len().min(MAX_METADATA_BYTES));
+    for character in value.chars() {
+        if sanitized.len() + character.len_utf8() > MAX_METADATA_BYTES {
+            break;
+        }
+        if character.is_control() {
+            if !sanitized.ends_with(' ') {
+                sanitized.push(' ');
+            }
+        } else {
+            sanitized.push(character);
         }
     }
     sanitized.trim().to_owned()
@@ -293,6 +443,45 @@ mod tests {
         let sanitized = sanitize_message(&oversized);
         assert!(sanitized.len() <= MAX_MESSAGE_BYTES);
         assert!(sanitized.is_char_boundary(sanitized.len()));
+    }
+
+    #[test]
+    fn structured_log_metadata_is_bounded_and_source_is_reported() {
+        let slot = DeviceLogSlot::default();
+        slot.set_source(Some(DeviceLogSource::Unified));
+        slot.publish_structured(
+            "network changed".into(),
+            DeviceLogMetadata {
+                level: Some(DeviceLogLevel::Notice),
+                process: Some(format!("Game\n{}", "x".repeat(MAX_METADATA_BYTES * 2))),
+                pid: Some(42),
+                subsystem: Some("com.example.network".into()),
+                category: Some("connection".into()),
+                filename: Some("Network.swift".into()),
+            },
+        );
+        let batch = slot.snapshot(None, 10, true);
+        let entry = &batch.entries[0];
+        assert_eq!(batch.source, Some(DeviceLogSource::Unified));
+        assert_eq!(entry.level, Some(DeviceLogLevel::Notice));
+        assert_eq!(entry.pid, Some(42));
+        assert_eq!(entry.subsystem.as_deref(), Some("com.example.network"));
+        assert_eq!(entry.category.as_deref(), Some("connection"));
+        assert_eq!(entry.filename.as_deref(), Some("Network.swift"));
+        assert!(
+            !entry
+                .process
+                .as_ref()
+                .unwrap()
+                .chars()
+                .any(char::is_control)
+        );
+        assert!(entry.process.as_ref().unwrap().len() <= MAX_METADATA_BYTES);
+
+        slot.reset();
+        let reset = slot.snapshot(None, 10, false);
+        assert!(reset.entries.is_empty());
+        assert_eq!(reset.source, None);
     }
 
     #[tokio::test]

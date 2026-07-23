@@ -158,11 +158,16 @@ block HID dispatch. Listing is bounded by depth and entry counts. Export
 revalidates an absolute device path and regular-file metadata, caps allocation
 at 128 MiB, and returns only metadata to the WebView.
 
-Device logs use a supervised SyslogRelay connection only while the log workspace
-is open. Log messages are sanitized and capped at 16 KiB before entering a
-2,000-entry in-memory ring buffer. The private API returns at most 500 entries
-per poll and reports cursor gaps. Device log content is never forwarded to the
-application tracing subsystem or persisted automatically.
+Device logs use a supervised OsTraceRelay connection only while the log
+workspace is open. The service exposes structured Unified Log level, process,
+PID, subsystem, category, and filename metadata. If connecting or starting the
+Unified Log activity fails, the same supervisor falls back to SyslogRelay; a
+stream failure triggers a supervised reconnect instead of changing sources
+inside a live connection. Messages are sanitized and capped at 16 KiB, metadata
+fields at 512 bytes, before entering a shared 2,000-entry in-memory ring buffer.
+The private API returns at most 500 entries per poll and reports cursor gaps.
+Device log content is never forwarded to the application tracing subsystem or
+persisted automatically.
 
 ## Video Pipeline
 

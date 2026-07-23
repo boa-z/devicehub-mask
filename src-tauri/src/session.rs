@@ -757,7 +757,7 @@ pub async fn manage(
             active.set(None);
             location.set(LocationStatus::default());
             performance.reset();
-            device_logs.clear();
+            device_logs.reset();
             services.clear();
             status.set("no device - pick one from the menu");
             tokio::select! {
@@ -982,7 +982,7 @@ async fn run(
         .map_err(|e| format!("RSD handshake failed: {e:?}"))?;
 
     views.performance.reset();
-    views.device_logs.clear();
+    views.device_logs.reset();
     let mut supervisor = supervisor::ServiceSupervisor::new(views.services.clone());
     supervisor.spawn(crate::device_logs::supervise(
         provider.clone(),

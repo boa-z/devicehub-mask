@@ -184,7 +184,15 @@ export type DeviceLogEntry = {
   sequence: number;
   received_at_ms: number;
   message: string;
+  level: DeviceLogLevel | null;
+  process: string | null;
+  pid: number | null;
+  subsystem: string | null;
+  category: string | null;
+  filename: string | null;
 };
+export type DeviceLogLevel = "notice" | "info" | "debug" | "error" | "fault";
+export type DeviceLogSource = "unified" | "syslog";
 export type DeviceLogsView = {
   entries: DeviceLogEntry[];
   oldest_sequence: number | null;
@@ -192,6 +200,7 @@ export type DeviceLogsView = {
   cursor_lagged: boolean;
   has_more: boolean;
   streaming: boolean;
+  source: DeviceLogSource | null;
   service: ServiceHealth | null;
 };
 export type AppOperationKind = "install" | "uninstall";
