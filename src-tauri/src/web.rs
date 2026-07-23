@@ -610,7 +610,10 @@ async fn list_profiles(State(state): State<AppState>) -> Result<Json<ProfileList
             if binding_conflicts.contains(&bundle_id) {
                 continue;
             }
-            if app_bindings.insert(bundle_id.clone(), name.clone()).is_some() {
+            if app_bindings
+                .insert(bundle_id.clone(), name.clone())
+                .is_some()
+            {
                 app_bindings.remove(&bundle_id);
                 binding_conflicts.insert(bundle_id);
             }
@@ -1745,9 +1748,14 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let mut pressed = HashSet::new();
 
-        handle_client_message(&state, r#"{"type":"text","text":"Hello, iPhone!"}"#, &mut pressed);
+        handle_client_message(
+            &state,
+            r#"{"type":"text","text":"Hello, iPhone!"}"#,
+            &mut pressed,
+        );
         handle_client_message(&state, r#"{"type":"text","text":""}"#, &mut pressed);
-        let oversized = serde_json::to_string(&json!({ "type": "text", "text": "x".repeat(129) })).unwrap();
+        let oversized =
+            serde_json::to_string(&json!({ "type": "text", "text": "x".repeat(129) })).unwrap();
         handle_client_message(&state, &oversized, &mut pressed);
 
         assert!(matches!(
@@ -1943,7 +1951,9 @@ mod tests {
         assert_eq!(list.profiles, vec!["default", "game"]);
         assert_eq!(list.active, "game");
         assert_eq!(
-            list.app_bindings.get("com.example.game").map(String::as_str),
+            list.app_bindings
+                .get("com.example.game")
+                .map(String::as_str),
             Some("game")
         );
         assert!(list.binding_conflicts.is_empty());
