@@ -1,5 +1,6 @@
 //! Supervised DVT performance sampling over the active CoreDevice tunnel.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -19,12 +20,23 @@ use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(8);
 const SAMPLE_INTERVAL_MS: u32 = 1_000;
+const TOP_PROCESSES_PER_METRIC: usize = 10;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProcessPerformance {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_percent: Option<f64>,
+    pub memory_bytes: Option<u64>,
+}
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PerformanceSnapshot {
     pub captured_at_ms: u64,
     pub system_cpu_percent: Option<f64>,
     pub process_count: Option<u32>,
+    pub logical_cpu_count: Option<u32>,
+    pub top_processes: Vec<ProcessPerformance>,
     pub graphics_fps: Option<f64>,
     pub gpu_allocated_bytes: Option<u64>,
     pub gpu_in_use_bytes: Option<u64>,
@@ -44,11 +56,18 @@ impl PerformanceSlot {
         *self.0.lock().unwrap() = PerformanceSnapshot::default();
     }
 
-    fn update_system(&self, sample: &SysmontapSample, cpu_count: u32) {
+    fn update_system(
+        &self,
+        sample: &SysmontapSample,
+        cpu_count: u32,
+        process_schema: &ProcessSchema,
+    ) {
         let mut snapshot = self.0.lock().unwrap();
         snapshot.captured_at_ms = unix_millis();
+        snapshot.logical_cpu_count = Some(cpu_count);
         if let Some(processes) = sample.processes.as_ref() {
             snapshot.process_count = Some(processes.len() as u32);
+            snapshot.top_processes = top_processes(processes, process_schema, cpu_count);
         }
         let raw_cpu_total_load = sample
             .system_cpu_usage
@@ -208,6 +227,7 @@ async fn run_system_once(
     let cpu_count = cpu_count.ok_or_else(|| {
         "DVT hardware information did not report a valid logical CPU count".to_string()
     })?;
+    let process_schema = ProcessSchema::new(&process_attributes);
     let mut client = SysmontapClient::new(&mut remote)
         .await
         .map_err(|error| format!("DVT sysmontap channel failed: {error:?}"))?;
@@ -239,7 +259,7 @@ async fn run_system_once(
                 }
             }
             sample = client.next_sample() => match sample {
-                Ok(sample) => slot.update_system(&sample, cpu_count),
+                Ok(sample) => slot.update_system(&sample, cpu_count, &process_schema),
                 Err(error) => return Err(format!("DVT sysmontap stream failed: {error:?}")),
             }
         }
@@ -332,6 +352,133 @@ fn numeric_u32(value: &Value) -> Option<u32> {
     }
 }
 
+fn numeric_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Integer(value) => value.as_unsigned().or_else(|| {
+            value
+                .as_signed()
+                .and_then(|value| u64::try_from(value).ok())
+        }),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default)]
+struct ProcessSchema {
+    name: Option<usize>,
+    pid: Option<usize>,
+    cpu_usage: Option<usize>,
+    physical_footprint: Option<usize>,
+}
+
+impl ProcessSchema {
+    fn new(attributes: &[String]) -> Self {
+        let index = |name: &str| attributes.iter().position(|attribute| attribute == name);
+        Self {
+            name: index("name"),
+            pid: index("pid"),
+            cpu_usage: index("cpuUsage"),
+            physical_footprint: index("physFootprint"),
+        }
+    }
+}
+
+fn top_processes(
+    processes: &plist::Dictionary,
+    schema: &ProcessSchema,
+    cpu_count: u32,
+) -> Vec<ProcessPerformance> {
+    let mut normalized = processes
+        .iter()
+        .filter_map(|(key, value)| normalize_process(key, value, schema, cpu_count))
+        .collect::<Vec<_>>();
+    let mut by_cpu = normalized.clone();
+    by_cpu.sort_by(compare_process_cpu);
+    normalized.sort_by(compare_process_memory);
+
+    let mut selected = Vec::with_capacity(TOP_PROCESSES_PER_METRIC * 2);
+    let mut selected_pids = HashSet::with_capacity(TOP_PROCESSES_PER_METRIC * 2);
+    for process in by_cpu
+        .into_iter()
+        .take(TOP_PROCESSES_PER_METRIC)
+        .chain(normalized.into_iter().take(TOP_PROCESSES_PER_METRIC))
+    {
+        if selected_pids.insert(process.pid) {
+            selected.push(process);
+        }
+    }
+    selected.sort_by(compare_process_cpu);
+    selected
+}
+
+fn normalize_process(
+    key: &str,
+    value: &Value,
+    schema: &ProcessSchema,
+    cpu_count: u32,
+) -> Option<ProcessPerformance> {
+    let row = value.as_array()?;
+    let pid = schema
+        .pid
+        .and_then(|index| row.get(index))
+        .and_then(numeric_u32)
+        .or_else(|| key.parse().ok())?;
+    let name = schema
+        .name
+        .and_then(|index| row.get(index))
+        .and_then(Value::as_string)
+        .map(sanitize_process_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| format!("pid {pid}"));
+    let cpu_percent = schema
+        .cpu_usage
+        .and_then(|index| row.get(index))
+        .and_then(numeric_value)
+        .and_then(|value| normalize_aggregate_cpu_percent(value, cpu_count));
+    let memory_bytes = schema
+        .physical_footprint
+        .and_then(|index| row.get(index))
+        .and_then(numeric_u64);
+    Some(ProcessPerformance {
+        pid,
+        name,
+        cpu_percent,
+        memory_bytes,
+    })
+}
+
+fn sanitize_process_name(name: &str) -> String {
+    name.chars()
+        .filter(|character| !character.is_control())
+        .take(256)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+fn compare_process_cpu(
+    left: &ProcessPerformance,
+    right: &ProcessPerformance,
+) -> std::cmp::Ordering {
+    right
+        .cpu_percent
+        .unwrap_or(-1.0)
+        .total_cmp(&left.cpu_percent.unwrap_or(-1.0))
+        .then_with(|| compare_process_memory(left, right))
+        .then_with(|| left.pid.cmp(&right.pid))
+}
+
+fn compare_process_memory(
+    left: &ProcessPerformance,
+    right: &ProcessPerformance,
+) -> std::cmp::Ordering {
+    right
+        .memory_bytes
+        .unwrap_or(0)
+        .cmp(&left.memory_bytes.unwrap_or(0))
+        .then_with(|| left.pid.cmp(&right.pid))
+}
+
 fn normalize_aggregate_cpu_percent(value: f64, cpu_count: u32) -> Option<f64> {
     let normalized = value / f64::from(cpu_count);
     (value.is_finite() && cpu_count > 0 && (0.0..=100.0).contains(&normalized))
@@ -372,6 +519,9 @@ fn unix_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idevice::IdeviceService;
+    use idevice::core_device_proxy::CoreDeviceProxy;
+    use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
 
     #[test]
     fn aggregate_cpu_load_is_normalized_by_device_cpu_count() {
@@ -409,6 +559,7 @@ mod tests {
                 system_cpu_usage: Some(cpu),
             },
             6,
+            &ProcessSchema::default(),
         );
         slot.update_system(
             &SysmontapSample {
@@ -417,11 +568,76 @@ mod tests {
                 system_cpu_usage: None,
             },
             6,
+            &ProcessSchema::default(),
         );
 
         let snapshot = slot.get();
         assert_eq!(snapshot.system_cpu_percent, Some(40.0));
         assert_eq!(snapshot.process_count, Some(1));
+        assert_eq!(snapshot.logical_cpu_count, Some(6));
+        assert_eq!(snapshot.top_processes.len(), 1);
+        assert_eq!(snapshot.top_processes[0].pid, 1);
+        assert_eq!(snapshot.top_processes[0].name, "pid 1");
+    }
+
+    #[test]
+    fn process_metrics_follow_the_negotiated_attribute_order() {
+        let attributes = vec![
+            "physFootprint".into(),
+            "name".into(),
+            "cpuUsage".into(),
+            "pid".into(),
+        ];
+        let schema = ProcessSchema::new(&attributes);
+        let row = Value::Array(vec![
+            Value::Integer(25_000_000.into()),
+            Value::String("Example\nGame".into()),
+            Value::Real(120.0),
+            Value::Integer(42.into()),
+        ]);
+        let process = normalize_process("ignored", &row, &schema, 6).unwrap();
+        assert_eq!(process.pid, 42);
+        assert_eq!(process.name, "ExampleGame");
+        assert_eq!(process.cpu_percent, Some(20.0));
+        assert_eq!(process.memory_bytes, Some(25_000_000));
+    }
+
+    #[test]
+    fn top_processes_include_cpu_and_memory_leaders() {
+        let attributes = vec![
+            "pid".into(),
+            "name".into(),
+            "cpuUsage".into(),
+            "physFootprint".into(),
+        ];
+        let schema = ProcessSchema::new(&attributes);
+        let mut processes = plist::Dictionary::new();
+        for pid in 1..=12_u32 {
+            processes.insert(
+                pid.to_string(),
+                Value::Array(vec![
+                    Value::Integer(pid.into()),
+                    Value::String(format!("cpu-{pid}")),
+                    Value::Real(f64::from(100 - pid)),
+                    Value::Integer(u64::from(pid * 1_000).into()),
+                ]),
+            );
+        }
+        processes.insert(
+            "99".into(),
+            Value::Array(vec![
+                Value::Integer(99.into()),
+                Value::String("memory-leader".into()),
+                Value::Real(0.0),
+                Value::Integer(9_000_000_000_u64.into()),
+            ]),
+        );
+
+        let top = top_processes(&processes, &schema, 6);
+        assert!(top.len() <= TOP_PROCESSES_PER_METRIC * 2);
+        assert!(top.iter().any(|process| process.pid == 1));
+        assert!(top.iter().any(|process| process.pid == 99));
+        assert_eq!(top[0].pid, 1);
     }
 
     #[test]
@@ -440,5 +656,72 @@ mod tests {
         assert_eq!(snapshot.graphics_fps, Some(59.5));
         assert_eq!(snapshot.gpu_in_use_bytes, Some(8));
         assert!(snapshot.captured_at_ms > 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn inspects_sysmontap_process_schema_from_hardware() {
+        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
+        let device = usbmuxd
+            .get_devices()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("no connected device");
+        let provider =
+            device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-performance-test");
+        let proxy = CoreDeviceProxy::connect(&provider).await.unwrap();
+        let rsd_port = proxy.tunnel_info().server_rsd_port;
+        let adapter = proxy.create_software_tunnel().unwrap();
+        let mut adapter = adapter.to_async_handle();
+        let stream = adapter.connect(rsd_port).await.unwrap();
+        let mut handshake = RsdHandshake::new(stream).await.unwrap();
+        let mut remote = RemoteServerClient::connect_rsd(&mut adapter, &mut handshake)
+            .await
+            .unwrap();
+        let (process_attributes, system_attributes, logical_cpu_count) = {
+            let mut info = DeviceInfoClient::new(&mut remote).await.unwrap();
+            (
+                info.sysmon_process_attributes().await.unwrap(),
+                info.sysmon_system_attributes().await.unwrap(),
+                cpu_count(&info.hardware_information().await.unwrap()).unwrap(),
+            )
+        };
+        let process_schema = ProcessSchema::new(&process_attributes);
+        assert!(process_schema.name.is_some());
+        assert!(process_schema.pid.is_some());
+        assert!(process_schema.cpu_usage.is_some());
+        assert!(process_schema.physical_footprint.is_some());
+        let mut client = SysmontapClient::new(&mut remote).await.unwrap();
+        client
+            .set_config(&SysmontapConfig {
+                interval_ms: SAMPLE_INTERVAL_MS,
+                process_attributes: process_attributes.clone(),
+                system_attributes,
+            })
+            .await
+            .unwrap();
+        client.start().await.unwrap();
+        let processes = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Some(processes) = client.next_sample().await.unwrap().processes {
+                    break processes;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for process sample");
+        let top = top_processes(&processes, &process_schema, logical_cpu_count);
+        assert!(!top.is_empty());
+        assert!(top.iter().all(|process| !process.name.is_empty()));
+        assert!(
+            top.iter()
+                .filter_map(|process| process.cpu_percent)
+                .all(|cpu| (0.0..=100.0).contains(&cpu))
+        );
+        assert!(top.iter().any(|process| process.memory_bytes.is_some()));
+        println!("normalized top processes: {:#?}", &top[..top.len().min(5)]);
+        client.stop().await.unwrap();
     }
 }

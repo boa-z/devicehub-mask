@@ -65,6 +65,10 @@ creates isolated DVT channels. Sysmontap and graphics sampling are demand-driven
 by the Performance workspace, and stop when the workspace closes. Their latest
 normalized snapshot is exposed through the authenticated private API; short-term
 chart history remains frontend-local and is discarded on device changes.
+Sysmontap process arrays are decoded against the attribute order negotiated for
+that session rather than fixed field indices. Per-process CPU is divided by the
+reported logical CPU count; the snapshot retains the union of the ten highest
+CPU and ten largest physical-footprint processes, bounded to twenty rows.
 
 Lockdown metadata is read once at connection. App listing and lifecycle control
 prefer a long-lived CoreDevice AppService client in the same session, avoiding

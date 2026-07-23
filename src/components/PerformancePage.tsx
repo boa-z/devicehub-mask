@@ -1,7 +1,8 @@
 import { DashboardOutlined } from "@ant-design/icons";
-import { Alert, Tag, Typography } from "antd";
+import { Alert, Segmented, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { sortProcesses, type ProcessSort } from "../processPerformance";
 import type { PerformanceSnapshot, PerformanceView, ServiceHealth, StreamMetrics } from "../types";
 
 type Props = {
@@ -62,6 +63,7 @@ function ServiceRow({ service }: { service: ServiceHealth }) {
 export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, error }: Props) {
   const { t } = useTranslation();
   const [history, setHistory] = useState<PerformanceSnapshot[]>([]);
+  const [processSort, setProcessSort] = useState<ProcessSort>("cpu");
 
   useEffect(() => {
     setHistory([]);
@@ -79,6 +81,10 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const sample = view?.sample;
   const cpuHistory = history.flatMap((item) => item.system_cpu_percent == null ? [] : [item.system_cpu_percent]);
   const fpsHistory = history.flatMap((item) => item.graphics_fps == null ? [] : [item.graphics_fps]);
+  const processes = useMemo(
+    () => sortProcesses(sample?.top_processes ?? [], processSort),
+    [processSort, sample?.top_processes],
+  );
 
   return (
     <main className="performance-page">
@@ -106,6 +112,48 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           </div>
           <div className="performance-metric"><span>{t("performance.processes")}</span><strong>{sample?.process_count ?? "--"}</strong></div>
           <div className="performance-metric"><span>{t("performance.gpuMemory")}</span><strong>{bytes(sample?.gpu_in_use_bytes)}</strong><small>{t("performance.allocated", { value: bytes(sample?.gpu_allocated_bytes) })}</small></div>
+        </div>
+      </section>
+
+      <section className="performance-section">
+        <div className="performance-process-header">
+          <div>
+            <Typography.Title level={5}>{t("performance.topProcesses")}</Typography.Title>
+            <Typography.Text type="secondary">
+              {sample?.logical_cpu_count
+                ? t("performance.processCpuNormalized", { count: sample.logical_cpu_count })
+                : t("performance.processCpuNormalizedUnknown")}
+            </Typography.Text>
+          </div>
+          <Segmented<ProcessSort>
+            aria-label={t("performance.processSort")}
+            value={processSort}
+            options={[
+              { value: "cpu", label: t("performance.sortCpu") },
+              { value: "memory", label: t("performance.sortMemory") },
+            ]}
+            onChange={setProcessSort}
+          />
+        </div>
+        <div className="performance-process-table-wrap">
+          <table className="performance-process-table">
+            <colgroup><col /><col /><col /><col /></colgroup>
+            <thead><tr>
+              <th>{t("performance.processName")}</th>
+              <th>{t("performance.pid")}</th>
+              <th>{t("performance.processCpu")}</th>
+              <th>{t("performance.physicalFootprint")}</th>
+            </tr></thead>
+            <tbody>
+              {processes.map((process) => <tr key={process.pid}>
+                <td><span title={process.name}>{process.name}</span></td>
+                <td>{process.pid}</td>
+                <td>{process.cpu_percent == null ? "--" : `${number(process.cpu_percent)}%`}</td>
+                <td>{bytes(process.memory_bytes)}</td>
+              </tr>)}
+              {processes.length === 0 && <tr className="performance-process-empty"><td colSpan={4}>{t("performance.waitingProcesses")}</td></tr>}
+            </tbody>
+          </table>
         </div>
       </section>
 

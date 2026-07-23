@@ -180,6 +180,21 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .performance-transport-grid > div:nth-child(3n) { border-right: 0; }
 .performance-transport-grid > div:nth-last-child(-n+3) { border-bottom: 0; }
 .performance-transport-grid strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.performance-process-header { margin-bottom: 12px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.performance-process-header > div { min-width: 0; }
+.performance-process-header h5 { margin-bottom: 2px; }
+.performance-process-header .ant-segmented { flex: 0 0 auto; }
+.performance-process-table-wrap { width: 100%; overflow-x: auto; border-top: 1px solid #303638; }
+.performance-process-table { width: 100%; min-width: 560px; border-collapse: collapse; table-layout: fixed; }
+.performance-process-table col:nth-child(1) { width: auto; }
+.performance-process-table col:nth-child(2) { width: 88px; }
+.performance-process-table col:nth-child(3) { width: 112px; }
+.performance-process-table col:nth-child(4) { width: 150px; }
+.performance-process-table th, .performance-process-table td { height: 42px; padding: 8px 12px; border-bottom: 1px solid #303638; text-align: right; font-variant-numeric: tabular-nums; }
+.performance-process-table th { color: #899493; font-size: 11px; font-weight: 500; }
+.performance-process-table th:first-child, .performance-process-table td:first-child { text-align: left; }
+.performance-process-table td:first-child span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.performance-process-empty td { color: #899493; text-align: center; }
 .performance-section-title { display: grid; grid-template-columns: minmax(0, 1fr) 90px; align-items: end; }
 .performance-section-title > span { color: #899493; font-size: 11px; text-align: center; }
 .performance-service-list { border-top: 1px solid #303638; }
@@ -232,6 +247,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .performance-metric { border-bottom: 1px solid #303638; }
   .performance-metric:nth-child(2n) { border-right: 0; }
   .performance-metric:nth-last-child(-n+2) { border-bottom: 0; }
+  .performance-process-header { align-items: stretch; flex-direction: column; }
+  .performance-process-header .ant-segmented { align-self: flex-start; }
   .performance-transport-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .performance-transport-grid > div:nth-child(3n) { border-right: 1px solid #303638; }
   .performance-transport-grid > div:nth-child(2n) { border-right: 0; }

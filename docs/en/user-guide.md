@@ -53,6 +53,10 @@ presentation rates, transport bandwidth, JPEG encoding time, and frame age.
 System CPU is the iPhone-wide percentage derived from DVT's aggregate
 `CPU_TotalLoad` divided by the device's reported logical CPU count; it is not
 desktop-host CPU usage or a per-process value.
+Top Processes shows the union of the ten busiest CPU processes and ten largest
+physical-memory processes. Switch between CPU and Memory sorting. Process CPU
+uses the same logical-core normalization as system CPU, so 100% represents the
+device's total processing capacity rather than one fully occupied core.
 
 Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health

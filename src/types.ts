@@ -30,10 +30,18 @@ export type ServiceHealth = {
   last_error: string | null;
   updated_at_ms: number;
 };
+export type ProcessPerformance = {
+  pid: number;
+  name: string;
+  cpu_percent: number | null;
+  memory_bytes: number | null;
+};
 export type PerformanceSnapshot = {
   captured_at_ms: number;
   system_cpu_percent: number | null;
   process_count: number | null;
+  logical_cpu_count: number | null;
+  top_processes: ProcessPerformance[];
   graphics_fps: number | null;
   gpu_allocated_bytes: number | null;
   gpu_in_use_bytes: number | null;
