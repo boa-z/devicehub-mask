@@ -48,7 +48,7 @@ import { PerformanceHud } from "./components/PerformanceHud";
 import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, shouldReuseAudioResumeAttempt, type DeviceAudioPreferences } from "./deviceAudio";
+import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, shouldAttemptAudioResumeOnLifecycle, shouldReuseAudioResumeAttempt, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { parsePngDimensions } from "./deviceScreenshot";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
@@ -342,6 +342,31 @@ export default function App() {
     return () => {
       window.removeEventListener("pointerdown", unlockAudio);
       window.removeEventListener("keydown", unlockAudio);
+    };
+  }, [audioPlayback.muted, deviceAudioEnabled, resumeDeviceAudio]);
+
+  useEffect(() => {
+    const resumeAfterLifecycleChange = () => {
+      const player = audioPlayerRef.current;
+      if (shouldAttemptAudioResumeOnLifecycle(
+        deviceAudioEnabled,
+        audioPlayback.muted,
+        player?.isRunning() ?? false,
+        document.visibilityState,
+      )) {
+        void resumeDeviceAudio();
+      }
+    };
+    const resumeAfterVisibilityChange = () => {
+      if (document.visibilityState === "visible") resumeAfterLifecycleChange();
+    };
+    window.addEventListener("focus", resumeAfterLifecycleChange);
+    window.addEventListener("pageshow", resumeAfterLifecycleChange);
+    document.addEventListener("visibilitychange", resumeAfterVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", resumeAfterLifecycleChange);
+      window.removeEventListener("pageshow", resumeAfterLifecycleChange);
+      document.removeEventListener("visibilitychange", resumeAfterVisibilityChange);
     };
   }, [audioPlayback.muted, deviceAudioEnabled, resumeDeviceAudio]);
 
@@ -814,7 +839,7 @@ export default function App() {
                 scheduled ? "info" : "warn",
                 "audio",
                 scheduled ? "playback_started" : "playback_suspended",
-                `${audio.sampleRate} Hz, ${audio.channels} channels, ${audio.frames} frames`,
+                `${audio.sampleRate} Hz, ${audio.channels} channels, ${audio.frames} frames; context=${player?.contextState() ?? "unavailable"}; visibility=${document.visibilityState}`,
               );
             }
             return;

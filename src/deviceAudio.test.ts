@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PcmAudioPlayer, defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume, shouldReuseAudioResumeAttempt } from "./deviceAudio";
+import { PcmAudioPlayer, defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume, shouldAttemptAudioResumeOnLifecycle, shouldReuseAudioResumeAttempt } from "./deviceAudio";
 
 describe("device audio", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -39,6 +39,8 @@ describe("device audio", () => {
     expect(shouldAttemptAudioResume(true, true, false)).toBe(false);
     expect(shouldAttemptAudioResume(true, false, true)).toBe(false);
     expect(shouldAttemptAudioResume(true, false, false)).toBe(true);
+    expect(shouldAttemptAudioResumeOnLifecycle(true, false, false, "visible")).toBe(true);
+    expect(shouldAttemptAudioResumeOnLifecycle(true, false, false, "hidden")).toBe(false);
   });
 
   it("reuses a gesture attempt but supersedes an automatic attempt", () => {

@@ -30,6 +30,15 @@ export function shouldAttemptAudioResume(
   return enabled === true && !muted && !running;
 }
 
+export function shouldAttemptAudioResumeOnLifecycle(
+  enabled: boolean | null,
+  muted: boolean,
+  running: boolean,
+  visibility: DocumentVisibilityState,
+): boolean {
+  return visibility === "visible" && shouldAttemptAudioResume(enabled, muted, running);
+}
+
 const storageKey = "devicehub-mask.device-audio";
 const magic = [0x44, 0x48, 0x41, 0x50] as const;
 const headerLength = 16;

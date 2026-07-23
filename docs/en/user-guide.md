@@ -50,7 +50,9 @@ Settings contains appearance, language, window behavior, device audio, clipboard
 update checking, a manual **Check now** command, the installed app version, and
 the GitHub repository link. Device audio is disabled by default; enabling it
 takes effect after reconnecting the device. Playback mute and volume apply
-immediately, and mute is also available in the Device toolbar. Clipboard synchronization is also disabled
+immediately, and mute is also available in the Device toolbar. Playback retries
+when the desktop wakes or the app regains focus; if WebKit still requires a
+user gesture, the highlighted play control resumes it. Clipboard synchronization is also disabled
 by default and takes effect after reconnecting. When enabled, text and images copied on either the host or
 device replace the clipboard on the other side. A transient message identifies the direction and content
 type; text previews are whitespace-collapsed and limited to 48 characters.
