@@ -1453,6 +1453,14 @@ impl DeviceManagement {
                 let _ = reply.send(result);
                 None
             }
+            InputCmd::StopApp { bundle_id, reply } => {
+                let result = match self.app_service.as_mut() {
+                    Some(client) => stop_device_app(client, &bundle_id).await,
+                    None => Err("app stop requires the CoreDevice AppService".to_string()),
+                };
+                let _ = reply.send(result);
+                None
+            }
             InputCmd::InstallApp { path, reply } => {
                 let result = self.install_app(path).await;
                 let _ = reply.send(result);
@@ -1566,10 +1574,27 @@ async fn list_device_apps(
     if let Some(client) = app_service {
         match client.list_apps(false, true, false, false, false).await {
             Ok(entries) => {
+                let processes = match client.list_processes().await {
+                    Ok(processes) => Some(processes),
+                    Err(error) => {
+                        tracing::warn!("CoreDevice process list unavailable: {error:?}");
+                        None
+                    }
+                };
                 return Ok(sort_device_apps(
                     entries
                         .into_iter()
                         .map(|entry| DeviceApp {
+                            is_running: processes.as_ref().map(|processes| {
+                                processes.iter().any(|process| {
+                                    process.executable_url.as_ref().is_some_and(|executable| {
+                                        process_executable_belongs_to_app(
+                                            &entry.path,
+                                            &executable.relative,
+                                        )
+                                    })
+                                })
+                            }),
                             bundle_id: entry.bundle_identifier,
                             name: entry.name,
                             version: entry.version,
@@ -1624,7 +1649,57 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
             .unwrap_or_else(|| signer.contains("Apple iPhone OS Application Signing")),
         is_developer_app: boolean("IsXcodeManaged").unwrap_or(false)
             || signer.contains("Apple Development"),
+        is_running: None,
     })
+}
+
+fn normalized_app_path(path: &str) -> &str {
+    path.strip_prefix("file://localhost")
+        .or_else(|| path.strip_prefix("file://"))
+        .unwrap_or(path)
+        .trim_end_matches('/')
+}
+
+fn process_executable_belongs_to_app(app_path: &str, executable_path: &str) -> bool {
+    let app_path = normalized_app_path(app_path);
+    let executable_path = normalized_app_path(executable_path);
+    executable_path
+        .rsplit_once('/')
+        .is_some_and(|(parent, executable)| parent == app_path && !executable.is_empty())
+}
+
+async fn stop_device_app(
+    client: &mut AppServiceClient<Box<dyn ReadWrite>>,
+    bundle_id: &str,
+) -> Result<bool, String> {
+    let apps = client
+        .list_apps(false, true, false, false, false)
+        .await
+        .map_err(|error| format!("unable to resolve app before stopping it: {error:?}"))?;
+    let app = apps
+        .into_iter()
+        .find(|app| app.bundle_identifier == bundle_id)
+        .ok_or_else(|| "app is not installed or is not user-manageable".to_string())?;
+    let processes = client
+        .list_processes()
+        .await
+        .map_err(|error| format!("unable to list app processes: {error:?}"))?;
+    let process_ids: Vec<_> = processes
+        .into_iter()
+        .filter(|process| {
+            process.executable_url.as_ref().is_some_and(|executable| {
+                process_executable_belongs_to_app(&app.path, &executable.relative)
+            })
+        })
+        .map(|process| process.pid)
+        .collect();
+    for pid in &process_ids {
+        client
+            .send_signal(*pid, 15)
+            .await
+            .map_err(|error| format!("unable to stop app: {error:?}"))?;
+    }
+    Ok(!process_ids.is_empty())
 }
 
 fn sort_device_apps(mut apps: Vec<DeviceApp>) -> Vec<DeviceApp> {
@@ -2041,6 +2116,7 @@ async fn dispatch(
         | InputCmd::ListApps(_)
         | InputCmd::ListProvisioningProfiles(_)
         | InputCmd::LaunchApp { .. }
+        | InputCmd::StopApp { .. }
         | InputCmd::InstallApp { .. }
         | InputCmd::UninstallApp { .. }
         | InputCmd::SetLocation { .. }
@@ -3644,6 +3720,28 @@ mod tests {
         assert_eq!(app.bundle_version.as_deref(), Some("42"));
         assert!(app.is_developer_app);
         assert!(!app.is_removable);
+        assert_eq!(app.is_running, None);
+    }
+
+    #[test]
+    fn matches_only_an_apps_main_executable() {
+        let app = "/private/var/containers/Bundle/Application/UUID/Example.app/";
+        assert!(process_executable_belongs_to_app(
+            app,
+            "file:///private/var/containers/Bundle/Application/UUID/Example.app/Example"
+        ));
+        assert!(process_executable_belongs_to_app(
+            "file://localhost/private/var/containers/Bundle/Application/UUID/Example.app",
+            "/private/var/containers/Bundle/Application/UUID/Example.app/Example"
+        ));
+        assert!(!process_executable_belongs_to_app(
+            app,
+            "/private/var/containers/Bundle/Application/UUID/Example.app/PlugIns/Widget.appex/Widget"
+        ));
+        assert!(!process_executable_belongs_to_app(
+            app,
+            "/private/var/containers/Bundle/Application/OTHER/Example.app/Example"
+        ));
     }
 
     #[tokio::test]

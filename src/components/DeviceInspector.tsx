@@ -9,6 +9,7 @@ import {
   ReloadOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
+  StopOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -57,7 +58,7 @@ export function DeviceInspector({
   const [profileStatus, setProfileStatus] = useState<ProfileStatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [launching, setLaunching] = useState<string | null>(null);
+  const [appProcessAction, setAppProcessAction] = useState<{ bundleId: string; kind: "launch" | "stop" } | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const handledOperation = useRef(0);
@@ -152,16 +153,32 @@ export function DeviceInspector({
   );
 
   const launch = async (app: DeviceApp) => {
-    setLaunching(app.bundle_id);
+    setAppProcessAction({ bundleId: app.bundle_id, kind: "launch" });
     try {
       const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/launch`, { method: "PUT" });
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
-      void message.success(t("deviceInspector.appLaunched", { name: app.name }));
+      void message.success(t(app.is_running ? "deviceInspector.appRestarted" : "deviceInspector.appLaunched", { name: app.name }));
       onAppLaunched?.(app.bundle_id);
+      await loadApps();
     } catch (launchError) {
       void message.error(t("deviceInspector.appLaunchFailed", { error: String(launchError) }));
     } finally {
-      setLaunching(null);
+      setAppProcessAction(null);
+    }
+  };
+
+  const stopApp = async (app: DeviceApp) => {
+    setAppProcessAction({ bundleId: app.bundle_id, kind: "stop" });
+    try {
+      const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/stop`, { method: "PUT" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      const result = await response.json() as { was_running: boolean };
+      void message.success(t(result.was_running ? "deviceInspector.appStopped" : "deviceInspector.appAlreadyStopped", { name: app.name }));
+      await loadApps();
+    } catch (stopError) {
+      void message.error(t("deviceInspector.appStopFailed", { error: String(stopError) }));
+    } finally {
+      setAppProcessAction(null);
     }
   };
 
@@ -345,6 +362,7 @@ export function DeviceInspector({
                   <Typography.Text type="secondary" ellipsis={{ tooltip: app.bundle_id }}>{app.bundle_id}</Typography.Text>
                   <div className="device-app-tags">
                     {app.version && <Tag>{app.version}</Tag>}
+                    {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
                     {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}
                     {bindingState === "conflict"
                       ? <Tag color="error">{t("deviceInspector.appProfileConflictTag")}</Tag>
@@ -365,15 +383,28 @@ export function DeviceInspector({
                   <Tooltip title={t("deviceInspector.copyBundleId")}>
                     <Button size="small" icon={<CopyOutlined />} onClick={() => void copyBundleId(app.bundle_id)} />
                   </Tooltip>
-                  <Tooltip title={t("deviceInspector.launchApp")}>
+                  <Tooltip title={t(app.is_running ? "deviceInspector.restartApp" : "deviceInspector.launchApp")}>
                     <Button
                       size="small"
-                      type="primary"
-                      icon={<PlayCircleOutlined />}
-                      loading={launching === app.bundle_id}
+                      type={app.is_running ? "default" : "primary"}
+                      icon={app.is_running ? <ReloadOutlined /> : <PlayCircleOutlined />}
+                      loading={appProcessAction?.bundleId === app.bundle_id && appProcessAction.kind === "launch"}
+                      disabled={appProcessAction !== null}
                       onClick={() => void launch(app)}
                     />
                   </Tooltip>
+                  {app.is_running === true && (
+                    <Tooltip title={t("deviceInspector.stopApp")}>
+                      <Button
+                        danger
+                        size="small"
+                        icon={<StopOutlined />}
+                        loading={appProcessAction?.bundleId === app.bundle_id && appProcessAction.kind === "stop"}
+                        disabled={appProcessAction !== null}
+                        onClick={() => void stopApp(app)}
+                      />
+                    </Tooltip>
+                  )}
                   {app.is_removable && !app.is_first_party && (
                     <Tooltip title={t("deviceInspector.uninstallApp")}>
                       <Button

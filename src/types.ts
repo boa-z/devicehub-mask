@@ -76,6 +76,7 @@ export type DeviceApp = {
   is_removable: boolean;
   is_first_party: boolean;
   is_developer_app: boolean;
+  is_running: boolean | null;
 };
 export type AppOperationKind = "install" | "uninstall";
 export type AppOperationState = "idle" | "running" | "succeeded" | "failed" | "cancelled";

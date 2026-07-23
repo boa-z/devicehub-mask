@@ -152,6 +152,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/device/apps/install", put(install_app))
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
         .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
+        .route("/api/device/apps/{bundle_id}/stop", put(stop_app))
         .route(
             "/api/device/provisioning-profiles",
             get(device_provisioning_profiles),
@@ -527,6 +528,38 @@ async fn launch_app(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn stop_app(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !valid_bundle_identifier(&bundle_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
+    }
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::StopApp { bundle_id, reply }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let was_running = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "app stop request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(serde_json::json!({ "was_running": was_running })))
 }
 
 fn valid_bundle_identifier(bundle_id: &str) -> bool {
@@ -1878,6 +1911,35 @@ mod tests {
             ));
         }
         assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn app_stop_rejects_invalid_bundle_identifiers_before_dispatch() {
+        let (state, mut input_rx) = test_state();
+
+        for bundle_id in ["", "no-domain", "com.example.bad value", "com/example/app"] {
+            assert!(matches!(
+                stop_app(State(state.clone()), Path(bundle_id.into())).await,
+                Err((StatusCode::BAD_REQUEST, _))
+            ));
+        }
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn app_stop_dispatches_only_a_validated_bundle_identifier() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(stop_app(State(state), Path("com.example.game".into())));
+
+        match input_rx.recv().await.unwrap() {
+            InputCmd::StopApp { bundle_id, reply } => {
+                assert_eq!(bundle_id, "com.example.game");
+                reply.send(Ok(true)).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let Json(result) = request.await.unwrap().unwrap();
+        assert_eq!(result, serde_json::json!({ "was_running": true }));
     }
 
     #[tokio::test]

@@ -114,9 +114,10 @@ Hold timing is preserved for controls such as Siri.
 ## Applications and Provisioning Profiles
 
 The Apps tab lists applications through CoreDevice AppService and falls back to
-Lockdown Installation Proxy when necessary. It can launch apps, select an IPA
-with the native file dialog, report installation stages, and remove confirmed
-removable user apps.
+Lockdown Installation Proxy when necessary. When AppService process data is
+available, running apps are marked and can be stopped or restarted. It can also
+select an IPA with the native file dialog, report installation stages, and
+remove confirmed removable user apps.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or
@@ -149,8 +150,8 @@ signing and release details.
 While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP
 endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
 swipes, simultaneous multi-touch, text and key input, hardware buttons, app
-discovery and launch, rotation, device selection and reconnection, virtual
-location, frame synchronization, and session status.
+discovery, launch/restart and stop, rotation, device selection and reconnection,
+virtual location, frame synchronization, and session status.
 
 Take a screenshot before sending coordinate-based input. Pass the returned
 `image_width` and `image_height` to `tap`, `swipe`, or `multi_touch` so

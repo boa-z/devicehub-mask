@@ -66,10 +66,12 @@ by the Performance workspace, and stop when the workspace closes. Their latest
 normalized snapshot is exposed through the authenticated private API; short-term
 chart history remains frontend-local and is discarded on device changes.
 
-Lockdown metadata is read once at connection. App listing and launch prefer a
-long-lived CoreDevice AppService client in the same session, avoiding a new RSD
-tunnel per operation. Listing falls back to Installation Proxy when AppService
-is absent.
+Lockdown metadata is read once at connection. App listing and lifecycle control
+prefer a long-lived CoreDevice AppService client in the same session, avoiding
+a new RSD tunnel per operation. Process URLs are matched only when their direct
+parent is the selected app bundle; stop resolves fresh device state and sends a
+fixed SIGTERM without accepting a client PID or signal. Listing falls back to
+Installation Proxy when AppService is absent, with running state left unknown.
 
 IPA installation and app removal use independent Tokio tasks and fresh
 Installation Proxy connections so uploads do not block video, HID, or app-list

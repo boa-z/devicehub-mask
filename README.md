@@ -19,12 +19,14 @@ exposed as a browser application.
   keyboard passthrough, and configurable hardware-button shortcuts
 - Complete scrcpy-mask `0.0.1` controller profile import/export and a visual
   mapping editor with live or captured-screen backgrounds
-- Device metadata, application browsing and launch, IPA installation, safe app
-  removal, and provisioning profile inspection
+- Device metadata, application browsing, running-state detection, launch,
+  restart and stop controls, IPA installation, safe app removal, and
+  provisioning profile inspection
 - On-demand iPhone CPU, process, Core Animation FPS, and GPU-memory telemetry
   with supervised DVT service recovery
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch,
-  app launch, frame synchronization, device switching, and DVT virtual location
+  app lifecycle control, frame synchronization, device switching, and DVT
+  virtual location
 - Native Tauri 2 desktop controls, Simplified Chinese and English UI, and signed
   nightly updates
 - macOS, Windows, and Linux verification and packaging through GitHub Actions

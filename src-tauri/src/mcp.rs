@@ -174,6 +174,13 @@ struct AppParams {
     wait_for_settle: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct StopAppParams {
+    bundle_id: String,
+    /// Wait for the screen after the app stops to become stable. Defaults to true.
+    wait_for_settle: Option<bool>,
+}
+
 fn ok_text(value: impl Into<String>) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(value.into())]))
 }
@@ -877,7 +884,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Launch an installed app by bundle ID and optionally wait for its screen to become stable. Use list_apps to discover bundle IDs."
+        description = "Launch an installed app by bundle ID, or restart it when already running, and optionally wait for its screen to become stable. Use list_apps to discover bundle IDs and running state."
     )]
     async fn launch_app(
         &self,
@@ -907,6 +914,42 @@ impl DeviceHub {
                 "launched": params.bundle_id,
                 "frame_version_before": frame_version,
                 "frame_version_after": frame_version_after,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Stop a running user app by bundle ID. The server resolves the app's current main process and sends SIGTERM; callers cannot provide a PID or signal."
+    )]
+    async fn stop_app(
+        &self,
+        Parameters(params): Parameters<StopAppParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if !valid_bundle_identifier(&params.bundle_id) {
+            return Err(McpError::invalid_params("invalid bundle identifier", None));
+        }
+        let frame_version = self.frames.version();
+        let _gesture = self.gesture_lock.lock().await;
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::StopApp {
+            bundle_id: params.bundle_id.clone(),
+            reply,
+        })?;
+        let was_running = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("app stop request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        if params.wait_for_settle.unwrap_or(true) {
+            self.settle().await;
+        }
+        ok_text(
+            json!({
+                "stopped": params.bundle_id,
+                "was_running": was_running,
+                "frame_version_before": frame_version,
+                "frame_version_after": self.frames.version(),
             })
             .to_string(),
         )
@@ -1078,7 +1121,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps/launch_app to open a game and list_devices/connect_device when no device is active.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active.")
     }
 }
 
@@ -1166,6 +1209,7 @@ mod tests {
             "rotate",
             "list_apps",
             "launch_app",
+            "stop_app",
             "list_devices",
             "connect_device",
             "reconnect_device",

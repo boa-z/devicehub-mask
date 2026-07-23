@@ -319,6 +319,11 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Stop an application's main process through CoreDevice AppService.
+    StopApp {
+        bundle_id: String,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
     /// Validate and install a local IPA without blocking the HID dispatch loop.
     InstallApp {
         path: PathBuf,
@@ -482,6 +487,8 @@ pub struct DeviceApp {
     pub is_removable: bool,
     pub is_first_party: bool,
     pub is_developer_app: bool,
+    /// `None` means the process list was unavailable for this request.
+    pub is_running: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]

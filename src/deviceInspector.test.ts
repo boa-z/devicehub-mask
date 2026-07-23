@@ -11,6 +11,7 @@ const apps: DeviceApp[] = [
     is_removable: true,
     is_first_party: false,
     is_developer_app: true,
+    is_running: true,
   },
   {
     bundle_id: "com.example.game",
@@ -20,6 +21,7 @@ const apps: DeviceApp[] = [
     is_removable: true,
     is_first_party: false,
     is_developer_app: false,
+    is_running: null,
   },
 ];
 
