@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultDeviceAudioPreferences, parseAudioEnvelope, parseDeviceAudioPreferences } from "./deviceAudio";
+import { defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences } from "./deviceAudio";
 
 describe("device audio", () => {
   it("parses PCM envelopes and rejects ordinary image data", () => {
@@ -21,5 +21,13 @@ describe("device audio", () => {
     expect(parseDeviceAudioPreferences(null)).toEqual(defaultDeviceAudioPreferences);
     expect(parseDeviceAudioPreferences("broken")).toEqual(defaultDeviceAudioPreferences);
     expect(parseDeviceAudioPreferences('{"muted":true,"volume":4}')).toEqual({ muted: true, volume: 1 });
+  });
+
+  it("prioritizes enable, unmute, and resume before mute", () => {
+    expect(deviceAudioControlAction(null, false, false)).toBe("unavailable");
+    expect(deviceAudioControlAction(false, false, false)).toBe("enable");
+    expect(deviceAudioControlAction(true, true, true)).toBe("unmute");
+    expect(deviceAudioControlAction(true, false, true)).toBe("resume");
+    expect(deviceAudioControlAction(true, false, false)).toBe("mute");
   });
 });

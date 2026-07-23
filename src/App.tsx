@@ -46,7 +46,7 @@ import { PerformanceHud } from "./components/PerformanceHud";
 import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { PcmAudioPlayer, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
+import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
@@ -193,6 +193,7 @@ export default function App() {
   const [audioPlayback, setAudioPlayback] = useState<DeviceAudioPreferences>(readDeviceAudioPreferences);
   const [deviceAudioEnabled, setDeviceAudioEnabled] = useState<boolean | null>(null);
   const [deviceAudioBusy, setDeviceAudioBusy] = useState(false);
+  const [audioPlaybackSuspended, setAudioPlaybackSuspended] = useState(false);
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
@@ -214,6 +215,7 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
   const audioReceptionLoggedRef = useRef(false);
+  const audioPlaybackSuspendedRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
@@ -245,15 +247,31 @@ export default function App() {
       .catch((error) => logFrontend("warn", "audio", "read_settings", error));
   }, []);
 
+  const markAudioPlaybackSuspended = useCallback((suspended: boolean) => {
+    if (audioPlaybackSuspendedRef.current === suspended) return;
+    audioPlaybackSuspendedRef.current = suspended;
+    setAudioPlaybackSuspended(suspended);
+  }, []);
+
+  const resumeDeviceAudio = useCallback(async () => {
+    try {
+      const resumed = await audioPlayerRef.current?.resume() ?? false;
+      markAudioPlaybackSuspended(!resumed);
+      if (resumed) logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
+      return resumed;
+    } catch (error) {
+      markAudioPlaybackSuspended(true);
+      logFrontend("warn", "audio", "resume_failed", error);
+      return false;
+    }
+  }, [markAudioPlaybackSuspended]);
+
   const updateAudioPlayback = useCallback((next: DeviceAudioPreferences) => {
     setAudioPlayback(next);
     saveDeviceAudioPreferences(next);
     audioPlayerRef.current?.setPreferences(next);
-    if (!next.muted) {
-      void audioPlayerRef.current?.resume()
-        .catch((error) => logFrontend("warn", "audio", "resume_failed", error));
-    }
-  }, []);
+    if (!next.muted) void resumeDeviceAudio();
+  }, [resumeDeviceAudio]);
 
   useEffect(() => {
     const player = new PcmAudioPlayer(audioPlayback);
@@ -268,17 +286,14 @@ export default function App() {
 
   useEffect(() => {
     if (audioPlayback.muted) return;
-    const unlockAudio = () => {
-      void audioPlayerRef.current?.resume()
-        .catch((error) => logFrontend("warn", "audio", "resume_failed", error));
-    };
+    const unlockAudio = () => void resumeDeviceAudio();
     window.addEventListener("pointerdown", unlockAudio, { once: true });
     window.addEventListener("keydown", unlockAudio, { once: true });
     return () => {
       window.removeEventListener("pointerdown", unlockAudio);
       window.removeEventListener("keydown", unlockAudio);
     };
-  }, [audioPlayback.muted]);
+  }, [audioPlayback.muted, resumeDeviceAudio]);
 
   useEffect(() => {
     let disposed = false;
@@ -638,6 +653,7 @@ export default function App() {
         setStreamStalled(false);
         setStreamMetrics(emptyMetrics);
         audioPlayerRef.current?.reset();
+        markAudioPlaybackSuspended(false);
         audioReceptionLoggedRef.current = false;
         if (!disposed) retry = window.setTimeout(open, 800);
       };
@@ -712,6 +728,7 @@ export default function App() {
           const audio = parseAudioEnvelope(buffer);
           if (audio) {
             const scheduled = audioPlayerRef.current?.push(audio) ?? false;
+            markAudioPlaybackSuspended(!scheduled);
             if (!audioReceptionLoggedRef.current) {
               audioReceptionLoggedRef.current = true;
               logFrontend(
@@ -742,7 +759,7 @@ export default function App() {
     };
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
-  }, [backend]);
+  }, [backend, markAudioPlaybackSuspended]);
 
   useEffect(() => () => {
     if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
@@ -1241,9 +1258,20 @@ export default function App() {
     }
   };
   const toggleDeviceAudio = async () => {
-    if (deviceAudioEnabled === null || deviceAudioBusy) return;
-    if (deviceAudioEnabled) {
-      updateAudioPlayback({ ...audioPlayback, muted: !audioPlayback.muted });
+    const action = deviceAudioControlAction(deviceAudioEnabled, audioPlayback.muted, audioPlaybackSuspended);
+    if (action === "unavailable" || deviceAudioBusy) return;
+    if (action !== "enable") {
+      if (action === "unmute") {
+        updateAudioPlayback({ ...audioPlayback, muted: false });
+      } else if (action === "resume") {
+        setDeviceAudioBusy(true);
+        const resumed = await resumeDeviceAudio();
+        setDeviceAudioBusy(false);
+        if (resumed) void message.success(t("device.deviceAudioPlaybackStarted"));
+        else void message.warning(t("device.deviceAudioPlaybackStillSuspended"));
+      } else if (action === "mute") {
+        updateAudioPlayback({ ...audioPlayback, muted: true });
+      }
       return;
     }
     setDeviceAudioBusy(true);
@@ -1383,6 +1411,18 @@ export default function App() {
   const recordingSupported = typeof MediaRecorder !== "undefined"
     && typeof HTMLCanvasElement !== "undefined"
     && typeof HTMLCanvasElement.prototype.captureStream === "function";
+  const audioControlAction = deviceAudioControlAction(
+    deviceAudioEnabled,
+    audioPlayback.muted,
+    audioPlaybackSuspended,
+  );
+  const audioControlLabel = t({
+    unavailable: "device.startDeviceAudioPlayback",
+    enable: "device.enableDeviceAudio",
+    unmute: "device.unmuteDeviceAudio",
+    resume: "device.startDeviceAudioPlayback",
+    mute: "device.muteDeviceAudio",
+  }[audioControlAction]);
   const deviceDisplayControls = (
     <Space size={4} className="device-display-controls">
       <Select<DeviceViewScale>
@@ -1405,14 +1445,10 @@ export default function App() {
       <Tooltip title={t("device.saveScreenshot")}>
         <Button aria-label={t("device.saveScreenshot")} disabled={!canvasReady} icon={<CameraOutlined />} onClick={() => void saveDeviceScreenshot()} />
       </Tooltip>
-      <Tooltip title={t(deviceAudioEnabled === false
-        ? "device.enableDeviceAudio"
-        : audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}>
+      <Tooltip title={audioControlLabel}>
         <Button
-          aria-label={t(deviceAudioEnabled === false
-            ? "device.enableDeviceAudio"
-            : audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}
-          type={deviceAudioEnabled && !audioPlayback.muted ? "primary" : "default"}
+          aria-label={audioControlLabel}
+          type={deviceAudioEnabled && !audioPlayback.muted && !audioPlaybackSuspended ? "primary" : "default"}
           disabled={deviceAudioEnabled === null}
           loading={deviceAudioBusy}
           icon={deviceAudioEnabled && !audioPlayback.muted ? <SoundOutlined /> : <AudioMutedOutlined />}

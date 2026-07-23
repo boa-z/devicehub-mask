@@ -8,6 +8,20 @@ export const defaultDeviceAudioPreferences: DeviceAudioPreferences = {
   volume: 0.8,
 };
 
+export type DeviceAudioControlAction = "unavailable" | "enable" | "unmute" | "resume" | "mute";
+
+export function deviceAudioControlAction(
+  enabled: boolean | null,
+  muted: boolean,
+  suspended: boolean,
+): DeviceAudioControlAction {
+  if (enabled === null) return "unavailable";
+  if (!enabled) return "enable";
+  if (muted) return "unmute";
+  if (suspended) return "resume";
+  return "mute";
+}
+
 const storageKey = "devicehub-mask.device-audio";
 const magic = [0x44, 0x48, 0x41, 0x50] as const;
 const headerLength = 16;
@@ -93,9 +107,10 @@ export class PcmAudioPlayer {
     }
   }
 
-  async resume() {
+  async resume(): Promise<boolean> {
     const context = this.ensureContext();
-    if (context.state === "suspended") await context.resume();
+    if (context.state !== "running") await context.resume();
+    return context.state === "running";
   }
 
   push(chunk: PcmAudioChunk): boolean {
