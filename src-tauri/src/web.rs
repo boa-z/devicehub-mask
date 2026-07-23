@@ -817,6 +817,9 @@ enum ClientMessage {
     KeyboardUp {
         usage: u64,
     },
+    Text {
+        text: String,
+    },
     Rotate {
         direction: RotateRequest,
     },
@@ -1214,6 +1217,11 @@ fn handle_client_message(
         ClientMessage::KeyboardUp { usage } => {
             if valid_keyboard_usage(usage) && pressed_keyboard.remove(&usage) {
                 state.input.send(InputCmd::KeyboardUp(usage));
+            }
+        }
+        ClientMessage::Text { text } => {
+            if !text.is_empty() && text.len() <= 512 && text.chars().count() <= 128 {
+                state.input.send(InputCmd::Text(text));
             }
         }
         ClientMessage::Rotate { direction } => {
@@ -1688,6 +1696,23 @@ mod tests {
         handle_client_message(&state, r#"{"type":"keyboard_up","usage":4}"#, &mut pressed);
         assert!(matches!(input_rx.try_recv(), Ok(InputCmd::KeyboardUp(4))));
         assert!(pressed.is_empty());
+    }
+
+    #[test]
+    fn text_messages_are_bounded_before_dispatch() {
+        let (state, mut input_rx) = test_state();
+        let mut pressed = HashSet::new();
+
+        handle_client_message(&state, r#"{"type":"text","text":"Hello, iPhone!"}"#, &mut pressed);
+        handle_client_message(&state, r#"{"type":"text","text":""}"#, &mut pressed);
+        let oversized = serde_json::to_string(&json!({ "type": "text", "text": "x".repeat(129) })).unwrap();
+        handle_client_message(&state, &oversized, &mut pressed);
+
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InputCmd::Text(text)) if text == "Hello, iPhone!"
+        ));
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[test]

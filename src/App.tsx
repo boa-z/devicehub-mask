@@ -2,8 +2,10 @@ import {
   AimOutlined,
   ApiOutlined,
   AudioMutedOutlined,
+  CameraOutlined,
   CompressOutlined,
   CustomerServiceOutlined,
+  EditOutlined,
   ExpandOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
@@ -22,12 +24,15 @@ import {
   RotateLeftOutlined,
   RotateRightOutlined,
   SaveOutlined,
+  SendOutlined,
+  StopOutlined,
   SyncOutlined,
   ThunderboltOutlined,
+  VideoCameraOutlined,
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Button, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
@@ -41,6 +46,7 @@ import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
+import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
@@ -116,6 +122,12 @@ function screenshotFilename(deviceName: string, width: number, height: number) {
   return `devicehub-mask_${safeName}_${width}x${height}_${timestamp}.png`;
 }
 
+function recordingFilename(deviceName: string, extension: string) {
+  const safeName = deviceName.trim().replace(/[<>:"/\\|?*]+/g, "-") || "iPhone";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `devicehub-mask_${safeName}_${timestamp}.${extension}`;
+}
+
 type ControlMode = "mapping" | "keyboard";
 
 function isUiControl(target: EventTarget | null) {
@@ -161,7 +173,8 @@ export default function App() {
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [systemFullscreen, setSystemFullscreen] = useState(false);
   const [deviceFullscreen, setDeviceFullscreen] = useState(false);
-  const [controlOverlayVisible, setControlOverlayVisible] = useState(true);
+  const [deviceViewPreferences, setDeviceViewPreferences] = useState<DeviceViewPreferences>(readDeviceViewPreferences);
+  const [fullscreenToolbarVisible, setFullscreenToolbarVisible] = useState(true);
   const [selectedUdid, setSelectedUdid] = useState<string | null>(null);
   const [inspectorVisible, setInspectorVisible] = useState(true);
   const [connected, setConnected] = useState(false);
@@ -174,6 +187,12 @@ export default function App() {
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
   const [hasFrame, setHasFrame] = useState(false);
+  const [canvasReady, setCanvasReady] = useState(false);
+  const [streamStalled, setStreamStalled] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [textInputOpen, setTextInputOpen] = useState(false);
+  const [textInput, setTextInput] = useState("");
+  const [displayScaleOpen, setDisplayScaleOpen] = useState(false);
   const [mappingBackgroundMode, setMappingBackgroundMode] = useState<MappingBackgroundMode>("live");
   const [capturedScreenshot, setCapturedScreenshot] = useState<CapturedScreenshot | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -181,7 +200,13 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const renderedFramesRef = useRef(0);
+  const lastFrameAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const canvasReadyRef = useRef(false);
+  const fullscreenToolbarTimerRef = useRef<number | null>(null);
   const orientationRef = useRef<Orientation>("portrait");
   const heldRef = useRef(new Set<string>());
   const heldSinceRef = useRef(new Map<string, number>());
@@ -239,6 +264,23 @@ export default function App() {
   const bindCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     canvasRef.current = canvas;
     canvasContextRef.current = null;
+    if (canvas) {
+      canvasReadyRef.current = false;
+      setCanvasReady(false);
+    }
+  }, []);
+
+  const updateDeviceViewPreferences = useCallback((next: DeviceViewPreferences) => {
+    setDeviceViewPreferences(next);
+    saveDeviceViewPreferences(next);
+  }, []);
+
+  const patchDeviceViewPreferences = useCallback((patch: Partial<DeviceViewPreferences>) => {
+    setDeviceViewPreferences((current) => {
+      const next = { ...current, ...patch };
+      saveDeviceViewPreferences(next);
+      return next;
+    });
   }, []);
 
   const updatePerformanceHud = useCallback((preferences: PerformanceHudPreferences) => {
@@ -412,6 +454,45 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (!connected || !status.active_udid || (page !== "device" && page !== "mappings")) {
+      setStreamStalled(false);
+      return;
+    }
+    const update = () => {
+      const lastFrameAt = lastFrameAtRef.current;
+      setStreamStalled(lastFrameAt > 0 && performance.now() - lastFrameAt > 2_500);
+    };
+    update();
+    const timer = window.setInterval(update, 1_000);
+    return () => window.clearInterval(timer);
+  }, [connected, page, status.active_udid]);
+
+  const showFullscreenToolbar = useCallback(() => {
+    if (!deviceFullscreen || !deviceViewPreferences.fullscreenToolbarAutoHide) return;
+    setFullscreenToolbarVisible(true);
+    if (fullscreenToolbarTimerRef.current !== null) window.clearTimeout(fullscreenToolbarTimerRef.current);
+    fullscreenToolbarTimerRef.current = window.setTimeout(() => {
+      fullscreenToolbarTimerRef.current = null;
+      if (textInputOpen || displayScaleOpen) return;
+      setFullscreenToolbarVisible(false);
+    }, 2_200);
+  }, [deviceFullscreen, deviceViewPreferences.fullscreenToolbarAutoHide, displayScaleOpen, textInputOpen]);
+
+  useEffect(() => {
+    if (!deviceFullscreen || !deviceViewPreferences.fullscreenToolbarAutoHide) {
+      setFullscreenToolbarVisible(true);
+      if (fullscreenToolbarTimerRef.current !== null) window.clearTimeout(fullscreenToolbarTimerRef.current);
+      fullscreenToolbarTimerRef.current = null;
+      return;
+    }
+    showFullscreenToolbar();
+    return () => {
+      if (fullscreenToolbarTimerRef.current !== null) window.clearTimeout(fullscreenToolbarTimerRef.current);
+      fullscreenToolbarTimerRef.current = null;
+    };
+  }, [deviceFullscreen, deviceViewPreferences.fullscreenToolbarAutoHide, showFullscreenToolbar]);
+
   useLayoutEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -497,6 +578,9 @@ export default function App() {
         setActiveIds(new Set());
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
+        canvasReadyRef.current = false;
+        setCanvasReady(false);
+        setStreamStalled(false);
         setStreamMetrics(emptyMetrics);
         if (!disposed) retry = window.setTimeout(open, 800);
       };
@@ -526,6 +610,11 @@ export default function App() {
               frontendMetrics.canvasDrawMs += performance.now() - drawStarted;
               frontendMetrics.presentedFrames += 1;
               renderedFramesRef.current += 1;
+              lastFrameAtRef.current = performance.now();
+              if (!canvasReadyRef.current) {
+                canvasReadyRef.current = true;
+                setCanvasReady(true);
+              }
               if (!hasFrameRef.current) {
                 hasFrameRef.current = true;
                 setHasFrame(true);
@@ -612,6 +701,108 @@ export default function App() {
     link.remove();
     void message.success(t("mapping.screenshotSaved"));
   }, [captureMappingScreenshot, mappingBackgroundMode, status.active_udid, status.devices, t]);
+
+  const saveDeviceScreenshot = useCallback(async () => {
+    const canvas = canvasRef.current;
+    if (!canvas || !canvasReadyRef.current) {
+      void message.warning(t("device.screenshotUnavailable"));
+      return;
+    }
+    const blob = await canvasPng(canvas);
+    if (!blob) {
+      void message.error(t("device.screenshotFailed"));
+      return;
+    }
+    const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = screenshotFilename(deviceName, canvas.width, canvas.height);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    void message.success(t("device.screenshotSaved"));
+  }, [status.active_udid, status.devices, t]);
+
+  const stopDeviceRecording = useCallback(() => {
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  }, []);
+
+  const toggleDeviceRecording = useCallback(() => {
+    const activeRecorder = recorderRef.current;
+    if (activeRecorder && activeRecorder.state !== "inactive") {
+      activeRecorder.stop();
+      return;
+    }
+    const canvas = canvasRef.current;
+    if (!canvas || !canvasReadyRef.current || typeof MediaRecorder === "undefined" || typeof canvas.captureStream !== "function") {
+      void message.warning(t("device.recordingUnavailable"));
+      return;
+    }
+    try {
+      const stream = canvas.captureStream(60);
+      const mimeType = [
+        "video/mp4;codecs=avc1.42E01E",
+        "video/mp4",
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+      ].find((candidate) => MediaRecorder.isTypeSupported(candidate));
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recordingChunksRef.current = [];
+      recordingStreamRef.current = stream;
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onerror = (event) => {
+        logFrontend("warn", "video", "recording", event.error);
+        void message.error(t("device.recordingFailed", { error: event.error.message }));
+      };
+      recorder.onstop = () => {
+        const chunks = recordingChunksRef.current;
+        const recordedType = recorder.mimeType || mimeType || "video/webm";
+        recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+        recordingStreamRef.current = null;
+        recorderRef.current = null;
+        recordingChunksRef.current = [];
+        setRecording(false);
+        if (chunks.length === 0) return;
+        const blob = new Blob(chunks, { type: recordedType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
+        link.href = url;
+        link.download = recordingFilename(deviceName, recordedType.includes("mp4") ? "mp4" : "webm");
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+        void message.success(t("device.recordingSaved"));
+      };
+      recorder.start(1_000);
+      setRecording(true);
+    } catch (error) {
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      recorderRef.current = null;
+      setRecording(false);
+      logFrontend("warn", "video", "start_recording", error);
+      void message.error(t("device.recordingFailed", { error: String(error) }));
+    }
+  }, [status.active_udid, status.devices, t]);
+
+  useEffect(() => {
+    if (page !== "device" || !status.active_udid) stopDeviceRecording();
+  }, [page, status.active_udid, stopDeviceRecording]);
+
+  useEffect(() => () => {
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -864,6 +1055,7 @@ export default function App() {
   };
   const toggleDeviceFullscreen = () => {
     releaseAllControls();
+    setFullscreenToolbarVisible(true);
     setDeviceFullscreen((active) => !active);
     setPage("device");
   };
@@ -949,14 +1141,27 @@ export default function App() {
       finish();
     }
   };
+  const controlOverlayVisible = deviceViewPreferences.controlOverlayVisible;
   const selectedDevice = selectedUdid ?? undefined;
   const displayedMappings = page === "mappings" ? profile.mappings : controlProfile.mappings;
   const displayedFrameSize = page === "mappings" ? mappingFrameSize : frameSize;
   const aspectRatio = useMemo(() => `${displayedFrameSize.width} / ${displayedFrameSize.height}`, [displayedFrameSize]);
-  const viewportSize = useMemo(
-    () => containSize(stageSize.width, stageSize.height, displayedFrameSize.width, displayedFrameSize.height),
-    [displayedFrameSize, stageSize],
-  );
+  const activeViewScale = page === "device" ? deviceViewPreferences.scale : "fit";
+  const viewScaleFactor = deviceViewScaleFactor(activeViewScale);
+  const viewportSize = useMemo(() => viewScaleFactor === null
+    ? containSize(stageSize.width, stageSize.height, displayedFrameSize.width, displayedFrameSize.height)
+    : { width: displayedFrameSize.width * viewScaleFactor, height: displayedFrameSize.height * viewScaleFactor },
+  [displayedFrameSize, stageSize, viewScaleFactor]);
+  const viewportScrollable = activeViewScale !== "fit";
+  const stageIssue = !status.active_udid
+    ? "waiting"
+    : !connected
+      ? "reconnecting"
+      : !canvasReady
+        ? "starting"
+        : streamStalled
+          ? "stalled"
+          : null;
   const statusText = status.error ?? (backendStatusKeys[status.status] ? t(backendStatusKeys[status.status]) : status.status);
   const hardwareControls = (
     <div className="hardware-controls" role="toolbar" aria-label={t("hardware.toolbar")}>
@@ -978,9 +1183,98 @@ export default function App() {
       })}
     </div>
   );
+  const recordingSupported = typeof MediaRecorder !== "undefined"
+    && typeof HTMLCanvasElement !== "undefined"
+    && typeof HTMLCanvasElement.prototype.captureStream === "function";
+  const deviceDisplayControls = (
+    <Space size={4} className="device-display-controls">
+      <Select<DeviceViewScale>
+        className="device-scale-select"
+        aria-label={t("device.displayScale")}
+        value={deviceViewPreferences.scale}
+        onOpenChange={setDisplayScaleOpen}
+        options={[
+          { value: "fit", label: t("device.fitWindow") },
+          { value: "0.25", label: "25%" },
+          { value: "0.5", label: "50%" },
+          { value: "0.75", label: "75%" },
+          { value: "1", label: t("device.actualSize") },
+          { value: "1.25", label: "125%" },
+          { value: "1.5", label: "150%" },
+          { value: "2", label: "200%" },
+        ]}
+        onChange={(scale) => patchDeviceViewPreferences({ scale })}
+      />
+      <Tooltip title={t("device.saveScreenshot")}>
+        <Button aria-label={t("device.saveScreenshot")} disabled={!canvasReady} icon={<CameraOutlined />} onClick={() => void saveDeviceScreenshot()} />
+      </Tooltip>
+      <Tooltip title={t(recording ? "device.stopRecording" : recordingSupported ? "device.startRecording" : "device.recordingUnsupported")}>
+        <Button
+          aria-label={t(recording ? "device.stopRecording" : "device.startRecording")}
+          danger={recording}
+          type={recording ? "primary" : "default"}
+          disabled={!recording && (!canvasReady || !recordingSupported)}
+          icon={recording ? <StopOutlined /> : <VideoCameraOutlined />}
+          onClick={toggleDeviceRecording}
+        />
+      </Tooltip>
+      <Tooltip title={t(deviceViewPreferences.rotationControlsLocked ? "device.unlockRotationControls" : "device.lockRotationControls")}>
+        <Button
+          aria-label={t(deviceViewPreferences.rotationControlsLocked ? "device.unlockRotationControls" : "device.lockRotationControls")}
+          type={deviceViewPreferences.rotationControlsLocked ? "primary" : "default"}
+          icon={<LockOutlined />}
+          onClick={() => patchDeviceViewPreferences({ rotationControlsLocked: !deviceViewPreferences.rotationControlsLocked })}
+        />
+      </Tooltip>
+      <Popover
+        trigger="click"
+        open={textInputOpen}
+        onOpenChange={setTextInputOpen}
+        title={t("device.textInput")}
+        content={(
+          <div className="device-text-input">
+            <Input.TextArea
+              autoFocus
+              value={textInput}
+              maxLength={128}
+              rows={3}
+              placeholder={t("device.textInputPlaceholder")}
+              onChange={(event) => setTextInput(event.target.value)}
+            />
+            <Typography.Text type="secondary">{t("device.textInputHint")}</Typography.Text>
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              disabled={!textInput || !connected || !status.active_udid}
+              onClick={() => {
+                command({ type: "text", text: textInput });
+                setTextInput("");
+                setTextInputOpen(false);
+              }}
+            >
+              {t("device.sendText")}
+            </Button>
+          </div>
+        )}
+      >
+        <Tooltip title={t("device.textInput")}><Button aria-label={t("device.textInput")} disabled={!connected || !status.active_udid} icon={<EditOutlined />} /></Tooltip>
+      </Popover>
+    </Space>
+  );
 
   return (
-    <div className={`app-shell${deviceFullscreen ? " is-device-fullscreen" : ""}`}>
+    <div
+      className={`app-shell${deviceFullscreen ? " is-device-fullscreen" : ""}`}
+      onPointerMove={deviceFullscreen ? (event) => {
+        if (event.target instanceof Element && event.target.closest(".device-fullscreen-toolbar")) {
+          setFullscreenToolbarVisible(true);
+          if (fullscreenToolbarTimerRef.current !== null) window.clearTimeout(fullscreenToolbarTimerRef.current);
+          fullscreenToolbarTimerRef.current = null;
+        } else {
+          showFullscreenToolbar();
+        }
+      } : undefined}
+    >
       {!deviceFullscreen && <header className="topbar">
         <div className="brand"><AimOutlined /><strong>DeviceHub Mask</strong><span>{t("brand.subtitle")}</span></div>
         <Space size={8} wrap>
@@ -1010,10 +1304,12 @@ export default function App() {
               alwaysOnTop={alwaysOnTop}
               systemFullscreen={systemFullscreen}
               inspectorVisible={inspectorVisible}
+              deviceView={deviceViewPreferences}
               performanceHud={performanceHud}
               onAlwaysOnTopChange={() => void toggleAlwaysOnTop()}
               onSystemFullscreenChange={() => void toggleSystemFullscreen()}
               onInspectorVisibleChange={setInspectorVisible}
+              onDeviceViewChange={updateDeviceViewPreferences}
               onPerformanceHudChange={updatePerformanceHud}
             />
           ) : page === "location" ? (
@@ -1041,7 +1337,7 @@ export default function App() {
               <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" ? "device-workspace" : page === "mappings" && inspectorVisible ? "" : "inspector-hidden"}`}>
                 <section className="stage-column">
                   {deviceFullscreen ? (
-                    <div className="device-fullscreen-toolbar" role="toolbar" aria-label={t("device.deviceFullscreenControls")}>
+                    <div className={`device-fullscreen-toolbar${fullscreenToolbarVisible ? "" : " is-hidden"}`} role="toolbar" aria-label={t("device.deviceFullscreenControls")}>
                       <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedUdid} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
                       <Segmented<ControlMode>
                         value={controlMode}
@@ -1059,11 +1355,12 @@ export default function App() {
                         <Button
                           aria-label={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}
                           icon={controlOverlayVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                          onClick={() => setControlOverlayVisible((visible) => !visible)}
+                          onClick={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
                         />
                       </Tooltip>
-                      <Tooltip title={t("device.rotateLeft")}><Button icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
-                      <Tooltip title={t("device.rotateRight")}><Button icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
+                      {deviceDisplayControls}
+                      <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
+                      <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
                       {hardwareControls}
                       <Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>
                       <Tooltip title={t("device.exitDeviceFullscreen")}><Button icon={<CompressOutlined />} onClick={toggleDeviceFullscreen} /></Tooltip>
@@ -1101,13 +1398,14 @@ export default function App() {
                           <Button
                             aria-label={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}
                             icon={controlOverlayVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                            onClick={() => setControlOverlayVisible((visible) => !visible)}
+                            onClick={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
                           />
                         </Tooltip>
                       )}
+                      {page === "device" && deviceDisplayControls}
                       {page === "mappings" && <><span>{t("device.edit")}</span><Switch disabled={controlMode === "keyboard"} checked={mappingEditing} onChange={(value) => { releaseAllControls(); setEditing(value); }} /></>}
-                      <Tooltip title={t("device.rotateLeft")}><Button icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
-                      <Tooltip title={t("device.rotateRight")}><Button icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
+                      <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
+                      <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
                     </Space>
                     {hardwareControls}
                   </div>}
@@ -1123,7 +1421,7 @@ export default function App() {
                       onSave={() => void saveMappingScreenshot()}
                     />
                   )}
-                  <div className="stage-wrap" ref={stageRef}>
+                  <div className={`stage-wrap${viewportScrollable ? " is-scrollable" : ""}`} ref={stageRef}>
                     <div
                       className={`device-viewport ${mappingEditing ? "is-editing" : "is-controlling"}`}
                       style={{ aspectRatio, width: viewportSize.width, height: viewportSize.height }}
@@ -1148,7 +1446,15 @@ export default function App() {
                       {directTouches.map((contact) => (
                         <span key={contact.identity} className="direct-touch" style={{ left: `${contact.x * 100}%`, top: `${contact.y * 100}%` }} />
                       ))}
-                      {!status.active_udid && !(page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot) && <div className="empty-stage"><AimOutlined /><span>{t("status.waitingForDevice")}</span></div>}
+                      {stageIssue && !(page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot) && (
+                        <div className="device-stage-state" onPointerDown={(event) => event.stopPropagation()}>
+                          <AimOutlined />
+                          <span>{t(`device.stageState.${stageIssue}`)}</span>
+                          {stageIssue !== "waiting" && selectedUdid && (
+                            <Button size="small" icon={<SyncOutlined />} onClick={() => void reconnectDevice()}>{t("device.reconnect")}</Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </section>

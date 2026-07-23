@@ -5,6 +5,7 @@ import { Button, Checkbox, Select, Space, Switch, Tag, Typography, message } fro
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import { type DeviceViewPreferences, type DeviceViewScale } from "../deviceViewPreferences";
 import { performanceHudItems, type PerformanceHudItem, type PerformanceHudPreferences } from "../performanceHudPreferences";
 import { openLogDirectory, readDiagnosticsStatus, setDebugLogging, type DiagnosticsStatus } from "../diagnostics";
 import { useUpdates } from "../updateContext";
@@ -20,10 +21,12 @@ type Props = {
   alwaysOnTop: boolean;
   systemFullscreen: boolean;
   inspectorVisible: boolean;
+  deviceView: DeviceViewPreferences;
   performanceHud: PerformanceHudPreferences;
   onAlwaysOnTopChange: () => void;
   onSystemFullscreenChange: () => void;
   onInspectorVisibleChange: (visible: boolean) => void;
+  onDeviceViewChange: (preferences: DeviceViewPreferences) => void;
   onPerformanceHudChange: (preferences: PerformanceHudPreferences) => void;
 };
 
@@ -31,10 +34,12 @@ export function SettingsPage({
   alwaysOnTop,
   systemFullscreen,
   inspectorVisible,
+  deviceView,
   performanceHud,
   onAlwaysOnTopChange,
   onSystemFullscreenChange,
   onInspectorVisibleChange,
+  onDeviceViewChange,
   onPerformanceHudChange,
 }: Props) {
   const { t, i18n } = useTranslation();
@@ -122,6 +127,30 @@ export function SettingsPage({
         <label><span>{t("settings.alwaysOnTop")}</span><Switch checked={alwaysOnTop} onChange={onAlwaysOnTopChange} /></label>
         <label><span>{t("settings.systemFullscreen")}</span><Switch checked={systemFullscreen} onChange={onSystemFullscreenChange} /></label>
         <label><span>{t("settings.inspector")}</span><Switch checked={inspectorVisible} onChange={onInspectorVisibleChange} /></label>
+      </div>
+      <div className="settings-section">
+        <Typography.Title level={5}>{t("settings.deviceControl")}</Typography.Title>
+        <label>
+          <span>{t("settings.defaultDisplayScale")}</span>
+          <Select<DeviceViewScale>
+            className="device-view-scale-select"
+            value={deviceView.scale}
+            options={[
+              { value: "fit", label: t("device.fitWindow") },
+              { value: "0.25", label: "25%" },
+              { value: "0.5", label: "50%" },
+              { value: "0.75", label: "75%" },
+              { value: "1", label: t("device.actualSize") },
+              { value: "1.25", label: "125%" },
+              { value: "1.5", label: "150%" },
+              { value: "2", label: "200%" },
+            ]}
+            onChange={(scale) => onDeviceViewChange({ ...deviceView, scale })}
+          />
+        </label>
+        <label><span>{t("settings.showControlOverlay")}</span><Switch checked={deviceView.controlOverlayVisible} onChange={(controlOverlayVisible) => onDeviceViewChange({ ...deviceView, controlOverlayVisible })} /></label>
+        <label><span>{t("settings.lockRotationControls")}</span><Switch checked={deviceView.rotationControlsLocked} onChange={(rotationControlsLocked) => onDeviceViewChange({ ...deviceView, rotationControlsLocked })} /></label>
+        <label><span>{t("settings.fullscreenToolbarAutoHide")}</span><Switch checked={deviceView.fullscreenToolbarAutoHide} onChange={(fullscreenToolbarAutoHide) => onDeviceViewChange({ ...deviceView, fullscreenToolbarAutoHide })} /></label>
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.video")}</Typography.Title>
