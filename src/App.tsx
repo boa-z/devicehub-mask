@@ -253,12 +253,6 @@ export default function App() {
     if (status.active_udid) setSelectedUdid(status.active_udid);
   }, [status.active_udid]);
 
-  useEffect(() => {
-    void readVideoSettings()
-      .then((settings) => setDeviceAudioEnabled(settings.audio_enabled))
-      .catch((error) => logFrontend("warn", "audio", "read_settings", error));
-  }, []);
-
   const markAudioPlaybackSuspended = useCallback((suspended: boolean) => {
     if (audioPlaybackSuspendedRef.current === suspended) return;
     audioPlaybackSuspendedRef.current = suspended;
@@ -329,6 +323,18 @@ export default function App() {
     // Playback preference changes are applied through updateAudioPlayback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    void readVideoSettings()
+      .then((settings) => {
+        setDeviceAudioEnabled(settings.audio_enabled);
+        const player = audioPlayerRef.current;
+        markAudioPlaybackSuspended(
+          settings.audio_enabled && (player?.isAudible() ?? false) && !(player?.isRunning() ?? false),
+        );
+      })
+      .catch((error) => logFrontend("warn", "audio", "read_settings", error));
+  }, [markAudioPlaybackSuspended]);
 
   useEffect(() => {
     if (deviceAudioEnabled !== true || audioPlayback.muted) return;

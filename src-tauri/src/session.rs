@@ -93,6 +93,7 @@ const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 /// SSRC: long enough to ignore stray packets from a competing/leaked sender,
 /// short enough to pick up a real stream restart promptly.
 const SSRC_TAKEOVER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
 /// RTCP Receiver Report interval. AVConference uses RTCP for liveness; if reports
 /// stop, the device's sender eventually stops too and the screen freezes.
 const RTCP_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -3666,35 +3667,80 @@ async fn audio_task(udp: UdpSocketHandle, slot: AudioSlot, enabled: bool) {
         return;
     }
 
-    let (mut child, stdout, stderr, rtp_address) = match decode::spawn_audio_ffmpeg().await {
-        Ok(process) => process,
-        Err(error) => {
-            tracing::warn!(%error, "cannot start device audio decoder; draining audio stream");
-            audio_receive_loop(&udp, None).await;
-            return;
-        }
-    };
-    let sender = match tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await {
-        Ok(sender) => sender,
-        Err(error) => {
-            tracing::warn!(%error, "cannot bind audio RTP forwarding socket");
-            return;
-        }
-    };
-    {
-        let output = decode::read_audio_chunks(stdout, slot);
+    let mut restart_attempt = 0_u32;
+    loop {
+        let (mut child, stdout, stderr, rtp_address) = match decode::spawn_audio_ffmpeg().await {
+            Ok(process) => process,
+            Err(error) => {
+                tracing::warn!(%error, "cannot start device audio decoder; draining audio stream");
+                audio_receive_loop(&udp, None).await;
+                return;
+            }
+        };
+        let sender = match tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await {
+            Ok(sender) => sender,
+            Err(error) => {
+                tracing::warn!(%error, "cannot bind audio RTP forwarding socket");
+                audio_receive_loop(&udp, None).await;
+                return;
+            }
+        };
+        let decoder_started = Instant::now();
+        let output = decode::read_audio_chunks(stdout, slot.clone());
         let errors = watch_audio_errors(stderr);
         let receive = audio_receive_loop(&udp, Some((&sender, rtp_address)));
         tokio::pin!(output, errors, receive);
-        tokio::select! {
-            _ = &mut output => tracing::warn!("device audio decoder output ended"),
-            _ = &mut errors => tracing::warn!("device audio decoder stderr ended"),
-            _ = &mut receive => tracing::warn!("device audio RTP input ended"),
-            status = child.wait() => tracing::warn!(?status, "device audio decoder stopped"),
+        let exit_reason = tokio::select! {
+            _ = &mut output => "output-ended",
+            _ = &mut errors => "stderr-ended",
+            _ = &mut receive => {
+                tracing::warn!("device audio RTP input ended");
+                return;
+            }
+            status = child.wait() => {
+                tracing::warn!(?status, "device audio decoder stopped");
+                "process-ended"
+            },
+        };
+        let elapsed = decoder_started.elapsed();
+        restart_attempt = if elapsed >= AUDIO_DECODER_STABLE_RUNTIME {
+            1
+        } else {
+            restart_attempt.saturating_add(1)
+        };
+        let retry_delay = audio_decoder_restart_backoff(restart_attempt - 1);
+        tracing::warn!(
+            exit_reason,
+            elapsed_ms = elapsed.as_millis() as u64,
+            restart_attempt,
+            retry_ms = retry_delay.as_millis() as u64,
+            "device audio decoder ended; restarting"
+        );
+        drop(child);
+        if !drain_audio_until_retry(&udp, retry_delay).await {
+            return;
         }
     }
-    tracing::warn!("device audio unavailable; continuing the device session without playback");
-    audio_receive_loop(&udp, None).await;
+}
+
+fn audio_decoder_restart_backoff(attempt: u32) -> Duration {
+    Duration::from_millis(250_u64.saturating_mul(1_u64 << attempt.min(4)))
+}
+
+async fn drain_audio_until_retry(udp: &UdpSocketHandle, delay: Duration) -> bool {
+    let retry = tokio::time::sleep(delay);
+    tokio::pin!(retry);
+    loop {
+        tokio::select! {
+            _ = &mut retry => return true,
+            packet = udp.recv() => {
+                if let Err(error) = packet {
+                    tracing::warn!(?error, "audio UDP receive failed while restarting decoder");
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 async fn watch_audio_errors(stderr: ChildStderr) {
@@ -4157,6 +4203,14 @@ mod tests {
         );
         assert_eq!(parse_aac_au_header(&[0x00, 0x10, 0x01, 0x00, 1]), None);
         assert_eq!(parse_aac_au_header(&[0x00, 0x07, 0, 0]), None);
+    }
+
+    #[test]
+    fn audio_decoder_restart_backoff_is_bounded() {
+        assert_eq!(audio_decoder_restart_backoff(0), Duration::from_millis(250));
+        assert_eq!(audio_decoder_restart_backoff(1), Duration::from_millis(500));
+        assert_eq!(audio_decoder_restart_backoff(4), Duration::from_secs(4));
+        assert_eq!(audio_decoder_restart_backoff(20), Duration::from_secs(4));
     }
 
     #[test]

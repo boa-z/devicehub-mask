@@ -207,8 +207,9 @@ the backend publishes bounded 20 ms PCM chunks and never waits for consumers.
 Audio uses a versioned `DHAP` binary WebSocket envelope while JPEG messages keep
 their existing format. The WebView schedules PCM with Web Audio, starts with a
 small jitter buffer, and resets if queued latency exceeds 250 ms. Audio is off
-by default and audio decoder failure falls back to draining the negotiated
-stream without terminating video or input.
+by default. A runtime decoder exit triggers a bounded-backoff restart while stale
+RTP is drained; a decoder that cannot be started falls back to draining the
+negotiated stream without terminating video or input.
 
 ## Input Pipeline
 
