@@ -88,6 +88,9 @@ App icons are fetched through a separate request-driven SpringBoardServices RSD
 channel, so icon reads never occupy the HID dispatch loop. The worker validates
 PNG headers and dimensions, limits each response to 4 MiB, and uses a 256-entry,
 32 MiB FIFO cache. The frontend requests only rows near the visible viewport.
+Native screenshots use a separate bounded CoreDevice ScreenCaptureService
+channel. The worker accepts one queued request, validates the PNG and dimensions,
+and caps the response at 32 MiB; capture never occupies the HID dispatch loop.
 
 Restart and shutdown are separate fixed private-API commands rather than a
 client-supplied DiagnosticsRelay operation. Each opens an independent relay

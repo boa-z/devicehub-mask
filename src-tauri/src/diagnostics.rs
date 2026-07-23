@@ -10,8 +10,11 @@ use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
-const DEFAULT_FILTER: &str = "devicehub_mask=info,tower_http=warn,idevice=warn";
-const DEBUG_FILTER: &str = "devicehub_mask=debug,tower_http=info,idevice=info";
+const XPC_PARTIAL_FRAME_FILTER: &str = "idevice::xpc::format=error";
+const DEFAULT_FILTER: &str =
+    "devicehub_mask=info,tower_http=warn,idevice=warn,idevice::xpc::format=error";
+const DEBUG_FILTER: &str =
+    "devicehub_mask=debug,tower_http=info,idevice=info,idevice::xpc::format=error";
 
 type FilterHandle = reload::Handle<EnvFilter, Registry>;
 
@@ -67,10 +70,14 @@ impl Diagnostics {
             .or_else(|_| std::env::var("RUST_LOG"))
             .ok();
         let (filter_text, mode, rejected_filter) = match configured_filter {
-            Some(value) if parse_filter(&value).is_ok() => (value, LogMode::Custom, false),
-            Some(_) => {
-                eprintln!("DeviceHub Mask ignored an invalid DEVICEHUB_LOG/RUST_LOG filter");
-                (DEFAULT_FILTER.to_owned(), LogMode::Normal, true)
+            Some(value) => {
+                let value = suppress_xpc_partial_frame_noise(&value);
+                if parse_filter(&value).is_ok() {
+                    (value, LogMode::Custom, false)
+                } else {
+                    eprintln!("DeviceHub Mask ignored an invalid DEVICEHUB_LOG/RUST_LOG filter");
+                    (DEFAULT_FILTER.to_owned(), LogMode::Normal, true)
+                }
             }
             None => (DEFAULT_FILTER.to_owned(), LogMode::Normal, false),
         };
@@ -219,6 +226,19 @@ fn parse_filter(value: &str) -> Result<EnvFilter, String> {
         .map_err(|error| format!("invalid log filter: {error}"))
 }
 
+fn suppress_xpc_partial_frame_noise(value: &str) -> String {
+    if value
+        .split(',')
+        .any(|directive| directive.trim().starts_with("idevice::xpc::format="))
+    {
+        value.to_owned()
+    } else if value.trim().is_empty() {
+        XPC_PARTIAL_FRAME_FILTER.to_owned()
+    } else {
+        format!("{value},{XPC_PARTIAL_FRAME_FILTER}")
+    }
+}
+
 fn create_file_writer(
     log_directory: &Path,
 ) -> Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard), String> {
@@ -281,7 +301,19 @@ fn bounded_field(name: &str, value: String, max_chars: usize) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_field, device_id_fingerprint};
+    use super::{bounded_field, device_id_fingerprint, suppress_xpc_partial_frame_noise};
+
+    #[test]
+    fn suppresses_partial_xpc_frame_noise_without_overriding_explicit_filters() {
+        assert_eq!(
+            suppress_xpc_partial_frame_noise("warn"),
+            "warn,idevice::xpc::format=error"
+        );
+        assert_eq!(
+            suppress_xpc_partial_frame_noise("warn,idevice::xpc::format=trace"),
+            "warn,idevice::xpc::format=trace"
+        );
+    }
 
     #[test]
     fn frontend_fields_are_single_line() {

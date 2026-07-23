@@ -170,7 +170,7 @@ export const zhCN = {
       fromDevice: "已从设备复制{{kind}}：{{preview}}",
       toDevice: "已向设备复制{{kind}}：{{preview}}",
     },
-    screenshotUnavailable: "等待设备画面后再截图。",
+    screenshotUnavailable: "请先连接设备，或等待已解码画面后再截图。",
     screenshotFailed: "无法生成截图",
     screenshotSaved: "截图已保存",
     startRecording: "开始屏幕录制",

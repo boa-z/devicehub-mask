@@ -352,6 +352,8 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
+    /// Capture a lossless PNG directly through CoreDevice ScreenCaptureService.
+    TakeScreenshot(oneshot::Sender<Result<Vec<u8>, String>>),
     /// Access one application's vended Documents root through House Arrest.
     AppDocuments(crate::app_documents::AppDocumentCommand),
     /// Restart the active device through DiagnosticsRelay.

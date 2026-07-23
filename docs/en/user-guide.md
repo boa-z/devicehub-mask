@@ -23,6 +23,9 @@ The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri,
 and Action. Always-on-top, inspector visibility, and fullscreen controls are in
 the title toolbar. Hiding the inspector gives the device view more room without
 stretching it. Page and fullscreen transitions release all active input.
+The screenshot button requests a lossless PNG directly from CoreDevice, so it
+still works before the video canvas has recovered. If native capture is
+temporarily unavailable, the current decoded canvas is saved instead.
 The active saved control profile is shown in the stage toolbar and can be
 switched there without opening the mapping editor. It remains available in the
 focused device-view toolbar.

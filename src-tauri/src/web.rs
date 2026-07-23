@@ -152,6 +152,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
+        .route("/api/device/screenshot", get(device_screenshot))
         .route("/api/device/text/paste", put(paste_device_text))
         .route("/api/device/restart", put(restart_device))
         .route("/api/device/shutdown", put(shutdown_device))
@@ -339,6 +340,7 @@ async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String
 }
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const SCREENSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 const CRASH_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 
@@ -475,6 +477,37 @@ async fn device_details(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(details))
+}
+
+async fn device_screenshot(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::TakeScreenshot(reply)) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let png = tokio::time::timeout(SCREENSHOT_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "device screenshot request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok((
+        [(CONTENT_TYPE, "image/png"), (CACHE_CONTROL, "no-store")],
+        png,
+    ))
 }
 
 async fn restart_device(State(state): State<AppState>) -> Result<StatusCode, (StatusCode, String)> {
@@ -2464,6 +2497,10 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            device_screenshot(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             device_apps(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -2548,6 +2585,22 @@ mod tests {
         let response = request.await.unwrap().unwrap().into_response();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
+    }
+
+    #[tokio::test]
+    async fn native_screenshot_endpoint_dispatches_and_disables_caching() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(device_screenshot(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::TakeScreenshot(reply) => {
+                reply.send(Ok(vec![1, 2, 3])).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let response = request.await.unwrap().unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
+        assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-store");
     }
 
     #[tokio::test]

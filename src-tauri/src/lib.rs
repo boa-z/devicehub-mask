@@ -10,6 +10,7 @@ mod mcp;
 mod performance;
 mod protocol;
 mod provisioning;
+mod screen_capture;
 mod session;
 mod settings;
 mod supervisor;

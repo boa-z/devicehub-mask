@@ -50,6 +50,7 @@ import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
 import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, shouldReuseAudioResumeAttempt, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
+import { parsePngDimensions } from "./deviceScreenshot";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
@@ -208,6 +209,7 @@ export default function App() {
   const [textInputOpen, setTextInputOpen] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [textInputBusy, setTextInputBusy] = useState(false);
+  const [screenshotBusy, setScreenshotBusy] = useState(false);
   const [displayScaleOpen, setDisplayScaleOpen] = useState(false);
   const [mappingBackgroundMode, setMappingBackgroundMode] = useState<MappingBackgroundMode>("live");
   const [capturedScreenshot, setCapturedScreenshot] = useState<CapturedScreenshot | null>(null);
@@ -884,27 +886,51 @@ export default function App() {
   }, [captureMappingScreenshot, mappingBackgroundMode, status.active_udid, status.devices, t]);
 
   const saveDeviceScreenshot = useCallback(async () => {
-    const canvas = canvasRef.current;
-    if (!canvas || !canvasReadyRef.current) {
-      void message.warning(t("device.screenshotUnavailable"));
-      return;
+    if (screenshotBusy) return;
+    setScreenshotBusy(true);
+    try {
+      let blob: Blob | null = null;
+      let dimensions: { width: number; height: number } | null = null;
+      if (status.active_udid) {
+        try {
+          const response = await request("/api/device/screenshot");
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          const native = await response.blob();
+          const header = new Uint8Array(await native.slice(0, 24).arrayBuffer());
+          dimensions = parsePngDimensions(header);
+          if (!dimensions) throw new Error("device returned an invalid PNG screenshot");
+          blob = native;
+        } catch (error) {
+          logFrontend("warn", "screenshot", "native_capture", error);
+        }
+      }
+      if (!blob || !dimensions) {
+        const canvas = canvasRef.current;
+        if (!canvas || !canvasReadyRef.current) {
+          void message.warning(t("device.screenshotUnavailable"));
+          return;
+        }
+        blob = await canvasPng(canvas);
+        dimensions = { width: canvas.width, height: canvas.height };
+      }
+      if (!blob) {
+        void message.error(t("device.screenshotFailed"));
+        return;
+      }
+      const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = screenshotFilename(deviceName, dimensions.width, dimensions.height);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      void message.success(t("device.screenshotSaved"));
+    } finally {
+      setScreenshotBusy(false);
     }
-    const blob = await canvasPng(canvas);
-    if (!blob) {
-      void message.error(t("device.screenshotFailed"));
-      return;
-    }
-    const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = screenshotFilename(deviceName, canvas.width, canvas.height);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-    void message.success(t("device.screenshotSaved"));
-  }, [status.active_udid, status.devices, t]);
+  }, [request, screenshotBusy, status.active_udid, status.devices, t]);
 
   const stopDeviceRecording = useCallback(() => {
     const recorder = recorderRef.current;
@@ -1547,7 +1573,13 @@ export default function App() {
         onChange={(scale) => patchDeviceViewPreferences({ scale })}
       />
       <Tooltip title={t("device.saveScreenshot")}>
-        <Button aria-label={t("device.saveScreenshot")} disabled={!canvasReady} icon={<CameraOutlined />} onClick={() => void saveDeviceScreenshot()} />
+        <Button
+          aria-label={t("device.saveScreenshot")}
+          disabled={!status.active_udid && !canvasReady}
+          loading={screenshotBusy}
+          icon={<CameraOutlined />}
+          onClick={() => void saveDeviceScreenshot()}
+        />
       </Tooltip>
       <Tooltip title={audioControlLabel}>
         <Button

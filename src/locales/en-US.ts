@@ -181,7 +181,7 @@ export const enUS = {
       fromDevice: "{{kind}} copied from device: {{preview}}",
       toDevice: "{{kind}} copied to device: {{preview}}",
     },
-    screenshotUnavailable: "Wait for a device frame before taking a screenshot.",
+    screenshotUnavailable: "Connect a device or wait for a decoded frame before taking a screenshot.",
     screenshotFailed: "Unable to create the screenshot",
     screenshotSaved: "Screenshot saved",
     startRecording: "Start screen recording",

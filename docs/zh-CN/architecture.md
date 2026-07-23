@@ -68,6 +68,8 @@ CoreDevice AppService，避免每次操作创建新的 RSD tunnel。只有可执
 App 图标通过独立、按请求工作的 SpringBoardServices RSD channel 获取，因此不会占用 HID
 分发循环。worker 会校验 PNG header 与尺寸，限制单张 4 MiB，并使用 256 项、32 MiB 的
 FIFO 缓存；前端只请求接近可视区域的 App 行。
+原生截图使用独立、有界的 CoreDevice ScreenCaptureService channel。worker 只接受一条
+排队请求，校验 PNG 与尺寸并把响应限制在 32 MiB；截图不会占用 HID 分发循环。
 
 重启与关机是两个固定的私有 API 命令，不接受客户端传入任意 DiagnosticsRelay 操作。每个
 命令都在有超时的独立任务中建立 relay 连接，因此等待设备确认不会阻塞 HID 分发；前端

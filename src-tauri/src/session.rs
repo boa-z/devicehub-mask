@@ -1050,9 +1050,17 @@ async fn run(
         app_documents_receiver,
         supervisor.shutdown_receiver(),
     ));
-    let app_management_services = AppManagementServices {
+    let (screen_capture_sender, screen_capture_receiver) = tokio::sync::mpsc::channel(1);
+    supervisor.spawn(crate::screen_capture::serve(
+        adapter.clone(),
+        handshake.clone(),
+        screen_capture_receiver,
+        supervisor.shutdown_receiver(),
+    ));
+    let device_management_services = DeviceManagementServices {
         icons: app_icon_sender,
         documents: app_documents_sender,
+        screen_capture: screen_capture_sender,
     };
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
@@ -1081,7 +1089,7 @@ async fn run(
                     device_details,
                     installation_proxy,
                     misagent,
-                    app_management_services,
+                    device_management_services,
                 ),
                 &mut input_rx,
                 &location,
@@ -1265,7 +1273,7 @@ async fn run(
                 app_service,
                 installation_proxy,
                 misagent,
-                app_management_services,
+                device_management_services,
             ),
             &mut input_rx,
             InputBridges {
@@ -1397,9 +1405,10 @@ struct LocationBridge {
     status: LocationStatusSlot,
 }
 
-struct AppManagementServices {
+struct DeviceManagementServices {
     icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
+    screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
 }
 
 fn reject_app_document_command(command: crate::app_documents::AppDocumentCommand, reason: &str) {
@@ -1432,7 +1441,7 @@ struct DeviceManagement {
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
     misagent: Option<MisagentClient>,
-    services: AppManagementServices,
+    services: DeviceManagementServices,
 }
 
 struct ActiveAppOperation {
@@ -1459,7 +1468,7 @@ impl DeviceManagement {
         app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
-        services: AppManagementServices,
+        services: DeviceManagementServices,
     ) -> Self {
         Self {
             provider,
@@ -1480,7 +1489,7 @@ impl DeviceManagement {
         details: Option<DeviceDetails>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
-        services: AppManagementServices,
+        services: DeviceManagementServices,
     ) -> Self {
         Self::new(
             provider,
@@ -1624,6 +1633,21 @@ impl DeviceManagement {
                         }
                         tokio::sync::mpsc::error::TrySendError::Closed(command) => {
                             ("app icon service is unavailable", command)
+                        }
+                    };
+                    let _ = command.reply.send(Err(reason.into()));
+                }
+                None
+            }
+            InputCmd::TakeScreenshot(reply) => {
+                let command = crate::screen_capture::ScreenCaptureCommand { reply };
+                if let Err(error) = self.services.screen_capture.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("screen capture service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("screen capture service is unavailable", command)
                         }
                     };
                     let _ = command.reply.send(Err(reason.into()));
@@ -2569,6 +2593,7 @@ async fn dispatch(
         InputCmd::GetDeviceDetails(_)
         | InputCmd::ListApps(_)
         | InputCmd::GetAppIcon { .. }
+        | InputCmd::TakeScreenshot(_)
         | InputCmd::AppDocuments(_)
         | InputCmd::RestartDevice(_)
         | InputCmd::ShutdownDevice(_)
