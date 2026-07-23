@@ -25,6 +25,13 @@ function bytes(value: number | null | undefined) {
   return `${(value / 1024 ** 2).toFixed(1)} MB`;
 }
 
+function byteRate(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "--";
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(2)} MB/s`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB/s`;
+  return `${value.toFixed(0)} B/s`;
+}
+
 function Sparkline({ values, ceiling }: { values: number[]; ceiling?: number }) {
   const points = useMemo(() => {
     if (values.length === 0) return "";
@@ -112,6 +119,15 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           </div>
           <div className="performance-metric"><span>{t("performance.processes")}</span><strong>{sample?.process_count ?? "--"}</strong></div>
           <div className="performance-metric"><span>{t("performance.gpuMemory")}</span><strong>{bytes(sample?.gpu_in_use_bytes)}</strong><small>{t("performance.allocated", { value: bytes(sample?.gpu_allocated_bytes) })}</small></div>
+        </div>
+      </section>
+
+      <section className="performance-section">
+        <Typography.Title level={5}>{t("performance.deviceNetwork")}</Typography.Title>
+        <div className="performance-transport-grid">
+          <div><span>{t("performance.networkReceive")}</span><strong>{byteRate(sample?.network_rx_bytes_per_second)}</strong></div>
+          <div><span>{t("performance.networkSend")}</span><strong>{byteRate(sample?.network_tx_bytes_per_second)}</strong></div>
+          <div><span>{t("performance.networkConnections")}</span><strong>{sample?.network_recent_connections ?? "--"}</strong></div>
         </div>
       </section>
 

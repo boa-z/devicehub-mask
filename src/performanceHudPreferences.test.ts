@@ -18,4 +18,10 @@ describe("performance HUD preferences", () => {
   it("allows an empty metric selection", () => {
     expect(parsePerformanceHudPreferences('{"enabled":true,"items":[]}')).toEqual({ enabled: true, items: [] });
   });
+
+  it("accepts device network metrics", () => {
+    expect(parsePerformanceHudPreferences(
+      '{"enabled":true,"items":["device_network_rx","device_network_tx"]}',
+    )).toEqual({ enabled: true, items: ["device_network_rx", "device_network_tx"] });
+  });
 });

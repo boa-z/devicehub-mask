@@ -3,6 +3,8 @@ export const performanceHudItems = [
   "graphics_fps",
   "process_count",
   "gpu_memory",
+  "device_network_rx",
+  "device_network_tx",
   "source_fps",
   "decoded_fps",
   "presented_fps",
@@ -16,6 +18,8 @@ export const devicePerformanceHudItems = new Set<PerformanceHudItem>([
   "graphics_fps",
   "process_count",
   "gpu_memory",
+  "device_network_rx",
+  "device_network_tx",
 ]);
 
 export type PerformanceHudItem = (typeof performanceHudItems)[number];

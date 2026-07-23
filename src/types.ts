@@ -52,6 +52,9 @@ export type PerformanceSnapshot = {
   gpu_in_use_bytes: number | null;
   gpu_driver_bytes: number | null;
   gpu_recovery_count: number | null;
+  network_rx_bytes_per_second: number | null;
+  network_tx_bytes_per_second: number | null;
+  network_recent_connections: number | null;
 };
 export type PerformanceView = { sample: PerformanceSnapshot; services: ServiceHealth[]; sampling: boolean };
 export type DeviceDetails = {

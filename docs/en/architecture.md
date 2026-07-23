@@ -57,14 +57,18 @@ Optional device services run under a shared supervisor inside a Tokio
 thread while the HTTP, WebSocket, and MCP transports continue using the
 multi-thread runtime. Each service publishes a common health record with phase,
 attempt count, restart count, last error, and update time. Location, sysmontap,
-and graphics channels reconnect independently with bounded exponential backoff;
-one broken channel cannot terminate video or HID.
+graphics, and network-monitor channels reconnect independently with bounded
+exponential backoff; one broken channel cannot terminate video or HID.
 
 Performance monitoring reuses cloned handles to the active software tunnel and
-creates isolated DVT channels. Sysmontap and graphics sampling are demand-driven
-by the Performance workspace, and stop when the workspace closes. Their latest
-normalized snapshot is exposed through the authenticated private API; short-term
-chart history remains frontend-local and is discarded on device changes.
+creates isolated DVT connections. Sysmontap, graphics, and network sampling are
+demand-driven by the Performance workspace or selected HUD metrics, and stop
+when neither needs them. NetworkMonitor uses its own RemoteServer connection;
+one-second receive/send rates are derived from per-connection counter deltas.
+Connections expire after one minute without updates and the tracker has a fixed
+entry limit. The latest normalized snapshot is exposed through the authenticated
+private API; short-term chart history remains frontend-local and is discarded on
+device changes.
 Sysmontap process arrays are decoded against the attribute order negotiated for
 that session rather than fixed field indices. Per-process CPU is divided by the
 reported logical CPU count; the snapshot retains the union of the ten highest

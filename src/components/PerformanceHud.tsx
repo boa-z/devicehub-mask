@@ -19,6 +19,13 @@ function bytes(value: number | null | undefined) {
   return `${(value / 1024 ** 2).toFixed(1)} MB`;
 }
 
+function byteRate(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "--";
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB/s`;
+  if (value >= 1024) return `${(value / 1024).toFixed(0)} KB/s`;
+  return `${value.toFixed(0)} B/s`;
+}
+
 export function PerformanceHud({ items, view, streamMetrics, renderFps }: Props) {
   const { t } = useTranslation();
   const sample = view?.sample;
@@ -27,6 +34,8 @@ export function PerformanceHud({ items, view, streamMetrics, renderFps }: Props)
     graphics_fps: number(sample?.graphics_fps),
     process_count: sample?.process_count == null ? "--" : String(sample.process_count),
     gpu_memory: bytes(sample?.gpu_in_use_bytes),
+    device_network_rx: byteRate(sample?.network_rx_bytes_per_second),
+    device_network_tx: byteRate(sample?.network_tx_bytes_per_second),
     source_fps: number(streamMetrics.source_fps),
     decoded_fps: number(streamMetrics.decoded_fps),
     presented_fps: number(renderFps),

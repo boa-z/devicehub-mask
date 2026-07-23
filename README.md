@@ -29,7 +29,8 @@ exposed as a browser application.
 - On-demand live iPhone syslog console with bounded in-memory buffering, search,
   pause, copy and service recovery status
 - On-demand normalized iPhone CPU, top-process CPU and memory rankings, Core
-  Animation FPS, and GPU-memory telemetry with supervised DVT service recovery
+  Animation FPS, GPU-memory, and device network telemetry with supervised DVT
+  service recovery
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch,
   app lifecycle control, frame synchronization, device switching, and DVT
   virtual location

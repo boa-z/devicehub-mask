@@ -1,11 +1,12 @@
 //! Supervised DVT performance sampling over the active CoreDevice tunnel.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use idevice::dvt::device_info::DeviceInfoClient;
 use idevice::dvt::graphics::GraphicsClient;
+use idevice::dvt::network_monitor::{NetworkEvent, NetworkMonitorClient};
 use idevice::dvt::remote_server::RemoteServerClient;
 use idevice::dvt::sysmontap::{SysmontapClient, SysmontapConfig, SysmontapSample};
 use idevice::rsd::RsdHandshake;
@@ -21,6 +22,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(8);
 const SAMPLE_INTERVAL_MS: u32 = 1_000;
 const TOP_PROCESSES_PER_METRIC: usize = 10;
+const NETWORK_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const NETWORK_CONNECTION_TTL: Duration = Duration::from_secs(60);
+const MAX_NETWORK_CONNECTIONS: usize = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessPerformance {
@@ -42,6 +46,9 @@ pub struct PerformanceSnapshot {
     pub gpu_in_use_bytes: Option<u64>,
     pub gpu_driver_bytes: Option<u64>,
     pub gpu_recovery_count: Option<u64>,
+    pub network_rx_bytes_per_second: Option<f64>,
+    pub network_tx_bytes_per_second: Option<f64>,
+    pub network_recent_connections: Option<u32>,
 }
 
 #[derive(Clone, Default)]
@@ -96,6 +103,110 @@ impl PerformanceSlot {
         snapshot.gpu_in_use_bytes = Some(sample.in_use_system_memory);
         snapshot.gpu_driver_bytes = Some(sample.in_use_system_memory_driver);
         snapshot.gpu_recovery_count = Some(sample.recovery_count);
+    }
+
+    fn update_network(&self, sample: NetworkRateSample) {
+        let mut snapshot = self.0.lock().unwrap();
+        snapshot.captured_at_ms = unix_millis();
+        snapshot.network_rx_bytes_per_second = Some(sample.rx_bytes_per_second);
+        snapshot.network_tx_bytes_per_second = Some(sample.tx_bytes_per_second);
+        snapshot.network_recent_connections = Some(sample.recent_connections);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NetworkRateSample {
+    rx_bytes_per_second: f64,
+    tx_bytes_per_second: f64,
+    recent_connections: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NetworkConnectionCounters {
+    rx_bytes: u64,
+    tx_bytes: u64,
+    last_seen: Instant,
+    initialized: bool,
+}
+
+struct NetworkAccumulator {
+    connections: HashMap<u64, NetworkConnectionCounters>,
+    window_rx_bytes: u64,
+    window_tx_bytes: u64,
+    window_started: Instant,
+}
+
+impl NetworkAccumulator {
+    fn new(now: Instant) -> Self {
+        Self {
+            connections: HashMap::new(),
+            window_rx_bytes: 0,
+            window_tx_bytes: 0,
+            window_started: now,
+        }
+    }
+
+    fn observe(&mut self, event: NetworkEvent, now: Instant) {
+        match event {
+            NetworkEvent::ConnectionDetection(event) => {
+                if self.connections.len() < MAX_NETWORK_CONNECTIONS {
+                    self.connections.entry(event.serial_number).or_insert(
+                        NetworkConnectionCounters {
+                            rx_bytes: 0,
+                            tx_bytes: 0,
+                            last_seen: now,
+                            initialized: false,
+                        },
+                    );
+                }
+            }
+            NetworkEvent::ConnectionUpdate(event) => {
+                if let Some(previous) = self.connections.get_mut(&event.connection_serial) {
+                    if previous.initialized {
+                        self.window_rx_bytes = self
+                            .window_rx_bytes
+                            .saturating_add(event.rx_bytes.saturating_sub(previous.rx_bytes));
+                        self.window_tx_bytes = self
+                            .window_tx_bytes
+                            .saturating_add(event.tx_bytes.saturating_sub(previous.tx_bytes));
+                    }
+                    previous.rx_bytes = event.rx_bytes;
+                    previous.tx_bytes = event.tx_bytes;
+                    previous.last_seen = now;
+                    previous.initialized = true;
+                } else if self.connections.len() < MAX_NETWORK_CONNECTIONS {
+                    self.connections.insert(
+                        event.connection_serial,
+                        NetworkConnectionCounters {
+                            rx_bytes: event.rx_bytes,
+                            tx_bytes: event.tx_bytes,
+                            last_seen: now,
+                            initialized: true,
+                        },
+                    );
+                }
+            }
+            NetworkEvent::InterfaceDetection(_) | NetworkEvent::Unknown(_) => {}
+        }
+    }
+
+    fn sample(&mut self, now: Instant) -> NetworkRateSample {
+        self.connections.retain(|_, counters| {
+            now.saturating_duration_since(counters.last_seen) <= NETWORK_CONNECTION_TTL
+        });
+        let elapsed = now
+            .saturating_duration_since(self.window_started)
+            .as_secs_f64()
+            .max(f64::EPSILON);
+        let sample = NetworkRateSample {
+            rx_bytes_per_second: self.window_rx_bytes as f64 / elapsed,
+            tx_bytes_per_second: self.window_tx_bytes as f64 / elapsed,
+            recent_connections: self.connections.len().min(u32::MAX as usize) as u32,
+        };
+        self.window_rx_bytes = 0;
+        self.window_tx_bytes = 0;
+        self.window_started = now;
+        sample
     }
 }
 
@@ -182,6 +293,46 @@ pub async fn supervise_graphics(
         attempt += 1;
         reporter.connecting(attempt);
         let result = run_graphics_once(
+            adapter.clone(),
+            handshake.clone(),
+            slot.clone(),
+            &mut shutdown,
+            &mut enabled,
+            &reporter,
+            attempt,
+        )
+        .await;
+        if *shutdown.borrow() {
+            break;
+        }
+        let Some(error) = result.err() else { continue };
+        reporter.retrying(attempt, error);
+        if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+            break;
+        }
+    }
+    reporter.stopped(attempt);
+}
+
+pub async fn supervise_network(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    slot: PerformanceSlot,
+    reporter: ServiceReporter,
+    mut enabled: watch::Receiver<bool>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut attempt = 0;
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        if !wait_until_enabled(&mut enabled, &mut shutdown, &reporter, attempt).await {
+            break;
+        }
+        attempt += 1;
+        reporter.connecting(attempt);
+        let result = run_network_once(
             adapter.clone(),
             handshake.clone(),
             slot.clone(),
@@ -302,6 +453,51 @@ async fn run_graphics_once(
                 Ok(sample) => slot.update_graphics(&sample),
                 Err(error) => return Err(format!("DVT graphics stream failed: {error:?}")),
             }
+        }
+    }
+}
+
+async fn run_network_once(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    slot: PerformanceSlot,
+    shutdown: &mut watch::Receiver<bool>,
+    enabled: &mut watch::Receiver<bool>,
+    reporter: &ServiceReporter,
+    attempt: u32,
+) -> Result<(), String> {
+    let mut remote = connect_remote(adapter, handshake).await?;
+    let mut client = NetworkMonitorClient::new(&mut remote)
+        .await
+        .map_err(|error| format!("DVT network monitor channel failed: {error:?}"))?;
+    tokio::time::timeout(SETUP_TIMEOUT, client.start_monitoring())
+        .await
+        .map_err(|_| "DVT network monitor setup timed out".to_string())?
+        .map_err(|error| format!("DVT network monitor setup failed: {error:?}"))?;
+    reporter.ready(attempt);
+    let mut accumulator = NetworkAccumulator::new(Instant::now());
+    let mut tick = tokio::time::interval(NETWORK_SAMPLE_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tick.tick().await;
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    let _ = client.stop_monitoring().await;
+                    return Ok(());
+                }
+            }
+            changed = enabled.changed() => {
+                if changed.is_err() || !*enabled.borrow() {
+                    let _ = client.stop_monitoring().await;
+                    return Ok(());
+                }
+            }
+            event = client.next_event() => match event {
+                Ok(event) => accumulator.observe(event, Instant::now()),
+                Err(error) => return Err(format!("DVT network monitor stream failed: {error:?}")),
+            },
+            _ = tick.tick() => slot.update_network(accumulator.sample(Instant::now())),
         }
     }
 }
@@ -658,6 +854,73 @@ mod tests {
         assert!(snapshot.captured_at_ms > 0);
     }
 
+    #[test]
+    fn network_rates_use_connection_deltas_and_expire_stale_entries() {
+        use idevice::dvt::network_monitor::{ConnectionDetectionEvent, ConnectionUpdateEvent};
+
+        let started = Instant::now();
+        let mut accumulator = NetworkAccumulator::new(started);
+        accumulator.observe(
+            NetworkEvent::ConnectionDetection(ConnectionDetectionEvent {
+                local_address: None,
+                remote_address: None,
+                interface_index: 1,
+                pid: 42,
+                recv_buffer_size: 0,
+                recv_buffer_used: 0,
+                serial_number: 7,
+                kind: 0,
+            }),
+            started,
+        );
+        accumulator.observe(
+            NetworkEvent::ConnectionUpdate(ConnectionUpdateEvent {
+                rx_packets: 1,
+                rx_bytes: 1_000,
+                tx_packets: 1,
+                tx_bytes: 200,
+                rx_dups: 0,
+                rx_ooo: 0,
+                tx_retx: 0,
+                min_rtt: 0,
+                avg_rtt: 0,
+                connection_serial: 7,
+                time: 0,
+            }),
+            started + Duration::from_millis(500),
+        );
+        let first = accumulator.sample(started + Duration::from_secs(1));
+        assert_eq!(first.rx_bytes_per_second, 0.0);
+        assert_eq!(first.tx_bytes_per_second, 0.0);
+        assert_eq!(first.recent_connections, 1);
+
+        accumulator.observe(
+            NetworkEvent::ConnectionUpdate(ConnectionUpdateEvent {
+                rx_packets: 2,
+                rx_bytes: 1_500,
+                tx_packets: 2,
+                tx_bytes: 500,
+                rx_dups: 0,
+                rx_ooo: 0,
+                tx_retx: 0,
+                min_rtt: 0,
+                avg_rtt: 0,
+                connection_serial: 7,
+                time: 1,
+            }),
+            started + Duration::from_millis(1_500),
+        );
+        let second = accumulator.sample(started + Duration::from_secs(2));
+        assert_eq!(second.rx_bytes_per_second, 500.0);
+        assert_eq!(second.tx_bytes_per_second, 300.0);
+        assert_eq!(
+            accumulator
+                .sample(started + NETWORK_CONNECTION_TTL + Duration::from_secs(2))
+                .recent_connections,
+            0
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires a connected physical device"]
     async fn inspects_sysmontap_process_schema_from_hardware() {
@@ -723,5 +986,71 @@ mod tests {
         assert!(top.iter().any(|process| process.memory_bytes.is_some()));
         println!("normalized top processes: {:#?}", &top[..top.len().min(5)]);
         client.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn receives_network_monitor_event_from_hardware() {
+        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
+        let device = usbmuxd
+            .get_devices()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("no connected device");
+        let provider = device.to_provider(
+            UsbmuxdAddr::default(),
+            "devicehub-mask-network-monitor-test",
+        );
+        let proxy = CoreDeviceProxy::connect(&provider).await.unwrap();
+        let rsd_port = proxy.tunnel_info().server_rsd_port;
+        let adapter = proxy.create_software_tunnel().unwrap();
+        let mut adapter = adapter.to_async_handle();
+        let stream = adapter.connect(rsd_port).await.unwrap();
+        let mut handshake = RsdHandshake::new(stream).await.unwrap();
+        let mut remote = RemoteServerClient::connect_rsd(&mut adapter, &mut handshake)
+            .await
+            .unwrap();
+        let mut client = NetworkMonitorClient::new(&mut remote).await.unwrap();
+        client.start_monitoring().await.unwrap();
+        let (serial, rx_delta, tx_delta, detections, updates) =
+            tokio::time::timeout(Duration::from_secs(20), async {
+                let mut detections = 0_u32;
+                let mut updates = 0_u32;
+                let mut baselines = HashMap::<u64, (u64, u64)>::new();
+                loop {
+                    let event = client.next_event().await.unwrap();
+                    match event {
+                        NetworkEvent::ConnectionDetection(_) => detections += 1,
+                        NetworkEvent::ConnectionUpdate(update) => {
+                            updates += 1;
+                            if let Some((previous_rx, previous_tx)) = baselines.insert(
+                                update.connection_serial,
+                                (update.rx_bytes, update.tx_bytes),
+                            ) {
+                                let rx_delta = update.rx_bytes.saturating_sub(previous_rx);
+                                let tx_delta = update.tx_bytes.saturating_sub(previous_tx);
+                                if rx_delta > 0 || tx_delta > 0 {
+                                    break (
+                                        update.connection_serial,
+                                        rx_delta,
+                                        tx_delta,
+                                        detections,
+                                        updates,
+                                    );
+                                }
+                            }
+                        }
+                        NetworkEvent::InterfaceDetection(_) | NetworkEvent::Unknown(_) => {}
+                    }
+                }
+            })
+            .await
+            .expect("timed out waiting for a positive network counter delta");
+        println!(
+            "received network delta for serial {serial} after {detections} detections and {updates} updates: rx={rx_delta} tx={tx_delta}"
+        );
+        client.stop_monitoring().await.unwrap();
     }
 }
