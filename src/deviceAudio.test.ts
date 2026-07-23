@@ -53,6 +53,7 @@ describe("device audio", () => {
     const player = new PcmAudioPlayer(defaultDeviceAudioPreferences);
     const chunk = { sampleRate: 48_000, channels: 2, frames: 1, samples: new Int16Array(2) };
 
+    expect(player.isAudible()).toBe(true);
     expect(player.push(chunk)).toBe(false);
     expect(contexts).toHaveLength(0);
     expect(await player.resume(true)).toBe(true);
@@ -63,6 +64,12 @@ describe("device audio", () => {
     expect(contexts).toHaveLength(2);
     expect(contexts[0].closed).toBe(true);
     player.close();
+  });
+
+  it("reports muted and zero-volume playback as inaudible", () => {
+    expect(new PcmAudioPlayer({ muted: true, volume: 1 }).isAudible()).toBe(false);
+    expect(new PcmAudioPlayer({ muted: false, volume: 0 }).isAudible()).toBe(false);
+    expect(new PcmAudioPlayer({ muted: false, volume: 0.5 }).isAudible()).toBe(true);
   });
 });
 

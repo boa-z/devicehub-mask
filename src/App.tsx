@@ -20,6 +20,7 @@ import {
   PushpinFilled,
   PushpinOutlined,
   PlusOutlined,
+  PlayCircleOutlined,
   ReloadOutlined,
   RotateLeftOutlined,
   RotateRightOutlined,
@@ -220,6 +221,7 @@ export default function App() {
   const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
   const audioResumePromiseRef = useRef<Promise<boolean> | null>(null);
   const audioResumeGenerationRef = useRef(0);
+  const audioAutoResumeAttemptedRef = useRef(false);
   const audioReceptionLoggedRef = useRef(false);
   const audioPlaybackSuspendedRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -701,6 +703,7 @@ export default function App() {
         setStreamMetrics(emptyMetrics);
         audioPlayerRef.current?.reset();
         markAudioPlaybackSuspended(false);
+        audioAutoResumeAttemptedRef.current = false;
         audioReceptionLoggedRef.current = false;
         if (!disposed) retry = window.setTimeout(open, 800);
       };
@@ -778,6 +781,12 @@ export default function App() {
             const player = audioPlayerRef.current;
             const scheduled = player?.push(audio) ?? false;
             markAudioPlaybackSuspended(!scheduled);
+            if (scheduled) {
+              audioAutoResumeAttemptedRef.current = false;
+            } else if (player?.isAudible() && !audioAutoResumeAttemptedRef.current) {
+              audioAutoResumeAttemptedRef.current = true;
+              void resumeDeviceAudio();
+            }
             if (!audioReceptionLoggedRef.current) {
               audioReceptionLoggedRef.current = true;
               logFrontend(
@@ -808,7 +817,7 @@ export default function App() {
     };
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
-  }, [backend, markAudioPlaybackSuspended]);
+  }, [backend, markAudioPlaybackSuspended, resumeDeviceAudio]);
 
   useEffect(() => () => {
     if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
@@ -1524,10 +1533,14 @@ export default function App() {
       <Tooltip title={audioControlLabel}>
         <Button
           aria-label={audioControlLabel}
-          type={deviceAudioEnabled && !audioPlayback.muted && !audioPlaybackSuspended ? "primary" : "default"}
+          type={audioControlAction === "resume" || (deviceAudioEnabled && !audioPlayback.muted) ? "primary" : "default"}
           disabled={deviceAudioEnabled === null}
           loading={deviceAudioBusy}
-          icon={deviceAudioEnabled && !audioPlayback.muted && !audioPlaybackSuspended ? <SoundOutlined /> : <AudioMutedOutlined />}
+          icon={audioControlAction === "resume"
+            ? <PlayCircleOutlined />
+            : deviceAudioEnabled && !audioPlayback.muted
+              ? <SoundOutlined />
+              : <AudioMutedOutlined />}
           onClick={() => void toggleDeviceAudio()}
         />
       </Tooltip>
