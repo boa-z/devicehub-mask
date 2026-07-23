@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
+use crate::hid::TouchContact;
 use crate::protocol::{
     ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat, FrameSlot, InputCmd,
     InputSink, LocationStatusSlot, Orientation, OrientationSlot, RotateDir, StatusSlot, norm,
@@ -27,8 +28,8 @@ use crate::protocol::{
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
 const DEFAULT_MAX_DIM: u32 = 1024;
 const MAX_SCREENSHOT_DIM: u32 = 4096;
-const TAP_HOLD_SAMPLES: u32 = 3;
 const TAP_SAMPLE_MS: u64 = 25;
+const DEFAULT_TAP_HOLD_MS: u64 = 100;
 const SETTLE_MIN: Duration = Duration::from_millis(200);
 const SETTLE_MAX: Duration = Duration::from_millis(2600);
 const SETTLE_POLL: Duration = Duration::from_millis(110);
@@ -38,6 +39,7 @@ const GRID_STEP: u32 = 100;
 const GRID_LABEL_EVERY: u32 = 2;
 const DEVICE_WAIT: Duration = Duration::from_secs(20);
 const LOCATION_WAIT: Duration = Duration::from_secs(10);
+const APP_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 struct DeviceHub {
@@ -73,6 +75,10 @@ struct PointParams {
     image_width: Option<u32>,
     /// Height of the screenshot used for the coordinates. Must accompany image_width.
     image_height: Option<u32>,
+    /// Contact hold time in milliseconds. Defaults to 100 and is clamped to 25..5000.
+    hold_ms: Option<u64>,
+    /// Wait for the screen to become visually stable after the action. Defaults to true.
+    wait_for_settle: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -85,6 +91,36 @@ struct SwipeParams {
     duration_ms: Option<u64>,
     image_width: Option<u32>,
     image_height: Option<u32>,
+    /// Wait for the screen to become visually stable after the action. Defaults to true.
+    wait_for_settle: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct TouchPathParams {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct MultiTouchParams {
+    /// One to five simultaneous touch paths. Use identical start/end points for held buttons.
+    contacts: Vec<TouchPathParams>,
+    /// Shared gesture duration in milliseconds. Defaults to 250 and is clamped to 25..5000.
+    duration_ms: Option<u64>,
+    image_width: Option<u32>,
+    image_height: Option<u32>,
+    /// Wait for visual stability. Defaults to false for latency-sensitive game actions.
+    wait_for_settle: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WaitFrameParams {
+    /// Wait for a frame newer than this version. Defaults to the version current at tool entry.
+    after_version: Option<u64>,
+    /// Maximum wait in milliseconds. Defaults to 2000 and is clamped to 1..10000.
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -121,6 +157,23 @@ struct LocationParams {
     longitude: f64,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ListAppsParams {
+    /// Case-insensitive app-name or bundle-ID filter.
+    query: Option<String>,
+    /// Include Apple first-party apps. Defaults to false.
+    include_system: Option<bool>,
+    /// Maximum returned apps. Defaults to 100 and is clamped to 1..200.
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct AppParams {
+    bundle_id: String,
+    /// Wait for the launched app screen to become stable. Defaults to true.
+    wait_for_settle: Option<bool>,
+}
+
 fn ok_text(value: impl Into<String>) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(value.into())]))
 }
@@ -137,6 +190,26 @@ fn image_size(width: Option<u32>, height: Option<u32>) -> Result<Option<(u32, u3
             "image_width and image_height must be provided together",
             None,
         )),
+    }
+}
+
+fn valid_bundle_identifier(bundle_id: &str) -> bool {
+    !bundle_id.is_empty()
+        && bundle_id.len() <= 255
+        && bundle_id.contains('.')
+        && bundle_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+
+fn validate_touch_count(count: usize) -> Result<(), McpError> {
+    if (1..=5).contains(&count) {
+        Ok(())
+    } else {
+        Err(McpError::invalid_params(
+            "contacts must contain between one and five touch paths",
+            None,
+        ))
     }
 }
 
@@ -478,13 +551,13 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Capture the current iPhone screen as a PNG. The returned image is the coordinate space for tap/swipe. A labeled 100px grid is enabled by default; max_dim defaults to 1024 and 0 keeps native resolution."
+        description = "Capture the current iPhone screen as a PNG with a frame version. The returned image is the coordinate space for tap/swipe/multi_touch. A labeled 100px grid is enabled by default; max_dim defaults to 1024 and 0 keeps native resolution."
     )]
     async fn screenshot(
         &self,
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> Result<CallToolResult, McpError> {
-        let Some((_, frame)) = self.frames.latest() else {
+        let Some((frame_version, frame)) = self.frames.latest() else {
             return ok_text("No frame available. Connect a device and wait for streaming.");
         };
         let (width, height, rgb) =
@@ -511,9 +584,16 @@ impl DeviceHub {
             })?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(png);
         Ok(CallToolResult::success(vec![
-            Content::text(format!(
-                "Image is {width}x{height} pixels; origin is top-left. Pass these dimensions with tap/swipe when coordinating across MCP clients."
-            )),
+            Content::text(
+                json!({
+                    "frame_version": frame_version,
+                    "image_width": width,
+                    "image_height": height,
+                    "origin": "top-left",
+                    "coordinate_hint": "Pass image_width and image_height to coordinate-based actions."
+                })
+                .to_string(),
+            ),
             Content::image(encoded, "image/png"),
         ]))
     }
@@ -529,16 +609,35 @@ impl DeviceHub {
         let Some((x, y)) = self.to_device(params.x, params.y, size) else {
             return ok_text("No screen available. Connect a device first.");
         };
+        let hold_ms = params
+            .hold_ms
+            .unwrap_or(DEFAULT_TAP_HOLD_MS)
+            .clamp(TAP_SAMPLE_MS, 5000);
+        let samples = (hold_ms / TAP_SAMPLE_MS).clamp(1, 200);
+        let interval = Duration::from_millis((hold_ms / samples).max(1));
+        let frame_version = self.frames.version();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::TouchDown { x, y })?;
-        for _ in 0..TAP_HOLD_SAMPLES {
-            tokio::time::sleep(Duration::from_millis(TAP_SAMPLE_MS)).await;
+        for _ in 0..samples {
+            tokio::time::sleep(interval).await;
             self.send(InputCmd::TouchMove { x, y })?;
         }
-        tokio::time::sleep(Duration::from_millis(TAP_SAMPLE_MS)).await;
         self.send(InputCmd::TouchUp { x, y })?;
-        self.settle().await;
-        ok_text(format!("Tapped ({}, {}).", params.x, params.y))
+        if params.wait_for_settle.unwrap_or(true) {
+            self.settle().await;
+        }
+        let frame_version_after = self.frames.version();
+        ok_text(
+            json!({
+                "action": "tap",
+                "x": params.x,
+                "y": params.y,
+                "hold_ms": hold_ms,
+                "frame_version_before": frame_version,
+                "frame_version_after": frame_version_after,
+            })
+            .to_string(),
+        )
     }
 
     #[tool(
@@ -552,8 +651,12 @@ impl DeviceHub {
         let Some((start_x, start_y)) = self.to_device(params.x1, params.y1, size) else {
             return ok_text("No screen available. Connect a device first.");
         };
+        let Some((end_x, end_y)) = self.to_device(params.x2, params.y2, size) else {
+            return ok_text("No screen available. Connect a device first.");
+        };
         let duration = params.duration_ms.unwrap_or(300).clamp(50, 5000);
         let steps = (duration / 16).clamp(2, 150);
+        let frame_version = self.frames.version();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::TouchDown {
             x: start_x,
@@ -561,21 +664,120 @@ impl DeviceHub {
         })?;
         for step in 1..=steps {
             let progress = step as f32 / steps as f32;
-            let x = params.x1 + (params.x2 - params.x1) * progress;
-            let y = params.y1 + (params.y2 - params.y1) * progress;
-            if let Some((x, y)) = self.to_device(x, y, size) {
-                self.send(InputCmd::TouchMove { x, y })?;
-            }
+            let x = (start_x as f32 + (end_x as f32 - start_x as f32) * progress).round() as u16;
+            let y = (start_y as f32 + (end_y as f32 - start_y as f32) * progress).round() as u16;
+            self.send(InputCmd::TouchMove { x, y })?;
             tokio::time::sleep(Duration::from_millis((duration / steps).max(1))).await;
         }
-        if let Some((x, y)) = self.to_device(params.x2, params.y2, size) {
-            self.send(InputCmd::TouchUp { x, y })?;
+        self.send(InputCmd::TouchUp { x: end_x, y: end_y })?;
+        if params.wait_for_settle.unwrap_or(true) {
+            self.settle().await;
         }
-        self.settle().await;
-        ok_text(format!(
-            "Swiped ({}, {}) to ({}, {}) over {duration}ms.",
-            params.x1, params.y1, params.x2, params.y2
-        ))
+        let frame_version_after = self.frames.version();
+        ok_text(
+            json!({
+                "action": "swipe",
+                "from": [params.x1, params.y1],
+                "to": [params.x2, params.y2],
+                "duration_ms": duration,
+                "frame_version_before": frame_version,
+                "frame_version_after": frame_version_after,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Perform one to five simultaneous touch paths as a single HID multi-touch gesture. Use fixed start/end points for held game buttons. wait_for_settle defaults to false for low latency."
+    )]
+    async fn multi_touch(
+        &self,
+        Parameters(params): Parameters<MultiTouchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_touch_count(params.contacts.len())?;
+        let size = image_size(params.image_width, params.image_height)?;
+        let paths = params
+            .contacts
+            .iter()
+            .map(|contact| {
+                Some((
+                    self.to_device(contact.x1, contact.y1, size)?,
+                    self.to_device(contact.x2, contact.y2, size)?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| McpError::internal_error("no screen available", None))?;
+        let duration = params.duration_ms.unwrap_or(250).clamp(25, 5000);
+        let steps = (duration / 16).clamp(2, 150);
+        let interval = Duration::from_millis((duration / steps).max(1));
+        let contacts_at = |progress: f32, touching: bool| {
+            paths
+                .iter()
+                .enumerate()
+                .map(|(identity, (start, end))| TouchContact {
+                    identity: identity as u8,
+                    touching,
+                    x: (start.0 as f32 + (end.0 as f32 - start.0 as f32) * progress).round() as u16,
+                    y: (start.1 as f32 + (end.1 as f32 - start.1 as f32) * progress).round() as u16,
+                })
+                .collect::<Vec<_>>()
+        };
+        let frame_version = self.frames.version();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::MultiTouchFrame(contacts_at(0.0, true)))?;
+        for step in 1..=steps {
+            let progress = step as f32 / steps as f32;
+            self.send(InputCmd::MultiTouchFrame(contacts_at(progress, true)))?;
+            tokio::time::sleep(interval).await;
+        }
+        self.send(InputCmd::MultiTouchFrame(contacts_at(1.0, false)))?;
+        if params.wait_for_settle.unwrap_or(false) {
+            self.settle().await;
+        }
+        let frame_version_after = self.frames.version();
+        ok_text(
+            json!({
+                "action": "multi_touch",
+                "contacts": paths.len(),
+                "duration_ms": duration,
+                "frame_version_before": frame_version,
+                "frame_version_after": frame_version_after,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Wait for a newer decoded screen frame. Use frame_version from screenshot or frame_version_after from a low-latency action."
+    )]
+    async fn wait_for_frame(
+        &self,
+        Parameters(params): Parameters<WaitFrameParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let after = params
+            .after_version
+            .unwrap_or_else(|| self.frames.version());
+        let timeout = Duration::from_millis(params.timeout_ms.unwrap_or(2000).clamp(1, 10_000));
+        let mut receiver = self.frames.subscribe();
+        let changed = tokio::time::timeout(timeout, async {
+            loop {
+                if self.frames.version() > after && receiver.borrow().is_some() {
+                    break true;
+                }
+                if receiver.changed().await.is_err() {
+                    break false;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        ok_text(
+            json!({
+                "changed": changed,
+                "frame_version": self.frames.version(),
+            })
+            .to_string(),
+        )
     }
 
     #[tool(description = "Type printable text into the currently focused field.")]
@@ -636,6 +838,78 @@ impl DeviceHub {
         self.send(InputCmd::Rotate(direction))?;
         self.settle().await;
         ok_text(format!("Rotated {}.", params.direction))
+    }
+
+    #[tool(
+        description = "List launchable apps on the connected iPhone. User-installed apps are returned by default; filter by app name or bundle ID."
+    )]
+    async fn list_apps(
+        &self,
+        Parameters(params): Parameters<ListAppsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::ListApps(reply))?;
+        let mut apps = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("app list request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        let query = params.query.unwrap_or_default().trim().to_lowercase();
+        let include_system = params.include_system.unwrap_or(false);
+        apps.retain(|app| {
+            (include_system || !app.is_first_party)
+                && (query.is_empty()
+                    || app.name.to_lowercase().contains(&query)
+                    || app.bundle_id.to_lowercase().contains(&query))
+        });
+        apps.sort_by(|left, right| left.name.cmp(&right.name));
+        let total = apps.len();
+        apps.truncate(params.limit.unwrap_or(100).clamp(1, 200));
+        let returned = apps.len();
+        ok_text(
+            json!({
+                "apps": apps,
+                "returned": returned,
+                "total_matches": total,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Launch an installed app by bundle ID and optionally wait for its screen to become stable. Use list_apps to discover bundle IDs."
+    )]
+    async fn launch_app(
+        &self,
+        Parameters(params): Parameters<AppParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if !valid_bundle_identifier(&params.bundle_id) {
+            return Err(McpError::invalid_params("invalid bundle identifier", None));
+        }
+        let frame_version = self.frames.version();
+        let _gesture = self.gesture_lock.lock().await;
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::LaunchApp {
+            bundle_id: params.bundle_id.clone(),
+            reply,
+        })?;
+        tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("app launch request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        if params.wait_for_settle.unwrap_or(true) {
+            self.settle().await;
+        }
+        let frame_version_after = self.frames.version();
+        ok_text(
+            json!({
+                "launched": params.bundle_id,
+                "frame_version_before": frame_version,
+                "frame_version_after": frame_version_after,
+            })
+            .to_string(),
+        )
     }
 
     #[tool(
@@ -804,7 +1078,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then tap/swipe/type_text/press_key/press_button, and screenshot again. Coordinates are pixels in the screenshot; include its image_width and image_height in actions. Use list_devices and connect_device when no device is active. Actions wait for the screen to settle before returning.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps/launch_app to open a game and list_devices/connect_device when no device is active.")
     }
 }
 
@@ -884,10 +1158,14 @@ mod tests {
             "screenshot",
             "tap",
             "swipe",
+            "multi_touch",
+            "wait_for_frame",
             "type_text",
             "press_key",
             "press_button",
             "rotate",
+            "list_apps",
+            "launch_app",
             "list_devices",
             "connect_device",
             "reconnect_device",
@@ -908,6 +1186,117 @@ mod tests {
         assert_eq!(image_size(Some(320), Some(640)).unwrap(), Some((320, 640)));
         assert!(image_size(Some(320), None).is_err());
         assert!(image_size(Some(0), Some(640)).is_err());
+    }
+
+    #[test]
+    fn game_action_parameters_are_bounded() {
+        assert!(validate_touch_count(1).is_ok());
+        assert!(validate_touch_count(5).is_ok());
+        assert!(validate_touch_count(0).is_err());
+        assert!(validate_touch_count(6).is_err());
+        assert!(valid_bundle_identifier("com.example.game"));
+        assert!(!valid_bundle_identifier("invalid bundle"));
+    }
+
+    #[tokio::test]
+    async fn multi_touch_sends_simultaneous_down_and_release_frames() {
+        let frames = FrameSlot::default();
+        frames.publish(Arc::new(Frame {
+            width: 100,
+            height: 200,
+            format: FrameFormat::Rgb24,
+            pixels: vec![0; 100 * 200 * 3],
+            decoded_at: Instant::now(),
+            jpeg: std::sync::OnceLock::new(),
+        }));
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            frames,
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            control,
+        );
+        hub.multi_touch(Parameters(MultiTouchParams {
+            contacts: vec![
+                TouchPathParams {
+                    x1: 10.0,
+                    y1: 20.0,
+                    x2: 20.0,
+                    y2: 30.0,
+                },
+                TouchPathParams {
+                    x1: 80.0,
+                    y1: 160.0,
+                    x2: 80.0,
+                    y2: 160.0,
+                },
+            ],
+            duration_ms: Some(25),
+            image_width: Some(100),
+            image_height: Some(200),
+            wait_for_settle: Some(false),
+        }))
+        .await
+        .unwrap();
+
+        let sent = std::iter::from_fn(|| input_rx.try_recv().ok()).collect::<Vec<_>>();
+        let InputCmd::MultiTouchFrame(first) = &sent[0] else {
+            panic!("first command must be a multi-touch frame");
+        };
+        let InputCmd::MultiTouchFrame(last) = sent.last().unwrap() else {
+            panic!("last command must be a multi-touch frame");
+        };
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|contact| contact.touching));
+        assert!(last.iter().all(|contact| !contact.touching));
+    }
+
+    #[tokio::test]
+    async fn wait_for_frame_observes_a_newer_published_version() {
+        let frames = FrameSlot::default();
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            frames.clone(),
+            InputSink::default(),
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            control,
+        );
+        let waiter = tokio::spawn(async move {
+            hub.wait_for_frame(Parameters(WaitFrameParams {
+                after_version: Some(0),
+                timeout_ms: Some(500),
+            }))
+            .await
+            .unwrap()
+        });
+        tokio::task::yield_now().await;
+        frames.publish(Arc::new(Frame {
+            width: 1,
+            height: 1,
+            format: FrameFormat::Rgb24,
+            pixels: vec![0, 0, 0],
+            decoded_at: Instant::now(),
+            jpeg: std::sync::OnceLock::new(),
+        }));
+        let result = waiter.await.unwrap();
+        assert!(result.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""changed":true"#))
+        }));
     }
 
     #[test]

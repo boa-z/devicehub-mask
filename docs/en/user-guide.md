@@ -138,13 +138,32 @@ signing and release details.
 
 While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP
 endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
-swipes, text and key input, hardware buttons, rotation, device selection and
-reconnection, virtual location, and session status.
+swipes, simultaneous multi-touch, text and key input, hardware buttons, app
+discovery and launch, rotation, device selection and reconnection, virtual
+location, frame synchronization, and session status.
 
 Take a screenshot before sending coordinate-based input. Pass the returned
-`image_width` and `image_height` to `tap` or `swipe` so coordinates remain
-correct when screenshots are resized. MCP reuses the desktop application's
-active device session; it does not open a second connection to the phone.
+`image_width` and `image_height` to `tap`, `swipe`, or `multi_touch` so
+coordinates remain correct when screenshots are resized. For latency-sensitive
+gameplay, disable `wait_for_settle` on an action and pass its
+`frame_version_after` to `wait_for_frame` before taking the next screenshot.
+MCP reuses the desktop application's active device session; it does not open a
+second connection to the phone.
+
+For example, `multi_touch` can move a left-side joystick while holding a
+right-side action button in the same 250ms HID gesture:
+
+```json
+{
+  "contacts": [
+    { "x1": 180, "y1": 700, "x2": 240, "y2": 650 },
+    { "x1": 850, "y1": 680, "x2": 850, "y2": 680 }
+  ],
+  "duration_ms": 250,
+  "image_width": 1024,
+  "image_height": 768
+}
+```
 
 The endpoint has no authentication. Keep it on loopback unless the host is on a
 trusted isolated network. Developers can change the bind address with

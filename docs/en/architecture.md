@@ -38,9 +38,12 @@ The MCP service is a separate Streamable HTTP endpoint on
 `127.0.0.1:8009/mcp` by default. It shares the manager's latest-frame slot,
 input sink, device state, and control channel, so automation and the WebView use
 one CoreDevice session. Coordinate tools include the screenshot dimensions and
-are transformed through the same orientation model as direct touch. MCP has no
-authentication; binding it beyond loopback is an explicit deployment decision
-and emits a warning.
+are transformed through the same orientation model as direct touch. Game
+gestures serialize one-to-five-contact HID frames through the shared input
+queue. Screenshot and action results expose frame versions so an agent can skip
+the visual-stability delay and explicitly wait for the next decoded frame. MCP
+has no authentication; binding it beyond loopback is an explicit deployment
+decision and emits a warning.
 
 ## Session Ownership
 
