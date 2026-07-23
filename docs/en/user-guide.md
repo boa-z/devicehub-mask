@@ -87,9 +87,10 @@ view.
 focus, entering fullscreen, or disconnecting releases every touch, hardware
 button, and keyboard usage to prevent stuck input.
 
-Keyboard passthrough represents physical HID keys, not composed text. CJK IME
-and arbitrary text composition should use clipboard synchronization until a
-dedicated text input path is implemented.
+Keyboard passthrough represents physical HID keys, not composed text. The text
+tool in the Device toolbar writes up to 1,024 Unicode characters to the device
+pasteboard and sends Cmd+V, so focus an editable field before using it. This
+one-shot action works even when continuous clipboard synchronization is disabled.
 
 ## Direct Touch and Orientation
 
@@ -189,6 +190,10 @@ endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
 swipes, simultaneous multi-touch, text and key input, hardware buttons, app
 discovery, launch/restart and stop, rotation, device selection and reconnection,
 virtual location, frame synchronization, and session status.
+
+Use `type_text` for printable ASCII HID keystrokes. Use `paste_text` for CJK or
+other Unicode text; it waits for the device pasteboard write and Cmd+V before
+returning success.
 
 Take a screenshot before sending coordinate-based input. Pass the returned
 `image_width` and `image_height` to `tap`, `swipe`, or `multi_touch` so

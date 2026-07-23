@@ -268,6 +268,17 @@ pub fn clipboard_preview(text: &str, max: usize) -> String {
     }
 }
 
+pub fn validate_paste_text(text: &str) -> Result<usize, &'static str> {
+    let characters = text.chars().count();
+    if text.is_empty() || text.len() > 4_096 || characters > 1_024 || text.contains('\0') {
+        Err(
+            "paste text must contain 1..1024 characters, fit in 4096 UTF-8 bytes, and contain no NUL bytes",
+        )
+    } else {
+        Ok(characters)
+    }
+}
+
 /// A control command from the UI to the device session.
 ///
 /// Touch coordinates are normalized `0..=65535` across the screen
@@ -299,6 +310,11 @@ pub enum InputCmd {
     MultiTouchFrame(Vec<TouchContact>),
     /// Type printable text.
     Text(String),
+    /// Put arbitrary Unicode text on the device pasteboard, then issue Cmd+V.
+    PasteText {
+        text: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Press a single HID Keyboard/Keypad usage (enter, arrows...).
     KeyUsage(u64),
     /// Press a key with modifiers held (e.g. ⌘C); iOS reads these as
@@ -765,6 +781,16 @@ mod tests {
 
         assert_eq!(receiver.recv().await.unwrap(), event);
         assert_eq!(clipboard_preview(" a\n b  c ", 4), "a b ...");
+    }
+
+    #[test]
+    fn paste_text_validation_accepts_unicode_and_bounds_payloads() {
+        assert_eq!(validate_paste_text("你好, iPhone").unwrap(), 10);
+        for invalid in [String::new(), "bad\0text".into(), "x".repeat(1_025)] {
+            assert!(validate_paste_text(&invalid).is_err());
+        }
+        assert!(validate_paste_text(&"界".repeat(1_024)).is_ok());
+        assert!(validate_paste_text(&"😀".repeat(1_024)).is_ok());
     }
 
     #[test]

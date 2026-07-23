@@ -167,9 +167,10 @@ export const zhCN = {
     lockRotationControls: "锁定旋转控制",
     unlockRotationControls: "解锁旋转控制",
     textInput: "向设备输入文本",
+    pasteTextFailed: "无法在设备上粘贴文本：{{error}}",
     textInputPlaceholder: "输入到设备当前焦点文本框",
-    textInputHint: "直接 HID 输入目前支持可打印 ASCII 文本。",
-    sendText: "发送",
+    textInputHint: "通过设备剪贴板和 Cmd+V 输入，支持 Unicode 文本；请先聚焦可编辑文本框。",
+    sendText: "粘贴",
     stageState: {
       waiting: "等待 iOS 设备画面",
       reconnecting: "设备控制连接已中断",

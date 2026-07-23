@@ -48,6 +48,7 @@ import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
 import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, type DeviceAudioPreferences } from "./deviceAudio";
+import { truncatePasteText } from "./deviceText";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
@@ -205,6 +206,7 @@ export default function App() {
   const [recording, setRecording] = useState(false);
   const [textInputOpen, setTextInputOpen] = useState(false);
   const [textInput, setTextInput] = useState("");
+  const [textInputBusy, setTextInputBusy] = useState(false);
   const [displayScaleOpen, setDisplayScaleOpen] = useState(false);
   const [mappingBackgroundMode, setMappingBackgroundMode] = useState<MappingBackgroundMode>("live");
   const [capturedScreenshot, setCapturedScreenshot] = useState<CapturedScreenshot | null>(null);
@@ -1298,6 +1300,25 @@ export default function App() {
       return false;
     }
   };
+  const pasteTextToDevice = async () => {
+    if (!textInput || textInputBusy) return;
+    setTextInputBusy(true);
+    try {
+      const response = await request("/api/device/text/paste", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: textInput }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
+      setTextInput("");
+      setTextInputOpen(false);
+    } catch (error) {
+      void message.error(t("device.pasteTextFailed", { error: String(error) }));
+      logFrontend("warn", "clipboard", "paste_text", error);
+    } finally {
+      setTextInputBusy(false);
+    }
+  };
   const toggleDeviceAudio = async () => {
     const action = deviceAudioControlAction(deviceAudioEnabled, audioPlayback.muted, audioPlaybackSuspended);
     if (action === "unavailable" || deviceAudioBusy) return;
@@ -1532,21 +1553,18 @@ export default function App() {
             <Input.TextArea
               autoFocus
               value={textInput}
-              maxLength={128}
               rows={3}
+              disabled={textInputBusy}
               placeholder={t("device.textInputPlaceholder")}
-              onChange={(event) => setTextInput(event.target.value)}
+              onChange={(event) => setTextInput(truncatePasteText(event.target.value))}
             />
             <Typography.Text type="secondary">{t("device.textInputHint")}</Typography.Text>
             <Button
               type="primary"
               icon={<SendOutlined />}
+              loading={textInputBusy}
               disabled={!textInput || !connected || !status.active_udid}
-              onClick={() => {
-                command({ type: "text", text: textInput });
-                setTextInput("");
-                setTextInputOpen(false);
-              }}
+              onClick={() => void pasteTextToDevice()}
             >
               {t("device.sendText")}
             </Button>

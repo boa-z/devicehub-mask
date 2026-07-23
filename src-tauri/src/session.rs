@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStderr;
 use tokio::sync::Notify;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver};
 
 use idevice::{
     IdeviceError, IdeviceService, ReadWrite, RsdService,
@@ -75,6 +75,7 @@ const KEY_LEFT_CTRL: u64 = 0xE0;
 const KEY_LEFT_SHIFT: u64 = 0xE1;
 const KEY_LEFT_ALT: u64 = 0xE2;
 const KEY_LEFT_CMD: u64 = 0xE3;
+const KEY_V: u64 = 0x19;
 
 /// The device's encoder sends a single IDR then only P-frames, so a dropped
 /// packet corrupts the picture permanently; recovery is an RTCP keyframe request
@@ -1189,6 +1190,8 @@ async fn run(
             None => std::future::pending::<()>().await,
         }
     };
+    let (clipboard_commands, clipboard_command_rx) = tokio::sync::mpsc::channel(4);
+    let clipboard_bridge = ClipboardBridge(clipboard_commands);
 
     tokio::select! {
         _ = video_task(
@@ -1225,13 +1228,19 @@ async fn run(
         _ = rtcp_send_task(
             video_udp, rtcp_udp, rtcp, our_ssrc, cname, &corruption,
         ) => {}
-        _ = clipboard_task(pasteboard, clipboard, &mut adapter, &mut handshake) => {}
+        _ = clipboard_task(
+            pasteboard,
+            video.clipboard_sync_enabled,
+            clipboard,
+            clipboard_command_rx,
+            &mut adapter,
+            &mut handshake,
+        ) => {}
         _ = orientation_task => {}
         _ = input_loop(
             &mut touch,
             &mut indigo,
             &mut orientation,
-            &views.orientation,
             DeviceManagement::new(
                 provider,
                 views.app_operation.clone(),
@@ -1242,7 +1251,11 @@ async fn run(
                 app_management_services,
             ),
             &mut input_rx,
-            &location,
+            InputBridges {
+                orientation: &views.orientation,
+                location: &location,
+                clipboard: &clipboard_bridge,
+            },
         ) => {}
     }
 
@@ -1256,14 +1269,19 @@ async fn run(
 }
 
 /// Dispatch input until the UI shuts us down or the channel closes.
+struct InputBridges<'a> {
+    orientation: &'a OrientationSlot,
+    location: &'a LocationBridge,
+    clipboard: &'a ClipboardBridge,
+}
+
 async fn input_loop(
     touch: &mut UniversalHidClient<Box<dyn ReadWrite>>,
     indigo: &mut IndigoHidClient<Box<dyn ReadWrite>>,
     orientation: &mut Option<OrientationServiceClient<Box<dyn ReadWrite>>>,
-    orientation_view: &OrientationSlot,
     mut management: DeviceManagement,
     input_rx: &mut UnboundedReceiver<InputCmd>,
-    location: &LocationBridge,
+    bridges: InputBridges<'_>,
 ) {
     while let Some(cmd) = input_rx.recv().await {
         if matches!(cmd, InputCmd::Shutdown) {
@@ -1272,10 +1290,28 @@ async fn input_loop(
         let Some(cmd) = management.handle(cmd).await else {
             continue;
         };
-        let Some(cmd) = forward_location_command(cmd, location) else {
+        let Some(cmd) = forward_location_command(cmd, bridges.location) else {
             continue;
         };
-        if let Err(e) = dispatch(touch, indigo, orientation, orientation_view, cmd).await {
+        if let InputCmd::PasteText { text, reply } = cmd {
+            let result = async {
+                bridges.clipboard.set_text(text).await?;
+                type_key(
+                    indigo,
+                    KEY_V,
+                    KeyMods {
+                        cmd: true,
+                        ..KeyMods::default()
+                    },
+                )
+                .await
+                .map_err(|error| format!("unable to send paste shortcut: {error:?}"))
+            }
+            .await;
+            let _ = reply.send(result);
+            continue;
+        }
+        if let Err(e) = dispatch(touch, indigo, orientation, bridges.orientation, cmd).await {
             tracing::warn!("input dispatch failed: {e:?}");
         }
     }
@@ -1293,6 +1329,10 @@ async fn management_input_loop(
         let Some(command) = management.handle(command).await else {
             continue;
         };
+        if let InputCmd::PasteText { reply, .. } = command {
+            let _ = reply.send(Err("device control is unavailable".into()));
+            continue;
+        }
         let _ = forward_location_command(command, location);
     }
 }
@@ -1956,6 +1996,43 @@ fn sort_device_apps(mut apps: Vec<DeviceApp>) -> Vec<DeviceApp> {
 const CLIPBOARD_POLL: std::time::Duration = std::time::Duration::from_millis(600);
 /// Max characters in the UI's clipboard-activity preview.
 const CLIPBOARD_PREVIEW_LEN: usize = 48;
+const CLIPBOARD_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+
+enum ClipboardCommand {
+    SetText {
+        text: String,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+}
+
+enum ClipboardWake {
+    Push(Result<PasteboardSnapshot, IdeviceError>),
+    Tick,
+    Command(Option<ClipboardCommand>),
+}
+
+#[derive(Clone)]
+struct ClipboardBridge(Sender<ClipboardCommand>);
+
+impl ClipboardBridge {
+    async fn set_text(&self, text: String) -> Result<(), String> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.0
+            .try_send(ClipboardCommand::SetText { text, reply })
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    "device clipboard is busy".to_string()
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    "device clipboard is unavailable".to_string()
+                }
+            })?;
+        tokio::time::timeout(CLIPBOARD_COMMAND_TIMEOUT, response)
+            .await
+            .map_err(|_| "device clipboard request timed out".to_string())?
+            .map_err(|_| "device clipboard session ended".to_string())?
+    }
+}
 
 /// The contents both clipboards are believed to already share, used to suppress
 /// echoes and break the host⇄device feedback loop. Text and image are mutually
@@ -1980,19 +2057,25 @@ struct ClipState {
 /// `select!`); idles if the host clipboard or pasteboard service is unavailable.
 async fn clipboard_task(
     pasteboard: Option<PasteboardServiceClient<Box<dyn ReadWrite>>>,
+    sync_enabled: bool,
     activity: ClipboardSlot,
+    mut commands: Receiver<ClipboardCommand>,
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
 ) {
     let Some(mut pb) = pasteboard else {
-        std::future::pending::<()>().await;
+        clipboard_command_loop(None, &activity, &mut commands, adapter, handshake).await;
         return;
     };
+    if !sync_enabled {
+        clipboard_command_loop(Some(pb), &activity, &mut commands, adapter, handshake).await;
+        return;
+    }
     let mut clip = match arboard::Clipboard::new() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("no host clipboard; clipboard sync disabled: {e:?}");
-            std::future::pending::<()>().await;
+            clipboard_command_loop(Some(pb), &activity, &mut commands, adapter, handshake).await;
             return;
         }
     };
@@ -2012,19 +2095,23 @@ async fn clipboard_task(
     subscribe(&mut pb).await;
 
     let mut tick = tokio::time::interval(CLIPBOARD_POLL);
+    let mut commands_open = true;
     loop {
         // The `recv_push` future is dropped when the tick wins - safe because the
         // XPC read path buffers partial reads. Resolve the borrow of `pb` before
         // the match body, which reuses it.
-        let push = tokio::select! {
-            r = pb.recv_push() => Some(r),
-            _ = tick.tick() => None,
+        let wake = tokio::select! {
+            result = pb.recv_push() => ClipboardWake::Push(result),
+            _ = tick.tick() => ClipboardWake::Tick,
+            command = commands.recv(), if commands_open => ClipboardWake::Command(command),
         };
 
-        match push {
+        match wake {
             // device -> host (push)
-            Some(Ok(snap)) => apply_device_snapshot(&snap, &mut clip, &activity, &mut state),
-            Some(Err(e)) => {
+            ClipboardWake::Push(Ok(snap)) => {
+                apply_device_snapshot(&snap, &mut clip, &activity, &mut state)
+            }
+            ClipboardWake::Push(Err(e)) => {
                 tracing::warn!("clipboard PUSH failed: {e:?}");
                 if let Some(c) = reconnect_pasteboard(adapter, handshake).await {
                     pb = c;
@@ -2039,7 +2126,7 @@ async fn clipboard_task(
                 }
             }
             // poll tick
-            None => {
+            ClipboardWake::Tick => {
                 // Fallback device -> host for devices that don't push.
                 match pb.get(GENERAL_PASTEBOARD).await {
                     Ok(snap) => apply_device_snapshot(&snap, &mut clip, &activity, &mut state),
@@ -2062,6 +2149,86 @@ async fn clipboard_task(
                     }
                 }
             }
+            ClipboardWake::Command(Some(command)) => {
+                let prepared_text = match &command {
+                    ClipboardCommand::SetText { text, .. } => text.clone(),
+                };
+                if execute_clipboard_command(&mut pb, &activity, command).await {
+                    state.last_text = Some(prepared_text);
+                    state.last_image = None;
+                    state.last_change_count = pb
+                        .get(GENERAL_PASTEBOARD)
+                        .await
+                        .ok()
+                        .and_then(|snapshot| snapshot.change_count);
+                } else if let Some(client) = reconnect_pasteboard(adapter, handshake).await {
+                    pb = client;
+                    subscribe(&mut pb).await;
+                }
+            }
+            ClipboardWake::Command(None) => commands_open = false,
+        }
+    }
+}
+
+async fn clipboard_command_loop(
+    mut pasteboard: Option<PasteboardServiceClient<Box<dyn ReadWrite>>>,
+    activity: &ClipboardSlot,
+    commands: &mut Receiver<ClipboardCommand>,
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+) {
+    loop {
+        let Some(command) = commands.recv().await else {
+            std::future::pending::<()>().await;
+            return;
+        };
+        if pasteboard.is_none() {
+            pasteboard = reconnect_pasteboard(adapter, handshake).await;
+        }
+        let Some(client) = pasteboard.as_mut() else {
+            reject_clipboard_command(command, "device pasteboard service is unavailable");
+            continue;
+        };
+        if !execute_clipboard_command(client, activity, command).await {
+            pasteboard = None;
+        }
+    }
+}
+
+async fn execute_clipboard_command(
+    pasteboard: &mut PasteboardServiceClient<Box<dyn ReadWrite>>,
+    activity: &ClipboardSlot,
+    command: ClipboardCommand,
+) -> bool {
+    match command {
+        ClipboardCommand::SetText { text, reply } => {
+            let result = pasteboard
+                .set_text(&text, GENERAL_PASTEBOARD)
+                .await
+                .map_err(|error| format!("unable to set device clipboard: {error:?}"));
+            let succeeded = result.is_ok();
+            if succeeded {
+                tracing::info!(
+                    bytes = text.len(),
+                    "clipboard: text prepared for device paste"
+                );
+                activity.set(ClipboardEvent {
+                    from_device: false,
+                    kind: ClipboardContentKind::Text,
+                    preview: clipboard_preview(&text, CLIPBOARD_PREVIEW_LEN),
+                });
+            }
+            let _ = reply.send(result);
+            succeeded
+        }
+    }
+}
+
+fn reject_clipboard_command(command: ClipboardCommand, reason: &str) {
+    match command {
+        ClipboardCommand::SetText { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
         }
     }
 }
@@ -2237,13 +2404,22 @@ async fn reconnect_pasteboard(
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
 ) -> Option<PasteboardServiceClient<Box<dyn ReadWrite>>> {
-    match PasteboardServiceClient::connect_rsd(adapter, handshake).await {
-        Ok(c) => {
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        PasteboardServiceClient::connect_rsd(adapter, handshake),
+    )
+    .await
+    {
+        Ok(Ok(c)) => {
             tracing::info!("clipboard: reconnected pasteboard service");
             Some(c)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::warn!("clipboard reconnect failed: {e:?}");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("clipboard reconnect timed out");
             None
         }
     }
@@ -2296,6 +2472,7 @@ async fn dispatch(
             }
             Ok(())
         }
+        InputCmd::PasteText { .. } => Ok(()),
         InputCmd::KeyUsage(usage) => type_key(indigo, usage, KeyMods::default()).await,
         InputCmd::KeyCombo { usage, mods } => type_key(indigo, usage, mods).await,
         InputCmd::KeyboardDown(usage) => indigo.send_keyboard(usage, ButtonState::Down).await,

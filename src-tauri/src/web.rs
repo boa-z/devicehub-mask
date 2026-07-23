@@ -25,7 +25,7 @@ use crate::protocol::{
     ActiveSlot, AppOperationSlot, AudioSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
     Frame, FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot,
     Orientation, OrientationSlot, RotateDir, StatusSlot, VideoCounters, encode_audio_envelope,
-    norm, unrotate_norm,
+    norm, unrotate_norm, validate_paste_text,
 };
 use crate::{
     performance::{PerformanceDemand, PerformanceSlot},
@@ -152,6 +152,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
+        .route("/api/device/text/paste", put(paste_device_text))
         .route("/api/device/restart", put(restart_device))
         .route("/api/device/shutdown", put(shutdown_device))
         .route(
@@ -347,6 +348,30 @@ struct SetLocationRequest {
     longitude: f64,
 }
 
+#[derive(Deserialize)]
+struct PasteDeviceTextRequest {
+    text: String,
+}
+
+async fn paste_device_text(
+    State(state): State<AppState>,
+    Json(request): Json<PasteDeviceTextRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_paste_text(&request.text).map_err(|error| (StatusCode::BAD_REQUEST, error.into()))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::PasteText {
+        text: request.text,
+        reply,
+    }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_device_command(response, "paste text").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn device_location(State(state): State<AppState>) -> Json<LocationStatus> {
     Json(state.location.get())
 }
@@ -397,6 +422,13 @@ fn validate_coordinates(latitude: f64, longitude: f64) -> Result<(), (StatusCode
 }
 
 async fn await_location_response(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    await_device_command(response, operation).await
+}
+
+async fn await_device_command(
     response: oneshot::Receiver<Result<(), String>>,
     operation: &str,
 ) -> Result<(), (StatusCode, String)> {
@@ -2344,6 +2376,36 @@ mod tests {
             Ok(InputCmd::Text(text)) if text == "Hello, iPhone!"
         ));
         assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn paste_text_endpoint_dispatches_unicode_and_waits_for_completion() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(paste_device_text(
+            State(state.clone()),
+            Json(PasteDeviceTextRequest {
+                text: "你好, iPhone".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::PasteText { text, reply } => {
+                assert_eq!(text, "你好, iPhone");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(request.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        assert!(matches!(
+            paste_device_text(
+                State(state),
+                Json(PasteDeviceTextRequest {
+                    text: "bad\0text".into(),
+                }),
+            )
+            .await,
+            Err((StatusCode::BAD_REQUEST, _))
+        ));
     }
 
     #[test]

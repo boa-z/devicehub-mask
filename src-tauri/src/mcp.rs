@@ -22,7 +22,7 @@ use crate::hid::TouchContact;
 use crate::protocol::{
     ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat, FrameSlot, InputCmd,
     InputSink, LocationStatusSlot, Orientation, OrientationSlot, RotateDir, StatusSlot, norm,
-    unrotate_norm,
+    unrotate_norm, validate_paste_text,
 };
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
@@ -39,6 +39,7 @@ const GRID_STEP: u32 = 100;
 const GRID_LABEL_EVERY: u32 = 2;
 const DEVICE_WAIT: Duration = Duration::from_secs(20);
 const LOCATION_WAIT: Duration = Duration::from_secs(10);
+const CLIPBOARD_WAIT: Duration = Duration::from_secs(10);
 const APP_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
@@ -798,6 +799,28 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Paste arbitrary Unicode text into the focused field through the iOS pasteboard and Cmd+V."
+    )]
+    async fn paste_text(
+        &self,
+        Parameters(params): Parameters<TextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let count = validate_paste_text(&params.text)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::PasteText {
+            text: params.text,
+            reply,
+        })?;
+        let result = tokio::time::timeout(CLIPBOARD_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("paste text timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?;
+        result.map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(format!("Pasted {count} characters."))
+    }
+
+    #[tool(
         description = "Press a special keyboard key: enter, escape, backspace, tab, delete, arrows, home, end, pageup or pagedown."
     )]
     async fn press_key(
@@ -1204,6 +1227,7 @@ mod tests {
             "multi_touch",
             "wait_for_frame",
             "type_text",
+            "paste_text",
             "press_key",
             "press_button",
             "rotate",

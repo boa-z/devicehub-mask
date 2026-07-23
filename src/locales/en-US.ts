@@ -178,9 +178,10 @@ export const enUS = {
     lockRotationControls: "Lock rotation controls",
     unlockRotationControls: "Unlock rotation controls",
     textInput: "Send text to device",
+    pasteTextFailed: "Unable to paste text on the device: {{error}}",
     textInputPlaceholder: "Text for the focused field",
-    textInputHint: "Direct HID typing currently supports printable ASCII text.",
-    sendText: "Send",
+    textInputHint: "Uses the device pasteboard and Cmd+V, including Unicode text. Focus an editable field first.",
+    sendText: "Paste",
     stageState: {
       waiting: "Waiting for an iOS device stream",
       reconnecting: "Control connection interrupted",

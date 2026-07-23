@@ -97,9 +97,12 @@ silently replace an existing item, and deletes are non-recursive.
 Clipboard synchronization connects CoreDevice Pasteboard Service only when its
 persisted opt-in setting is enabled for a newly connected session. Device changes
 are push-driven when available, while host changes use a bounded-rate poll with
-echo suppression. The disabled default performs no clipboard access or background
-clipboard transfer. Activity is published through an eight-entry broadcast channel
-to authenticated WebSocket clients, so UI feedback cannot backpressure the service.
+echo suppression. The disabled default performs no background clipboard access or
+transfer; an explicit one-shot paste still writes the requested text. Activity is
+published through an eight-entry broadcast channel to authenticated WebSocket
+clients, so UI feedback cannot backpressure the service.
+One-shot Unicode paste commands share that Pasteboard Service owner through a
+four-entry command queue and issue Cmd+V only after receiving the SET reply.
 
 IPA installation and app removal use independent Tokio tasks and fresh
 Installation Proxy connections so uploads do not block video, HID, or app-list
