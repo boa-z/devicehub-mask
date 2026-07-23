@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PcmAudioPlayer, defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume } from "./deviceAudio";
+import { PcmAudioPlayer, defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume, shouldReuseAudioResumeAttempt } from "./deviceAudio";
 
 describe("device audio", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -41,6 +41,13 @@ describe("device audio", () => {
     expect(shouldAttemptAudioResume(true, false, false)).toBe(true);
   });
 
+  it("reuses a gesture attempt but supersedes an automatic attempt", () => {
+    expect(shouldReuseAudioResumeAttempt(false, false)).toBe(true);
+    expect(shouldReuseAudioResumeAttempt(false, true)).toBe(false);
+    expect(shouldReuseAudioResumeAttempt(true, false)).toBe(true);
+    expect(shouldReuseAudioResumeAttempt(true, true)).toBe(true);
+  });
+
   it("waits for user activation before creating a context and replaces a stuck context", async () => {
     const contexts: FakeAudioContext[] = [];
     class TestAudioContext extends FakeAudioContext {
@@ -54,10 +61,13 @@ describe("device audio", () => {
     const chunk = { sampleRate: 48_000, channels: 2, frames: 1, samples: new Int16Array(2) };
 
     expect(player.isAudible()).toBe(true);
+    expect(player.contextState()).toBe("uninitialized");
     expect(player.push(chunk)).toBe(false);
     expect(contexts).toHaveLength(0);
     expect(await player.resume(true)).toBe(true);
     expect(contexts).toHaveLength(1);
+    expect(contexts[0].startedSources).toBe(1);
+    expect(player.contextState()).toBe("running");
 
     contexts[0].state = "suspended";
     expect(await player.resume(true)).toBe(true);
@@ -78,12 +88,28 @@ class FakeAudioContext {
   currentTime = 0;
   destination = {} as AudioDestinationNode;
   closed = false;
+  sampleRate = 48_000;
+  startedSources = 0;
 
   createGain() {
     return {
       gain: { setValueAtTime: vi.fn() },
       connect: vi.fn(),
     } as unknown as GainNode;
+  }
+
+  createBuffer() {
+    return {} as AudioBuffer;
+  }
+
+  createBufferSource() {
+    return {
+      buffer: null,
+      connect: vi.fn(),
+      start: vi.fn(() => { this.startedSources += 1; }),
+      stop: vi.fn(),
+      onended: null,
+    } as unknown as AudioBufferSourceNode;
   }
 
   async resume() {

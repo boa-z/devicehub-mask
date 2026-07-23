@@ -48,7 +48,7 @@ import { PerformanceHud } from "./components/PerformanceHud";
 import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, type DeviceAudioPreferences } from "./deviceAudio";
+import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, shouldReuseAudioResumeAttempt, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
@@ -220,6 +220,7 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
   const audioResumePromiseRef = useRef<Promise<boolean> | null>(null);
+  const audioResumeUserGestureRef = useRef(false);
   const audioResumeGenerationRef = useRef(0);
   const audioAutoResumeAttemptedRef = useRef(false);
   const audioReceptionLoggedRef = useRef(false);
@@ -264,7 +265,10 @@ export default function App() {
   const resumeDeviceAudio = useCallback((userGesture = false) => {
     // WebKit may leave a resume() requested outside a user gesture pending.
     // A real gesture must issue a fresh call while its activation is still live.
-    if (!userGesture && audioResumePromiseRef.current) return audioResumePromiseRef.current;
+    if (audioResumePromiseRef.current
+      && shouldReuseAudioResumeAttempt(audioResumeUserGestureRef.current, userGesture)) {
+      return audioResumePromiseRef.current;
+    }
     const generation = audioResumeGenerationRef.current + 1;
     audioResumeGenerationRef.current = generation;
     const attempt = (async () => {
@@ -272,7 +276,18 @@ export default function App() {
         const resumed = await audioPlayerRef.current?.resume(userGesture) ?? false;
         if (audioResumeGenerationRef.current === generation) {
           markAudioPlaybackSuspended(!resumed);
-          if (resumed) logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
+          if (resumed) {
+            logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
+          } else {
+            const contextState = audioPlayerRef.current?.contextState() ?? "unavailable";
+            const userActivation = navigator.userActivation?.isActive ?? false;
+            logFrontend(
+              "warn",
+              "audio",
+              "playback_resume_blocked",
+              `context=${contextState}; gesture=${userGesture}; user_activation=${userActivation}; visibility=${document.visibilityState}`,
+            );
+          }
         }
         return resumed;
       } catch (error) {
@@ -284,8 +299,12 @@ export default function App() {
       }
     })();
     audioResumePromiseRef.current = attempt;
+    audioResumeUserGestureRef.current = userGesture;
     void attempt.finally(() => {
-      if (audioResumePromiseRef.current === attempt) audioResumePromiseRef.current = null;
+      if (audioResumePromiseRef.current === attempt) {
+        audioResumePromiseRef.current = null;
+        audioResumeUserGestureRef.current = false;
+      }
     });
     return attempt;
   }, [markAudioPlaybackSuspended]);

@@ -17,6 +17,50 @@ use crate::protocol::{
 };
 
 const AUDIO_CHUNK_MILLIS: usize = 20;
+const AUDIO_DIAGNOSTIC_CHUNKS: u64 = 5_000 / AUDIO_CHUNK_MILLIS as u64;
+const AUDIO_ACTIVE_SAMPLE_THRESHOLD: i32 = 32;
+
+#[derive(Default)]
+struct AudioSignalWindow {
+    sample_count: u64,
+    active_sample_count: u64,
+    square_sum: f64,
+    peak: i32,
+}
+
+impl AudioSignalWindow {
+    fn observe(&mut self, pcm: &[u8]) {
+        for bytes in pcm.chunks_exact(2) {
+            let sample = i32::from(i16::from_le_bytes([bytes[0], bytes[1]]));
+            let magnitude = sample.abs();
+            self.sample_count += 1;
+            self.active_sample_count += u64::from(magnitude > AUDIO_ACTIVE_SAMPLE_THRESHOLD);
+            self.square_sum += f64::from(sample * sample);
+            self.peak = self.peak.max(magnitude);
+        }
+    }
+
+    fn levels(&self) -> (f64, f64, f64) {
+        let rms = if self.sample_count == 0 {
+            0.0
+        } else {
+            (self.square_sum / self.sample_count as f64).sqrt()
+        };
+        let dbfs = |amplitude: f64| {
+            if amplitude <= 0.0 {
+                -96.0
+            } else {
+                (20.0 * (amplitude / 32_768.0).log10()).max(-96.0)
+            }
+        };
+        let active_ratio = if self.sample_count == 0 {
+            0.0
+        } else {
+            self.active_sample_count as f64 / self.sample_count as f64
+        };
+        (dbfs(f64::from(self.peak)), dbfs(rms), active_ratio)
+    }
+}
 
 pub async fn spawn_audio_ffmpeg()
 -> std::io::Result<(Child, ChildStdout, ChildStderr, std::net::SocketAddr)> {
@@ -53,6 +97,7 @@ pub async fn read_audio_chunks(mut stdout: ChildStdout, slot: AudioSlot) {
     let frames_per_chunk = AUDIO_SAMPLE_RATE as usize * AUDIO_CHUNK_MILLIS / 1_000;
     let mut chunk = vec![0_u8; frames_per_chunk * usize::from(AUDIO_CHANNELS) * 2];
     let mut chunks = 0_u64;
+    let mut signal = AudioSignalWindow::default();
     loop {
         match stdout.read_exact(&mut chunk).await {
             Ok(_) => {
@@ -64,6 +109,18 @@ pub async fn read_audio_chunks(mut stdout: ChildStdout, slot: AudioSlot) {
                         frames = frames_per_chunk,
                         "ffmpeg audio PCM output started"
                     );
+                }
+                signal.observe(&chunk);
+                if chunks.is_multiple_of(AUDIO_DIAGNOSTIC_CHUNKS) {
+                    let (peak_dbfs, rms_dbfs, active_sample_ratio) = signal.levels();
+                    tracing::debug!(
+                        target: "devicehub_mask::audio",
+                        peak_dbfs,
+                        rms_dbfs,
+                        active_sample_ratio,
+                        "decoded PCM signal diagnostics"
+                    );
+                    signal = AudioSignalWindow::default();
                 }
                 slot.publish(bytes::Bytes::copy_from_slice(&chunk));
             }
@@ -464,6 +521,25 @@ fn trim(line: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measures_silent_and_audible_pcm_windows() {
+        let mut silent = AudioSignalWindow::default();
+        silent.observe(&[0; 8]);
+        assert_eq!(silent.levels(), (-96.0, -96.0, 0.0));
+
+        let samples = [0_i16, 16_384, -16_384, i16::MIN];
+        let pcm = samples
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut audible = AudioSignalWindow::default();
+        audible.observe(&pcm);
+        let (peak_dbfs, rms_dbfs, active_sample_ratio) = audible.levels();
+        assert_eq!(peak_dbfs, 0.0);
+        assert!((-4.3..-4.2).contains(&rms_dbfs));
+        assert_eq!(active_sample_ratio, 0.75);
+    }
 
     #[test]
     fn configured_ffmpeg_precedes_path_and_common_locations() {

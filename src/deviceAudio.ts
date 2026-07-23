@@ -35,6 +35,13 @@ const magic = [0x44, 0x48, 0x41, 0x50] as const;
 const headerLength = 16;
 const resumeWaitMs = 1_000;
 
+export function shouldReuseAudioResumeAttempt(
+  pendingUserGesture: boolean,
+  requestedUserGesture: boolean,
+): boolean {
+  return !requestedUserGesture || pendingUserGesture;
+}
+
 export type PcmAudioChunk = {
   sampleRate: number;
   channels: number;
@@ -122,6 +129,7 @@ export class PcmAudioPlayer {
     }
     const context = this.ensureContext();
     if (context.state !== "running") {
+      if (recreateSuspendedContext) this.primeContext(context);
       let timeout: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         context.resume(),
@@ -135,6 +143,10 @@ export class PcmAudioPlayer {
 
   isRunning(): boolean {
     return this.context?.state === "running";
+  }
+
+  contextState(): AudioContextState | "uninitialized" {
+    return this.context?.state ?? "uninitialized";
   }
 
   isAudible(): boolean {
@@ -187,6 +199,15 @@ export class PcmAudioPlayer {
     this.context = null;
     this.gain = null;
     void context?.close();
+  }
+
+  private primeContext(context: AudioContext) {
+    const source = context.createBufferSource();
+    source.buffer = context.createBuffer(1, 1, context.sampleRate);
+    source.connect(this.gain ?? context.destination);
+    source.onended = () => this.sources.delete(source);
+    this.sources.add(source);
+    source.start(0);
   }
 
   private ensureContext() {
