@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PcmAudioPlayer, defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume } from "./deviceAudio";
 
 describe("device audio", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("parses PCM envelopes and rejects ordinary image data", () => {
     expect(parseAudioEnvelope(new Uint8Array([0xff, 0xd8, 0xff]).buffer)).toBeNull();
     const bytes = new Uint8Array(24);
@@ -39,12 +41,50 @@ describe("device audio", () => {
     expect(shouldAttemptAudioResume(true, false, false)).toBe(true);
   });
 
-  it("treats muted and zero-volume playback as inaudible", () => {
-    const muted = new PcmAudioPlayer({ muted: true, volume: 1 });
-    const silent = new PcmAudioPlayer({ muted: false, volume: 0 });
-    const audible = new PcmAudioPlayer({ muted: false, volume: 0.5 });
-    expect(muted.isAudible()).toBe(false);
-    expect(silent.isAudible()).toBe(false);
-    expect(audible.isAudible()).toBe(true);
+  it("waits for user activation before creating a context and replaces a stuck context", async () => {
+    const contexts: FakeAudioContext[] = [];
+    class TestAudioContext extends FakeAudioContext {
+      constructor() {
+        super();
+        contexts.push(this);
+      }
+    }
+    vi.stubGlobal("AudioContext", TestAudioContext);
+    const player = new PcmAudioPlayer(defaultDeviceAudioPreferences);
+    const chunk = { sampleRate: 48_000, channels: 2, frames: 1, samples: new Int16Array(2) };
+
+    expect(player.push(chunk)).toBe(false);
+    expect(contexts).toHaveLength(0);
+    expect(await player.resume(true)).toBe(true);
+    expect(contexts).toHaveLength(1);
+
+    contexts[0].state = "suspended";
+    expect(await player.resume(true)).toBe(true);
+    expect(contexts).toHaveLength(2);
+    expect(contexts[0].closed).toBe(true);
+    player.close();
   });
 });
+
+class FakeAudioContext {
+  state: AudioContextState = "suspended";
+  currentTime = 0;
+  destination = {} as AudioDestinationNode;
+  closed = false;
+
+  createGain() {
+    return {
+      gain: { setValueAtTime: vi.fn() },
+      connect: vi.fn(),
+    } as unknown as GainNode;
+  }
+
+  async resume() {
+    this.state = "running";
+  }
+
+  async close() {
+    this.closed = true;
+    this.state = "closed";
+  }
+}

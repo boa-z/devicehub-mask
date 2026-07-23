@@ -219,6 +219,7 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
   const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
   const audioResumePromiseRef = useRef<Promise<boolean> | null>(null);
+  const audioResumeGenerationRef = useRef(0);
   const audioReceptionLoggedRef = useRef(false);
   const audioPlaybackSuspendedRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -262,15 +263,21 @@ export default function App() {
     // WebKit may leave a resume() requested outside a user gesture pending.
     // A real gesture must issue a fresh call while its activation is still live.
     if (!userGesture && audioResumePromiseRef.current) return audioResumePromiseRef.current;
+    const generation = audioResumeGenerationRef.current + 1;
+    audioResumeGenerationRef.current = generation;
     const attempt = (async () => {
       try {
-        const resumed = await audioPlayerRef.current?.resume() ?? false;
-        markAudioPlaybackSuspended(!resumed);
-        if (resumed) logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
+        const resumed = await audioPlayerRef.current?.resume(userGesture) ?? false;
+        if (audioResumeGenerationRef.current === generation) {
+          markAudioPlaybackSuspended(!resumed);
+          if (resumed) logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
+        }
         return resumed;
       } catch (error) {
-        markAudioPlaybackSuspended(true);
-        logFrontend("warn", "audio", "resume_failed", error);
+        if (audioResumeGenerationRef.current === generation) {
+          markAudioPlaybackSuspended(true);
+          logFrontend("warn", "audio", "resume_failed", error);
+        }
         return false;
       }
     })();
@@ -281,11 +288,11 @@ export default function App() {
     return attempt;
   }, [markAudioPlaybackSuspended]);
 
-  const updateAudioPlayback = useCallback((next: DeviceAudioPreferences) => {
+  const updateAudioPlayback = useCallback((next: DeviceAudioPreferences, userGesture = false) => {
     setAudioPlayback(next);
     saveDeviceAudioPreferences(next);
     audioPlayerRef.current?.setPreferences(next);
-    if (!next.muted) void resumeDeviceAudio();
+    if (!next.muted) void resumeDeviceAudio(userGesture);
   }, [resumeDeviceAudio]);
 
   useEffect(() => {
@@ -771,7 +778,6 @@ export default function App() {
             const player = audioPlayerRef.current;
             const scheduled = player?.push(audio) ?? false;
             markAudioPlaybackSuspended(!scheduled);
-            if (!scheduled && player?.isAudible()) void resumeDeviceAudio();
             if (!audioReceptionLoggedRef.current) {
               audioReceptionLoggedRef.current = true;
               logFrontend(
@@ -802,7 +808,7 @@ export default function App() {
     };
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
-  }, [backend, markAudioPlaybackSuspended, resumeDeviceAudio]);
+  }, [backend, markAudioPlaybackSuspended]);
 
   useEffect(() => () => {
     if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
@@ -1324,7 +1330,7 @@ export default function App() {
     if (action === "unavailable" || deviceAudioBusy) return;
     if (action !== "enable") {
       if (action === "unmute") {
-        updateAudioPlayback({ ...audioPlayback, muted: false });
+        updateAudioPlayback({ ...audioPlayback, muted: false }, true);
       } else if (action === "resume") {
         setDeviceAudioBusy(true);
         const resumed = await resumeDeviceAudio(true);
@@ -1626,7 +1632,7 @@ export default function App() {
               onInspectorVisibleChange={setInspectorVisible}
               onDeviceViewChange={updateDeviceViewPreferences}
               onPerformanceHudChange={updatePerformanceHud}
-              onAudioPlaybackChange={updateAudioPlayback}
+              onAudioPlaybackChange={(preferences) => updateAudioPlayback(preferences, true)}
               onAudioEnabledChange={setDeviceAudioEnabled}
             />
           ) : page === "location" ? (

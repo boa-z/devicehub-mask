@@ -33,6 +33,7 @@ export function shouldAttemptAudioResume(
 const storageKey = "devicehub-mask.device-audio";
 const magic = [0x44, 0x48, 0x41, 0x50] as const;
 const headerLength = 16;
+const resumeWaitMs = 1_000;
 
 export type PcmAudioChunk = {
   sampleRate: number;
@@ -115,9 +116,20 @@ export class PcmAudioPlayer {
     }
   }
 
-  async resume(): Promise<boolean> {
+  async resume(recreateSuspendedContext = false): Promise<boolean> {
+    if (recreateSuspendedContext && this.context && this.context.state !== "running") {
+      this.replaceContext();
+    }
     const context = this.ensureContext();
-    if (context.state !== "running") await context.resume();
+    if (context.state !== "running") {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        context.resume(),
+        new Promise<void>((resolve) => { timeout = setTimeout(resolve, resumeWaitMs); }),
+      ]).finally(() => {
+        if (timeout !== undefined) clearTimeout(timeout);
+      });
+    }
     return context.state === "running";
   }
 
@@ -125,13 +137,10 @@ export class PcmAudioPlayer {
     return this.context?.state === "running";
   }
 
-  isAudible(): boolean {
-    return !this.preferences.muted && this.preferences.volume > 0;
-  }
-
   push(chunk: PcmAudioChunk): boolean {
-    const context = this.ensureContext();
-    if (context.state !== "running" || !this.gain) return false;
+    const context = this.context;
+    const gain = this.gain;
+    if (!context || !gain || context.state !== "running") return false;
     if (this.nextStartTime - context.currentTime > 0.25) this.reset();
     if (this.nextStartTime < context.currentTime) this.nextStartTime = context.currentTime + 0.06;
 
@@ -144,7 +153,7 @@ export class PcmAudioPlayer {
     }
     const source = context.createBufferSource();
     source.buffer = audioBuffer;
-    source.connect(this.gain);
+    source.connect(gain);
     source.onended = () => this.sources.delete(source);
     this.sources.add(source);
     source.start(this.nextStartTime);
@@ -161,10 +170,19 @@ export class PcmAudioPlayer {
   }
 
   close() {
+    const context = this.context;
     this.reset();
-    void this.context?.close();
     this.context = null;
     this.gain = null;
+    void context?.close();
+  }
+
+  private replaceContext() {
+    const context = this.context;
+    this.reset();
+    this.context = null;
+    this.gain = null;
+    void context?.close();
   }
 
   private ensureContext() {
