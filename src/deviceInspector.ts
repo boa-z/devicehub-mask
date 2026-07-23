@@ -1,6 +1,19 @@
 import type { DeviceApp, ProvisioningProfile } from "./types";
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
+export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
+
+export function appProfileBindingState(
+  bundleId: string,
+  activeProfile: string,
+  bindings: Record<string, string>,
+  conflicts: readonly string[],
+): AppProfileBindingState {
+  if (conflicts.includes(bundleId)) return "conflict";
+  const owner = bindings[bundleId];
+  if (!owner) return "unbound";
+  return owner === activeProfile ? "active" : "other";
+}
 
 export function formatCapacity(bytes: number | null): string {
   if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return "-";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "./deviceInspector";
+import { appProfileBindingState, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "./deviceInspector";
 import type { DeviceApp, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -73,6 +73,14 @@ describe("device inspector", () => {
     expect(filterDeviceApps(apps, " game ")).toEqual([apps[1]]);
     expect(filterDeviceApps(apps, "CAMERA")).toEqual([apps[0]]);
     expect(filterDeviceApps(apps, "")).toBe(apps);
+  });
+
+  it("classifies app profile bindings without hiding conflicts", () => {
+    const bindings = { "com.example.camera": "camera", "com.example.game": "game" };
+    expect(appProfileBindingState("com.example.camera", "camera", bindings, [])).toBe("active");
+    expect(appProfileBindingState("com.example.game", "camera", bindings, [])).toBe("other");
+    expect(appProfileBindingState("com.example.notes", "camera", bindings, [])).toBe("unbound");
+    expect(appProfileBindingState("com.example.game", "game", bindings, ["com.example.game"])).toBe("conflict");
   });
 
   it("filters provisioning profiles by metadata and status", () => {

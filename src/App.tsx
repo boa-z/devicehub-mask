@@ -938,6 +938,34 @@ export default function App() {
     if (!response.ok) throw new Error(translateRef.current("errors.saveProfile", { status: response.status }));
   }, [request]);
 
+  const changeAppProfileBinding = useCallback(async (bundleId: string, bind: boolean) => {
+    if (appBindingConflicts.includes(bundleId)) {
+      throw new Error(translateRef.current("profile.appBindingConflict"));
+    }
+    const owner = appProfileBindings[bundleId];
+    const profileName = bind ? activeProfile : owner;
+    if (!profileName || (bind && owner && owner !== activeProfile)) {
+      throw new Error(translateRef.current("profile.appBindingOwned", { profile: owner ?? "" }));
+    }
+    const loaded = await readProfile(profileName);
+    const bundleIdentifiers = bind
+      ? [...new Set([...loaded.bundleIdentifiers, bundleId])]
+      : loaded.bundleIdentifiers.filter((candidate) => candidate !== bundleId);
+    const updated = { ...loaded, bundleIdentifiers };
+    await writeProfile(profileName, updated);
+    await refreshProfiles();
+    const mergeBinding = (current: Profile) => current.name === profileName
+      ? {
+          ...current,
+          bundleIdentifiers: bind
+            ? [...new Set([...current.bundleIdentifiers, bundleId])]
+            : current.bundleIdentifiers.filter((candidate) => candidate !== bundleId),
+        }
+      : current;
+    setProfile(mergeBinding);
+    setControlProfile(mergeBinding);
+  }, [activeProfile, appBindingConflicts, appProfileBindings, readProfile, refreshProfiles, writeProfile]);
+
   useEffect(() => {
     if (!backend) return;
     const initializeProfiles = async () => {
@@ -1494,7 +1522,15 @@ export default function App() {
                   />
                 )}
                 {page === "device" && !deviceFullscreen && (
-                  <DeviceInspector activeUdid={status.active_udid} request={request} onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)} />
+                  <DeviceInspector
+                    activeUdid={status.active_udid}
+                    request={request}
+                    activeProfile={activeProfile}
+                    appProfileBindings={appProfileBindings}
+                    bindingConflicts={appBindingConflicts}
+                    onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
+                    onAppProfileBindingChange={changeAppProfileBinding}
+                  />
                 )}
               </main>
             </>

@@ -82,6 +82,12 @@ Profiles are validated JSON files in the Tauri application data directory. You
 can select, activate, create, duplicate, rename, delete, import, and export them.
 The active profile cannot be deleted.
 
+A profile can be associated with app bundle IDs. Launching an associated app
+from the DeviceHub Mask app list activates that saved control profile. The app
+list shows the current association and can associate an unassigned app with the
+active profile or remove that association. Conflicting or cross-profile
+associations must be resolved explicitly in the profile editor.
+
 DeviceHub Mask imports and exports scrcpy-mask `0.0.1` JSON. All thirteen
 controller types are preserved, including nested sequence positions, bindings,
 release modes, timing, and script fields. Import compatibility does not imply

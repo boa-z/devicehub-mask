@@ -2,7 +2,9 @@ import {
   AppstoreOutlined,
   CopyOutlined,
   DeleteOutlined,
+  DisconnectOutlined,
   InfoCircleOutlined,
+  LinkOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
@@ -13,7 +15,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "../deviceInspector";
+import { appProfileBindingState, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "../deviceInspector";
 import type { ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, DeviceApp, DeviceDetails, ProvisioningProfile } from "../types";
 
@@ -23,7 +25,11 @@ type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type Props = {
   activeUdid: string | null;
   request: Request;
+  activeProfile: string;
+  appProfileBindings: Record<string, string>;
+  bindingConflicts: string[];
   onAppLaunched?: (bundleId: string) => void;
+  onAppProfileBindingChange: (bundleId: string, bind: boolean) => Promise<void>;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -33,7 +39,15 @@ async function readJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function DeviceInspector({ activeUdid, request, onAppLaunched }: Props) {
+export function DeviceInspector({
+  activeUdid,
+  request,
+  activeProfile,
+  appProfileBindings,
+  bindingConflicts,
+  onAppLaunched,
+  onAppProfileBindingChange,
+}: Props) {
   const { t, i18n } = useTranslation();
   const [tab, setTab] = useState<InspectorTab>("info");
   const [details, setDetails] = useState<DeviceDetails | null>(null);
@@ -44,6 +58,7 @@ export function DeviceInspector({ activeUdid, request, onAppLaunched }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [launching, setLaunching] = useState<string | null>(null);
+  const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const handledOperation = useRef(0);
 
@@ -153,6 +168,18 @@ export function DeviceInspector({ activeUdid, request, onAppLaunched }: Props) {
   const copyBundleId = async (bundleId: string) => {
     await navigator.clipboard.writeText(bundleId);
     void message.success(t("deviceInspector.bundleIdCopied"));
+  };
+
+  const changeAppProfileBinding = async (bundleId: string, bind: boolean) => {
+    setBindingApp(bundleId);
+    try {
+      await onAppProfileBindingChange(bundleId, bind);
+      void message.success(t(bind ? "deviceInspector.appProfileBound" : "deviceInspector.appProfileUnbound", { profile: activeProfile }));
+    } catch (bindingError) {
+      void message.error(t("deviceInspector.appProfileBindingFailed", { error: String(bindingError) }));
+    } finally {
+      setBindingApp(null);
+    }
   };
 
   const installApp = async () => {
@@ -282,8 +309,15 @@ export function DeviceInspector({ activeUdid, request, onAppLaunched }: Props) {
           )}
           <div className="device-app-count">{t("deviceInspector.appCount", { count: visibleApps.length })}</div>
           <div className="device-app-list">
-            {visibleApps.map((app) => (
-              <div className="device-app-row" key={app.bundle_id}>
+            {visibleApps.map((app) => {
+              const bindingState = appProfileBindingState(app.bundle_id, activeProfile, appProfileBindings, bindingConflicts);
+              const boundProfile = appProfileBindings[app.bundle_id];
+              const bindingTooltip = bindingState === "conflict"
+                ? t("deviceInspector.appProfileConflict")
+                : bindingState === "other"
+                  ? t("deviceInspector.appProfileBoundOther", { profile: boundProfile })
+                  : t(bindingState === "active" ? "deviceInspector.unbindAppProfile" : "deviceInspector.bindAppProfile", { profile: activeProfile });
+              return <div className="device-app-row" key={app.bundle_id}>
                 <div className="device-app-icon" aria-hidden="true">{app.name.slice(0, 1).toLocaleUpperCase()}</div>
                 <div className="device-app-meta">
                   <Typography.Text strong ellipsis={{ tooltip: app.name }}>{app.name}</Typography.Text>
@@ -291,9 +325,22 @@ export function DeviceInspector({ activeUdid, request, onAppLaunched }: Props) {
                   <div className="device-app-tags">
                     {app.version && <Tag>{app.version}</Tag>}
                     {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}
+                    {bindingState === "conflict"
+                      ? <Tag color="error">{t("deviceInspector.appProfileConflictTag")}</Tag>
+                      : boundProfile && <Tag color={bindingState === "active" ? "success" : "default"}>{t("deviceInspector.appProfileTag", { profile: boundProfile })}</Tag>}
                   </div>
                 </div>
                 <div className="device-app-actions">
+                  <Tooltip title={bindingTooltip}>
+                    <Button
+                      size="small"
+                      type={bindingState === "active" ? "primary" : "default"}
+                      icon={bindingState === "active" ? <DisconnectOutlined /> : <LinkOutlined />}
+                      loading={bindingApp === app.bundle_id}
+                      disabled={bindingState === "conflict" || bindingState === "other"}
+                      onClick={() => void changeAppProfileBinding(app.bundle_id, bindingState !== "active")}
+                    />
+                  </Tooltip>
                   <Tooltip title={t("deviceInspector.copyBundleId")}>
                     <Button size="small" icon={<CopyOutlined />} onClick={() => void copyBundleId(app.bundle_id)} />
                   </Tooltip>
@@ -318,8 +365,8 @@ export function DeviceInspector({ activeUdid, request, onAppLaunched }: Props) {
                     </Tooltip>
                   )}
                 </div>
-              </div>
-            ))}
+              </div>;
+            })}
             {visibleApps.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noApps")} />}
           </div>
         </div>
