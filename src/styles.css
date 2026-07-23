@@ -100,6 +100,13 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-profile-details > span { color: #7f8a89; }
 .device-profile-details > .ant-typography { text-align: right; margin: 0; overflow-wrap: anywhere; }
 .device-profile-error { font-size: 11px; overflow-wrap: anywhere; }
+.device-crashes-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.device-crash-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
+.device-crash-row { min-height: 68px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 28px minmax(0, 1fr) 32px; align-items: center; gap: 8px; }
+.device-crash-icon { color: #8ba5a1; font-size: 18px; }
+.device-crash-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.device-crash-meta > .ant-typography { margin: 0; }
+.device-crash-meta .ant-tag { margin: 0 4px 0 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
 .inspector-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .inspector-title h5 { margin: 0; }
 .mapping-list { margin-top: 14px; display: grid; gap: 2px; }

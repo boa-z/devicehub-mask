@@ -1,4 +1,4 @@
-import type { DeviceApp, ProvisioningProfile } from "./types";
+import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
@@ -26,6 +26,28 @@ export function filterDeviceApps(apps: DeviceApp[], query: string): DeviceApp[] 
   return apps.filter((app) =>
     app.name.toLocaleLowerCase().includes(needle)
     || app.bundle_id.toLocaleLowerCase().includes(needle));
+}
+
+export function filterCrashReports(reports: DeviceCrashReport[], query: string): DeviceCrashReport[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return reports;
+  return reports.filter((report) =>
+    report.name.toLocaleLowerCase().includes(needle)
+    || report.path.toLocaleLowerCase().includes(needle));
+}
+
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "-";
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(bytes < 10_000 ? 1 : 0)} KB`;
+  return `${(bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0)} MB`;
+}
+
+export function formatReportDate(value: string, locale: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "-"
+    : new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
 export function filterProvisioningProfiles(

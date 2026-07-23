@@ -153,6 +153,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
         .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
         .route("/api/device/apps/{bundle_id}/stop", put(stop_app))
+        .route("/api/device/crash-reports", get(device_crash_reports))
+        .route("/api/device/crash-reports/export", put(export_crash_report))
         .route(
             "/api/device/provisioning-profiles",
             get(device_provisioning_profiles),
@@ -255,6 +257,7 @@ async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String
 }
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CRASH_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 struct SetLocationRequest {
@@ -560,6 +563,73 @@ async fn stop_app(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(serde_json::json!({ "was_running": was_running })))
+}
+
+async fn device_crash_reports(
+    State(state): State<AppState>,
+) -> Result<Json<crate::protocol::DeviceCrashReportList>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::ListCrashReports(reply)) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let reports = tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "crash report list request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(reports))
+}
+
+#[derive(Deserialize)]
+struct ExportCrashReportRequest {
+    device_path: String,
+    destination: PathBuf,
+}
+
+async fn export_crash_report(
+    State(state): State<AppState>,
+    Json(request): Json<ExportCrashReportRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::ExportCrashReport {
+        device_path: request.device_path,
+        destination: request.destination,
+        reply,
+    }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let bytes_written = tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "crash report export timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(serde_json::json!({ "bytes_written": bytes_written })))
 }
 
 fn valid_bundle_identifier(bundle_id: &str) -> bool {
@@ -1885,6 +1955,10 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            device_crash_reports(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             install_app(
                 State(state.clone()),
                 Json(InstallAppRequest {
@@ -1940,6 +2014,53 @@ mod tests {
         }
         let Json(result) = request.await.unwrap().unwrap();
         assert_eq!(result, serde_json::json!({ "was_running": true }));
+    }
+
+    #[tokio::test]
+    async fn crash_report_list_and_export_use_the_device_session() {
+        let (state, mut input_rx) = test_state();
+        let list_request = tokio::spawn(device_crash_reports(State(state.clone())));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::ListCrashReports(reply) => {
+                reply
+                    .send(Ok(crate::protocol::DeviceCrashReportList {
+                        reports: vec![crate::protocol::DeviceCrashReport {
+                            path: "/Report.ips".into(),
+                            name: "Report.ips".into(),
+                            size_bytes: 42,
+                            modified: "2026-07-24T00:00:00Z".into(),
+                        }],
+                        truncated: false,
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let Json(list) = list_request.await.unwrap().unwrap();
+        assert_eq!(list.reports.len(), 1);
+        assert!(!list.truncated);
+
+        let export_request = tokio::spawn(export_crash_report(
+            State(state),
+            Json(ExportCrashReportRequest {
+                device_path: "/Report.ips".into(),
+                destination: PathBuf::from("/tmp/Report.ips"),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::ExportCrashReport {
+                device_path,
+                destination,
+                reply,
+            } => {
+                assert_eq!(device_path, "/Report.ips");
+                assert_eq!(destination, PathBuf::from("/tmp/Report.ips"));
+                reply.send(Ok(42)).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let Json(result) = export_request.await.unwrap().unwrap();
+        assert_eq!(result, serde_json::json!({ "bytes_written": 42 }));
     }
 
     #[tokio::test]

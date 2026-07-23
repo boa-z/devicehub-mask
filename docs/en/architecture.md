@@ -83,6 +83,12 @@ The current `idevice` package helper buffers a selected IPA before AFC upload
 and cannot report byte-level upload progress. The frontend therefore labels the
 upload stage as indeterminate instead of displaying invented percentages.
 
+Crash-report listing and export open fresh CrashReportCopyMobile/AFC sessions in
+independent Tokio tasks, so recursive directory reads and file transfer cannot
+block HID dispatch. Listing is bounded by depth and entry counts. Export
+revalidates an absolute device path and regular-file metadata, caps allocation
+at 128 MiB, and returns only metadata to the WebView.
+
 ## Video Pipeline
 
 CoreDevice displayservice produces RTP/HEVC. The backend assembles complete HEVC

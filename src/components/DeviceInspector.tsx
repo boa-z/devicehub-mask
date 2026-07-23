@@ -1,8 +1,11 @@
 import {
   AppstoreOutlined,
+  BugOutlined,
   CopyOutlined,
   DeleteOutlined,
   DisconnectOutlined,
+  DownloadOutlined,
+  FileTextOutlined,
   InfoCircleOutlined,
   LinkOutlined,
   PlayCircleOutlined,
@@ -12,15 +15,15 @@ import {
   StopOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { appProfileBindingState, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "../deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate } from "../deviceInspector";
 import type { ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, DeviceApp, DeviceDetails, ProvisioningProfile } from "../types";
+import type { AppOperation, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, ProvisioningProfile } from "../types";
 
-type InspectorTab = "info" | "apps" | "profiles";
+type InspectorTab = "info" | "apps" | "profiles" | "crashes";
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
 type Props = {
@@ -54,11 +57,14 @@ export function DeviceInspector({
   const [details, setDetails] = useState<DeviceDetails | null>(null);
   const [apps, setApps] = useState<DeviceApp[]>([]);
   const [profiles, setProfiles] = useState<ProvisioningProfile[]>([]);
+  const [crashReports, setCrashReports] = useState<DeviceCrashReport[]>([]);
+  const [crashReportsTruncated, setCrashReportsTruncated] = useState(false);
   const [query, setQuery] = useState("");
   const [profileStatus, setProfileStatus] = useState<ProfileStatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appProcessAction, setAppProcessAction] = useState<{ bundleId: string; kind: "launch" | "stop" } | null>(null);
+  const [exportingReport, setExportingReport] = useState<string | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const handledOperation = useRef(0);
@@ -76,8 +82,12 @@ export function DeviceInspector({
         setDetails(await readJson<DeviceDetails>(await request("/api/device/details")));
       } else if (tab === "apps") {
         await loadApps();
-      } else {
+      } else if (tab === "profiles") {
         setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
+      } else {
+        const result = await readJson<DeviceCrashReportList>(await request("/api/device/crash-reports"));
+        setCrashReports(result.reports);
+        setCrashReportsTruncated(result.truncated);
       }
     } catch (loadError) {
       setError(String(loadError));
@@ -90,6 +100,8 @@ export function DeviceInspector({
     setDetails(null);
     setApps([]);
     setProfiles([]);
+    setCrashReports([]);
+    setCrashReportsTruncated(false);
     setAppOperation(null);
     setError(null);
   }, [activeUdid]);
@@ -150,6 +162,10 @@ export function DeviceInspector({
   const visibleProfiles = useMemo(
     () => filterProvisioningProfiles(profiles, query, profileStatus),
     [profileStatus, profiles, query],
+  );
+  const visibleCrashReports = useMemo(
+    () => filterCrashReports(crashReports, query),
+    [crashReports, query],
   );
 
   const launch = async (app: DeviceApp) => {
@@ -238,6 +254,29 @@ export function DeviceInspector({
     });
   };
 
+  const exportCrashReport = async (report: DeviceCrashReport) => {
+    const destination = await save({
+      defaultPath: report.name.replaceAll("/", "_").replaceAll("\\", "_"),
+      filters: [{ name: t("deviceInspector.crashReportFile"), extensions: ["ips", "crash", "panic", "tailspin", "txt"] }],
+    });
+    if (!destination) return;
+    setExportingReport(report.path);
+    try {
+      const response = await request("/api/device/crash-reports/export", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_path: report.path, destination }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      const result = await response.json() as { bytes_written: number };
+      void message.success(t("deviceInspector.crashReportExported", { size: formatFileSize(result.bytes_written) }));
+    } catch (exportError) {
+      void message.error(t("deviceInspector.crashReportExportFailed", { error: String(exportError) }));
+    } finally {
+      setExportingReport(null);
+    }
+  };
+
   const appMutationRunning = appOperation?.state === "running";
 
   const infoRows = details ? [
@@ -282,6 +321,7 @@ export function DeviceInspector({
             { value: "info", label: t("deviceInspector.info"), icon: <InfoCircleOutlined /> },
             { value: "apps", label: t("deviceInspector.apps"), icon: <AppstoreOutlined /> },
             { value: "profiles", label: t("deviceInspector.profiles"), icon: <SafetyCertificateOutlined /> },
+            { value: "crashes", label: t("deviceInspector.crashes"), icon: <BugOutlined /> },
           ]}
           onChange={(next) => {
             setTab(next);
@@ -297,7 +337,7 @@ export function DeviceInspector({
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noDevice")} />
       ) : error ? (
         <Alert type="error" showIcon message={t("deviceInspector.loadFailed")} description={error} />
-      ) : loading && (tab === "info" ? !details : tab === "apps" ? apps.length === 0 : profiles.length === 0) ? (
+      ) : loading && (tab === "info" ? !details : tab === "apps" ? apps.length === 0 : tab === "profiles" ? profiles.length === 0 : crashReports.length === 0) ? (
         <div className="device-inspector-loading"><Spin /></div>
       ) : tab === "info" ? (
         <div className="device-info-list">
@@ -422,7 +462,7 @@ export function DeviceInspector({
             {visibleApps.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noApps")} />}
           </div>
         </div>
-      ) : (
+      ) : tab === "profiles" ? (
         <div className="device-profiles-pane">
           <Input
             allowClear
@@ -479,6 +519,45 @@ export function DeviceInspector({
               </div>
             ))}
             {visibleProfiles.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noProfiles")} />}
+          </div>
+        </div>
+      ) : (
+        <div className="device-crashes-pane">
+          <Input
+            allowClear
+            value={query}
+            prefix={<SearchOutlined />}
+            placeholder={t("deviceInspector.searchCrashReports")}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {crashReportsTruncated && (
+            <Alert type="warning" showIcon message={t("deviceInspector.crashReportsTruncated")} />
+          )}
+          <div className="device-app-count">{t("deviceInspector.crashReportCount", { count: visibleCrashReports.length })}</div>
+          <div className="device-crash-list">
+            {visibleCrashReports.map((report) => (
+              <div className="device-crash-row" key={report.path}>
+                <FileTextOutlined className="device-crash-icon" aria-hidden="true" />
+                <div className="device-crash-meta">
+                  <Typography.Text strong ellipsis={{ tooltip: report.name }}>{report.name}</Typography.Text>
+                  <Typography.Text type="secondary" ellipsis={{ tooltip: report.path }}>{report.path}</Typography.Text>
+                  <div>
+                    <Tag>{formatFileSize(report.size_bytes)}</Tag>
+                    <Tag>{formatReportDate(report.modified, i18n.resolvedLanguage ?? i18n.language)}</Tag>
+                  </div>
+                </div>
+                <Tooltip title={t("deviceInspector.exportCrashReport")}>
+                  <Button
+                    size="small"
+                    icon={<DownloadOutlined />}
+                    loading={exportingReport === report.path}
+                    disabled={exportingReport !== null}
+                    onClick={() => void exportCrashReport(report)}
+                  />
+                </Tooltip>
+              </div>
+            ))}
+            {visibleCrashReports.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noCrashReports")} />}
           </div>
         </div>
       )}

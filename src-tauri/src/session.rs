@@ -1461,6 +1461,26 @@ impl DeviceManagement {
                 let _ = reply.send(result);
                 None
             }
+            InputCmd::ListCrashReports(reply) => {
+                let provider = self.provider.clone();
+                tokio::spawn(async move {
+                    let _ = reply.send(crate::crash_reports::list(provider).await);
+                });
+                None
+            }
+            InputCmd::ExportCrashReport {
+                device_path,
+                destination,
+                reply,
+            } => {
+                let provider = self.provider.clone();
+                tokio::spawn(async move {
+                    let result =
+                        crate::crash_reports::export(provider, device_path, &destination).await;
+                    let _ = reply.send(result);
+                });
+                None
+            }
             InputCmd::InstallApp { path, reply } => {
                 let result = self.install_app(path).await;
                 let _ = reply.send(result);
@@ -2117,6 +2137,8 @@ async fn dispatch(
         | InputCmd::ListProvisioningProfiles(_)
         | InputCmd::LaunchApp { .. }
         | InputCmd::StopApp { .. }
+        | InputCmd::ListCrashReports(_)
+        | InputCmd::ExportCrashReport { .. }
         | InputCmd::InstallApp { .. }
         | InputCmd::UninstallApp { .. }
         | InputCmd::SetLocation { .. }

@@ -128,6 +128,13 @@ Provisioning profiles are read through Misagent and decoded as CMS SignedData.
 The UI receives normalized metadata but not raw payloads or provisioned device
 identifiers. Malformed profiles appear as individual error rows.
 
+The Crashes tab refreshes and recursively lists reports exposed by
+CrashReportCopyMobile. Search operates on report names and device paths. Export
+uses the native save dialog and streams the selected regular file to the chosen
+host path. Browsing is read-only: the app does not delete reports from the
+device, does not send report contents to the WebView, and rejects traversal,
+non-file entries, or reports larger than 128 MiB.
+
 ## Language and Fonts
 
 The UI supports Simplified Chinese (`zh-CN`) and English (`en-US`). First launch

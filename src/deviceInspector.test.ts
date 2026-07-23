@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatProfileDate } from "./deviceInspector";
-import type { DeviceApp, ProvisioningProfile } from "./types";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate } from "./deviceInspector";
+import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
   {
@@ -64,6 +64,11 @@ const profiles: ProvisioningProfile[] = [
   },
 ];
 
+const crashReports: DeviceCrashReport[] = [
+  { path: "/JetsamEvent-2026-07-24.ips", name: "JetsamEvent-2026-07-24.ips", size_bytes: 1_250_000, modified: "2026-07-24T01:02:03Z" },
+  { path: "/Retired/Game-2026-07-23.ips", name: "Game-2026-07-23.ips", size_bytes: 999, modified: "2026-07-23T01:02:03Z" },
+];
+
 describe("device inspector", () => {
   it("formats decimal device capacity without exposing invalid values", () => {
     expect(formatCapacity(127_900_000_000)).toBe("128 GB");
@@ -75,6 +80,16 @@ describe("device inspector", () => {
     expect(filterDeviceApps(apps, " game ")).toEqual([apps[1]]);
     expect(filterDeviceApps(apps, "CAMERA")).toEqual([apps[0]]);
     expect(filterDeviceApps(apps, "")).toBe(apps);
+  });
+
+  it("filters and formats crash reports", () => {
+    expect(filterCrashReports(crashReports, "jetsam")).toEqual([crashReports[0]]);
+    expect(filterCrashReports(crashReports, "retired")).toEqual([crashReports[1]]);
+    expect(filterCrashReports(crashReports, "")).toBe(crashReports);
+    expect(formatFileSize(999)).toBe("999 B");
+    expect(formatFileSize(1_250_000)).toBe("1.3 MB");
+    expect(formatReportDate("bad", "en-US")).toBe("-");
+    expect(formatReportDate("2026-07-24T01:02:03Z", "en-US")).not.toBe("-");
   });
 
   it("classifies app profile bindings without hiding conflicts", () => {

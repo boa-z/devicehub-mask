@@ -324,6 +324,14 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<bool, String>>,
     },
+    /// List crash reports without exposing their contents through the API.
+    ListCrashReports(oneshot::Sender<Result<DeviceCrashReportList, String>>),
+    /// Export one validated crash report to a user-selected host path.
+    ExportCrashReport {
+        device_path: String,
+        destination: PathBuf,
+        reply: oneshot::Sender<Result<u64, String>>,
+    },
     /// Validate and install a local IPA without blocking the HID dispatch loop.
     InstallApp {
         path: PathBuf,
@@ -489,6 +497,20 @@ pub struct DeviceApp {
     pub is_developer_app: bool,
     /// `None` means the process list was unavailable for this request.
     pub is_running: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceCrashReport {
+    pub path: String,
+    pub name: String,
+    pub size_bytes: u64,
+    pub modified: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceCrashReportList {
+    pub reports: Vec<DeviceCrashReport>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

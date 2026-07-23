@@ -10,6 +10,7 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-fullscreen",
     "dialog:allow-open",
+    "dialog:allow-save",
     "process:allow-restart",
     {
       "identifier": "opener:allow-open-url",

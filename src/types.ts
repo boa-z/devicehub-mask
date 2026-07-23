@@ -78,6 +78,16 @@ export type DeviceApp = {
   is_developer_app: boolean;
   is_running: boolean | null;
 };
+export type DeviceCrashReport = {
+  path: string;
+  name: string;
+  size_bytes: number;
+  modified: string;
+};
+export type DeviceCrashReportList = {
+  reports: DeviceCrashReport[];
+  truncated: boolean;
+};
 export type AppOperationKind = "install" | "uninstall";
 export type AppOperationState = "idle" | "running" | "succeeded" | "failed" | "cancelled";
 export type AppOperation = {

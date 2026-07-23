@@ -1,3 +1,4 @@
+mod crash_reports;
 mod decode;
 mod diagnostics;
 mod hid;
