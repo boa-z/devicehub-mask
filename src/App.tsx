@@ -46,7 +46,7 @@ import { PerformanceHud } from "./components/PerformanceHud";
 import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
-import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
+import { PcmAudioPlayer, deviceAudioControlAction, parseAudioEnvelope, readDeviceAudioPreferences, saveDeviceAudioPreferences, shouldAttemptAudioResume, type DeviceAudioPreferences } from "./deviceAudio";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
@@ -285,15 +285,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (audioPlayback.muted) return;
-    const unlockAudio = () => void resumeDeviceAudio();
-    window.addEventListener("pointerdown", unlockAudio, { once: true });
-    window.addEventListener("keydown", unlockAudio, { once: true });
+    if (deviceAudioEnabled !== true || audioPlayback.muted) return;
+    const unlockAudio = () => {
+      const player = audioPlayerRef.current;
+      if (shouldAttemptAudioResume(deviceAudioEnabled, audioPlayback.muted, player?.isRunning() ?? false)) {
+        void resumeDeviceAudio();
+      }
+    };
+    window.addEventListener("pointerdown", unlockAudio);
+    window.addEventListener("keydown", unlockAudio);
     return () => {
       window.removeEventListener("pointerdown", unlockAudio);
       window.removeEventListener("keydown", unlockAudio);
     };
-  }, [audioPlayback.muted, resumeDeviceAudio]);
+  }, [audioPlayback.muted, deviceAudioEnabled, resumeDeviceAudio]);
 
   useEffect(() => {
     let disposed = false;

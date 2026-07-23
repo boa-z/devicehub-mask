@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences } from "./deviceAudio";
+import { defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume } from "./deviceAudio";
 
 describe("device audio", () => {
   it("parses PCM envelopes and rejects ordinary image data", () => {
@@ -29,5 +29,13 @@ describe("device audio", () => {
     expect(deviceAudioControlAction(true, true, true)).toBe("unmute");
     expect(deviceAudioControlAction(true, false, true)).toBe("resume");
     expect(deviceAudioControlAction(true, false, false)).toBe("mute");
+  });
+
+  it("only resumes enabled, audible playback that is not already running", () => {
+    expect(shouldAttemptAudioResume(null, false, false)).toBe(false);
+    expect(shouldAttemptAudioResume(false, false, false)).toBe(false);
+    expect(shouldAttemptAudioResume(true, true, false)).toBe(false);
+    expect(shouldAttemptAudioResume(true, false, true)).toBe(false);
+    expect(shouldAttemptAudioResume(true, false, false)).toBe(true);
   });
 });

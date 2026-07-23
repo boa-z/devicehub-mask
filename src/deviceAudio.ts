@@ -22,6 +22,14 @@ export function deviceAudioControlAction(
   return "mute";
 }
 
+export function shouldAttemptAudioResume(
+  enabled: boolean | null,
+  muted: boolean,
+  running: boolean,
+): boolean {
+  return enabled === true && !muted && !running;
+}
+
 const storageKey = "devicehub-mask.device-audio";
 const magic = [0x44, 0x48, 0x41, 0x50] as const;
 const headerLength = 16;
@@ -111,6 +119,10 @@ export class PcmAudioPlayer {
     const context = this.ensureContext();
     if (context.state !== "running") await context.resume();
     return context.state === "running";
+  }
+
+  isRunning(): boolean {
+    return this.context?.state === "running";
   }
 
   push(chunk: PcmAudioChunk): boolean {
