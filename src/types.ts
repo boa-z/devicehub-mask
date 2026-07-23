@@ -88,6 +88,20 @@ export type DeviceCrashReportList = {
   reports: DeviceCrashReport[];
   truncated: boolean;
 };
+export type DeviceLogEntry = {
+  sequence: number;
+  received_at_ms: number;
+  message: string;
+};
+export type DeviceLogsView = {
+  entries: DeviceLogEntry[];
+  oldest_sequence: number | null;
+  latest_sequence: number | null;
+  cursor_lagged: boolean;
+  has_more: boolean;
+  streaming: boolean;
+  service: ServiceHealth | null;
+};
 export type AppOperationKind = "install" | "uninstall";
 export type AppOperationState = "idle" | "running" | "succeeded" | "failed" | "cancelled";
 export type AppOperation = {

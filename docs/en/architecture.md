@@ -89,6 +89,12 @@ block HID dispatch. Listing is bounded by depth and entry counts. Export
 revalidates an absolute device path and regular-file metadata, caps allocation
 at 128 MiB, and returns only metadata to the WebView.
 
+Device logs use a supervised SyslogRelay connection only while the log workspace
+is open. Log messages are sanitized and capped at 16 KiB before entering a
+2,000-entry in-memory ring buffer. The private API returns at most 500 entries
+per poll and reports cursor gaps. Device log content is never forwarded to the
+application tracing subsystem or persisted automatically.
+
 ## Video Pipeline
 
 CoreDevice displayservice produces RTP/HEVC. The backend assembles complete HEVC

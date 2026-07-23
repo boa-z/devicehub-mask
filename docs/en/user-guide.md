@@ -135,6 +135,14 @@ host path. Browsing is read-only: the app does not delete reports from the
 device, does not send report contents to the WebView, and rejects traversal,
 non-file entries, or reports larger than 128 MiB.
 
+## Device Logs
+
+The Device Logs workspace displays the active iPhone's live SyslogRelay stream.
+It supports live search, pausing the display, automatic scrolling, copying the
+visible result, and clearing the bounded in-memory buffer. Collection starts
+only while this workspace is open and stops after leaving it. A warning appears
+if high log volume causes older entries to leave the buffer.
+
 ## Language and Fonts
 
 The UI supports Simplified Chinese (`zh-CN`) and English (`en-US`). First launch

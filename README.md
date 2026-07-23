@@ -22,6 +22,8 @@ exposed as a browser application.
 - Device metadata, application browsing, running-state detection, launch,
   restart and stop controls, IPA installation, safe app removal, and
   provisioning profile inspection, plus bounded crash-report browsing and export
+- On-demand live iPhone syslog console with bounded in-memory buffering, search,
+  pause, copy and service recovery status
 - On-demand iPhone CPU, process, Core Animation FPS, and GPU-memory telemetry
   with supervised DVT service recovery
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch,

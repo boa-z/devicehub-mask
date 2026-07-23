@@ -658,6 +658,8 @@ struct SessionViews {
     location: LocationStatusSlot,
     performance: performance::PerformanceSlot,
     performance_demand: performance::PerformanceDemand,
+    device_logs: crate::device_logs::DeviceLogSlot,
+    device_log_demand: crate::device_logs::DeviceLogDemand,
     services: supervisor::ServiceRegistry,
 }
 
@@ -690,6 +692,8 @@ pub async fn manage(
     location: LocationStatusSlot,
     performance: performance::PerformanceSlot,
     performance_demand: performance::PerformanceDemand,
+    device_logs: crate::device_logs::DeviceLogSlot,
+    device_log_demand: crate::device_logs::DeviceLogDemand,
     services: supervisor::ServiceRegistry,
     input_sink: InputSink,
     mut control_rx: UnboundedReceiver<ControlCmd>,
@@ -717,6 +721,7 @@ pub async fn manage(
             active.set(None);
             location.set(LocationStatus::default());
             performance.reset();
+            device_logs.clear();
             services.clear();
             status.set("no device - pick one from the menu");
             tokio::select! {
@@ -755,6 +760,8 @@ pub async fn manage(
                 location: location.clone(),
                 performance: performance.clone(),
                 performance_demand: performance_demand.clone(),
+                device_logs: device_logs.clone(),
+                device_log_demand: device_log_demand.clone(),
                 services: services.clone(),
             },
             in_rx,
@@ -942,7 +949,15 @@ async fn run(
         .map_err(|e| format!("RSD handshake failed: {e:?}"))?;
 
     views.performance.reset();
+    views.device_logs.clear();
     let mut supervisor = supervisor::ServiceSupervisor::new(views.services.clone());
+    supervisor.spawn(crate::device_logs::supervise(
+        provider.clone(),
+        views.device_logs.clone(),
+        supervisor.reporter("device.logs"),
+        views.device_log_demand.subscribe(),
+        supervisor.shutdown_receiver(),
+    ));
     supervisor.spawn(performance::supervise_system(
         adapter.clone(),
         handshake.clone(),

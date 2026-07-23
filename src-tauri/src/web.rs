@@ -46,6 +46,8 @@ pub struct AppState {
     pub location: LocationStatusSlot,
     pub performance: PerformanceSlot,
     pub performance_demand: PerformanceDemand,
+    pub device_logs: crate::device_logs::DeviceLogSlot,
+    pub device_log_demand: crate::device_logs::DeviceLogDemand,
     pub services: ServiceRegistry,
     pub input: InputSink,
     pub control: UnboundedSender<ControlCmd>,
@@ -137,6 +139,14 @@ pub fn router(state: AppState, token: String) -> Router {
             "/api/performance/sampling",
             put(start_performance_sampling).delete(stop_performance_sampling),
         )
+        .route(
+            "/api/device/logs",
+            get(device_logs).delete(clear_device_logs),
+        )
+        .route(
+            "/api/device/logs/streaming",
+            put(start_device_logs).delete(stop_device_logs),
+        )
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
@@ -218,6 +228,53 @@ async fn start_performance_sampling(State(state): State<AppState>) -> StatusCode
 async fn stop_performance_sampling(State(state): State<AppState>) -> StatusCode {
     state.performance_demand.set(false);
     state.performance.reset();
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+struct DeviceLogQuery {
+    after: Option<u64>,
+    limit: Option<usize>,
+}
+
+async fn device_logs(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<DeviceLogQuery>,
+) -> Json<DeviceLogsView> {
+    let service = state
+        .services
+        .snapshot()
+        .into_iter()
+        .find(|service| service.name == "device.logs");
+    Json(DeviceLogsView {
+        batch: state.device_logs.snapshot(
+            query.after,
+            query.limit.unwrap_or(crate::device_logs::MAX_BATCH_ENTRIES),
+            state.device_log_demand.enabled(),
+        ),
+        service,
+    })
+}
+
+#[derive(Serialize)]
+struct DeviceLogsView {
+    #[serde(flatten)]
+    batch: crate::device_logs::DeviceLogBatch,
+    service: Option<crate::supervisor::ServiceHealth>,
+}
+
+async fn start_device_logs(State(state): State<AppState>) -> StatusCode {
+    state.device_log_demand.set(true);
+    StatusCode::NO_CONTENT
+}
+
+async fn stop_device_logs(State(state): State<AppState>) -> StatusCode {
+    state.device_log_demand.set(false);
+    StatusCode::NO_CONTENT
+}
+
+async fn clear_device_logs(State(state): State<AppState>) -> StatusCode {
+    state.device_logs.clear();
     StatusCode::NO_CONTENT
 }
 
@@ -1526,6 +1583,8 @@ mod tests {
                 location: LocationStatusSlot::default(),
                 performance: PerformanceSlot::default(),
                 performance_demand: PerformanceDemand::default(),
+                device_logs: crate::device_logs::DeviceLogSlot::default(),
+                device_log_demand: crate::device_logs::DeviceLogDemand::default(),
                 services: ServiceRegistry::default(),
                 input,
                 control,
@@ -1608,6 +1667,49 @@ mod tests {
             StatusCode::NO_CONTENT
         );
         assert!(!state.performance_demand.enabled());
+    }
+
+    #[tokio::test]
+    async fn device_log_endpoints_bound_batches_and_control_demand() {
+        let (state, _) = test_state();
+        for index in 0..3 {
+            state.device_logs.publish(format!("line {index}"));
+        }
+        assert_eq!(
+            start_device_logs(State(state.clone())).await,
+            StatusCode::NO_CONTENT
+        );
+        let view = device_logs(
+            State(state.clone()),
+            axum::extract::Query(DeviceLogQuery {
+                after: Some(1),
+                limit: Some(1),
+            }),
+        )
+        .await
+        .0;
+        assert!(view.batch.streaming);
+        assert_eq!(view.batch.entries.len(), 1);
+        assert_eq!(view.batch.entries[0].sequence, 2);
+        assert!(!view.batch.cursor_lagged);
+        assert!(view.batch.has_more);
+
+        assert_eq!(
+            clear_device_logs(State(state.clone())).await,
+            StatusCode::NO_CONTENT
+        );
+        assert!(
+            state
+                .device_logs
+                .snapshot(None, 10, true)
+                .entries
+                .is_empty()
+        );
+        assert_eq!(
+            stop_device_logs(State(state.clone())).await,
+            StatusCode::NO_CONTENT
+        );
+        assert!(!state.device_log_demand.enabled());
     }
 
     #[tokio::test]

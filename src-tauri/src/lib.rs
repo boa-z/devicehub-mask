@@ -1,5 +1,6 @@
 mod crash_reports;
 mod decode;
+mod device_logs;
 mod diagnostics;
 mod hid;
 mod location;
@@ -152,6 +153,8 @@ fn spawn_backend(
                 let location = LocationStatusSlot::default();
                 let performance = performance::PerformanceSlot::default();
                 let performance_demand = performance::PerformanceDemand::default();
+                let device_logs = device_logs::DeviceLogSlot::default();
+                let device_log_demand = device_logs::DeviceLogDemand::default();
                 let services = supervisor::ServiceRegistry::default();
 
                 tokio::spawn(mcp::serve(
@@ -183,6 +186,8 @@ fn spawn_backend(
                     location.clone(),
                     performance.clone(),
                     performance_demand.clone(),
+                    device_logs.clone(),
+                    device_log_demand.clone(),
                     services.clone(),
                     input.clone(),
                     control_rx,
@@ -201,6 +206,8 @@ fn spawn_backend(
                         location,
                         performance,
                         performance_demand,
+                        device_logs,
+                        device_log_demand,
                         services,
                         input,
                         control: thread_control.clone(),

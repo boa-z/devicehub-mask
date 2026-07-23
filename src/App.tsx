@@ -38,6 +38,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceInspector } from "./components/DeviceInspector";
+import { DeviceLogsPage } from "./components/DeviceLogsPage";
 import { LocationPage } from "./components/LocationPage";
 import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingInspector } from "./components/MappingInspector";
@@ -420,6 +421,16 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [performanceSamplingRequired, request, status.active_udid]);
+
+  const deviceLogStreamingRequired = Boolean(status.active_udid) && page === "logs";
+
+  useEffect(() => {
+    if (!backend) return;
+    const method = deviceLogStreamingRequired ? "PUT" : "DELETE";
+    void request("/api/device/logs/streaming", { method }).then((response) => {
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    }).catch((error) => logFrontend("warn", "device_logs", "set_streaming", error));
+  }, [backend, deviceLogStreamingRequired, request]);
 
   const command = useCallback((payload: unknown) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -1571,6 +1582,8 @@ export default function App() {
             <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />
           ) : page === "performance" ? (
             <PerformancePage activeUdid={status.active_udid} streamMetrics={streamMetrics} renderFps={renderFps} view={performanceView} error={performanceError} />
+          ) : page === "logs" ? (
+            <DeviceLogsPage activeUdid={status.active_udid} request={request} />
           ) : (
             <>
               {page === "mappings" && (
