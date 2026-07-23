@@ -81,6 +81,11 @@ channel, so icon reads never occupy the HID dispatch loop. The worker validates
 PNG headers and dimensions, limits each response to 4 MiB, and uses a 256-entry,
 32 MiB FIFO cache. The frontend requests only rows near the visible viewport.
 
+Restart and shutdown are separate fixed private-API commands rather than a
+client-supplied DiagnosticsRelay operation. Each opens an independent relay
+connection in a bounded task, so waiting for the device acknowledgement does
+not stall HID dispatch. The frontend requires a device-named confirmation.
+
 IPA installation and app removal use independent Tokio tasks and fresh
 Installation Proxy connections so uploads do not block video, HID, or app-list
 requests. The backend re-queries an uninstall target and permits only removable,

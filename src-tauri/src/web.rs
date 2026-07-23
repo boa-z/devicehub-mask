@@ -151,6 +151,8 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
+        .route("/api/device/restart", put(restart_device))
+        .route("/api/device/shutdown", put(shutdown_device))
         .route(
             "/api/device/location",
             get(device_location)
@@ -419,6 +421,58 @@ async fn device_details(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(details))
+}
+
+async fn restart_device(State(state): State<AppState>) -> Result<StatusCode, (StatusCode, String)> {
+    dispatch_device_power_command(&state, true).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn shutdown_device(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    dispatch_device_power_command(&state, false).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn dispatch_device_power_command(
+    state: &AppState,
+    restart: bool,
+) -> Result<(), (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    let command = if restart {
+        InputCmd::RestartDevice(reply)
+    } else {
+        InputCmd::ShutdownDevice(reply)
+    };
+    if !state.input.try_send(command) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "device power request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| {
+            let status = if error == "another device power command is already running" {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, error)
+        })
 }
 
 async fn device_apps(
@@ -2099,6 +2153,14 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            restart_device(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            shutdown_device(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             device_provisioning_profiles(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -2158,6 +2220,40 @@ mod tests {
         let response = request.await.unwrap().unwrap().into_response();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
+    }
+
+    #[tokio::test]
+    async fn device_power_endpoints_dispatch_only_fixed_commands() {
+        let (state, mut input_rx) = test_state();
+        let restart = tokio::spawn(restart_device(State(state.clone())));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::RestartDevice(reply) => reply.send(Ok(())).unwrap(),
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(restart.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let shutdown = tokio::spawn(shutdown_device(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::ShutdownDevice(reply) => reply.send(Ok(())).unwrap(),
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(shutdown.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn device_power_endpoint_reports_a_concurrent_command_as_conflict() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(restart_device(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::RestartDevice(reply) => reply
+                .send(Err("another device power command is already running".into()))
+                .unwrap(),
+            _ => panic!("unexpected command"),
+        }
+        assert!(matches!(
+            request.await.unwrap(),
+            Err((StatusCode::CONFLICT, _))
+        ));
     }
 
     #[tokio::test]

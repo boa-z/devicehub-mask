@@ -44,6 +44,11 @@ the GitHub repository link. Device audio is disabled by default; enabling it
 takes effect after reconnecting the device. Playback mute and volume apply
 immediately, and mute is also available in the Device toolbar.
 
+The Device Info tab includes confirmed **Restart device** and **Shut down
+device** actions. Both end the current control session. Restart reconnects only
+after iOS and the USB services are available again; a shut-down device must be
+turned on manually.
+
 ### Performance
 
 The Performance workspace combines device-side DVT telemetry with the desktop

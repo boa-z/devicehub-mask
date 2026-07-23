@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -647,6 +648,32 @@ enum Next {
     Idle,
     /// The UI is gone - exit the manager entirely.
     Quit,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DevicePowerAction {
+    Restart,
+    Shutdown,
+}
+
+#[derive(Clone, Default)]
+struct DevicePowerSlot(Arc<AtomicBool>);
+
+impl DevicePowerSlot {
+    fn try_start(&self) -> Result<DevicePowerLease, String> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| DevicePowerLease(self.clone()))
+            .map_err(|_| "another device power command is already running".into())
+    }
+}
+
+struct DevicePowerLease(DevicePowerSlot);
+
+impl Drop for DevicePowerLease {
+    fn drop(&mut self) {
+        self.0.0.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Clone)]
@@ -1294,6 +1321,7 @@ struct LocationBridge {
 
 struct DeviceManagement {
     provider: Arc<dyn IdeviceProvider>,
+    power: DevicePowerSlot,
     app_operation: AppOperationSlot,
     operation_task: Option<ActiveAppOperation>,
     details: Option<DeviceDetails>,
@@ -1331,6 +1359,7 @@ impl DeviceManagement {
     ) -> Self {
         Self {
             provider,
+            power: DevicePowerSlot::default(),
             app_operation,
             operation_task: None,
             details,
@@ -1480,6 +1509,14 @@ impl DeviceManagement {
                 }
                 None
             }
+            InputCmd::RestartDevice(reply) => {
+                self.start_power_action(DevicePowerAction::Restart, reply);
+                None
+            }
+            InputCmd::ShutdownDevice(reply) => {
+                self.start_power_action(DevicePowerAction::Shutdown, reply);
+                None
+            }
             InputCmd::ListProvisioningProfiles(reply) => {
                 let result = list_provisioning_profiles(self.misagent.as_mut()).await;
                 let _ = reply.send(result);
@@ -1538,6 +1575,48 @@ impl DeviceManagement {
             other => Some(other),
         }
     }
+
+    fn start_power_action(
+        &self,
+        action: DevicePowerAction,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) {
+        match self.power.try_start() {
+            Ok(lease) => {
+                spawn_device_power_action(self.provider.clone(), action, reply, lease);
+            }
+            Err(error) => {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
+}
+
+fn spawn_device_power_action(
+    provider: Arc<dyn IdeviceProvider>,
+    action: DevicePowerAction,
+    reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    _lease: DevicePowerLease,
+) {
+    tokio::spawn(async move {
+        let result = tokio::time::timeout(Duration::from_secs(8), async {
+            let mut diagnostics = DiagnosticsRelayClient::connect(provider.as_ref())
+                .await
+                .map_err(|error| format!("cannot connect diagnostics relay: {error:?}"))?;
+            match action {
+                DevicePowerAction::Restart => diagnostics.restart().await,
+                DevicePowerAction::Shutdown => diagnostics.shutdown().await,
+            }
+            .map_err(|error| format!("device power command failed: {error:?}"))
+        })
+        .await
+        .unwrap_or_else(|_| Err("device power command timed out".into()));
+        match &result {
+            Ok(()) => tracing::info!(?action, "device power command accepted"),
+            Err(error) => tracing::warn!(?action, %error, "device power command failed"),
+        }
+        let _ = reply.send(result);
+    });
 }
 
 async fn validate_ipa_path(path: &Path) -> Result<(PathBuf, String), String> {
@@ -2179,6 +2258,8 @@ async fn dispatch(
         InputCmd::GetDeviceDetails(_)
         | InputCmd::ListApps(_)
         | InputCmd::GetAppIcon { .. }
+        | InputCmd::RestartDevice(_)
+        | InputCmd::ShutdownDevice(_)
         | InputCmd::ListProvisioningProfiles(_)
         | InputCmd::LaunchApp { .. }
         | InputCmd::StopApp { .. }
@@ -3467,6 +3548,15 @@ fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn device_power_slot_rejects_concurrent_commands_and_releases_on_drop() {
+        let slot = DevicePowerSlot::default();
+        let lease = slot.try_start().unwrap();
+        assert!(slot.try_start().is_err());
+        drop(lease);
+        assert!(slot.try_start().is_ok());
+    }
 
     fn access_unit(size: usize, is_irap: bool) -> HevcAccessUnit {
         HevcAccessUnit {

@@ -317,6 +317,10 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
+    /// Restart the active device through DiagnosticsRelay.
+    RestartDevice(oneshot::Sender<Result<(), String>>),
+    /// Shut down the active device through DiagnosticsRelay.
+    ShutdownDevice(oneshot::Sender<Result<(), String>>),
     /// List installed provisioning profiles through the Mobile Installation Agent.
     ListProvisioningProfiles(oneshot::Sender<Result<Vec<ProvisioningProfile>, String>>),
     /// Launch an application through CoreDevice AppService.

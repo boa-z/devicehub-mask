@@ -9,6 +9,7 @@ import {
   InfoCircleOutlined,
   LinkOutlined,
   PlayCircleOutlined,
+  PoweroffOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
@@ -119,6 +120,7 @@ export function DeviceInspector({
   const [exportingReport, setExportingReport] = useState<string | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
+  const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
   const handledOperation = useRef(0);
 
   const loadApps = useCallback(async () => {
@@ -329,6 +331,30 @@ export function DeviceInspector({
     }
   };
 
+  const confirmDevicePowerAction = (action: "restart" | "shutdown") => {
+    if (!details || devicePowerAction) return;
+    Modal.confirm({
+      title: t(`deviceInspector.${action}Device`),
+      content: t(`deviceInspector.${action}Confirm`, { name: details.name }),
+      okText: t(`deviceInspector.${action}`),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        setDevicePowerAction(action);
+        try {
+          const response = await request(`/api/device/${action}`, { method: "PUT" });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          void message.success(t(`deviceInspector.${action}Requested`));
+        } catch (powerError) {
+          void message.error(t("deviceInspector.powerActionFailed", { error: String(powerError) }));
+          throw powerError;
+        } finally {
+          setDevicePowerAction(null);
+        }
+      },
+    });
+  };
+
   const appMutationRunning = appOperation?.state === "running";
 
   const infoRows = details ? [
@@ -392,13 +418,34 @@ export function DeviceInspector({
       ) : loading && (tab === "info" ? !details : tab === "apps" ? apps.length === 0 : tab === "profiles" ? profiles.length === 0 : crashReports.length === 0) ? (
         <div className="device-inspector-loading"><Spin /></div>
       ) : tab === "info" ? (
-        <div className="device-info-list">
-          {infoRows.map(([label, value]) => (
-            <div className="device-info-row" key={label}>
-              <Typography.Text>{label}</Typography.Text>
-              <Typography.Text type="secondary" ellipsis={{ tooltip: value }}>{value}</Typography.Text>
+        <div className="device-info-pane">
+          <div className="device-info-list">
+            {infoRows.map(([label, value]) => (
+              <div className="device-info-row" key={label}>
+                <Typography.Text>{label}</Typography.Text>
+                <Typography.Text type="secondary" ellipsis={{ tooltip: value }}>{value}</Typography.Text>
+              </div>
+            ))}
+          </div>
+          <div className="device-power-actions">
+            <div>
+              <Typography.Text strong>{t("deviceInspector.powerActions")}</Typography.Text>
+              <Typography.Text type="secondary">{t("deviceInspector.powerActionsHint")}</Typography.Text>
             </div>
-          ))}
+            <Button
+              icon={<ReloadOutlined />}
+              loading={devicePowerAction === "restart"}
+              disabled={devicePowerAction !== null}
+              onClick={() => confirmDevicePowerAction("restart")}
+            >{t("deviceInspector.restartDevice")}</Button>
+            <Button
+              danger
+              icon={<PoweroffOutlined />}
+              loading={devicePowerAction === "shutdown"}
+              disabled={devicePowerAction !== null}
+              onClick={() => confirmDevicePowerAction("shutdown")}
+            >{t("deviceInspector.shutdownDevice")}</Button>
+          </div>
         </div>
       ) : tab === "apps" ? (
         <div className="device-apps-pane">
