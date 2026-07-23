@@ -24,6 +24,11 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
+// RSD handshakes decode nested XPC dictionaries recursively. The device owner
+// also hosts a LocalSet for non-Send DVT channels, so the platform thread
+// default (2 MiB on macOS) is not enough for larger iOS 27 service catalogs.
+const COREDEVICE_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
+
 struct BackendHandle {
     control: mpsc::UnboundedSender<ControlCmd>,
     origin: String,
@@ -112,7 +117,12 @@ fn spawn_backend(
 
     let thread = std::thread::Builder::new()
         .name("devicehub-coredevice".into())
+        .stack_size(COREDEVICE_THREAD_STACK_BYTES)
         .spawn(move || {
+            tracing::info!(
+                stack_bytes = COREDEVICE_THREAD_STACK_BYTES,
+                "CoreDevice owner thread started"
+            );
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
