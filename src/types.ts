@@ -121,9 +121,11 @@ export type DeviceDetails = {
   ecid: string | null;
   total_disk_capacity: number | null;
   storage: DeviceStorage | null;
+  activation_state: DeviceActivationState | null;
   developer_mode_enabled: boolean | null;
   battery: DeviceBattery | null;
 };
+export type DeviceActivationState = "activated" | "unactivated" | "factory_activated" | "soft_activated" | "unknown";
 export type DeviceStorage = {
   data_capacity_bytes: number | null;
   data_available_bytes: number | null;

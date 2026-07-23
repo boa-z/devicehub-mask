@@ -519,8 +519,19 @@ pub struct DeviceDetails {
     pub ecid: Option<String>,
     pub total_disk_capacity: Option<u64>,
     pub storage: Option<DeviceStorage>,
+    pub activation_state: Option<DeviceActivationState>,
     pub developer_mode_enabled: Option<bool>,
     pub battery: Option<DeviceBattery>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceActivationState {
+    Activated,
+    Unactivated,
+    FactoryActivated,
+    SoftActivated,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize)]

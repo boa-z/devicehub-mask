@@ -19,7 +19,7 @@ exposed as a browser application.
   keyboard passthrough, and configurable hardware-button shortcuts
 - Complete scrcpy-mask `0.0.1` controller profile import/export and a visual
   mapping editor with live or captured-screen backgrounds
-- Device metadata, application browsing, running-state detection, launch,
+- Device metadata and activation readiness, application browsing, running-state detection, launch,
   restart and stop controls, native app icons, IPA installation, safe app
   removal, sandboxed App Documents browsing and transfer, confirmed device
   restart and shutdown, and

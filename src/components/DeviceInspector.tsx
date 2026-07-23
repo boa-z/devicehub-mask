@@ -434,6 +434,9 @@ export function DeviceInspector({
     [t("deviceInspector.hardwareModel"), details.hardware_model ?? "-"],
     [t("deviceInspector.serialNumber"), details.serial_number ?? "-"],
     [t("deviceInspector.ecid"), details.ecid?.toString() ?? "-"],
+    [t("deviceInspector.activationState"), details.activation_state == null
+      ? t("deviceInspector.activationStates.unavailable")
+      : t(`deviceInspector.activationStates.${details.activation_state}`)],
     [t("deviceInspector.developerMode"), details.developer_mode_enabled == null
       ? t("deviceInspector.developerModeStates.unknown")
       : t(`deviceInspector.developerModeStates.${details.developer_mode_enabled ? "enabled" : "disabled"}`)],
@@ -491,6 +494,14 @@ export function DeviceInspector({
         <div className="device-inspector-loading"><Spin /></div>
       ) : tab === "info" ? (
         <div className="device-info-pane">
+          {details?.activation_state === "unactivated" && (
+            <Alert
+              type="error"
+              showIcon
+              message={t("deviceInspector.deviceNotActivated")}
+              description={t("deviceInspector.deviceNotActivatedHint")}
+            />
+          )}
           {details?.developer_mode_enabled === false && (
             <Alert
               type="warning"

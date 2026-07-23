@@ -17,6 +17,10 @@ privacy-safe battery diagnostics through Diagnostics Relay: charge level and
 state, cycle count, full-charge versus design capacity, voltage/current,
 remaining time, and power-adapter rating.
 Battery and adapter serial numbers are never returned by the private API.
+The tab also reads the device's activation state through MobileActivationd,
+using its Lockdown fallback when necessary. Only a normalized state reaches the
+UI; activation records and blobs are not requested. An unactivated device shows
+a warning because developer and management services may remain unavailable.
 It also queries Developer Mode through MobileImageMounter. When disabled, the
 tab points to the required iPhone setting because DVT diagnostics and
 performance services depend on it.

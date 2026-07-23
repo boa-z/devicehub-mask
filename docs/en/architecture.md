@@ -61,6 +61,12 @@ condition-inducer, graphics, network-monitor, and energy-monitor channels
 reconnect independently with bounded exponential backoff; one broken channel
 cannot terminate video or HID.
 
+Device-detail refresh reads activation state through MobileActivationd in
+parallel with Lockdown metadata, DiagnosticsRelay battery data, and
+MobileImageMounter Developer Mode status. The backend reduces vendor strings to
+a fixed public enum and does not request activation records, certificates, or
+activation-info payloads.
+
 Device condition simulation owns an isolated DVT Condition Inducer channel and a
 bounded command queue. The backend bounds and sanitizes the device-provided
 catalog, and accepts only group/profile pairs from that catalog. Every channel

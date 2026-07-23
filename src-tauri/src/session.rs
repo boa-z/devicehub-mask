@@ -33,6 +33,7 @@ use idevice::{
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     mobile_image_mounter::ImageMounter,
+    mobileactivationd::MobileActivationdClient,
     provider::IdeviceProvider,
     rsd::RsdHandshake,
     springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
@@ -46,10 +47,10 @@ use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, AudioSlot, ClipboardContentKind,
-    ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceApp, DeviceBattery, DeviceDetails,
-    DeviceInfo, DeviceListSlot, DeviceStorage, ErrorSlot, FrameFormat, FrameSlot, InputCmd,
-    InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
-    RotateDir, StatusSlot, VideoCounters, clipboard_preview,
+    ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceActivationState, DeviceApp,
+    DeviceBattery, DeviceDetails, DeviceInfo, DeviceListSlot, DeviceStorage, ErrorSlot,
+    FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot,
+    Orientation, OrientationSlot, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
@@ -1650,7 +1651,12 @@ impl DeviceManagement {
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
                     let requested_udid = details.udid.clone();
-                    let (details_result, battery_result, developer_mode_result) = tokio::join!(
+                    let (
+                        details_result,
+                        battery_result,
+                        developer_mode_result,
+                        activation_state_result,
+                    ) = tokio::join!(
                         tokio::time::timeout(
                             Duration::from_secs(3),
                             read_device_details(provider.as_ref(), requested_udid),
@@ -1662,6 +1668,10 @@ impl DeviceManagement {
                         tokio::time::timeout(
                             Duration::from_secs(3),
                             read_developer_mode_status(provider.as_ref()),
+                        ),
+                        tokio::time::timeout(
+                            Duration::from_secs(3),
+                            read_activation_state(provider.as_ref()),
                         ),
                     );
                     match details_result {
@@ -1696,6 +1706,18 @@ impl DeviceManagement {
                         }
                         Err(_) => {
                             tracing::warn!("developer mode status timed out");
+                        }
+                    }
+                    match activation_state_result {
+                        Ok(Ok(state)) => {
+                            tracing::debug!(?state, "device activation state refreshed");
+                            details.activation_state = Some(state);
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "device activation state unavailable");
+                        }
+                        Err(_) => {
+                            tracing::warn!("device activation state timed out");
                         }
                     }
                     let _ = reply.send(Ok(details));
@@ -3193,9 +3215,30 @@ async fn read_device_details(
         ecid: integer("UniqueChipID").map(|value| value.to_string()),
         total_disk_capacity,
         storage,
+        activation_state: None,
         developer_mode_enabled: None,
         battery: None,
     })
+}
+
+async fn read_activation_state(
+    provider: &dyn IdeviceProvider,
+) -> Result<DeviceActivationState, String> {
+    let raw = MobileActivationdClient::new(provider)
+        .state()
+        .await
+        .map_err(|error| format!("cannot read activation state: {error:?}"))?;
+    Ok(normalize_activation_state(&raw))
+}
+
+fn normalize_activation_state(value: &str) -> DeviceActivationState {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "activated" => DeviceActivationState::Activated,
+        "unactivated" => DeviceActivationState::Unactivated,
+        "factoryactivated" | "factory_activated" => DeviceActivationState::FactoryActivated,
+        "softactivated" | "soft_activated" => DeviceActivationState::SoftActivated,
+        _ => DeviceActivationState::Unknown,
+    }
 }
 
 fn device_storage_from_disk_usage(values: &plist::Dictionary) -> Option<DeviceStorage> {
@@ -4258,6 +4301,7 @@ mod tests {
             ecid: None,
             total_disk_capacity: None,
             storage: None,
+            activation_state: None,
             developer_mode_enabled: None,
             battery: None,
         };
@@ -4267,6 +4311,30 @@ mod tests {
         assert!(message.contains("iPhone11,2 running iOS 26.0"));
         assert!(message.contains("iOS 27.0 or later"));
         assert!(!message.contains("Dictionary"));
+    }
+
+    #[test]
+    fn activation_states_are_reduced_to_a_stable_public_enum() {
+        assert_eq!(
+            normalize_activation_state("Activated"),
+            DeviceActivationState::Activated
+        );
+        assert_eq!(
+            normalize_activation_state(" Unactivated "),
+            DeviceActivationState::Unactivated
+        );
+        assert_eq!(
+            normalize_activation_state("FactoryActivated"),
+            DeviceActivationState::FactoryActivated
+        );
+        assert_eq!(
+            normalize_activation_state("soft_activated"),
+            DeviceActivationState::SoftActivated
+        );
+        assert_eq!(
+            normalize_activation_state("future-state\nprivate-data"),
+            DeviceActivationState::Unknown
+        );
     }
 
     #[test]
