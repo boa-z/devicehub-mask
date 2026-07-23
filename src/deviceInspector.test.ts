@@ -38,6 +38,7 @@ const profiles: ProvisioningProfile[] = [
     provisioned_devices: 2,
     is_expired: false,
     get_task_allow: true,
+    removal_supported: true,
     parse_error: null,
   },
   {
@@ -50,6 +51,7 @@ const profiles: ProvisioningProfile[] = [
     provisioned_devices: 0,
     is_expired: true,
     get_task_allow: false,
+    removal_supported: true,
     parse_error: null,
   },
   {
@@ -62,6 +64,7 @@ const profiles: ProvisioningProfile[] = [
     provisioned_devices: 0,
     is_expired: false,
     get_task_allow: false,
+    removal_supported: false,
     parse_error: "invalid CMS",
   },
 ];

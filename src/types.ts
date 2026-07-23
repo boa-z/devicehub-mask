@@ -213,6 +213,7 @@ export type ProvisioningProfile = {
   provisioned_devices: number;
   is_expired: boolean;
   get_task_allow: boolean;
+  removal_supported: boolean;
   parse_error: string | null;
 };
 

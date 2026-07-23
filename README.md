@@ -23,7 +23,8 @@ exposed as a browser application.
   restart and stop controls, native app icons, IPA installation, safe app
   removal, sandboxed App Documents browsing and transfer, confirmed device
   restart and shutdown, and
-  provisioning profile inspection, plus bounded crash-report browsing and export
+  provisioning profile inspection, validated installation and confirmed removal,
+  plus bounded crash-report browsing and export
 - One-shot Unicode text paste and optional bidirectional text/image clipboard
   synchronization through the CoreDevice Pasteboard Service
 - On-demand live iPhone syslog console with bounded in-memory buffering, search,

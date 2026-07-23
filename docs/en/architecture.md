@@ -211,10 +211,18 @@ single physical key from producing both a mapped touch and a keyboard usage.
 
 ## Provisioning Data
 
-Profiles are read over a long-lived Misagent connection and decoded as CMS
-SignedData before plist metadata enters the private API. Raw profile payloads
+Profiles are managed by an independently supervised, bounded Misagent command
+service, so profile operations do not block the HID input loop. CMS SignedData
+is decoded before plist metadata enters the private API. Raw profile payloads
 and provisioned device identifiers never cross into the frontend. A malformed
 profile is isolated rather than failing the complete result.
+
+Install and removal commands carry request deadlines so a timed-out HTTP request
+cannot apply later from the queue. Installs validate the local file and profile
+metadata before device mutation; removals refresh the device catalog before and
+after mutation. Input, not-found, conflict, transport, and timeout failures retain
+typed semantics through the private API. Only transport and timeout failures
+cause the supervisor to rebuild the Misagent channel.
 
 If displayservice is unavailable, the backend preserves a reduced management
 session when Lockdown remains usable. Screen control and AppService-only actions

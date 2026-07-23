@@ -124,6 +124,7 @@ export function DeviceInspector({
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
+  const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
@@ -162,6 +163,7 @@ export function DeviceInspector({
     setCrashReports([]);
     setCrashReportsTruncated(false);
     setAppOperation(null);
+    setProfileMutation(null);
     setDocumentsApp(null);
     setError(null);
   }, [activeUdid]);
@@ -316,6 +318,58 @@ export function DeviceInspector({
           throw failure;
         }
         await refreshAppOperation();
+      },
+    });
+  };
+
+  const installProvisioningProfile = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: t("deviceInspector.mobileProvisionFile"), extensions: ["mobileprovision"] }],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      setProfileMutation("install");
+      const response = await request("/api/device/provisioning-profiles", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selected }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      const installed = await response.json() as ProvisioningProfile;
+      void message.success(t("deviceInspector.profileInstalled", { name: installed.name }));
+      await load();
+    } catch (profileError) {
+      void message.error(t("deviceInspector.profileInstallFailed", { error: String(profileError) }));
+    } finally {
+      setProfileMutation(null);
+    }
+  };
+
+  const removeProvisioningProfile = (profile: ProvisioningProfile) => {
+    if (!profile.removal_supported || profileMutation) return;
+    Modal.confirm({
+      title: t("deviceInspector.removeProfile"),
+      content: t("deviceInspector.removeProfileConfirm", { name: profile.name, uuid: profile.uuid }),
+      okText: t("deviceInspector.remove"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        setProfileMutation(profile.uuid);
+        try {
+          const response = await request(`/api/device/provisioning-profiles/${encodeURIComponent(profile.uuid)}`, {
+            method: "DELETE",
+          });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          void message.success(t("deviceInspector.profileRemoved", { name: profile.name }));
+          await load();
+        } catch (profileError) {
+          void message.error(t("deviceInspector.profileRemoveFailed", { error: String(profileError) }));
+          throw profileError;
+        } finally {
+          setProfileMutation(null);
+        }
       },
     });
   };
@@ -594,13 +648,23 @@ export function DeviceInspector({
         </div>
       ) : tab === "profiles" ? (
         <div className="device-profiles-pane">
-          <Input
-            allowClear
-            value={query}
-            prefix={<SearchOutlined />}
-            placeholder={t("deviceInspector.searchProfiles")}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+          <div className="device-profile-toolbar">
+            <Input
+              allowClear
+              value={query}
+              prefix={<SearchOutlined />}
+              placeholder={t("deviceInspector.searchProfiles")}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <Tooltip title={t("deviceInspector.installProfile")}>
+              <Button
+                icon={<UploadOutlined />}
+                loading={profileMutation === "install"}
+                disabled={profileMutation !== null}
+                onClick={() => void installProvisioningProfile()}
+              />
+            </Tooltip>
+          </div>
           <Segmented<ProfileStatusFilter>
             block
             size="small"
@@ -627,6 +691,18 @@ export function DeviceInspector({
                     <Tag color="success">{t("deviceInspector.profileValid")}</Tag>
                   )}
                   {profile.get_task_allow && <Tag color="blue">{t("deviceInspector.profileDevelopment")}</Tag>}
+                  {profile.removal_supported && (
+                    <Tooltip title={t("deviceInspector.removeProfile")}>
+                      <Button
+                        danger
+                        size="small"
+                        icon={<DeleteOutlined />}
+                        loading={profileMutation === profile.uuid}
+                        disabled={profileMutation !== null}
+                        onClick={() => removeProvisioningProfile(profile)}
+                      />
+                    </Tooltip>
+                  )}
                 </div>
                 {profile.parse_error ? (
                   <Typography.Text type="danger" className="device-profile-error">{profile.parse_error}</Typography.Text>

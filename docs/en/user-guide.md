@@ -182,7 +182,16 @@ begins reporting device-side installation percentages.
 
 Provisioning profiles are read through Misagent and decoded as CMS SignedData.
 The UI receives normalized metadata but not raw payloads or provisioned device
-identifiers. Malformed profiles appear as individual error rows.
+identifiers. Malformed profiles appear as individual error rows. The install
+action accepts only absolute, non-empty `.mobileprovision` files up to 16 MiB;
+the backend validates the CMS payload, plist metadata, UUID, and expiration
+before sending anything to the device. The installed catalog is queried again
+after installation to confirm the UUID is present.
+
+Profile removal requires confirmation because applications signed only by that
+profile may stop launching. Before removal, the backend refreshes the device
+catalog and accepts only a valid UUID that is currently installed. It refreshes
+again afterward and reports a conflict if the profile remains present.
 
 The Crashes tab refreshes and recursively lists reports exposed by
 CrashReportCopyMobile. Search operates on report names and device paths. Export

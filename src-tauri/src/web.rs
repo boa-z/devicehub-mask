@@ -206,7 +206,11 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/device/crash-reports/export", put(export_crash_report))
         .route(
             "/api/device/provisioning-profiles",
-            get(device_provisioning_profiles),
+            get(device_provisioning_profiles).put(install_provisioning_profile),
+        )
+        .route(
+            "/api/device/provisioning-profiles/{uuid}",
+            delete(remove_provisioning_profile),
         )
         .route("/api/profiles", get(list_profiles))
         .route("/api/profiles/{name}", get(load_profile).put(save_profile))
@@ -502,6 +506,7 @@ async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String
 }
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const PROVISIONING_REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
 const SCREENSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 const CRASH_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
@@ -1084,21 +1089,85 @@ async fn device_provisioning_profiles(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::protocol::ProvisioningProfile>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state
-        .input
-        .try_send(InputCmd::ListProvisioningProfiles(reply))
-    {
+    if !state.input.try_send(InputCmd::Provisioning(
+        crate::provisioning::ProvisioningCommand::List {
+            expires_at: tokio::time::Instant::now() + Duration::from_secs(20),
+            reply,
+        },
+    )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
         ));
     }
-    let profiles = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+    let profiles = await_provisioning_response(response, "provisioning profile request").await?;
+    Ok(Json(profiles))
+}
+
+#[derive(Deserialize)]
+struct InstallProvisioningProfileRequest {
+    path: PathBuf,
+}
+
+async fn install_provisioning_profile(
+    State(state): State<AppState>,
+    Json(request): Json<InstallProvisioningProfileRequest>,
+) -> Result<Json<crate::protocol::ProvisioningProfile>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::Provisioning(
+        crate::provisioning::ProvisioningCommand::Install {
+            path: request.path,
+            expires_at: tokio::time::Instant::now() + Duration::from_secs(20),
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let profile =
+        await_provisioning_response(response, "provisioning profile installation").await?;
+    Ok(Json(profile))
+}
+
+async fn remove_provisioning_profile(
+    State(state): State<AppState>,
+    Path(uuid): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if uuid::Uuid::parse_str(&uuid).is_err() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "invalid provisioning profile UUID".into(),
+        ));
+    }
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::Provisioning(
+        crate::provisioning::ProvisioningCommand::Remove {
+            uuid,
+            expires_at: tokio::time::Instant::now() + Duration::from_secs(20),
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_provisioning_response(response, "provisioning profile removal").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn await_provisioning_response<T>(
+    response: oneshot::Receiver<Result<T, crate::provisioning::ProvisioningFailure>>,
+    operation: &str,
+) -> Result<T, (StatusCode, String)> {
+    tokio::time::timeout(PROVISIONING_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
             (
                 StatusCode::GATEWAY_TIMEOUT,
-                "provisioning profile request timed out".into(),
+                format!("{operation} timed out"),
             )
         })?
         .map_err(|_| {
@@ -1107,8 +1176,18 @@ async fn device_provisioning_profiles(
                 "device session ended".into(),
             )
         })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(profiles))
+        .map_err(|error| {
+            use crate::provisioning::ProvisioningFailure;
+            let status = match error {
+                ProvisioningFailure::Invalid(_) => StatusCode::BAD_REQUEST,
+                ProvisioningFailure::NotFound(_) => StatusCode::NOT_FOUND,
+                ProvisioningFailure::Conflict(_) => StatusCode::CONFLICT,
+                ProvisioningFailure::Unavailable(_) => StatusCode::BAD_GATEWAY,
+                ProvisioningFailure::Deadline(_) => StatusCode::GATEWAY_TIMEOUT,
+                ProvisioningFailure::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
+            };
+            (status, error.to_string())
+        })
 }
 
 async fn launch_app(
@@ -2307,6 +2386,119 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn provisioning_endpoints_dispatch_typed_commands() {
+        let (state, mut input_rx) = test_state();
+        let list_state = state.clone();
+        let list = tokio::spawn(device_provisioning_profiles(State(list_state)));
+        let InputCmd::Provisioning(crate::provisioning::ProvisioningCommand::List {
+            reply, ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected provisioning list command");
+        };
+        reply.send(Ok(Vec::new())).unwrap();
+        assert!(list.await.unwrap().unwrap().0.is_empty());
+
+        let install_state = state.clone();
+        let install = tokio::spawn(install_provisioning_profile(
+            State(install_state),
+            Json(InstallProvisioningProfileRequest {
+                path: PathBuf::from("/tmp/Game.mobileprovision"),
+            }),
+        ));
+        let InputCmd::Provisioning(crate::provisioning::ProvisioningCommand::Install {
+            path,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected provisioning install command");
+        };
+        assert_eq!(path, PathBuf::from("/tmp/Game.mobileprovision"));
+        let profile = crate::protocol::ProvisioningProfile {
+            name: "Game Development".into(),
+            uuid: "00000000-1111-2222-3333-444444444444".into(),
+            team_identifiers: vec!["TEAM123".into()],
+            application_identifier: Some("TEAM123.com.example.game".into()),
+            creation_date: None,
+            expiration_date: None,
+            provisioned_devices: 1,
+            is_expired: false,
+            get_task_allow: true,
+            removal_supported: true,
+            parse_error: None,
+        };
+        reply.send(Ok(profile.clone())).unwrap();
+        assert_eq!(install.await.unwrap().unwrap().0.uuid, profile.uuid);
+
+        let remove = tokio::spawn(remove_provisioning_profile(
+            State(state),
+            Path("00000000-1111-2222-3333-444444444444".into()),
+        ));
+        let InputCmd::Provisioning(crate::provisioning::ProvisioningCommand::Remove {
+            uuid,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected provisioning remove command");
+        };
+        assert_eq!(uuid, "00000000-1111-2222-3333-444444444444");
+        reply.send(Ok(())).unwrap();
+        assert_eq!(remove.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn provisioning_remove_rejects_invalid_uuid_before_dispatch() {
+        let (state, mut input_rx) = test_state();
+        let error = remove_provisioning_profile(State(state), Path("not-a-uuid".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn provisioning_failures_map_to_actionable_http_statuses() {
+        use crate::provisioning::ProvisioningFailure;
+
+        let cases = [
+            (
+                ProvisioningFailure::Invalid("invalid".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ProvisioningFailure::NotFound("missing".into()),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                ProvisioningFailure::Conflict("conflict".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                ProvisioningFailure::Unavailable("closed".into()),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                ProvisioningFailure::Deadline("expired".into()),
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
+            (
+                ProvisioningFailure::Timeout("slow".into()),
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
+        ];
+        for (failure, expected) in cases {
+            let (reply, response) = oneshot::channel();
+            reply.send(Err(failure)).unwrap();
+            let error = await_provisioning_response::<()>(response, "test")
+                .await
+                .unwrap_err();
+            assert_eq!(error.0, expected);
+        }
     }
 
     #[tokio::test]

@@ -32,7 +32,6 @@ use idevice::{
     diagnostics_relay::DiagnosticsRelayClient,
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
-    misagent::MisagentClient,
     mobile_image_mounter::ImageMounter,
     provider::IdeviceProvider,
     rsd::RsdHandshake,
@@ -50,7 +49,7 @@ use crate::protocol::{
     ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceApp, DeviceBattery, DeviceDetails,
     DeviceInfo, DeviceListSlot, DeviceStorage, ErrorSlot, FrameFormat, FrameSlot, InputCmd,
     InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
-    ProvisioningProfile, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
+    RotateDir, StatusSlot, VideoCounters, clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
@@ -965,14 +964,6 @@ async fn run(
             None
         }
     };
-    let misagent = match MisagentClient::connect(&*provider).await {
-        Ok(client) => Some(client),
-        Err(error) => {
-            tracing::warn!("misagent unavailable; provisioning profile list disabled: {error:?}");
-            None
-        }
-    };
-
     let proxy = CoreDeviceProxy::connect(&*provider)
         .await
         .map_err(|e| format!("no core device proxy: {e:?}"))?;
@@ -1091,12 +1082,20 @@ async fn run(
         supervisor.reporter("device.conditions"),
         supervisor.shutdown_receiver(),
     ));
+    let (provisioning_sender, provisioning_receiver) = tokio::sync::mpsc::channel(4);
+    supervisor.spawn(crate::provisioning::supervise(
+        provider.clone(),
+        provisioning_receiver,
+        supervisor.reporter("device.provisioning"),
+        supervisor.shutdown_receiver(),
+    ));
     let device_management_services = DeviceManagementServices {
         icons: app_icon_sender,
         documents: app_documents_sender,
         screen_capture: screen_capture_sender,
         network_capture: network_capture_sender,
         device_conditions: device_condition_sender,
+        provisioning: provisioning_sender,
     };
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
@@ -1124,7 +1123,6 @@ async fn run(
                     views.app_operation.clone(),
                     device_details,
                     installation_proxy,
-                    misagent,
                     device_management_services,
                 ),
                 &mut input_rx,
@@ -1308,7 +1306,6 @@ async fn run(
                 device_details,
                 app_service,
                 installation_proxy,
-                misagent,
                 device_management_services,
             ),
             &mut input_rx,
@@ -1447,6 +1444,24 @@ struct DeviceManagementServices {
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
     device_conditions: tokio::sync::mpsc::Sender<crate::device_conditions::DeviceConditionCommand>,
+    provisioning: tokio::sync::mpsc::Sender<crate::provisioning::ProvisioningCommand>,
+}
+
+fn reject_provisioning_command(command: crate::provisioning::ProvisioningCommand, reason: &str) {
+    use crate::provisioning::ProvisioningCommand;
+
+    let failure = || crate::provisioning::ProvisioningFailure::Unavailable(reason.into());
+    match command {
+        ProvisioningCommand::List { reply, .. } => {
+            let _ = reply.send(Err(failure()));
+        }
+        ProvisioningCommand::Install { reply, .. } => {
+            let _ = reply.send(Err(failure()));
+        }
+        ProvisioningCommand::Remove { reply, .. } => {
+            let _ = reply.send(Err(failure()));
+        }
+    }
 }
 
 fn reject_device_condition_command(
@@ -1505,7 +1520,6 @@ struct DeviceManagement {
     details: Option<DeviceDetails>,
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
-    misagent: Option<MisagentClient>,
     services: DeviceManagementServices,
 }
 
@@ -1532,7 +1546,6 @@ impl DeviceManagement {
         details: Option<DeviceDetails>,
         app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
         installation_proxy: Option<InstallationProxyClient>,
-        misagent: Option<MisagentClient>,
         services: DeviceManagementServices,
     ) -> Self {
         Self {
@@ -1543,7 +1556,6 @@ impl DeviceManagement {
             details,
             app_service,
             installation_proxy,
-            misagent,
             services,
         }
     }
@@ -1553,7 +1565,6 @@ impl DeviceManagement {
         app_operation: AppOperationSlot,
         details: Option<DeviceDetails>,
         installation_proxy: Option<InstallationProxyClient>,
-        misagent: Option<MisagentClient>,
         services: DeviceManagementServices,
     ) -> Self {
         Self::new(
@@ -1562,7 +1573,6 @@ impl DeviceManagement {
             details,
             None,
             installation_proxy,
-            misagent,
             services,
         )
     }
@@ -1779,9 +1789,18 @@ impl DeviceManagement {
                 self.start_power_action(DevicePowerAction::Shutdown, reply);
                 None
             }
-            InputCmd::ListProvisioningProfiles(reply) => {
-                let result = list_provisioning_profiles(self.misagent.as_mut()).await;
-                let _ = reply.send(result);
+            InputCmd::Provisioning(command) => {
+                if let Err(error) = self.services.provisioning.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("provisioning profile service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("provisioning profile service is unavailable", command)
+                        }
+                    };
+                    reject_provisioning_command(command, reason);
+                }
                 None
             }
             InputCmd::LaunchApp { bundle_id, reply } => {
@@ -1941,35 +1960,6 @@ async fn uninstall_user_app(
         )
         .await
         .map_err(|error| format!("unable to uninstall app: {error:?}"))
-}
-
-async fn list_provisioning_profiles(
-    misagent: Option<&mut MisagentClient>,
-) -> Result<Vec<ProvisioningProfile>, String> {
-    let client =
-        misagent.ok_or_else(|| "provisioning profile service is unavailable".to_string())?;
-    let raw_profiles = client
-        .copy_all()
-        .await
-        .map_err(|error| format!("unable to list provisioning profiles: {error:?}"))?;
-    let now = std::time::SystemTime::now();
-    let mut profiles: Vec<_> = raw_profiles
-        .into_iter()
-        .enumerate()
-        .map(|(index, raw)| {
-            crate::provisioning::parse_profile(&raw, now).unwrap_or_else(|error| {
-                tracing::warn!(index, "unable to parse provisioning profile: {error}");
-                crate::provisioning::unreadable_profile(index, error)
-            })
-        })
-        .collect();
-    profiles.sort_by(|left, right| {
-        left.is_expired
-            .cmp(&right.is_expired)
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-            .then_with(|| left.uuid.cmp(&right.uuid))
-    });
-    Ok(profiles)
 }
 
 async fn list_device_apps(
@@ -2702,7 +2692,7 @@ async fn dispatch(
         | InputCmd::AppDocuments(_)
         | InputCmd::RestartDevice(_)
         | InputCmd::ShutdownDevice(_)
-        | InputCmd::ListProvisioningProfiles(_)
+        | InputCmd::Provisioning(_)
         | InputCmd::LaunchApp { .. }
         | InputCmd::StopApp { .. }
         | InputCmd::ListCrashReports(_)

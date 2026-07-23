@@ -364,8 +364,8 @@ pub enum InputCmd {
     RestartDevice(oneshot::Sender<Result<(), String>>),
     /// Shut down the active device through DiagnosticsRelay.
     ShutdownDevice(oneshot::Sender<Result<(), String>>),
-    /// List installed provisioning profiles through the Mobile Installation Agent.
-    ListProvisioningProfiles(oneshot::Sender<Result<Vec<ProvisioningProfile>, String>>),
+    /// List, install, or remove provisioning profiles through Misagent.
+    Provisioning(crate::provisioning::ProvisioningCommand),
     /// Launch an application through CoreDevice AppService.
     LaunchApp {
         bundle_id: String,
@@ -587,6 +587,7 @@ pub struct ProvisioningProfile {
     pub provisioned_devices: usize,
     pub is_expired: bool,
     pub get_task_allow: bool,
+    pub removal_supported: bool,
     pub parse_error: Option<String>,
 }
 
