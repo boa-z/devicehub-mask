@@ -98,9 +98,9 @@ export class PcmAudioPlayer {
     if (context.state === "suspended") await context.resume();
   }
 
-  push(chunk: PcmAudioChunk) {
+  push(chunk: PcmAudioChunk): boolean {
     const context = this.ensureContext();
-    if (context.state !== "running" || !this.gain) return;
+    if (context.state !== "running" || !this.gain) return false;
     if (this.nextStartTime - context.currentTime > 0.25) this.reset();
     if (this.nextStartTime < context.currentTime) this.nextStartTime = context.currentTime + 0.06;
 
@@ -118,6 +118,7 @@ export class PcmAudioPlayer {
     this.sources.add(source);
     source.start(this.nextStartTime);
     this.nextStartTime += chunk.frames / chunk.sampleRate;
+    return true;
   }
 
   reset() {

@@ -53,6 +53,7 @@ import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
+import { readVideoSettings, setAudioEnabled } from "./videoSettings";
 
 const emptyStatus: DeviceStatus = {
   status: "",
@@ -190,6 +191,8 @@ export default function App() {
   const [performanceError, setPerformanceError] = useState<string | null>(null);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [audioPlayback, setAudioPlayback] = useState<DeviceAudioPreferences>(readDeviceAudioPreferences);
+  const [deviceAudioEnabled, setDeviceAudioEnabled] = useState<boolean | null>(null);
+  const [deviceAudioBusy, setDeviceAudioBusy] = useState(false);
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
@@ -210,6 +213,7 @@ export default function App() {
   const lastVideoActivityAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
   const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
+  const audioReceptionLoggedRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
@@ -235,11 +239,20 @@ export default function App() {
     if (status.active_udid) setSelectedUdid(status.active_udid);
   }, [status.active_udid]);
 
+  useEffect(() => {
+    void readVideoSettings()
+      .then((settings) => setDeviceAudioEnabled(settings.audio_enabled))
+      .catch((error) => logFrontend("warn", "audio", "read_settings", error));
+  }, []);
+
   const updateAudioPlayback = useCallback((next: DeviceAudioPreferences) => {
     setAudioPlayback(next);
     saveDeviceAudioPreferences(next);
     audioPlayerRef.current?.setPreferences(next);
-    if (!next.muted) void audioPlayerRef.current?.resume();
+    if (!next.muted) {
+      void audioPlayerRef.current?.resume()
+        .catch((error) => logFrontend("warn", "audio", "resume_failed", error));
+    }
   }, []);
 
   useEffect(() => {
@@ -255,7 +268,10 @@ export default function App() {
 
   useEffect(() => {
     if (audioPlayback.muted) return;
-    const unlockAudio = () => void audioPlayerRef.current?.resume();
+    const unlockAudio = () => {
+      void audioPlayerRef.current?.resume()
+        .catch((error) => logFrontend("warn", "audio", "resume_failed", error));
+    };
     window.addEventListener("pointerdown", unlockAudio, { once: true });
     window.addEventListener("keydown", unlockAudio, { once: true });
     return () => {
@@ -622,6 +638,7 @@ export default function App() {
         setStreamStalled(false);
         setStreamMetrics(emptyMetrics);
         audioPlayerRef.current?.reset();
+        audioReceptionLoggedRef.current = false;
         if (!disposed) retry = window.setTimeout(open, 800);
       };
       const drainFrames = async () => {
@@ -694,7 +711,16 @@ export default function App() {
         try {
           const audio = parseAudioEnvelope(buffer);
           if (audio) {
-            audioPlayerRef.current?.push(audio);
+            const scheduled = audioPlayerRef.current?.push(audio) ?? false;
+            if (!audioReceptionLoggedRef.current) {
+              audioReceptionLoggedRef.current = true;
+              logFrontend(
+                scheduled ? "info" : "warn",
+                "audio",
+                scheduled ? "playback_started" : "playback_suspended",
+                `${audio.sampleRate} Hz, ${audio.channels} channels, ${audio.frames} frames`,
+              );
+            }
             return;
           }
         } catch (error) {
@@ -1203,13 +1229,38 @@ export default function App() {
     }
   };
   const reconnectDevice = async () => {
-    if (!selectedUdid) return;
+    if (!selectedUdid) return false;
     releaseAllControls();
     try {
       const response = await request(`/api/devices/${encodeURIComponent(selectedUdid)}/reconnect`, { method: "PUT" });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return true;
     } catch (error) {
       void message.error(t("errors.reconnectDevice", { error: String(error) }));
+      return false;
+    }
+  };
+  const toggleDeviceAudio = async () => {
+    if (deviceAudioEnabled === null || deviceAudioBusy) return;
+    if (deviceAudioEnabled) {
+      updateAudioPlayback({ ...audioPlayback, muted: !audioPlayback.muted });
+      return;
+    }
+    setDeviceAudioBusy(true);
+    try {
+      const settings = await setAudioEnabled(true);
+      setDeviceAudioEnabled(settings.audio_enabled);
+      updateAudioPlayback({ ...audioPlayback, muted: false });
+      const reconnecting = await reconnectDevice();
+      void message.success(t(reconnecting ? "device.deviceAudioEnabled" : "device.deviceAudioEnabledReconnectManually"));
+      logFrontend("info", "audio", "enabled", reconnecting
+        ? "Device audio enabled; reconnect requested"
+        : "Device audio enabled; manual reconnect required");
+    } catch (error) {
+      void message.error(t("device.deviceAudioEnableFailed", { error: String(error) }));
+      logFrontend("error", "audio", "enable_failed", error);
+    } finally {
+      setDeviceAudioBusy(false);
     }
   };
   const pointFromPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1354,12 +1405,18 @@ export default function App() {
       <Tooltip title={t("device.saveScreenshot")}>
         <Button aria-label={t("device.saveScreenshot")} disabled={!canvasReady} icon={<CameraOutlined />} onClick={() => void saveDeviceScreenshot()} />
       </Tooltip>
-      <Tooltip title={t(audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}>
+      <Tooltip title={t(deviceAudioEnabled === false
+        ? "device.enableDeviceAudio"
+        : audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}>
         <Button
-          aria-label={t(audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}
-          type={audioPlayback.muted ? "default" : "primary"}
-          icon={audioPlayback.muted ? <AudioMutedOutlined /> : <SoundOutlined />}
-          onClick={() => updateAudioPlayback({ ...audioPlayback, muted: !audioPlayback.muted })}
+          aria-label={t(deviceAudioEnabled === false
+            ? "device.enableDeviceAudio"
+            : audioPlayback.muted ? "device.unmuteDeviceAudio" : "device.muteDeviceAudio")}
+          type={deviceAudioEnabled && !audioPlayback.muted ? "primary" : "default"}
+          disabled={deviceAudioEnabled === null}
+          loading={deviceAudioBusy}
+          icon={deviceAudioEnabled && !audioPlayback.muted ? <SoundOutlined /> : <AudioMutedOutlined />}
+          onClick={() => void toggleDeviceAudio()}
         />
       </Tooltip>
       <Tooltip title={t(recording ? "device.stopRecording" : recordingSupported ? "device.startRecording" : "device.recordingUnsupported")}>
@@ -1467,6 +1524,7 @@ export default function App() {
               onDeviceViewChange={updateDeviceViewPreferences}
               onPerformanceHudChange={updatePerformanceHud}
               onAudioPlaybackChange={updateAudioPlayback}
+              onAudioEnabledChange={setDeviceAudioEnabled}
             />
           ) : page === "location" ? (
             <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />

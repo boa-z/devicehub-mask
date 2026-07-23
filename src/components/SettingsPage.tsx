@@ -32,6 +32,7 @@ type Props = {
   onDeviceViewChange: (preferences: DeviceViewPreferences) => void;
   onPerformanceHudChange: (preferences: PerformanceHudPreferences) => void;
   onAudioPlaybackChange: (preferences: DeviceAudioPreferences) => void;
+  onAudioEnabledChange: (enabled: boolean) => void;
 };
 
 export function SettingsPage({
@@ -47,6 +48,7 @@ export function SettingsPage({
   onDeviceViewChange,
   onPerformanceHudChange,
   onAudioPlaybackChange,
+  onAudioEnabledChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
@@ -64,9 +66,12 @@ export function SettingsPage({
   }, [t]);
   useEffect(() => {
     void readVideoSettings()
-      .then(setVideoSettings)
+      .then((settings) => {
+        setVideoSettings(settings);
+        onAudioEnabledChange(settings.audio_enabled);
+      })
       .catch((error) => message.error(t("settings.videoSettingsUnavailable", { error: String(error) })));
-  }, [t]);
+  }, [onAudioEnabledChange, t]);
 
   const changeVideoPixelFormat = async (videoPixelFormat: VideoPixelFormat) => {
     setVideoSettingsBusy(true);
@@ -83,7 +88,9 @@ export function SettingsPage({
   const changeAudioEnabled = async (enabled: boolean) => {
     setVideoSettingsBusy(true);
     try {
-      setVideoSettings(await setAudioEnabled(enabled));
+      const settings = await setAudioEnabled(enabled);
+      setVideoSettings(settings);
+      onAudioEnabledChange(settings.audio_enabled);
       message.success(t("settings.deviceAudioChanged"));
     } catch (error) {
       message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));

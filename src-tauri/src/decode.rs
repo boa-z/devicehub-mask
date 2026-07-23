@@ -57,6 +57,14 @@ pub async fn read_audio_chunks(mut stdout: ChildStdout, slot: AudioSlot) {
         match stdout.read_exact(&mut chunk).await {
             Ok(_) => {
                 chunks += 1;
+                if chunks == 1 {
+                    tracing::info!(
+                        sample_rate = AUDIO_SAMPLE_RATE,
+                        channels = AUDIO_CHANNELS,
+                        frames = frames_per_chunk,
+                        "ffmpeg audio PCM output started"
+                    );
+                }
                 slot.publish(bytes::Bytes::copy_from_slice(&chunk));
             }
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
