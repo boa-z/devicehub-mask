@@ -1,10 +1,11 @@
 import { BugOutlined, FolderOpenOutlined, GithubOutlined } from "@ant-design/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Button, Select, Space, Switch, Tag, Typography, message } from "antd";
+import { Button, Checkbox, Select, Space, Switch, Tag, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import { performanceHudItems, type PerformanceHudItem, type PerformanceHudPreferences } from "../performanceHudPreferences";
 import { openLogDirectory, readDiagnosticsStatus, setDebugLogging, type DiagnosticsStatus } from "../diagnostics";
 import { useUpdates } from "../updateContext";
 import {
@@ -19,18 +20,22 @@ type Props = {
   alwaysOnTop: boolean;
   systemFullscreen: boolean;
   inspectorVisible: boolean;
+  performanceHud: PerformanceHudPreferences;
   onAlwaysOnTopChange: () => void;
   onSystemFullscreenChange: () => void;
   onInspectorVisibleChange: (visible: boolean) => void;
+  onPerformanceHudChange: (preferences: PerformanceHudPreferences) => void;
 };
 
 export function SettingsPage({
   alwaysOnTop,
   systemFullscreen,
   inspectorVisible,
+  performanceHud,
   onAlwaysOnTopChange,
   onSystemFullscreenChange,
   onInspectorVisibleChange,
+  onPerformanceHudChange,
 }: Props) {
   const { t, i18n } = useTranslation();
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
@@ -142,6 +147,24 @@ export function SettingsPage({
             ? t("settings.videoPixelFormatEnvironmentOverride")
             : t("settings.videoPixelFormatHint")}
         </Typography.Text>
+      </div>
+      <div className="settings-section performance-hud-settings">
+        <Typography.Title level={5}>{t("settings.performanceHud")}</Typography.Title>
+        <label>
+          <span>{t("settings.performanceHudEnabled")}</span>
+          <Switch
+            checked={performanceHud.enabled}
+            onChange={(enabled) => onPerformanceHudChange({ ...performanceHud, enabled })}
+          />
+        </label>
+        <Typography.Text type="secondary">{t("settings.performanceHudHint")}</Typography.Text>
+        <Typography.Text className="performance-hud-items-label">{t("settings.performanceHudItems")}</Typography.Text>
+        <Checkbox.Group
+          className="performance-hud-items"
+          value={performanceHud.items}
+          options={performanceHudItems.map((value) => ({ value, label: t(`performance.hud.items.${value}`) }))}
+          onChange={(values) => onPerformanceHudChange({ ...performanceHud, items: values as PerformanceHudItem[] })}
+        />
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.updates")}</Typography.Title>

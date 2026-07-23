@@ -8,7 +8,8 @@ type Props = {
   activeUdid: string | null;
   streamMetrics: StreamMetrics;
   renderFps: number;
-  request: (path: string, init?: RequestInit) => Promise<Response>;
+  view: PerformanceView | null;
+  error: string | null;
 };
 
 const HISTORY_LIMIT = 120;
@@ -58,45 +59,22 @@ function ServiceRow({ service }: { service: ServiceHealth }) {
   );
 }
 
-export function PerformancePage({ activeUdid, streamMetrics, renderFps, request }: Props) {
+export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, error }: Props) {
   const { t } = useTranslation();
-  const [view, setView] = useState<PerformanceView | null>(null);
   const [history, setHistory] = useState<PerformanceSnapshot[]>([]);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setHistory([]);
-    setView(null);
-    setError(null);
-    if (!activeUdid) return;
-    let disposed = false;
-    void request("/api/performance/sampling", { method: "PUT" });
-    const refresh = async () => {
-      try {
-        const response = await request("/api/performance");
-        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        const next = await response.json() as PerformanceView;
-        if (disposed) return;
-        setView(next);
-        setError(null);
-        if (next.sample.captured_at_ms > 0) {
-          setHistory((current) => {
-            if (current.at(-1)?.captured_at_ms === next.sample.captured_at_ms) return current;
-            return [...current, next.sample].slice(-HISTORY_LIMIT);
-          });
-        }
-      } catch (reason) {
-        if (!disposed) setError(String(reason));
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 1_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-      void request("/api/performance/sampling", { method: "DELETE" });
-    };
-  }, [activeUdid, request]);
+  }, [activeUdid]);
+
+  useEffect(() => {
+    const sample = view?.sample;
+    if (!sample || sample.captured_at_ms <= 0) return;
+    setHistory((current) => {
+      if (current.at(-1)?.captured_at_ms === sample.captured_at_ms) return current;
+      return [...current, sample].slice(-HISTORY_LIMIT);
+    });
+  }, [view]);
 
   const sample = view?.sample;
   const cpuHistory = history.flatMap((item) => item.system_cpu_percent == null ? [] : [item.system_cpu_percent]);

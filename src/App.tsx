@@ -36,12 +36,14 @@ import { LocationPage } from "./components/LocationPage";
 import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
+import { PerformanceHud } from "./components/PerformanceHud";
 import { PerformancePage } from "./components/PerformancePage";
 import { ProfileManager } from "./components/ProfileManager";
 import { SettingsPage } from "./components/SettingsPage";
 import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { logFrontend } from "./diagnostics";
-import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
+import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
+import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 
 const emptyStatus: DeviceStatus = {
   status: "",
@@ -165,6 +167,9 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(emptyMetrics);
   const [renderFps, setRenderFps] = useState(0);
+  const [performanceView, setPerformanceView] = useState<PerformanceView | null>(null);
+  const [performanceError, setPerformanceError] = useState<string | null>(null);
+  const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
@@ -230,6 +235,70 @@ export default function App() {
     headers.set("authorization", `Bearer ${backend.token}`);
     return fetch(`${backend.origin}${path}`, { ...init, headers });
   }, [backend]);
+
+  const updatePerformanceHud = useCallback((preferences: PerformanceHudPreferences) => {
+    setPerformanceHud(preferences);
+    savePerformanceHudPreferences(preferences);
+  }, []);
+
+  const hudNeedsDeviceSampling = performanceHud.enabled
+    && performanceHud.items.some((item) => devicePerformanceHudItems.has(item));
+  const performanceSamplingRequired = Boolean(status.active_udid)
+    && (page === "performance" || (page === "device" && hudNeedsDeviceSampling));
+
+  useEffect(() => {
+    if (!backend) return;
+    const method = performanceSamplingRequired ? "PUT" : "DELETE";
+    void request("/api/performance/sampling", { method }).then((response) => {
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    }).catch((error) => {
+      logFrontend("warn", "performance", "set_sampling", error);
+      if (performanceSamplingRequired) setPerformanceError(String(error));
+    });
+  }, [backend, performanceSamplingRequired, request]);
+
+  useEffect(() => {
+    if (!performanceSamplingRequired) {
+      setPerformanceView(null);
+      setPerformanceError(null);
+      return;
+    }
+    setPerformanceView(null);
+    setPerformanceError(null);
+    let disposed = false;
+    let loading = false;
+    let failureLogged = false;
+    const refresh = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const response = await request("/api/performance");
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        const next = await response.json() as PerformanceView;
+        if (!disposed) {
+          setPerformanceView(next);
+          setPerformanceError(null);
+          failureLogged = false;
+        }
+      } catch (error) {
+        if (!disposed) {
+          setPerformanceError(String(error));
+          if (!failureLogged) {
+            failureLogged = true;
+            logFrontend("warn", "performance", "read_telemetry", error);
+          }
+        }
+      } finally {
+        loading = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [performanceSamplingRequired, request, status.active_udid]);
 
   const command = useCallback((payload: unknown) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -933,14 +1002,16 @@ export default function App() {
               alwaysOnTop={alwaysOnTop}
               systemFullscreen={systemFullscreen}
               inspectorVisible={inspectorVisible}
+              performanceHud={performanceHud}
               onAlwaysOnTopChange={() => void toggleAlwaysOnTop()}
               onSystemFullscreenChange={() => void toggleSystemFullscreen()}
               onInspectorVisibleChange={setInspectorVisible}
+              onPerformanceHudChange={updatePerformanceHud}
             />
           ) : page === "location" ? (
             <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />
           ) : page === "performance" ? (
-            <PerformancePage activeUdid={status.active_udid} streamMetrics={streamMetrics} renderFps={renderFps} request={request} />
+            <PerformancePage activeUdid={status.active_udid} streamMetrics={streamMetrics} renderFps={renderFps} view={performanceView} error={performanceError} />
           ) : (
             <>
               {page === "mappings" && (
@@ -1057,6 +1128,9 @@ export default function App() {
                       onContextMenu={(event) => !mappingEditing && event.preventDefault()}
                     >
                       <canvas ref={canvasRef} />
+                      {page === "device" && performanceHud.enabled && (
+                        <PerformanceHud items={performanceHud.items} view={performanceView} streamMetrics={streamMetrics} renderFps={renderFps} />
+                      )}
                       {page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot && (
                         <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />
                       )}

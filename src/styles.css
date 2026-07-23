@@ -39,6 +39,10 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-viewport.is-controlling { cursor: crosshair; touch-action: none; }
 .device-viewport:focus-visible { outline: 2px solid #42b883; outline-offset: 3px; }
 .device-viewport canvas { display: block; width: 100%; height: 100%; }
+.performance-hud { position: absolute; top: 8px; left: 8px; z-index: 4; width: min(184px, calc(100% - 16px)); padding: 7px 9px; border: 1px solid rgba(237,242,240,.2); border-radius: 5px; background: rgba(8,11,12,.86); box-shadow: 0 4px 14px rgba(0,0,0,.3); color: #edf2f0; pointer-events: none; user-select: none; }
+.performance-hud > div { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 10px; font-size: 10px; line-height: 1.45; }
+.performance-hud span { min-width: 0; color: #aab4b2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.performance-hud strong { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mapping-screenshot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
 .direct-touch { position: absolute; width: 24px; height: 24px; border: 2px solid #42b883; border-radius: 50%; background: rgba(66,184,131,.25); box-shadow: 0 0 10px rgba(66,184,131,.65); transform: translate(-50%, -50%); pointer-events: none; }
 .empty-stage { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; color: #667170; font-size: 14px; }
@@ -114,6 +118,9 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .diagnostics-detail code { overflow-wrap: anywhere; }
 .language-select { width: 220px; }
 .video-format-select { width: 220px; }
+.performance-hud-items-label { display: block; margin-top: 14px; }
+.performance-hud-items { width: 100%; margin-top: 6px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 20px; }
+.performance-hud-items .ant-checkbox-wrapper { min-height: 32px; justify-content: flex-start; gap: 0; }
 .location-page { height: 100%; overflow-y: auto; padding: 24px 28px; }
 .location-page > header { max-width: 840px; padding-bottom: 18px; border-bottom: 1px solid #303638; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .location-page > header h3 { margin: 0 0 4px; display: flex; align-items: center; gap: 9px; }
@@ -176,6 +183,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .stream-metrics { min-width: 0; white-space: normal; }
   .location-page { padding: 20px 16px; }
   .performance-page { padding: 20px 16px; }
+  .performance-hud-items { grid-template-columns: minmax(0, 1fr); }
   .performance-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .performance-metric { border-bottom: 1px solid #303638; }
   .performance-metric:nth-child(2n) { border-right: 0; }
