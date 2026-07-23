@@ -11,9 +11,11 @@ view, control mode, rotation, direct touch, hardware buttons, and the device
 inspector. The inspector exposes Lockdown metadata, installed apps, IPA
 installation and removal, and provisioning profiles.
 
-The inspector's Info tab refreshes privacy-safe battery diagnostics through
-Diagnostics Relay: charge level and state, cycle count, full-charge versus
-design capacity, voltage/current, remaining time, and power-adapter rating.
+The inspector's Info tab shows Lockdown-reported device and data-storage
+capacity, including used and available user-data space. It refreshes
+privacy-safe battery diagnostics through Diagnostics Relay: charge level and
+state, cycle count, full-charge versus design capacity, voltage/current,
+remaining time, and power-adapter rating.
 Battery and adapter serial numbers are never returned by the private API.
 It also queries Developer Mode through MobileImageMounter. When disabled, the
 tab points to the required iPhone setting because DVT diagnostics and

@@ -514,8 +514,17 @@ pub struct DeviceDetails {
     /// Decimal text avoids losing 64-bit ECID precision in JavaScript clients.
     pub ecid: Option<String>,
     pub total_disk_capacity: Option<u64>,
+    pub storage: Option<DeviceStorage>,
     pub developer_mode_enabled: Option<bool>,
     pub battery: Option<DeviceBattery>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceStorage {
+    pub data_capacity_bytes: Option<u64>,
+    pub data_available_bytes: Option<u64>,
+    pub system_capacity_bytes: Option<u64>,
+    pub system_available_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

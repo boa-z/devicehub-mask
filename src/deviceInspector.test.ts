@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate } from "./deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -76,6 +76,9 @@ describe("device inspector", () => {
     expect(formatCapacity(127_900_000_000)).toBe("128 GB");
     expect(formatCapacity(null)).toBe("-");
     expect(formatCapacity(Number.NaN)).toBe("-");
+    expect(formatStorageUsage(120_000_000_000, 45_000_000_000)).toBe("75 GB / 120 GB (63%)");
+    expect(formatStorageUsage(100, 101)).toBe("-");
+    expect(formatStorageUsage(null, 50)).toBe("-");
   });
 
   it("filters apps by localized name or bundle identifier", () => {

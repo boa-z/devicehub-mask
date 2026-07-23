@@ -238,6 +238,8 @@ export const enUS = {
     os: "Operating system",
     udid: "UDID",
     capacity: "Capacity",
+    dataStorageUsed: "Data storage used",
+    dataStorageAvailable: "Data storage available",
     productType: "Product type",
     hardwareModel: "Hardware model",
     serialNumber: "Serial number",

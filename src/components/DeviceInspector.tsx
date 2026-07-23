@@ -22,7 +22,7 @@ import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Too
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate } from "../deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage } from "../deviceInspector";
 import type { ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, ProvisioningProfile } from "../types";
 
@@ -366,6 +366,8 @@ export function DeviceInspector({
     [t("deviceInspector.os"), `iOS ${details.product_version}${details.build_version ? ` (${details.build_version})` : ""}`],
     [t("deviceInspector.udid"), details.udid],
     [t("deviceInspector.capacity"), formatCapacity(details.total_disk_capacity)],
+    [t("deviceInspector.dataStorageUsed"), formatStorageUsage(details.storage?.data_capacity_bytes ?? null, details.storage?.data_available_bytes ?? null)],
+    [t("deviceInspector.dataStorageAvailable"), formatCapacity(details.storage?.data_available_bytes ?? null)],
     [t("deviceInspector.productType"), details.product_type],
     [t("deviceInspector.hardwareModel"), details.hardware_model ?? "-"],
     [t("deviceInspector.serialNumber"), details.serial_number ?? "-"],

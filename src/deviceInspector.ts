@@ -20,6 +20,14 @@ export function formatCapacity(bytes: number | null): string {
   return `${Math.round(bytes / 1_000_000_000)} GB`;
 }
 
+export function formatStorageUsage(capacity: number | null, available: number | null): string {
+  if (capacity === null || available === null
+    || !Number.isFinite(capacity) || !Number.isFinite(available)
+    || capacity <= 0 || available < 0 || available > capacity) return "-";
+  const used = capacity - available;
+  return `${formatCapacity(used)} / ${formatCapacity(capacity)} (${Math.round(used * 100 / capacity)}%)`;
+}
+
 export function filterDeviceApps(apps: DeviceApp[], query: string): DeviceApp[] {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return apps;

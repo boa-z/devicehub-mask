@@ -48,9 +48,9 @@ use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, AudioSlot, ClipboardContentKind,
     ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceApp, DeviceBattery, DeviceDetails,
-    DeviceInfo, DeviceListSlot, ErrorSlot, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods,
-    LocationStatus, LocationStatusSlot, Orientation, OrientationSlot, ProvisioningProfile,
-    RotateDir, StatusSlot, VideoCounters, clipboard_preview,
+    DeviceInfo, DeviceListSlot, DeviceStorage, ErrorSlot, FrameFormat, FrameSlot, InputCmd,
+    InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
+    ProvisioningProfile, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
@@ -3069,12 +3069,24 @@ async fn read_device_details(
             .map(ToOwned::to_owned)
     };
     let integer = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
-    let total_disk_capacity = lockdown
-        .get_value(Some("TotalDiskCapacity"), Some("com.apple.disk_usage"))
+    let disk_usage = lockdown
+        .get_value(None, Some("com.apple.disk_usage"))
         .await
         .ok()
-        .and_then(|value| value.as_unsigned_integer())
+        .and_then(plist::Value::into_dictionary);
+    let storage = disk_usage.as_ref().and_then(device_storage_from_disk_usage);
+    let mut total_disk_capacity = disk_usage
+        .as_ref()
+        .and_then(|values| values.get("TotalDiskCapacity"))
+        .and_then(plist::Value::as_unsigned_integer)
         .or_else(|| integer("TotalDiskCapacity"));
+    if total_disk_capacity.is_none() {
+        total_disk_capacity = lockdown
+            .get_value(Some("TotalDiskCapacity"), Some("com.apple.disk_usage"))
+            .await
+            .ok()
+            .and_then(|value| value.as_unsigned_integer());
+    }
     Some(DeviceDetails {
         udid: string("UniqueDeviceID").unwrap_or(requested_udid),
         name: string("DeviceName").unwrap_or_else(|| "iOS Device".to_string()),
@@ -3085,9 +3097,29 @@ async fn read_device_details(
         serial_number: string("SerialNumber"),
         ecid: integer("UniqueChipID").map(|value| value.to_string()),
         total_disk_capacity,
+        storage,
         developer_mode_enabled: None,
         battery: None,
     })
+}
+
+fn device_storage_from_disk_usage(values: &plist::Dictionary) -> Option<DeviceStorage> {
+    let unsigned = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
+    let storage = DeviceStorage {
+        data_capacity_bytes: unsigned("TotalDataCapacity"),
+        data_available_bytes: unsigned("TotalDataAvailable"),
+        system_capacity_bytes: unsigned("TotalSystemCapacity"),
+        system_available_bytes: unsigned("TotalSystemAvailable"),
+    };
+    if storage.data_capacity_bytes.is_none()
+        && storage.data_available_bytes.is_none()
+        && storage.system_capacity_bytes.is_none()
+        && storage.system_available_bytes.is_none()
+    {
+        None
+    } else {
+        Some(storage)
+    }
 }
 
 async fn read_developer_mode_status(provider: &dyn IdeviceProvider) -> Result<bool, String> {
@@ -4130,6 +4162,7 @@ mod tests {
             serial_number: None,
             ecid: None,
             total_disk_capacity: None,
+            storage: None,
             developer_mode_enabled: None,
             battery: None,
         };
@@ -4139,6 +4172,31 @@ mod tests {
         assert!(message.contains("iPhone11,2 running iOS 26.0"));
         assert!(message.contains("iOS 27.0 or later"));
         assert!(!message.contains("Dictionary"));
+    }
+
+    #[test]
+    fn normalizes_lockdown_disk_usage_without_inventing_missing_values() {
+        let values = plist::Dictionary::from_iter([
+            (
+                String::from("TotalDataCapacity"),
+                plist::Value::Integer(120_000_000_000_u64.into()),
+            ),
+            (
+                String::from("TotalDataAvailable"),
+                plist::Value::Integer(45_000_000_000_u64.into()),
+            ),
+            (
+                String::from("TotalSystemCapacity"),
+                plist::Value::Integer(8_000_000_000_u64.into()),
+            ),
+        ]);
+
+        let storage = device_storage_from_disk_usage(&values).unwrap();
+        assert_eq!(storage.data_capacity_bytes, Some(120_000_000_000));
+        assert_eq!(storage.data_available_bytes, Some(45_000_000_000));
+        assert_eq!(storage.system_capacity_bytes, Some(8_000_000_000));
+        assert_eq!(storage.system_available_bytes, None);
+        assert!(device_storage_from_disk_usage(&plist::Dictionary::new()).is_none());
     }
 
     #[test]

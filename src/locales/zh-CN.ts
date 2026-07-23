@@ -227,6 +227,8 @@ export const zhCN = {
     os: "操作系统",
     udid: "UDID",
     capacity: "容量",
+    dataStorageUsed: "数据存储已用",
+    dataStorageAvailable: "数据存储可用",
     productType: "产品类型",
     hardwareModel: "硬件型号",
     serialNumber: "序列号",
