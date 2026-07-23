@@ -1290,16 +1290,24 @@ export default function App() {
       }
       return;
     }
+    // WKWebView only permits Web Audio activation while the original user
+    // gesture is still on the stack. Prime playback before the settings invoke
+    // and reconnect cross an async boundary.
+    const playbackActivation = resumeDeviceAudio();
     setDeviceAudioBusy(true);
     try {
       const settings = await setAudioEnabled(true);
       setDeviceAudioEnabled(settings.audio_enabled);
       updateAudioPlayback({ ...audioPlayback, muted: false });
+      const playbackReady = await playbackActivation;
       const reconnecting = await reconnectDevice();
       void message.success(t(reconnecting ? "device.deviceAudioEnabled" : "device.deviceAudioEnabledReconnectManually"));
-      logFrontend("info", "audio", "enabled", reconnecting
-        ? "Device audio enabled; reconnect requested"
-        : "Device audio enabled; manual reconnect required");
+      logFrontend(
+        playbackReady ? "info" : "warn",
+        "audio",
+        "enabled",
+        `${reconnecting ? "Reconnect requested" : "Manual reconnect required"}; Web Audio ${playbackReady ? "running" : "suspended"}`,
+      );
     } catch (error) {
       void message.error(t("device.deviceAudioEnableFailed", { error: String(error) }));
       logFrontend("error", "audio", "enable_failed", error);
