@@ -79,23 +79,21 @@ directory and applies on the next device connection. An explicit
 Run the source gates before committing:
 
 ```sh
-npm run docs:check
-npm run lint
-npm test
-npm run build
-cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
-cargo test --manifest-path src-tauri/Cargo.toml --locked
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
-actionlint
-bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh
+npm run verify
 ```
 
-Build a standalone debug application as the final local integration check:
+This is the same cross-platform source gate used by GitHub Actions:
+documentation, frontend lint/tests/build, Rust formatting/tests, and Clippy with
+warnings denied. Run the full local gate before pushing a substantial change:
 
 ```sh
-npm run tauri:build:debug
-./src-tauri/target/debug/devicehub-mask
+npm run verify:full
 ```
+
+The full gate additionally builds the standalone debug application without
+launching, bundling, or installing it. On macOS and Linux, release-script syntax
+can be checked separately with
+`bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh`.
 
 The multitouch production path has been tested with a two-contact report on an
 iPhone 13 Pro Max. Cross-platform CI verifies compilation but cannot replace

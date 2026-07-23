@@ -9,6 +9,8 @@
     "docs:check": "node scripts/check-docs.mjs",
     "lint": "eslint .",
     "test": "vitest run",
+    "verify": "node scripts/verify.mjs",
+    "verify:full": "node scripts/verify.mjs --full",
     "tauri": "tauri",
     "tauri:dev": "cross-env CARGO_TARGET_DIR=target/tauri-dev tauri dev",
     "tauri:build": "tauri build",

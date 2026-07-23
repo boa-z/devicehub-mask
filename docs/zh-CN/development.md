@@ -74,23 +74,18 @@ DEVICEHUB_LOG=devicehub_mask=info,devicehub_mask::session=trace npm run tauri:de
 提交前运行源码门禁：
 
 ```sh
-npm run docs:check
-npm run lint
-npm test
-npm run build
-cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
-cargo test --manifest-path src-tauri/Cargo.toml --locked
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
-actionlint
-bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh
+npm run verify
 ```
 
-最后构建并运行独立 debug 应用做本地集成检查：
+这与 GitHub Actions 使用同一套跨平台源码门禁，包括文档、前端 lint/测试/构建、Rust
+格式/测试，以及将警告视为错误的 Clippy。较大改动在推送前运行完整本地门禁：
 
 ```sh
-npm run tauri:build:debug
-./src-tauri/target/debug/devicehub-mask
+npm run verify:full
 ```
+
+完整门禁还会构建独立 Debug 应用，但不会启动、打包或安装它。macOS 与 Linux 可另外使用
+`bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh` 检查发布脚本语法。
 
 多点触控生产路径已在 iPhone 13 Pro Max 上使用双触点 report 验证。跨平台 CI 可以验证
 编译，但不能替代真机测试。
