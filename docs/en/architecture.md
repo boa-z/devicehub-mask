@@ -67,6 +67,12 @@ MobileImageMounter Developer Mode status. The backend reduces vendor strings to
 a fixed public enum and does not request activation records, certificates, or
 activation-info payloads.
 
+Device rename accepts only a bounded, non-empty, control-free Unicode name. The
+session repeats validation, opens paired Lockdown, writes `DeviceName`, and reads
+the value back before returning success. Diagnostics record only the character
+count, not the requested name. Lockdown's name-change notification refreshes the
+device picker and active Info tab.
+
 Device condition simulation owns an isolated DVT Condition Inducer channel and a
 bounded command queue. The backend bounds and sanitizes the device-provided
 catalog, and accepts only group/profile pairs from that catalog. Every channel

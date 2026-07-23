@@ -5,6 +5,7 @@ import {
   DeleteOutlined,
   DisconnectOutlined,
   DownloadOutlined,
+  EditOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   InfoCircleOutlined,
@@ -22,7 +23,7 @@ import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Too
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, shouldRefreshDeviceInspector } from "../deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ProvisioningProfile } from "../types";
 
@@ -124,6 +125,9 @@ export function DeviceInspector({
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const handledOperation = useRef(0);
@@ -165,6 +169,9 @@ export function DeviceInspector({
     setAppOperation(null);
     setProfileMutation(null);
     setDocumentsApp(null);
+    setRenameOpen(false);
+    setRenameValue("");
+    setRenameBusy(false);
     setError(null);
   }, [activeUdid]);
 
@@ -421,10 +428,31 @@ export function DeviceInspector({
     });
   };
 
+  const normalizedDeviceName = normalizeDeviceNameInput(renameValue);
+  const renameDevice = async () => {
+    if (!normalizedDeviceName || renameBusy) return;
+    setRenameBusy(true);
+    try {
+      const response = await request("/api/device/name", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: normalizedDeviceName }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      const result = await response.json() as { name: string };
+      setDetails((current) => current ? { ...current, name: result.name } : current);
+      setRenameOpen(false);
+      void message.success(t("deviceInspector.deviceRenamed", { name: result.name }));
+    } catch (renameError) {
+      void message.error(t("deviceInspector.deviceRenameFailed", { error: String(renameError) }));
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
   const appMutationRunning = appOperation?.state === "running";
 
   const infoRows = details ? [
-    [t("deviceInspector.name"), details.name],
     [t("deviceInspector.os"), `iOS ${details.product_version}${details.build_version ? ` (${details.build_version})` : ""}`],
     [t("deviceInspector.udid"), details.udid],
     [t("deviceInspector.capacity"), formatCapacity(details.total_disk_capacity)],
@@ -511,6 +539,26 @@ export function DeviceInspector({
             />
           )}
           <div className="device-info-list">
+            {details && (
+              <div className="device-info-row">
+                <Typography.Text>{t("deviceInspector.name")}</Typography.Text>
+                <div className="device-info-value-action">
+                  <Typography.Text type="secondary" ellipsis={{ tooltip: details.name }}>{details.name}</Typography.Text>
+                  <Tooltip title={t("deviceInspector.renameDevice")}>
+                    <Button
+                      type="text"
+                      size="small"
+                      aria-label={t("deviceInspector.renameDevice")}
+                      icon={<EditOutlined />}
+                      onClick={() => {
+                        setRenameValue(details.name);
+                        setRenameOpen(true);
+                      }}
+                    />
+                  </Tooltip>
+                </div>
+              </div>
+            )}
             {infoRows.map(([label, value]) => (
               <div className="device-info-row" key={label}>
                 <Typography.Text>{label}</Typography.Text>
@@ -779,6 +827,29 @@ export function DeviceInspector({
         </div>
       )}
     </aside>
+    <Modal
+      title={t("deviceInspector.renameDevice")}
+      open={renameOpen}
+      okText={t("deviceInspector.rename")}
+      cancelText={t("common.cancel")}
+      confirmLoading={renameBusy}
+      okButtonProps={{ disabled: !normalizedDeviceName || normalizedDeviceName === details?.name }}
+      onOk={() => void renameDevice()}
+      onCancel={() => {
+        if (!renameBusy) setRenameOpen(false);
+      }}
+    >
+      <Input
+        value={renameValue}
+        aria-label={t("deviceInspector.deviceName")}
+        placeholder={t("deviceInspector.deviceName")}
+        disabled={renameBusy}
+        onChange={(event) => setRenameValue(event.target.value)}
+        onPressEnter={() => {
+          if (normalizedDeviceName && normalizedDeviceName !== details?.name) void renameDevice();
+        }}
+      />
+    </Modal>
     <AppDocumentsModal app={documentsApp} request={request} onClose={() => setDocumentsApp(null)} />
     </>
   );

@@ -12,7 +12,9 @@ inspector. The inspector exposes Lockdown metadata, installed apps, IPA
 installation and removal, and provisioning profiles.
 
 The inspector's Info tab shows Lockdown-reported device and data-storage
-capacity, including used and available user-data space. It refreshes
+capacity, including used and available user-data space. The device name is
+editable: the backend opens a paired Lockdown session, writes the normalized
+name, and reads it back before reporting success. It refreshes
 privacy-safe battery diagnostics through Diagnostics Relay: charge level and
 state, cycle count, full-charge versus design capacity, voltage/current,
 remaining time, and power-adapter rating.

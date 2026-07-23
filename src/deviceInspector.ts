@@ -4,6 +4,13 @@ export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
 export type DeviceInspectorTab = "info" | "apps" | "profiles" | "crashes";
 
+export function normalizeDeviceNameInput(name: string): string | null {
+  const normalized = name.trim();
+  const characters = Array.from(normalized).length;
+  if (characters === 0 || characters > 64 || new TextEncoder().encode(normalized).byteLength > 255) return null;
+  return Array.from(normalized).some((character) => /\p{Cc}/u.test(character)) ? null : normalized;
+}
+
 export function shouldRefreshDeviceInspector(kind: DeviceEvent["kind"], tab: DeviceInspectorTab): boolean {
   if (kind === "app_installed" || kind === "app_uninstalled") return tab === "apps";
   return (kind === "disk_usage_changed" || kind === "device_name_changed") && tab === "info";

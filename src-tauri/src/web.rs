@@ -25,7 +25,7 @@ use crate::protocol::{
     ActiveSlot, AppOperationSlot, AudioSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
     Frame, FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot,
     Orientation, OrientationSlot, RotateDir, StatusSlot, VideoCounters, encode_audio_envelope,
-    norm, unrotate_norm, validate_paste_text,
+    norm, unrotate_norm, validate_device_name, validate_paste_text,
 };
 use crate::{
     performance::{PerformanceDemand, PerformanceSlot},
@@ -165,6 +165,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
+        .route("/api/device/name", put(rename_device))
         .route("/api/device/screenshot", get(device_screenshot))
         .route("/api/device/text/paste", put(paste_device_text))
         .route("/api/device/restart", put(restart_device))
@@ -644,6 +645,47 @@ async fn device_details(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(details))
+}
+
+#[derive(Deserialize)]
+struct RenameDeviceRequest {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct RenameDeviceResponse {
+    name: String,
+}
+
+async fn rename_device(
+    State(state): State<AppState>,
+    Json(request): Json<RenameDeviceRequest>,
+) -> Result<Json<RenameDeviceResponse>, (StatusCode, String)> {
+    let name = validate_device_name(&request.name)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::RenameDevice { name, reply }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let name = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "device rename request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(RenameDeviceResponse { name }))
 }
 
 async fn device_screenshot(
@@ -2979,6 +3021,16 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            rename_device(
+                State(state.clone()),
+                Json(RenameDeviceRequest {
+                    name: "Test iPhone".into(),
+                }),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             device_screenshot(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -3029,6 +3081,41 @@ mod tests {
             uninstall_app(State(state), Path("com.example.app".into())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
+    }
+
+    #[tokio::test]
+    async fn device_rename_validates_and_dispatches_a_normalized_name() {
+        let (state, mut input_rx) = test_state();
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            rename_device(
+                State(request_state),
+                Json(RenameDeviceRequest {
+                    name: "  测试 iPhone  ".into(),
+                }),
+            )
+            .await
+        });
+        match input_rx.recv().await.unwrap() {
+            InputCmd::RenameDevice { name, reply } => {
+                assert_eq!(name, "测试 iPhone");
+                reply.send(Ok(name)).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(request.await.unwrap().unwrap().0.name, "测试 iPhone");
+
+        assert!(matches!(
+            rename_device(
+                State(state),
+                Json(RenameDeviceRequest {
+                    name: "bad\nname".into(),
+                }),
+            )
+            .await,
+            Err((StatusCode::BAD_REQUEST, _))
+        ));
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[tokio::test]

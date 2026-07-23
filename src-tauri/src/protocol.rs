@@ -345,6 +345,11 @@ pub enum InputCmd {
     },
     /// Return metadata collected from Lockdown for the active device.
     GetDeviceDetails(oneshot::Sender<Result<DeviceDetails, String>>),
+    /// Rename the active device through a verified Lockdown write.
+    RenameDevice {
+        name: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
     /// List user-facing applications through CoreDevice AppService.
     ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
     /// Read one validated PNG application icon through SpringBoardServices.
@@ -532,6 +537,21 @@ pub enum DeviceActivationState {
     FactoryActivated,
     SoftActivated,
     Unknown,
+}
+
+pub fn validate_device_name(name: &str) -> Result<String, &'static str> {
+    let normalized = name.trim();
+    let characters = normalized.chars().count();
+    if characters == 0 {
+        return Err("device name cannot be empty");
+    }
+    if characters > 64 || normalized.len() > 255 {
+        return Err("device name is too long");
+    }
+    if normalized.chars().any(char::is_control) {
+        return Err("device name cannot contain control characters");
+    }
+    Ok(normalized.to_string())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -819,6 +839,19 @@ mod tests {
         }
         assert!(validate_paste_text(&"界".repeat(1_024)).is_ok());
         assert!(validate_paste_text(&"😀".repeat(1_024)).is_ok());
+    }
+
+    #[test]
+    fn device_name_validation_preserves_unicode_and_rejects_unsafe_values() {
+        assert_eq!(
+            validate_device_name("  Boa 的 iPhone  ").unwrap(),
+            "Boa 的 iPhone"
+        );
+        assert!(validate_device_name("").is_err());
+        assert!(validate_device_name("name\nwith control").is_err());
+        assert!(validate_device_name(&"界".repeat(64)).is_ok());
+        assert!(validate_device_name(&"界".repeat(65)).is_err());
+        assert!(validate_device_name(&"😀".repeat(64)).is_err());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, shouldRefreshDeviceInspector } from "./deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -75,6 +75,12 @@ const crashReports: DeviceCrashReport[] = [
 ];
 
 describe("device inspector", () => {
+  it("normalizes safe Unicode device names", () => {
+    expect(normalizeDeviceNameInput("  Boa 的 iPhone  ")).toBe("Boa 的 iPhone");
+    expect(normalizeDeviceNameInput("bad\nname")).toBeNull();
+    expect(normalizeDeviceNameInput("界".repeat(64))).toBe("界".repeat(64));
+    expect(normalizeDeviceNameInput("😀".repeat(64))).toBeNull();
+  });
   it("refreshes only the inspector data affected by a device event", () => {
     expect(shouldRefreshDeviceInspector("app_installed", "apps")).toBe(true);
     expect(shouldRefreshDeviceInspector("app_uninstalled", "info")).toBe(false);

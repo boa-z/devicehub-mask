@@ -1730,6 +1730,20 @@ impl DeviceManagement {
                 });
                 None
             }
+            InputCmd::RenameDevice { name, reply } => {
+                let provider = self.provider.clone();
+                tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(6),
+                        rename_device(provider.as_ref(), &name),
+                    )
+                    .await
+                    .map_err(|_| "device rename timed out".to_string())
+                    .and_then(|result| result);
+                    let _ = reply.send(result);
+                });
+                None
+            }
             InputCmd::ListApps(reply) => {
                 let result =
                     list_device_apps(self.app_service.as_mut(), self.installation_proxy.as_mut())
@@ -2712,6 +2726,7 @@ async fn dispatch(
             Ok(())
         }
         InputCmd::GetDeviceDetails(_)
+        | InputCmd::RenameDevice { .. }
         | InputCmd::ListApps(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
@@ -3225,6 +3240,42 @@ async fn read_device_details(
         developer_mode_enabled: None,
         battery: None,
     })
+}
+
+async fn rename_device(
+    provider: &dyn IdeviceProvider,
+    requested_name: &str,
+) -> Result<String, String> {
+    let name = crate::protocol::validate_device_name(requested_name).map_err(str::to_string)?;
+    let mut lockdown = LockdownClient::connect(provider)
+        .await
+        .map_err(|error| format!("cannot connect Lockdown for device rename: {error}"))?;
+    let pairing_file = provider
+        .get_pairing_file()
+        .await
+        .map_err(|error| format!("cannot load pairing record for device rename: {error}"))?;
+    lockdown
+        .start_session(&pairing_file)
+        .await
+        .map_err(|error| format!("cannot start Lockdown session for device rename: {error}"))?;
+    lockdown
+        .set_value("DeviceName", plist::Value::String(name.clone()), None)
+        .await
+        .map_err(|error| format!("device rejected the new name: {error}"))?;
+    let verified = lockdown
+        .get_value(Some("DeviceName"), None)
+        .await
+        .map_err(|error| format!("cannot verify the new device name: {error}"))?
+        .into_string()
+        .ok_or_else(|| "device returned an invalid name after rename".to_string())?;
+    if verified != name {
+        return Err("device did not retain the requested name".into());
+    }
+    tracing::info!(
+        name_chars = name.chars().count(),
+        "device name changed through Lockdown"
+    );
+    Ok(name)
 }
 
 async fn read_activation_state(
