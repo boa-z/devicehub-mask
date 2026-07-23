@@ -150,6 +150,11 @@ export const zhCN = {
     deviceAudioEnabled: "设备音频已启用，正在重新连接设备。",
     deviceAudioEnabledReconnectManually: "设备音频已启用，请重新连接设备以开始播放。",
     deviceAudioEnableFailed: "无法启用设备音频：{{error}}",
+    clipboardKinds: { text: "文本", image: "图片" },
+    clipboardSynced: {
+      fromDevice: "已从设备复制{{kind}}：{{preview}}",
+      toDevice: "已向设备复制{{kind}}：{{preview}}",
+    },
     screenshotUnavailable: "等待设备画面后再截图。",
     screenshotFailed: "无法生成截图",
     screenshotSaved: "截图已保存",

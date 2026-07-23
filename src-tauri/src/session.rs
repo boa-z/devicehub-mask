@@ -45,11 +45,11 @@ use tokio::process::ChildStdin;
 use crate::decode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
-    ActiveSlot, AppOperationKind, AppOperationSlot, AudioSlot, ClipboardEvent, ClipboardSlot,
-    ConnKind, ControlCmd, DeviceApp, DeviceBattery, DeviceDetails, DeviceInfo, DeviceListSlot,
-    ErrorSlot, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus,
-    LocationStatusSlot, Orientation, OrientationSlot, ProvisioningProfile, RotateDir, StatusSlot,
-    VideoCounters, clipboard_preview,
+    ActiveSlot, AppOperationKind, AppOperationSlot, AudioSlot, ClipboardContentKind,
+    ClipboardEvent, ClipboardSlot, ConnKind, ControlCmd, DeviceApp, DeviceBattery, DeviceDetails,
+    DeviceInfo, DeviceListSlot, ErrorSlot, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods,
+    LocationStatus, LocationStatusSlot, Orientation, OrientationSlot, ProvisioningProfile,
+    RotateDir, StatusSlot, VideoCounters, clipboard_preview,
 };
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
@@ -2102,6 +2102,7 @@ fn apply_device_snapshot(
                     tracing::info!("clipboard: device -> host ({} bytes text)", text.len());
                     activity.set(ClipboardEvent {
                         from_device: true,
+                        kind: ClipboardContentKind::Text,
                         preview: clipboard_preview(&text, CLIPBOARD_PREVIEW_LEN),
                     });
                     state.last_text = Some(text);
@@ -2121,7 +2122,8 @@ fn apply_device_snapshot(
                             tracing::info!("clipboard: device -> host (image {w}×{h})");
                             activity.set(ClipboardEvent {
                                 from_device: true,
-                                preview: format!("🖼 image {w}×{h}"),
+                                kind: ClipboardContentKind::Image,
+                                preview: format!("{w} x {h}"),
                             });
                             state.last_image = Some(hash);
                             state.last_text = None;
@@ -2154,6 +2156,7 @@ async fn push_host_clipboard(
             tracing::info!("clipboard: host -> device ({} bytes text)", text.len());
             activity.set(ClipboardEvent {
                 from_device: false,
+                kind: ClipboardContentKind::Text,
                 preview: clipboard_preview(&text, CLIPBOARD_PREVIEW_LEN),
             });
             state.last_text = Some(text);
@@ -2181,7 +2184,8 @@ async fn push_host_clipboard(
                     );
                     activity.set(ClipboardEvent {
                         from_device: false,
-                        preview: format!("🖼 image {w}×{h}"),
+                        kind: ClipboardContentKind::Image,
+                        preview: format!("{w} x {h}"),
                     });
                     state.last_image = Some(hash);
                     state.last_text = None;

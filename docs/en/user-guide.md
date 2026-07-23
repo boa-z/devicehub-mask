@@ -44,7 +44,8 @@ the GitHub repository link. Device audio is disabled by default; enabling it
 takes effect after reconnecting the device. Playback mute and volume apply
 immediately, and mute is also available in the Device toolbar. Clipboard synchronization is also disabled
 by default and takes effect after reconnecting. When enabled, text and images copied on either the host or
-device replace the clipboard on the other side.
+device replace the clipboard on the other side. A transient message identifies the direction and content
+type; text previews are whitespace-collapsed and limited to 48 characters.
 
 The Device Info tab includes confirmed **Restart device** and **Shut down
 device** actions. Both end the current control session. Restart reconnects only

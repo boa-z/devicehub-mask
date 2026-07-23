@@ -161,6 +161,11 @@ export const enUS = {
     deviceAudioEnabled: "Device audio enabled; reconnecting the device.",
     deviceAudioEnabledReconnectManually: "Device audio enabled. Reconnect the device to start playback.",
     deviceAudioEnableFailed: "Unable to enable device audio: {{error}}",
+    clipboardKinds: { text: "Text", image: "Image" },
+    clipboardSynced: {
+      fromDevice: "{{kind}} copied from device: {{preview}}",
+      toDevice: "{{kind}} copied to device: {{preview}}",
+    },
     screenshotUnavailable: "Wait for a device frame before taking a screenshot.",
     screenshotFailed: "Unable to create the screenshot",
     screenshotSaved: "Screenshot saved",

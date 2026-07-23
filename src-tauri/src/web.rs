@@ -22,10 +22,10 @@ use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    ActiveSlot, AppOperationSlot, AudioSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame,
-    FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot, Orientation,
-    OrientationSlot, RotateDir, StatusSlot, VideoCounters, encode_audio_envelope, norm,
-    unrotate_norm,
+    ActiveSlot, AppOperationSlot, AudioSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
+    Frame, FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot,
+    Orientation, OrientationSlot, RotateDir, StatusSlot, VideoCounters, encode_audio_envelope,
+    norm, unrotate_norm,
 };
 use crate::{
     performance::{PerformanceDemand, PerformanceSlot},
@@ -36,6 +36,7 @@ use crate::{
 pub struct AppState {
     pub frames: FrameSlot,
     pub audio: AudioSlot,
+    pub clipboard: ClipboardSlot,
     pub video_counters: VideoCounters,
     pub status: StatusSlot,
     pub orientation: OrientationSlot,
@@ -1400,6 +1401,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
         let mut last_status = String::new();
         let mut frame_rx = send_state.frames.subscribe();
         let mut audio_rx = send_state.audio.subscribe();
+        let mut clipboard_rx = send_state.clipboard.subscribe();
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
@@ -1474,6 +1476,24 @@ async fn websocket(socket: WebSocket, state: AppState) {
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                             tracing::debug!(skipped, "WebSocket audio receiver skipped stale chunks");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                clipboard = clipboard_rx.recv() => {
+                    match clipboard {
+                        Ok(event) => {
+                            let Ok(text) = serde_json::to_string(
+                                &json!({"type": "clipboard", "payload": event}),
+                            ) else {
+                                continue;
+                            };
+                            if sender.send(Message::Text(text.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::debug!(skipped, "WebSocket clipboard receiver skipped stale events");
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -1905,6 +1925,7 @@ mod tests {
             AppState {
                 frames: FrameSlot::default(),
                 audio: AudioSlot::default(),
+                clipboard: ClipboardSlot::default(),
                 video_counters: VideoCounters::default(),
                 status: StatusSlot::default(),
                 orientation: OrientationSlot::default(),

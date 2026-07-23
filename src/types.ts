@@ -21,6 +21,11 @@ export type StreamMetrics = {
   presentation_ack_ms: number;
   megabits_per_second: number;
 };
+export type ClipboardEvent = {
+  from_device: boolean;
+  kind: "text" | "image";
+  preview: string;
+};
 export type ServicePhase = "connecting" | "ready" | "recovering" | "unavailable" | "stopped";
 export type ServiceHealth = {
   name: string;

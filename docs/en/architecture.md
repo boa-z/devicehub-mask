@@ -98,7 +98,8 @@ Clipboard synchronization connects CoreDevice Pasteboard Service only when its
 persisted opt-in setting is enabled for a newly connected session. Device changes
 are push-driven when available, while host changes use a bounded-rate poll with
 echo suppression. The disabled default performs no clipboard access or background
-clipboard transfer.
+clipboard transfer. Activity is published through an eight-entry broadcast channel
+to authenticated WebSocket clients, so UI feedback cannot backpressure the service.
 
 IPA installation and app removal use independent Tokio tasks and fresh
 Installation Proxy connections so uploads do not block video, HID, or app-list

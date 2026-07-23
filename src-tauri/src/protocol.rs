@@ -218,22 +218,41 @@ impl LocationStatusSlot {
     }
 }
 
-/// A clipboard sync event, surfaced to the UI's "copied" indicator.
-#[derive(Clone)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardContentKind {
+    Text,
+    Image,
+}
+
+/// A transient clipboard sync event surfaced only to authenticated WebSocket clients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ClipboardEvent {
     /// `true` if the text came *from* the device, `false` if pushed host → device.
     pub from_device: bool,
+    pub kind: ClipboardContentKind,
     pub preview: String,
 }
 
-/// The most recent [`ClipboardEvent`]; the UI `take`s it for a transient indicator.
-#[derive(Clone, Default)]
-pub struct ClipboardSlot(Arc<Mutex<Option<ClipboardEvent>>>);
+/// Bounded fan-out for clipboard activity. A slow UI loses stale notices rather
+/// than delaying the device pasteboard session.
+#[derive(Clone)]
+pub struct ClipboardSlot(broadcast::Sender<ClipboardEvent>);
+
+impl Default for ClipboardSlot {
+    fn default() -> Self {
+        let (sender, _) = broadcast::channel(8);
+        Self(sender)
+    }
+}
 
 impl ClipboardSlot {
     pub fn set(&self, event: ClipboardEvent) {
-        *self.0.lock().unwrap() = Some(event);
+        let _ = self.0.send(event);
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<ClipboardEvent> {
+        self.0.subscribe()
     }
 }
 
@@ -732,6 +751,21 @@ impl InputSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn clipboard_activity_is_broadcast_without_retaining_content() {
+        let slot = ClipboardSlot::default();
+        let mut receiver = slot.subscribe();
+        let event = ClipboardEvent {
+            from_device: true,
+            kind: ClipboardContentKind::Text,
+            preview: "copied text".into(),
+        };
+        slot.set(event.clone());
+
+        assert_eq!(receiver.recv().await.unwrap(), event);
+        assert_eq!(clipboard_preview(" a\n b  c ", 4), "a b ...");
+    }
 
     #[test]
     fn app_operation_tracks_progress_and_success() {

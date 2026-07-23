@@ -53,7 +53,7 @@ import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPrefere
 import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
-import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
+import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type ClipboardEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 import { readVideoSettings, setAudioEnabled } from "./videoSettings";
 
 const emptyStatus: DeviceStatus = {
@@ -195,6 +195,7 @@ export default function App() {
   const [deviceAudioEnabled, setDeviceAudioEnabled] = useState<boolean | null>(null);
   const [deviceAudioBusy, setDeviceAudioBusy] = useState(false);
   const [audioPlaybackSuspended, setAudioPlaybackSuspended] = useState(false);
+  const [clipboardEvent, setClipboardEvent] = useState<ClipboardEvent | null>(null);
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
@@ -311,6 +312,16 @@ export default function App() {
       window.removeEventListener("keydown", unlockAudio);
     };
   }, [audioPlayback.muted, deviceAudioEnabled, resumeDeviceAudio]);
+
+  useEffect(() => {
+    if (!clipboardEvent) return;
+    const direction = clipboardEvent.from_device ? "fromDevice" : "toDevice";
+    const kind = t(`device.clipboardKinds.${clipboardEvent.kind}`);
+    void message.info(t(`device.clipboardSynced.${direction}`, {
+      kind,
+      preview: clipboardEvent.preview,
+    }));
+  }, [clipboardEvent, t]);
 
   useEffect(() => {
     let disposed = false;
@@ -738,8 +749,9 @@ export default function App() {
       };
       socket.onmessage = (event) => {
         if (typeof event.data === "string") {
-          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics };
+          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent };
           if (data.type === "status") setStatus(data.payload as DeviceStatus);
+          if (data.type === "clipboard") setClipboardEvent(data.payload as ClipboardEvent);
           if (data.type === "metrics") {
             const metrics = data.payload as StreamMetrics;
             setStreamMetrics(metrics);

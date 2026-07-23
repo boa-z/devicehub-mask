@@ -187,7 +187,7 @@ fn spawn_backend(
                     frames.clone(),
                     audio.clone(),
                     status.clone(),
-                    clipboard,
+                    clipboard.clone(),
                     orientation.clone(),
                     devices.clone(),
                     active.clone(),
@@ -206,6 +206,7 @@ fn spawn_backend(
                     web::AppState {
                         frames,
                         audio,
+                        clipboard,
                         video_counters,
                         status,
                         orientation,
