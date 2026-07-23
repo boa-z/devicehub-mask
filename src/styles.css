@@ -225,6 +225,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .performance-section-title > span { color: #899493; font-size: 11px; text-align: center; }
 .performance-capture-controls { justify-content: flex-end; }
 .performance-capture-controls .ant-select { min-width: 112px; }
+.performance-condition-controls .ant-select { min-width: min(320px, 48vw); }
 .performance-capture-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .performance-capture-grid > div { border-right: 1px solid #303638; border-bottom: 0; }
 .performance-capture-grid > div:nth-child(3n) { border-right: 1px solid #303638; }

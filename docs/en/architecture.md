@@ -57,8 +57,19 @@ Optional device services run under a shared supervisor inside a Tokio
 thread while the HTTP, WebSocket, and MCP transports continue using the
 multi-thread runtime. Each service publishes a common health record with phase,
 attempt count, restart count, last error, and update time. Location, sysmontap,
-graphics, network-monitor, and energy-monitor channels reconnect independently
-with bounded exponential backoff; one broken channel cannot terminate video or HID.
+condition-inducer, graphics, network-monitor, and energy-monitor channels
+reconnect independently with bounded exponential backoff; one broken channel
+cannot terminate video or HID.
+
+Device condition simulation owns an isolated DVT Condition Inducer channel and a
+bounded command queue. The backend bounds and sanitizes the device-provided
+catalog, and accepts only group/profile pairs from that catalog. Every channel
+connection first disables any residual condition to establish a known baseline.
+Apply failures are treated as potentially active because the device may have
+committed before the reply failed. Session shutdown performs a bounded cleanup;
+if it cannot confirm success, the shared state retains `cleanup_pending` until a
+later connection clears the condition. No simulated condition is automatically
+restored after reconnecting.
 
 Performance monitoring reuses cloned handles to the active software tunnel and
 creates isolated DVT connections. Sysmontap, graphics, network, and energy sampling

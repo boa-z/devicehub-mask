@@ -1,10 +1,11 @@
-import { DashboardOutlined, DownloadOutlined, StopOutlined } from "@ant-design/icons";
+import { DashboardOutlined, DownloadOutlined, ExperimentOutlined, StopOutlined } from "@ant-design/icons";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Alert, Button, Segmented, Select, Space, Tag, Typography, message } from "antd";
+import { Alert, Button, Modal, Segmented, Select, Space, Tag, Typography, message } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sortProcesses, type ProcessSort } from "../processPerformance";
 import { networkCaptureDurations, networkCaptureFilename, networkCaptureRunning } from "../networkCapture";
+import { decodeDeviceConditionSelection, deviceConditionSelectionExists, encodeDeviceConditionSelection } from "../deviceConditions";
 import type { PerformanceSnapshot, PerformanceView, ServiceHealth, StreamMetrics } from "../types";
 
 type Props = {
@@ -91,10 +92,34 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const [processSort, setProcessSort] = useState<ProcessSort>("cpu");
   const [captureDuration, setCaptureDuration] = useState<number>(30);
   const [captureBusy, setCaptureBusy] = useState(false);
+  const [conditionSelection, setConditionSelection] = useState<string | null>(null);
+  const [conditionBusy, setConditionBusy] = useState(false);
+  const condition = view?.device_conditions;
 
   useEffect(() => {
     setHistory([]);
+    setConditionSelection(null);
   }, [activeUdid]);
+
+  useEffect(() => {
+    const groups = condition?.groups ?? [];
+    setConditionSelection((current) => {
+      if (current && deviceConditionSelectionExists(groups, current)) return current;
+      if (condition?.active) {
+        const active = encodeDeviceConditionSelection({
+          groupIdentifier: condition.active.group_identifier,
+          profileIdentifier: condition.active.profile_identifier,
+        });
+        if (deviceConditionSelectionExists(groups, active)) return active;
+      }
+      const firstGroup = groups.find((group) => group.profiles.length > 0);
+      const firstProfile = firstGroup?.profiles[0];
+      return firstGroup && firstProfile ? encodeDeviceConditionSelection({
+        groupIdentifier: firstGroup.identifier,
+        profileIdentifier: firstProfile.identifier,
+      }) : null;
+    });
+  }, [condition]);
 
   useEffect(() => {
     const sample = view?.sample;
@@ -117,6 +142,23 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const captureStatus = capture
     ? `${t(`performance.captureStates.${capture.state}`)}${capture.stop_reason ? ` · ${t(`performance.captureReasons.${capture.stop_reason}`)}` : ""}`
     : t("performance.captureStates.idle");
+  const conditionOptions = (condition?.groups ?? []).map((group) => ({
+    label: group.identifier,
+    options: group.profiles.map((profile) => ({
+      value: encodeDeviceConditionSelection({
+        groupIdentifier: group.identifier,
+        profileIdentifier: profile.identifier,
+      }),
+      label: profile.description && profile.description !== profile.identifier
+        ? `${profile.description} (${profile.identifier})`
+        : profile.identifier,
+      title: profile.identifier,
+    })),
+  }));
+  const activeConditionValue = condition?.active ? encodeDeviceConditionSelection({
+    groupIdentifier: condition.active.group_identifier,
+    profileIdentifier: condition.active.profile_identifier,
+  }) : null;
 
   const startCapture = async () => {
     const destination = await save({
@@ -150,6 +192,52 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       void message.error(t("performance.captureStopFailed", { error: String(captureError) }));
     } finally {
       setCaptureBusy(false);
+    }
+  };
+
+  const applyCondition = () => {
+    if (!conditionSelection || conditionBusy) return;
+    const selected = decodeDeviceConditionSelection(conditionSelection);
+    if (!selected) return;
+    Modal.confirm({
+      title: t("performance.conditionConfirmTitle"),
+      content: t("performance.conditionConfirmBody"),
+      okText: t("performance.applyCondition"),
+      okType: "danger",
+      cancelText: t("common.cancel"),
+      onOk: async () => {
+        setConditionBusy(true);
+        try {
+          const response = await request("/api/performance/device-condition", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              group_identifier: selected.groupIdentifier,
+              profile_identifier: selected.profileIdentifier,
+            }),
+          });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          void message.success(t("performance.conditionApplied"));
+        } catch (conditionError) {
+          void message.error(t("performance.conditionApplyFailed", { error: String(conditionError) }));
+        } finally {
+          setConditionBusy(false);
+        }
+      },
+    });
+  };
+
+  const clearCondition = async () => {
+    if (conditionBusy) return;
+    setConditionBusy(true);
+    try {
+      const response = await request("/api/performance/device-condition", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      void message.success(t("performance.conditionCleared"));
+    } catch (conditionError) {
+      void message.error(t("performance.conditionClearFailed", { error: String(conditionError) }));
+    } finally {
+      setConditionBusy(false);
     }
   };
 
@@ -189,6 +277,62 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.networkSend")}</span><strong>{byteRate(sample?.network_tx_bytes_per_second)}</strong></div>
           <div><span>{t("performance.networkConnections")}</span><strong>{sample?.network_recent_connections ?? "--"}</strong></div>
         </div>
+      </section>
+
+      <section className="performance-section">
+        <div className="performance-process-header">
+          <div>
+            <Typography.Title level={5}>{t("performance.deviceConditions")}</Typography.Title>
+            <Typography.Text type="secondary">{t("performance.deviceConditionsHint")}</Typography.Text>
+          </div>
+          <Space wrap className="performance-capture-controls performance-condition-controls">
+            <Select
+              aria-label={t("performance.conditionProfile")}
+              value={conditionSelection}
+              placeholder={t("performance.selectCondition")}
+              options={conditionOptions}
+              disabled={!activeUdid || !condition?.available || conditionBusy || conditionOptions.length === 0}
+              onChange={setConditionSelection}
+            />
+            <Button
+              danger
+              type="primary"
+              icon={<ExperimentOutlined />}
+              disabled={!condition?.available || !conditionSelection || conditionSelection === activeConditionValue}
+              loading={conditionBusy}
+              onClick={applyCondition}
+            >
+              {t("performance.applyCondition")}
+            </Button>
+            <Button
+              icon={<StopOutlined />}
+              disabled={!condition?.available || !condition.active}
+              loading={conditionBusy}
+              onClick={() => void clearCondition()}
+            >
+              {t("performance.clearCondition")}
+            </Button>
+          </Space>
+        </div>
+        {condition?.active && <Alert
+          type="warning"
+          showIcon
+          message={t("performance.conditionActive")}
+          description={condition.active.description || condition.active.profile_identifier}
+        />}
+        {condition?.cleanup_pending && <Alert
+          type="error"
+          showIcon
+          message={t("performance.conditionCleanupPending")}
+          description={t("performance.conditionCleanupPendingHint")}
+        />}
+        {activeUdid && condition && !condition.available && !condition.cleanup_pending && <Alert
+          type="info"
+          showIcon
+          message={t("performance.conditionsUnavailable")}
+          description={condition.error ?? t("performance.conditionsUnavailableHint")}
+        />}
+        {condition?.error && condition.cleanup_pending && <Typography.Text type="danger">{condition.error}</Typography.Text>}
       </section>
 
       <section className="performance-section">

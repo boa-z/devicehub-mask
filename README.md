@@ -30,7 +30,8 @@ exposed as a browser application.
   pause, copy and service recovery status
 - On-demand normalized iPhone CPU, top-process CPU, memory and relative energy
   rankings, Core Animation FPS, GPU-memory, and device network telemetry with
-  supervised DVT service recovery, plus bounded PCAP export through pcapd
+  supervised DVT service recovery, device-wide DVT network/thermal condition
+  simulation, plus bounded PCAP export through pcapd
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch,
   app lifecycle control, frame synchronization, device switching, and DVT
   virtual location

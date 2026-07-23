@@ -39,6 +39,7 @@ pub struct AppState {
     pub clipboard: ClipboardSlot,
     pub device_events: crate::device_events::DeviceEventSlot,
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
+    pub device_conditions: crate::device_conditions::DeviceConditionSlot,
     pub video_counters: VideoCounters,
     pub status: StatusSlot,
     pub orientation: OrientationSlot,
@@ -94,6 +95,7 @@ struct PerformanceView {
     services: Vec<crate::supervisor::ServiceHealth>,
     sampling: bool,
     network_capture: crate::network_capture::NetworkCaptureStatus,
+    device_conditions: crate::device_conditions::DeviceConditionStatus,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -146,6 +148,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route(
             "/api/performance/network-capture",
             put(start_network_capture).delete(stop_network_capture),
+        )
+        .route(
+            "/api/performance/device-condition",
+            put(apply_device_condition).delete(clear_device_condition),
         )
         .route(
             "/api/device/logs",
@@ -250,7 +256,81 @@ async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
         services: state.services.snapshot(),
         sampling: state.performance_demand.enabled(),
         network_capture: state.network_capture.get(),
+        device_conditions: state.device_conditions.get(),
     })
+}
+
+#[derive(Deserialize)]
+struct ApplyDeviceConditionRequest {
+    group_identifier: String,
+    profile_identifier: String,
+}
+
+async fn apply_device_condition(
+    State(state): State<AppState>,
+    Json(request): Json<ApplyDeviceConditionRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    crate::device_conditions::validate_identifiers(
+        &request.group_identifier,
+        &request.profile_identifier,
+    )
+    .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeviceCondition(
+        crate::device_conditions::DeviceConditionCommand::Apply {
+            group_identifier: request.group_identifier,
+            profile_identifier: request.profile_identifier,
+            expires_at: tokio::time::Instant::now() + Duration::from_secs(7),
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_device_condition_command(response, "apply device condition").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn clear_device_condition(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeviceCondition(
+        crate::device_conditions::DeviceConditionCommand::Clear {
+            expires_at: tokio::time::Instant::now() + Duration::from_secs(7),
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_device_condition_command(response, "clear device condition").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn await_device_condition_command(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    let result = tokio::time::timeout(Duration::from_secs(8), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("{operation} service stopped"),
+            )
+        })?;
+    result.map_err(|error| (StatusCode::CONFLICT, error))
 }
 
 #[derive(Deserialize)]
@@ -2094,6 +2174,7 @@ mod tests {
                 clipboard: ClipboardSlot::default(),
                 device_events: crate::device_events::DeviceEventSlot::default(),
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),
+                device_conditions: crate::device_conditions::DeviceConditionSlot::default(),
                 video_counters: VideoCounters::default(),
                 status: StatusSlot::default(),
                 orientation: OrientationSlot::default(),
@@ -2170,6 +2251,62 @@ mod tests {
         };
         reply.send(Ok(())).unwrap();
         assert_eq!(request.await.unwrap().unwrap(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn device_condition_endpoints_dispatch_to_the_supervised_service() {
+        let (state, mut input_rx) = test_state();
+        let apply_state = state.clone();
+        let apply = tokio::spawn(async move {
+            apply_device_condition(
+                State(apply_state),
+                Json(ApplyDeviceConditionRequest {
+                    group_identifier: "Network".into(),
+                    profile_identifier: "Lossy LTE".into(),
+                }),
+            )
+            .await
+        });
+        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Apply {
+            group_identifier,
+            profile_identifier,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected apply device condition command");
+        };
+        assert_eq!(group_identifier, "Network");
+        assert_eq!(profile_identifier, "Lossy LTE");
+        reply.send(Ok(())).unwrap();
+        assert_eq!(apply.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let clear = tokio::spawn(clear_device_condition(State(state)));
+        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Clear {
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected clear device condition command");
+        };
+        reply.send(Ok(())).unwrap();
+        assert_eq!(clear.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn device_condition_endpoint_rejects_invalid_identifiers_before_dispatch() {
+        let (state, mut input_rx) = test_state();
+        let error = apply_device_condition(
+            State(state),
+            Json(ApplyDeviceConditionRequest {
+                group_identifier: "Network\nInjected".into(),
+                profile_identifier: "LTE".into(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[tokio::test]

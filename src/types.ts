@@ -83,11 +83,32 @@ export type NetworkCaptureStatus = {
   stop_reason: NetworkCaptureStopReason | null;
   error: string | null;
 };
+export type DeviceConditionProfile = {
+  identifier: string;
+  description: string;
+};
+export type DeviceConditionGroup = {
+  identifier: string;
+  profiles: DeviceConditionProfile[];
+};
+export type ActiveDeviceCondition = {
+  group_identifier: string;
+  profile_identifier: string;
+  description: string;
+};
+export type DeviceConditionStatus = {
+  available: boolean;
+  groups: DeviceConditionGroup[];
+  active: ActiveDeviceCondition | null;
+  cleanup_pending: boolean;
+  error: string | null;
+};
 export type PerformanceView = {
   sample: PerformanceSnapshot;
   services: ServiceHealth[];
   sampling: boolean;
   network_capture: NetworkCaptureStatus;
+  device_conditions: DeviceConditionStatus;
 };
 export type DeviceDetails = {
   udid: string;
