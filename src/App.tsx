@@ -167,6 +167,7 @@ export default function App() {
   const [controlProfile, setControlProfile] = useState<Profile>(profile);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [activeProfile, setActiveProfile] = useState("default");
+  const [profileSwitching, setProfileSwitching] = useState<string | null>(null);
   const [appProfileBindings, setAppProfileBindings] = useState<Record<string, string>>({});
   const [appBindingConflicts, setAppBindingConflicts] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>("move");
@@ -209,6 +210,7 @@ export default function App() {
   const recordingChunksRef = useRef<Blob[]>([]);
   const canvasReadyRef = useRef(false);
   const fullscreenToolbarTimerRef = useRef<number | null>(null);
+  const profileSwitchingRef = useRef(false);
   const orientationRef = useRef<Orientation>("portrait");
   const heldRef = useRef(new Set<string>());
   const heldSinceRef = useRef(new Map<string, number>());
@@ -913,9 +915,11 @@ export default function App() {
     return list;
   }, [request]);
 
-  const activateProfileForApp = useCallback(async (bundleId: string) => {
-    const target = appProfileBindings[bundleId];
-    if (!target || target === activeProfile) return;
+  const activateSavedControlProfile = useCallback(async (target: string) => {
+    if (target === activeProfile) return false;
+    if (profileSwitchingRef.current) throw new Error(translateRef.current("profile.switchInProgress"));
+    profileSwitchingRef.current = true;
+    setProfileSwitching(target);
     try {
       const loaded = await readProfile(target);
       releaseAllControls();
@@ -923,11 +927,34 @@ export default function App() {
       if (!response.ok) throw new Error(translateRef.current("errors.activateProfile", { status: response.status }));
       setActiveProfile(target);
       setControlProfile(loaded);
-      void message.success(translateRef.current("profile.autoActivated", { profile: target }));
+      return true;
+    } finally {
+      profileSwitchingRef.current = false;
+      setProfileSwitching(null);
+    }
+  }, [activeProfile, readProfile, releaseAllControls, request]);
+
+  const activateProfileForApp = useCallback(async (bundleId: string) => {
+    const target = appProfileBindings[bundleId];
+    if (!target) return;
+    try {
+      if (await activateSavedControlProfile(target)) {
+        void message.success(translateRef.current("profile.autoActivated", { profile: target }));
+      }
     } catch (error) {
       void message.warning(translateRef.current("profile.autoActivateFailed", { error: String(error) }));
     }
-  }, [activeProfile, appProfileBindings, readProfile, releaseAllControls, request]);
+  }, [activateSavedControlProfile, appProfileBindings]);
+
+  const switchControlProfile = useCallback(async (target: string) => {
+    try {
+      if (await activateSavedControlProfile(target)) {
+        void message.success(translateRef.current("profile.switched", { profile: target }));
+      }
+    } catch (error) {
+      void message.error(translateRef.current("profile.switchFailed", { error: String(error) }));
+    }
+  }, [activateSavedControlProfile]);
 
   const writeProfile = useCallback(async (name: string, value: Profile) => {
     const response = await request(`/api/profiles/${encodeURIComponent(name)}`, {
@@ -1212,6 +1239,19 @@ export default function App() {
           ? "stalled"
           : null;
   const statusText = status.error ?? (backendStatusKeys[status.status] ? t(backendStatusKeys[status.status]) : status.status);
+  const controlProfileSelector = (
+    <Tooltip title={t("device.controlProfile")}>
+      <Select
+        className="control-profile-select"
+        aria-label={t("device.controlProfile")}
+        value={activeProfile}
+        options={profiles.map((name) => ({ value: name, label: name }))}
+        loading={profileSwitching !== null}
+        disabled={profiles.length === 0 || profileSwitching !== null}
+        onChange={(name) => void switchControlProfile(name)}
+      />
+    </Tooltip>
+  );
   const hardwareControls = (
     <div className="hardware-controls" role="toolbar" aria-label={t("hardware.toolbar")}>
       {([
@@ -1390,6 +1430,7 @@ export default function App() {
                   {deviceFullscreen ? (
                     <div className={`device-fullscreen-toolbar${fullscreenToolbarVisible ? "" : " is-hidden"}`} role="toolbar" aria-label={t("device.deviceFullscreenControls")}>
                       <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedUdid} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
+                      {controlProfileSelector}
                       <Segmented<ControlMode>
                         value={controlMode}
                         options={[
@@ -1432,6 +1473,7 @@ export default function App() {
                       </Tooltip>
                     </div>
                     <Space>
+                      {page === "device" && controlProfileSelector}
                       <Segmented<ControlMode>
                         value={controlMode}
                         options={[

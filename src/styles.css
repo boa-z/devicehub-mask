@@ -129,6 +129,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-view-scale-select { width: 220px; }
 .device-display-controls { flex: none; }
 .device-scale-select { width: 104px; }
+.control-profile-select { width: 144px; }
 .device-text-input { width: min(320px, 70vw); display: grid; gap: 8px; }
 .device-text-input .ant-typography { font-size: 11px; }
 .device-text-input .ant-btn { justify-self: end; }
