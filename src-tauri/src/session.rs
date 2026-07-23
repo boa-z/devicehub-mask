@@ -690,6 +690,7 @@ struct SessionViews {
     device_logs: crate::device_logs::DeviceLogSlot,
     device_log_demand: crate::device_logs::DeviceLogDemand,
     services: supervisor::ServiceRegistry,
+    device_events: crate::device_events::DeviceEventSlot,
 }
 
 #[derive(Clone)]
@@ -714,6 +715,7 @@ pub async fn manage(
     audio: AudioSlot,
     status: StatusSlot,
     clipboard: ClipboardSlot,
+    device_events: crate::device_events::DeviceEventSlot,
     orientation_view: OrientationSlot,
     device_list: DeviceListSlot,
     active: ActiveSlot,
@@ -757,7 +759,7 @@ pub async fn manage(
             tokio::select! {
                 cmd = control_rx.recv() => match cmd {
                     Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
-                    Some(ControlCmd::Refresh) => {}
+                    Some(ControlCmd::Refresh) => names.clear(),
                     Some(ControlCmd::Quit) | None => return,
                 },
                 _ = tokio::time::sleep(IDLE_RESCAN) => {}
@@ -794,6 +796,7 @@ pub async fn manage(
                 device_logs: device_logs.clone(),
                 device_log_demand: device_log_demand.clone(),
                 services: services.clone(),
+                device_events: device_events.clone(),
             },
             in_rx,
         );
@@ -814,6 +817,7 @@ pub async fn manage(
                     Some(ControlCmd::Connect(_)) => {} // already on this device
                     Some(ControlCmd::Reconnect(u)) => break Next::Switch(u),
                     Some(ControlCmd::Refresh) => {
+                        names.clear();
                         device_list.set(enumerate_devices(&mut names).await);
                     }
                     Some(ControlCmd::Quit) | None => break Next::Quit,
@@ -987,6 +991,12 @@ async fn run(
         views.device_logs.clone(),
         supervisor.reporter("device.logs"),
         views.device_log_demand.subscribe(),
+        supervisor.shutdown_receiver(),
+    ));
+    supervisor.spawn(crate::device_events::supervise(
+        provider.clone(),
+        views.device_events.clone(),
+        supervisor.reporter("device.notifications"),
         supervisor.shutdown_receiver(),
     ));
     supervisor.spawn(performance::supervise_system(
@@ -1574,7 +1584,12 @@ impl DeviceManagement {
                 };
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    let (battery_result, developer_mode_result) = tokio::join!(
+                    let requested_udid = details.udid.clone();
+                    let (details_result, battery_result, developer_mode_result) = tokio::join!(
+                        tokio::time::timeout(
+                            Duration::from_secs(3),
+                            read_device_details(provider.as_ref(), requested_udid),
+                        ),
                         tokio::time::timeout(
                             Duration::from_secs(3),
                             read_device_battery(provider.as_ref()),
@@ -1584,6 +1599,11 @@ impl DeviceManagement {
                             read_developer_mode_status(provider.as_ref()),
                         ),
                     );
+                    match details_result {
+                        Ok(Some(refreshed)) => details = refreshed,
+                        Ok(None) => tracing::warn!("device metadata refresh unavailable"),
+                        Err(_) => tracing::warn!("device metadata refresh timed out"),
+                    }
                     match battery_result {
                         Ok(Ok(battery)) => {
                             tracing::debug!(

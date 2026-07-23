@@ -2,6 +2,7 @@ mod app_documents;
 mod app_icons;
 mod crash_reports;
 mod decode;
+mod device_events;
 mod device_logs;
 mod diagnostics;
 mod hid;
@@ -155,6 +156,7 @@ fn spawn_backend(
                 let video_counters = VideoCounters::default();
                 let status = StatusSlot::default();
                 let clipboard = ClipboardSlot::default();
+                let device_events = device_events::DeviceEventSlot::default();
                 let orientation = OrientationSlot::default();
                 let devices = DeviceListSlot::default();
                 let active = ActiveSlot::default();
@@ -189,6 +191,7 @@ fn spawn_backend(
                     audio.clone(),
                     status.clone(),
                     clipboard.clone(),
+                    device_events.clone(),
                     orientation.clone(),
                     devices.clone(),
                     active.clone(),
@@ -208,6 +211,7 @@ fn spawn_backend(
                         frames,
                         audio,
                         clipboard,
+                        device_events,
                         video_counters,
                         status,
                         orientation,

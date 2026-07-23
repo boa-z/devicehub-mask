@@ -1,7 +1,13 @@
-import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
+import type { DeviceApp, DeviceCrashReport, DeviceEvent, ProvisioningProfile } from "./types";
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
+export type DeviceInspectorTab = "info" | "apps" | "profiles" | "crashes";
+
+export function shouldRefreshDeviceInspector(kind: DeviceEvent["kind"], tab: DeviceInspectorTab): boolean {
+  if (kind === "app_installed" || kind === "app_uninstalled") return tab === "apps";
+  return (kind === "disk_usage_changed" || kind === "device_name_changed") && tab === "info";
+}
 
 export function appProfileBindingState(
   bundleId: string,

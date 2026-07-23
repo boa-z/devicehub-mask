@@ -56,7 +56,7 @@ import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPrefere
 import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
-import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type ClipboardEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
+import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 import { readVideoSettings, setAudioEnabled } from "./videoSettings";
 
 const emptyStatus: DeviceStatus = {
@@ -199,6 +199,7 @@ export default function App() {
   const [deviceAudioBusy, setDeviceAudioBusy] = useState(false);
   const [audioPlaybackSuspended, setAudioPlaybackSuspended] = useState(false);
   const [clipboardEvent, setClipboardEvent] = useState<ClipboardEvent | null>(null);
+  const [deviceEvent, setDeviceEvent] = useState<DeviceEvent | null>(null);
   const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
@@ -807,9 +808,10 @@ export default function App() {
       };
       socket.onmessage = (event) => {
         if (typeof event.data === "string") {
-          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent };
+          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent | DeviceEvent };
           if (data.type === "status") setStatus(data.payload as DeviceStatus);
           if (data.type === "clipboard") setClipboardEvent(data.payload as ClipboardEvent);
+          if (data.type === "device_event") setDeviceEvent(data.payload as DeviceEvent);
           if (data.type === "metrics") {
             const metrics = data.payload as StreamMetrics;
             setStreamMetrics(metrics);
@@ -864,6 +866,12 @@ export default function App() {
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
   }, [backend, markAudioPlaybackSuspended, resumeDeviceAudio]);
+
+  useEffect(() => {
+    if (deviceEvent?.kind === "device_name_changed") {
+      void request("/api/devices/refresh", { method: "PUT" });
+    }
+  }, [deviceEvent, request]);
 
   useEffect(() => () => {
     if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
@@ -1895,6 +1903,7 @@ export default function App() {
                     activeProfile={activeProfile}
                     appProfileBindings={appProfileBindings}
                     bindingConflicts={appBindingConflicts}
+                    deviceEvent={deviceEvent}
                     onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
                     onAppProfileBindingChange={changeAppProfileBinding}
                   />

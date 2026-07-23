@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage } from "./deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, shouldRefreshDeviceInspector } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -72,6 +72,13 @@ const crashReports: DeviceCrashReport[] = [
 ];
 
 describe("device inspector", () => {
+  it("refreshes only the inspector data affected by a device event", () => {
+    expect(shouldRefreshDeviceInspector("app_installed", "apps")).toBe(true);
+    expect(shouldRefreshDeviceInspector("app_uninstalled", "info")).toBe(false);
+    expect(shouldRefreshDeviceInspector("disk_usage_changed", "info")).toBe(true);
+    expect(shouldRefreshDeviceInspector("device_name_changed", "apps")).toBe(false);
+  });
+
   it("formats decimal device capacity without exposing invalid values", () => {
     expect(formatCapacity(127_900_000_000)).toBe("128 GB");
     expect(formatCapacity(null)).toBe("-");

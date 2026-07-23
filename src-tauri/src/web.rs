@@ -37,6 +37,7 @@ pub struct AppState {
     pub frames: FrameSlot,
     pub audio: AudioSlot,
     pub clipboard: ClipboardSlot,
+    pub device_events: crate::device_events::DeviceEventSlot,
     pub video_counters: VideoCounters,
     pub status: StatusSlot,
     pub orientation: OrientationSlot,
@@ -1467,6 +1468,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
         let mut frame_rx = send_state.frames.subscribe();
         let mut audio_rx = send_state.audio.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
+        let mut device_event_rx = send_state.device_events.subscribe();
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
@@ -1559,6 +1561,24 @@ async fn websocket(socket: WebSocket, state: AppState) {
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                             tracing::debug!(skipped, "WebSocket clipboard receiver skipped stale events");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                device_event = device_event_rx.recv() => {
+                    match device_event {
+                        Ok(event) => {
+                            let Ok(text) = serde_json::to_string(
+                                &json!({"type": "device_event", "payload": event}),
+                            ) else {
+                                continue;
+                            };
+                            if sender.send(Message::Text(text.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::debug!(skipped, "WebSocket device event receiver skipped stale events");
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
@@ -1991,6 +2011,7 @@ mod tests {
                 frames: FrameSlot::default(),
                 audio: AudioSlot::default(),
                 clipboard: ClipboardSlot::default(),
+                device_events: crate::device_events::DeviceEventSlot::default(),
                 video_counters: VideoCounters::default(),
                 status: StatusSlot::default(),
                 orientation: OrientationSlot::default(),

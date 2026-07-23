@@ -22,11 +22,10 @@ import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Too
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage } from "../deviceInspector";
-import type { ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, ProvisioningProfile } from "../types";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, shouldRefreshDeviceInspector } from "../deviceInspector";
+import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
+import type { AppOperation, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ProvisioningProfile } from "../types";
 
-type InspectorTab = "info" | "apps" | "profiles" | "crashes";
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
 type Props = {
@@ -35,6 +34,7 @@ type Props = {
   activeProfile: string;
   appProfileBindings: Record<string, string>;
   bindingConflicts: string[];
+  deviceEvent: DeviceEvent | null;
   onAppLaunched?: (bundleId: string) => void;
   onAppProfileBindingChange: (bundleId: string, bind: boolean) => Promise<void>;
 };
@@ -104,11 +104,12 @@ export function DeviceInspector({
   activeProfile,
   appProfileBindings,
   bindingConflicts,
+  deviceEvent,
   onAppLaunched,
   onAppProfileBindingChange,
 }: Props) {
   const { t, i18n } = useTranslation();
-  const [tab, setTab] = useState<InspectorTab>("info");
+  const [tab, setTab] = useState<DeviceInspectorTab>("info");
   const [details, setDetails] = useState<DeviceDetails | null>(null);
   const [apps, setApps] = useState<DeviceApp[]>([]);
   const [profiles, setProfiles] = useState<ProvisioningProfile[]>([]);
@@ -125,6 +126,7 @@ export function DeviceInspector({
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const handledOperation = useRef(0);
+  const handledDeviceEvent = useRef(0);
 
   const loadApps = useCallback(async () => {
     setApps(await readJson<DeviceApp[]>(await request("/api/device/apps")));
@@ -167,6 +169,12 @@ export function DeviceInspector({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!deviceEvent || deviceEvent.sequence <= handledDeviceEvent.current) return;
+    handledDeviceEvent.current = deviceEvent.sequence;
+    if (shouldRefreshDeviceInspector(deviceEvent.kind, tab)) void load();
+  }, [deviceEvent, load, tab]);
 
   const readAppOperation = useCallback(
     async () => readJson<AppOperation>(await request("/api/device/apps/operation")),
@@ -402,7 +410,7 @@ export function DeviceInspector({
     <>
     <aside className="device-inspector">
       <div className="device-inspector-header">
-        <Segmented<InspectorTab>
+        <Segmented<DeviceInspectorTab>
           block
           value={tab}
           options={[

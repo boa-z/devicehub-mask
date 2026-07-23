@@ -26,6 +26,10 @@ export type ClipboardEvent = {
   kind: "text" | "image";
   preview: string;
 };
+export type DeviceEvent = {
+  sequence: number;
+  kind: "app_installed" | "app_uninstalled" | "disk_usage_changed" | "device_name_changed";
+};
 export type ServicePhase = "connecting" | "ready" | "recovering" | "unavailable" | "stopped";
 export type ServiceHealth = {
   name: string;
