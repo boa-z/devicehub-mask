@@ -76,6 +76,10 @@ a new RSD tunnel per operation. Process URLs are matched only when their direct
 parent is the selected app bundle; stop resolves fresh device state and sends a
 fixed SIGTERM without accepting a client PID or signal. Listing falls back to
 Installation Proxy when AppService is absent, with running state left unknown.
+App icons are fetched through a separate request-driven SpringBoardServices RSD
+channel, so icon reads never occupy the HID dispatch loop. The worker validates
+PNG headers and dimensions, limits each response to 4 MiB, and uses a 256-entry,
+32 MiB FIFO cache. The frontend requests only rows near the visible viewport.
 
 IPA installation and app removal use independent Tokio tasks and fresh
 Installation Proxy connections so uploads do not block video, HID, or app-list

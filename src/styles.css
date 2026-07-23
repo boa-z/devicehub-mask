@@ -85,6 +85,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-app-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
 .device-app-row { min-height: 72px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .device-app-icon { width: 40px; height: 40px; border-radius: 8px; background: #2c5550; color: #edf2f0; display: grid; place-items: center; font-size: 16px; font-weight: 700; }
+.device-app-icon img { width: 40px; height: 40px; border-radius: inherit; object-fit: cover; }
 .device-app-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .device-app-meta > .ant-typography { margin: 0; }
 .device-app-tags { min-height: 18px; display: flex; gap: 4px; }

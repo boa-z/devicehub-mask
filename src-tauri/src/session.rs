@@ -989,6 +989,13 @@ async fn run(
         sender: location_sender,
         status: views.location.clone(),
     };
+    let (app_icon_sender, app_icon_receiver) = tokio::sync::mpsc::channel(16);
+    supervisor.spawn(crate::app_icons::serve(
+        adapter.clone(),
+        handshake.clone(),
+        app_icon_receiver,
+        supervisor.shutdown_receiver(),
+    ));
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
     // associates our RTCP feedback with the stream; otherwise it's ignored.
@@ -1016,6 +1023,7 @@ async fn run(
                     device_details,
                     installation_proxy,
                     misagent,
+                    app_icon_sender,
                 ),
                 &mut input_rx,
                 &location,
@@ -1183,6 +1191,7 @@ async fn run(
                 app_service,
                 installation_proxy,
                 misagent,
+                app_icon_sender,
             ),
             &mut input_rx,
             &location,
@@ -1291,6 +1300,7 @@ struct DeviceManagement {
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
     misagent: Option<MisagentClient>,
+    app_icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
 }
 
 struct ActiveAppOperation {
@@ -1317,6 +1327,7 @@ impl DeviceManagement {
         app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
+        app_icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
     ) -> Self {
         Self {
             provider,
@@ -1326,6 +1337,7 @@ impl DeviceManagement {
             app_service,
             installation_proxy,
             misagent,
+            app_icons,
         }
     }
 
@@ -1335,6 +1347,7 @@ impl DeviceManagement {
         details: Option<DeviceDetails>,
         installation_proxy: Option<InstallationProxyClient>,
         misagent: Option<MisagentClient>,
+        app_icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
     ) -> Self {
         Self::new(
             provider,
@@ -1343,6 +1356,7 @@ impl DeviceManagement {
             None,
             installation_proxy,
             misagent,
+            app_icons,
         )
     }
 
@@ -1449,6 +1463,21 @@ impl DeviceManagement {
                     list_device_apps(self.app_service.as_mut(), self.installation_proxy.as_mut())
                         .await;
                 let _ = reply.send(result);
+                None
+            }
+            InputCmd::GetAppIcon { bundle_id, reply } => {
+                let command = crate::app_icons::AppIconCommand { bundle_id, reply };
+                if let Err(error) = self.app_icons.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("app icon service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("app icon service is unavailable", command)
+                        }
+                    };
+                    let _ = command.reply.send(Err(reason.into()));
+                }
                 None
             }
             InputCmd::ListProvisioningProfiles(reply) => {
@@ -2149,6 +2178,7 @@ async fn dispatch(
         }
         InputCmd::GetDeviceDetails(_)
         | InputCmd::ListApps(_)
+        | InputCmd::GetAppIcon { .. }
         | InputCmd::ListProvisioningProfiles(_)
         | InputCmd::LaunchApp { .. }
         | InputCmd::StopApp { .. }

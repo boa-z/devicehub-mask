@@ -20,7 +20,8 @@ exposed as a browser application.
 - Complete scrcpy-mask `0.0.1` controller profile import/export and a visual
   mapping editor with live or captured-screen backgrounds
 - Device metadata, application browsing, running-state detection, launch,
-  restart and stop controls, IPA installation, safe app removal, and
+  restart and stop controls, native app icons, IPA installation, safe app
+  removal, and
   provisioning profile inspection, plus bounded crash-report browsing and export
 - On-demand live iPhone syslog console with bounded in-memory buffering, search,
   pause, copy and service recovery status

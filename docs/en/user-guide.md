@@ -122,6 +122,9 @@ Lockdown Installation Proxy when necessary. When AppService process data is
 available, running apps are marked and can be stopped or restarted. It can also
 select an IPA with the native file dialog, report installation stages, and
 remove confirmed removable user apps.
+App icons are read on demand from SpringBoardServices as their rows approach the
+visible area. If an icon is unavailable, the list keeps its letter fallback and
+all management actions remain usable.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or

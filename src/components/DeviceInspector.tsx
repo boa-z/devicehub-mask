@@ -43,6 +43,58 @@ async function readJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function DeviceAppIcon({ app, request }: { app: DeviceApp; request: Request }) {
+  const container = useRef<HTMLDivElement>(null);
+  const [nearViewport, setNearViewport] = useState(false);
+  const [source, setSource] = useState<string | null>(null);
+
+  useEffect(() => {
+    const element = container.current;
+    if (!element || nearViewport) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setNearViewport(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "160px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [nearViewport]);
+
+  useEffect(() => {
+    if (!nearViewport) return;
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    void request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/icon`, {
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      objectUrl = URL.createObjectURL(await response.blob());
+      setSource(objectUrl);
+    }).catch(() => {
+      // An unavailable icon is non-fatal; keep the deterministic fallback.
+    });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [app.bundle_id, nearViewport, request]);
+
+  const fallback = Array.from(app.name.trim())[0]?.toLocaleUpperCase() ?? "?";
+  return (
+    <div ref={container} className="device-app-icon" aria-hidden="true">
+      {source ? <img src={source} alt="" draggable={false} /> : fallback}
+    </div>
+  );
+}
+
 export function DeviceInspector({
   activeUdid,
   request,
@@ -396,7 +448,7 @@ export function DeviceInspector({
                   ? t("deviceInspector.appProfileBoundOther", { profile: boundProfile })
                   : t(bindingState === "active" ? "deviceInspector.unbindAppProfile" : "deviceInspector.bindAppProfile", { profile: activeProfile });
               return <div className="device-app-row" key={app.bundle_id}>
-                <div className="device-app-icon" aria-hidden="true">{app.name.slice(0, 1).toLocaleUpperCase()}</div>
+                <DeviceAppIcon app={app} request={request} />
                 <div className="device-app-meta">
                   <Typography.Text strong ellipsis={{ tooltip: app.name }}>{app.name}</Typography.Text>
                   <Typography.Text type="secondary" ellipsis={{ tooltip: app.bundle_id }}>{app.bundle_id}</Typography.Text>

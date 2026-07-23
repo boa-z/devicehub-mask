@@ -1,3 +1,4 @@
+mod app_icons;
 mod crash_reports;
 mod decode;
 mod device_logs;

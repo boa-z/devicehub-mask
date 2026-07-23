@@ -312,6 +312,11 @@ pub enum InputCmd {
     GetDeviceDetails(oneshot::Sender<Result<DeviceDetails, String>>),
     /// List user-facing applications through CoreDevice AppService.
     ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
+    /// Read one validated PNG application icon through SpringBoardServices.
+    GetAppIcon {
+        bundle_id: String,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
     /// List installed provisioning profiles through the Mobile Installation Agent.
     ListProvisioningProfiles(oneshot::Sender<Result<Vec<ProvisioningProfile>, String>>),
     /// Launch an application through CoreDevice AppService.

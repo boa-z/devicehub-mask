@@ -60,6 +60,9 @@ CoreDevice AppService，避免每次操作创建新的 RSD tunnel。只有可执
 等于目标 App bundle 时才会匹配进程；停止操作会重新读取设备状态并发送固定 SIGTERM，
 客户端不能指定 PID 或信号。缺少 AppService 时，列表回退到 Installation Proxy，运行
 状态保持未知。
+App 图标通过独立、按请求工作的 SpringBoardServices RSD channel 获取，因此不会占用 HID
+分发循环。worker 会校验 PNG header 与尺寸，限制单张 4 MiB，并使用 256 项、32 MiB 的
+FIFO 缓存；前端只请求接近可视区域的 App 行。
 
 IPA 安装和应用卸载使用独立 Tokio 任务及新的 Installation Proxy 连接，因此上传不会
 阻塞画面、HID 或应用列表。后端会重新查询卸载目标，只允许移除非 Apple 第一方且标记

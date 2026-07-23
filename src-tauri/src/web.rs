@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Request, State, WebSocketUpgrade};
-use axum::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -158,6 +158,7 @@ pub fn router(state: AppState, token: String) -> Router {
                 .delete(clear_device_location),
         )
         .route("/api/device/apps", get(device_apps))
+        .route("/api/device/apps/{bundle_id}/icon", get(device_app_icon))
         .route("/api/device/apps/operation", get(app_operation))
         .route("/api/device/apps/install", put(install_app))
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
@@ -446,6 +447,47 @@ async fn device_apps(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(apps))
+}
+
+async fn device_app_icon(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !valid_bundle_identifier(&bundle_id) {
+        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
+    }
+    let (reply, response) = oneshot::channel();
+    if !state
+        .input
+        .try_send(InputCmd::GetAppIcon { bundle_id, reply })
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let icon = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "app icon request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok((
+        [
+            (CONTENT_TYPE, "image/png"),
+            (CACHE_CONTROL, "private, max-age=300"),
+        ],
+        icon,
+    ))
 }
 
 async fn app_operation(State(state): State<AppState>) -> Json<crate::protocol::AppOperationView> {
@@ -2053,6 +2095,10 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            device_app_icon(State(state.clone()), Path("com.example.game".into())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             device_provisioning_profiles(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -2087,6 +2133,31 @@ mod tests {
             ));
         }
         assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn app_icon_validates_and_dispatches_bundle_identifier() {
+        let (state, mut input_rx) = test_state();
+        assert!(matches!(
+            device_app_icon(State(state.clone()), Path("bad value".into())).await,
+            Err((StatusCode::BAD_REQUEST, _))
+        ));
+        assert!(input_rx.try_recv().is_err());
+
+        let request = tokio::spawn(device_app_icon(
+            State(state),
+            Path("com.example.game".into()),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::GetAppIcon { bundle_id, reply } => {
+                assert_eq!(bundle_id, "com.example.game");
+                reply.send(Ok(vec![1, 2, 3])).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let response = request.await.unwrap().unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
     }
 
     #[tokio::test]
