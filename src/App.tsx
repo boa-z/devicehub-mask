@@ -255,8 +255,10 @@ export default function App() {
     setAudioPlaybackSuspended(suspended);
   }, []);
 
-  const resumeDeviceAudio = useCallback(() => {
-    if (audioResumePromiseRef.current) return audioResumePromiseRef.current;
+  const resumeDeviceAudio = useCallback((userGesture = false) => {
+    // WebKit may leave a resume() requested outside a user gesture pending.
+    // A real gesture must issue a fresh call while its activation is still live.
+    if (!userGesture && audioResumePromiseRef.current) return audioResumePromiseRef.current;
     const attempt = (async () => {
       try {
         const resumed = await audioPlayerRef.current?.resume() ?? false;
@@ -299,7 +301,7 @@ export default function App() {
     const unlockAudio = () => {
       const player = audioPlayerRef.current;
       if (shouldAttemptAudioResume(deviceAudioEnabled, audioPlayback.muted, player?.isRunning() ?? false)) {
-        void resumeDeviceAudio();
+        void resumeDeviceAudio(true);
       }
     };
     window.addEventListener("pointerdown", unlockAudio);
@@ -1292,7 +1294,7 @@ export default function App() {
         updateAudioPlayback({ ...audioPlayback, muted: false });
       } else if (action === "resume") {
         setDeviceAudioBusy(true);
-        const resumed = await resumeDeviceAudio();
+        const resumed = await resumeDeviceAudio(true);
         setDeviceAudioBusy(false);
         if (resumed) void message.success(t("device.deviceAudioPlaybackStarted"));
         else void message.warning(t("device.deviceAudioPlaybackStillSuspended"));
@@ -1304,7 +1306,7 @@ export default function App() {
     // WKWebView only permits Web Audio activation while the original user
     // gesture is still on the stack. Prime playback before the settings invoke
     // and reconnect cross an async boundary.
-    const playbackActivation = resumeDeviceAudio();
+    const playbackActivation = resumeDeviceAudio(true);
     setDeviceAudioBusy(true);
     try {
       const settings = await setAudioEnabled(true);
