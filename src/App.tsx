@@ -215,6 +215,7 @@ export default function App() {
   const lastVideoActivityAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
   const audioPlayerRef = useRef<PcmAudioPlayer | null>(null);
+  const audioResumePromiseRef = useRef<Promise<boolean> | null>(null);
   const audioReceptionLoggedRef = useRef(false);
   const audioPlaybackSuspendedRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -254,17 +255,25 @@ export default function App() {
     setAudioPlaybackSuspended(suspended);
   }, []);
 
-  const resumeDeviceAudio = useCallback(async () => {
-    try {
-      const resumed = await audioPlayerRef.current?.resume() ?? false;
-      markAudioPlaybackSuspended(!resumed);
-      if (resumed) logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
-      return resumed;
-    } catch (error) {
-      markAudioPlaybackSuspended(true);
-      logFrontend("warn", "audio", "resume_failed", error);
-      return false;
-    }
+  const resumeDeviceAudio = useCallback(() => {
+    if (audioResumePromiseRef.current) return audioResumePromiseRef.current;
+    const attempt = (async () => {
+      try {
+        const resumed = await audioPlayerRef.current?.resume() ?? false;
+        markAudioPlaybackSuspended(!resumed);
+        if (resumed) logFrontend("info", "audio", "playback_resumed", "Web Audio context is running");
+        return resumed;
+      } catch (error) {
+        markAudioPlaybackSuspended(true);
+        logFrontend("warn", "audio", "resume_failed", error);
+        return false;
+      }
+    })();
+    audioResumePromiseRef.current = attempt;
+    void attempt.finally(() => {
+      if (audioResumePromiseRef.current === attempt) audioResumePromiseRef.current = null;
+    });
+    return attempt;
   }, [markAudioPlaybackSuspended]);
 
   const updateAudioPlayback = useCallback((next: DeviceAudioPreferences) => {
@@ -743,8 +752,10 @@ export default function App() {
         try {
           const audio = parseAudioEnvelope(buffer);
           if (audio) {
-            const scheduled = audioPlayerRef.current?.push(audio) ?? false;
+            const player = audioPlayerRef.current;
+            const scheduled = player?.push(audio) ?? false;
             markAudioPlaybackSuspended(!scheduled);
+            if (!scheduled && player?.isAudible()) void resumeDeviceAudio();
             if (!audioReceptionLoggedRef.current) {
               audioReceptionLoggedRef.current = true;
               logFrontend(
@@ -775,7 +786,7 @@ export default function App() {
     };
     open();
     return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
-  }, [backend, markAudioPlaybackSuspended]);
+  }, [backend, markAudioPlaybackSuspended, resumeDeviceAudio]);
 
   useEffect(() => () => {
     if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
@@ -1475,7 +1486,7 @@ export default function App() {
           type={deviceAudioEnabled && !audioPlayback.muted && !audioPlaybackSuspended ? "primary" : "default"}
           disabled={deviceAudioEnabled === null}
           loading={deviceAudioBusy}
-          icon={deviceAudioEnabled && !audioPlayback.muted ? <SoundOutlined /> : <AudioMutedOutlined />}
+          icon={deviceAudioEnabled && !audioPlayback.muted && !audioPlaybackSuspended ? <SoundOutlined /> : <AudioMutedOutlined />}
           onClick={() => void toggleDeviceAudio()}
         />
       </Tooltip>

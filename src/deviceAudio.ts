@@ -125,6 +125,10 @@ export class PcmAudioPlayer {
     return this.context?.state === "running";
   }
 
+  isAudible(): boolean {
+    return !this.preferences.muted && this.preferences.volume > 0;
+  }
+
   push(chunk: PcmAudioChunk): boolean {
     const context = this.ensureContext();
     if (context.state !== "running" || !this.gain) return false;

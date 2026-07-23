@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume } from "./deviceAudio";
+import { PcmAudioPlayer, defaultDeviceAudioPreferences, deviceAudioControlAction, parseAudioEnvelope, parseDeviceAudioPreferences, shouldAttemptAudioResume } from "./deviceAudio";
 
 describe("device audio", () => {
   it("parses PCM envelopes and rejects ordinary image data", () => {
@@ -37,5 +37,14 @@ describe("device audio", () => {
     expect(shouldAttemptAudioResume(true, true, false)).toBe(false);
     expect(shouldAttemptAudioResume(true, false, true)).toBe(false);
     expect(shouldAttemptAudioResume(true, false, false)).toBe(true);
+  });
+
+  it("treats muted and zero-volume playback as inaudible", () => {
+    const muted = new PcmAudioPlayer({ muted: true, volume: 1 });
+    const silent = new PcmAudioPlayer({ muted: false, volume: 0 });
+    const audible = new PcmAudioPlayer({ muted: false, volume: 0.5 });
+    expect(muted.isAudible()).toBe(false);
+    expect(silent.isAudible()).toBe(false);
+    expect(audible.isAudible()).toBe(true);
   });
 });
