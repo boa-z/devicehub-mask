@@ -1630,8 +1630,12 @@ async fn run(
     ));
     let (screen_capture_sender, screen_capture_receiver) = tokio::sync::mpsc::channel(1);
     supervisor.spawn(crate::screen_capture::serve(
-        adapter.clone(),
-        handshake.clone(),
+        crate::screen_capture::ScreenCaptureTransport::new(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+        ),
         screen_capture_receiver,
         supervisor.shutdown_receiver(),
     ));
