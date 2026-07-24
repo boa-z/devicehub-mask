@@ -36,8 +36,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .stage-toolbar { min-height: 46px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #131718; }
 .device-fullscreen-toolbars { position: absolute; inset: 0; z-index: 20; overflow: hidden; pointer-events: none; }
 .device-fullscreen-toolbar { position: absolute; z-index: 21; max-width: calc(100% - 16px); min-height: 44px; padding: 6px 8px; border: 1px solid #343c3d; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 4px; background: rgba(15,18,19,.96); box-shadow: 0 6px 20px rgba(0,0,0,.45); transform: var(--dock-transform, none); transition: opacity .16s ease, transform .16s ease, box-shadow .16s ease; pointer-events: auto; touch-action: none; }
-.device-fullscreen-hardware-toolbar { z-index: 25; }
-.device-fullscreen-hardware-toolbar .hardware-controls { margin-left: 0; }
+.device-fullscreen-hardware-toolbar { z-index: 25; flex: none; overflow: visible; }
+.device-fullscreen-hardware-toolbar .hardware-controls { flex: none; margin-left: 0; }
 .device-fullscreen-toolbar.is-hidden { opacity: 0; pointer-events: none; transform: var(--dock-transform, none) translateY(-8px); }
 .device-fullscreen-function-toolbar.is-dragging { z-index: 24; }
 .device-fullscreen-hardware-toolbar.is-dragging { z-index: 26; }
@@ -446,7 +446,10 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .workspace { display: flex; flex-direction: column; }
   .stage-column { min-height: 68vh; }
   .stage-toolbar { align-items: flex-start; flex-direction: column; }
-  .device-fullscreen-toolbar { max-width: calc(100% - 8px); overflow-x: auto; justify-content: flex-start; }
+  .device-fullscreen-toolbar { max-width: calc(100% - 8px); justify-content: flex-start; }
+  .device-fullscreen-function-toolbar { overflow-x: auto; }
+  .device-fullscreen-hardware-toolbar { max-width: none; padding-inline: 5px; gap: 3px; }
+  .device-fullscreen-hardware-toolbar .hardware-controls { gap: 3px; }
   .mapping-editor-toolbar { align-items: flex-start; flex-direction: column; }
   .mapping-resolution { white-space: normal; flex-wrap: wrap; }
   .mapping-background-controls { width: 100%; flex-wrap: wrap; }
