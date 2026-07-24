@@ -258,6 +258,8 @@ switching devices resets the workspace to the root.
 Imports and exports show live transferred bytes and item counts. A single file
 also shows an exact percentage; directory operations use an ongoing counter so
 the device tree is not scanned twice.
+Use the stop button in the transfer bar to cancel an active import or export.
+The workspace remains busy until its temporary host or device data is removed.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or

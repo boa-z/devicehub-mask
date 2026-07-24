@@ -273,6 +273,10 @@ snapshot. The transfer reuses one 64 KiB buffer across all files and publishes
 byte and entry counters at most every 100 ms. Single files expose a known byte
 total; directories stay indeterminate to avoid a second device traversal. The
 AFC tab polls the snapshot only while its transfer request is active.
+Cancellation bypasses the serialized AFC command queue through a session-scoped
+atomic token. Copy loops check it between 64 KiB blocks and directory entries,
+then discard staged host or device paths before reporting `cancelled`; cancellation
+does not invalidate an otherwise healthy AFC client.
 
 Clipboard synchronization connects CoreDevice Pasteboard Service only when its
 persisted opt-in setting is enabled for a newly connected session. Device changes

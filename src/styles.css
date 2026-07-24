@@ -155,6 +155,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .app-document-transfer { padding: 7px 8px; border: 1px solid #3b4345; background: #202628; }
 .app-document-transfer-heading { min-height: 20px; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; }
 .app-document-transfer-heading .ant-typography { min-width: 0; margin: 0; font-size: 11px; }
+.app-document-transfer-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.app-document-transfer-actions .ant-btn { flex: 0 0 auto; }
 .app-document-transfer .ant-progress { margin: 2px 0 0; line-height: 1; }
 .app-document-list { min-height: 0; max-height: min(460px, 60vh); overflow-y: auto; border-top: 1px solid #303638; }
 .app-document-row { min-height: 48px; padding: 7px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 24px minmax(0, 1fr) 72px 152px 104px; align-items: center; gap: 8px; }

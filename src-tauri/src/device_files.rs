@@ -1,6 +1,7 @@
 //! Bounded file management for the device's public AFC media container.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,7 @@ const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_TRANSFER_ENTRIES: usize = 100_000;
 const MAX_TRANSFER_DEPTH: usize = 64;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+pub const TRANSFER_CANCELLED: &str = "device file transfer cancelled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +74,7 @@ pub enum DeviceFileActivityState {
     Idle,
     Running,
     Succeeded,
+    Cancelled,
     Failed,
 }
 
@@ -89,12 +92,21 @@ pub struct DeviceFileActivityView {
 }
 
 #[derive(Clone, Default)]
-pub struct DeviceFileActivitySlot(Arc<Mutex<DeviceFileActivityView>>);
+pub struct DeviceFileActivitySlot {
+    view: Arc<Mutex<DeviceFileActivityView>>,
+    active_id: Arc<AtomicU64>,
+    cancelled: Arc<AtomicBool>,
+}
 
 impl DeviceFileActivitySlot {
-    fn start(&self, kind: DeviceFileActivityKind, path: String) -> u64 {
-        let mut view = self.0.lock().expect("device file activity lock poisoned");
+    pub(crate) fn start(&self, kind: DeviceFileActivityKind, path: String) -> u64 {
+        let mut view = self
+            .view
+            .lock()
+            .expect("device file activity lock poisoned");
         let id = view.id.wrapping_add(1).max(1);
+        self.cancelled.store(false, Ordering::Release);
+        self.active_id.store(id, Ordering::Release);
         *view = DeviceFileActivityView {
             id,
             kind: Some(kind),
@@ -106,7 +118,10 @@ impl DeviceFileActivitySlot {
     }
 
     fn update(&self, id: u64, transfer: DeviceFileTransfer) {
-        let mut view = self.0.lock().expect("device file activity lock poisoned");
+        let mut view = self
+            .view
+            .lock()
+            .expect("device file activity lock poisoned");
         if view.id == id && view.state == DeviceFileActivityState::Running {
             view.bytes_transferred = transfer.bytes_transferred;
             view.files_transferred = transfer.files_transferred;
@@ -115,14 +130,20 @@ impl DeviceFileActivitySlot {
     }
 
     fn set_total(&self, id: u64, bytes_total: u64) {
-        let mut view = self.0.lock().expect("device file activity lock poisoned");
+        let mut view = self
+            .view
+            .lock()
+            .expect("device file activity lock poisoned");
         if view.id == id && view.state == DeviceFileActivityState::Running {
             view.bytes_total = Some(bytes_total);
         }
     }
 
     fn finish(&self, id: u64, result: &Result<(), String>) {
-        let mut view = self.0.lock().expect("device file activity lock poisoned");
+        let mut view = self
+            .view
+            .lock()
+            .expect("device file activity lock poisoned");
         if view.id != id || view.state != DeviceFileActivityState::Running {
             return;
         }
@@ -133,24 +154,53 @@ impl DeviceFileActivitySlot {
                     view.bytes_transferred = total;
                 }
             }
+            Err(error) if is_transfer_cancelled(error) => {
+                view.state = DeviceFileActivityState::Cancelled;
+            }
             Err(error) => {
                 view.state = DeviceFileActivityState::Failed;
                 view.error = Some(error.chars().take(512).collect());
             }
         }
+        self.active_id.store(0, Ordering::Release);
     }
 
     pub fn get(&self) -> DeviceFileActivityView {
-        self.0
+        self.view
             .lock()
             .expect("device file activity lock poisoned")
             .clone()
     }
 
-    fn reset(&self) {
-        *self.0.lock().expect("device file activity lock poisoned") =
-            DeviceFileActivityView::default();
+    pub fn cancel(&self) -> bool {
+        let view = self
+            .view
+            .lock()
+            .expect("device file activity lock poisoned");
+        if view.state != DeviceFileActivityState::Running {
+            return false;
+        }
+        self.cancelled.store(true, Ordering::Release);
+        true
     }
+
+    fn is_cancelled(&self, id: u64) -> bool {
+        self.active_id.load(Ordering::Acquire) == id && self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn reset(&self) {
+        let mut view = self
+            .view
+            .lock()
+            .expect("device file activity lock poisoned");
+        self.cancelled.store(false, Ordering::Release);
+        self.active_id.store(0, Ordering::Release);
+        *view = DeviceFileActivityView::default();
+    }
+}
+
+pub fn is_transfer_cancelled(error: &str) -> bool {
+    error.contains(TRANSFER_CANCELLED)
 }
 
 struct TransferProgress {
@@ -176,6 +226,14 @@ impl TransferProgress {
         self.slot.set_total(self.id, bytes_total);
     }
 
+    fn check_cancelled(&self) -> Result<(), String> {
+        if self.slot.is_cancelled(self.id) {
+            Err(TRANSFER_CANCELLED.into())
+        } else {
+            Ok(())
+        }
+    }
+
     fn file(&mut self) {
         self.transfer.files_transferred = self.transfer.files_transferred.saturating_add(1);
         self.publish(true);
@@ -194,18 +252,26 @@ impl TransferProgress {
         }
     }
 
-    async fn copy<R, W>(&mut self, reader: &mut R, writer: &mut W) -> std::io::Result<u64>
+    async fn copy<R, W>(&mut self, reader: &mut R, writer: &mut W) -> Result<u64, String>
     where
         R: AsyncRead + Unpin,
         W: AsyncWrite + Unpin,
     {
         let mut total = 0u64;
         loop {
-            let read = reader.read(&mut self.buffer).await?;
+            self.check_cancelled()?;
+            let read = reader
+                .read(&mut self.buffer)
+                .await
+                .map_err(|error| error.to_string())?;
             if read == 0 {
                 return Ok(total);
             }
-            writer.write_all(&self.buffer[..read]).await?;
+            self.check_cancelled()?;
+            writer
+                .write_all(&self.buffer[..read])
+                .await
+                .map_err(|error| error.to_string())?;
             let read = read as u64;
             total = total.saturating_add(read);
             self.transfer.bytes_transferred = self.transfer.bytes_transferred.saturating_add(read);
@@ -394,7 +460,9 @@ async fn handle(
             let _ = progress.finish();
             let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
             activity.finish(id, &outcome);
-            let failed = result.is_err();
+            let failed = result
+                .as_ref()
+                .is_err_and(|error| !is_transfer_cancelled(error));
             let _ = reply.send(result);
             if failed { Err(()) } else { Ok(()) }
         }
@@ -414,7 +482,9 @@ async fn handle(
             let _ = progress.finish();
             let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
             activity.finish(id, &outcome);
-            let failed = result.is_err();
+            let failed = result
+                .as_ref()
+                .is_err_and(|error| !is_transfer_cancelled(error));
             let _ = reply.send(result);
             if failed { Err(()) } else { Ok(()) }
         }
@@ -527,6 +597,7 @@ async fn export_file(
     destination: &Path,
     progress: &mut TransferProgress,
 ) -> Result<DeviceFileTransfer, String> {
+    progress.check_cancelled()?;
     let path = normalize_path(path, false)?;
     let info = client
         .get_file_info(path.clone())
@@ -559,6 +630,7 @@ async fn export_regular_file(
     progress: &mut TransferProgress,
 ) -> Result<u64, String> {
     validate_export_destination(destination).await?;
+    progress.check_cancelled()?;
     let temporary = crate::app_documents::temporary_sibling(destination, "device-export")?;
     let result = async {
         let remote = client
@@ -570,10 +642,13 @@ async fn export_regular_file(
             .await
             .map_err(|error| format!("unable to create export file: {error}"))?;
         let mut local = BufWriter::with_capacity(TRANSFER_BUFFER_BYTES, local);
-        let bytes = progress
+        let transfer_result = progress
             .copy(&mut remote, &mut local)
             .await
-            .map_err(|error| format!("unable to export device file: {error}"))?;
+            .map_err(|error| format!("unable to export device file: {error}"));
+        let close_result = remote.into_inner().close().await;
+        close_result.map_err(|error| format!("unable to close device file: {error:?}"))?;
+        let bytes = transfer_result?;
         if bytes != expected_size {
             return Err("device file changed while it was being exported".into());
         }
@@ -581,11 +656,7 @@ async fn export_regular_file(
             .flush()
             .await
             .map_err(|error| format!("unable to flush export file: {error}"))?;
-        remote
-            .into_inner()
-            .close()
-            .await
-            .map_err(|error| format!("unable to close device file: {error:?}"))?;
+        progress.check_cancelled()?;
         crate::app_documents::replace_local_file(&temporary, destination).await?;
         progress.file();
         Ok(bytes)
@@ -604,6 +675,7 @@ async fn export_directory(
     progress: &mut TransferProgress,
 ) -> Result<DeviceFileTransfer, String> {
     validate_new_directory_destination(destination).await?;
+    progress.check_cancelled()?;
     let temporary = crate::app_documents::temporary_sibling(destination, "device-export-dir")?;
     tokio::fs::create_dir(&temporary)
         .await
@@ -617,6 +689,7 @@ async fn export_directory(
         let mut entries_seen = 0usize;
         let mut pending = vec![(path.to_owned(), temporary.clone(), 0usize)];
         while let Some((remote_directory, local_directory, depth)) = pending.pop() {
+            progress.check_cancelled()?;
             if depth >= MAX_TRANSFER_DEPTH {
                 return Err("device directory export exceeds the maximum nesting depth".into());
             }
@@ -627,6 +700,7 @@ async fn export_directory(
                     format!("unable to list device directory during export: {error:?}")
                 })?;
             for name in names.into_iter().filter(|name| name != "." && name != "..") {
+                progress.check_cancelled()?;
                 validate_name(&name)?;
                 entries_seen += 1;
                 if entries_seen > MAX_TRANSFER_ENTRIES {
@@ -671,6 +745,7 @@ async fn export_directory(
                 }
             }
         }
+        progress.check_cancelled()?;
         tokio::fs::rename(&temporary, destination)
             .await
             .map_err(|error| format!("unable to finish directory export: {error}"))?;
@@ -689,6 +764,7 @@ async fn import_path(
     source: &Path,
     progress: &mut TransferProgress,
 ) -> Result<DeviceFileEntry, String> {
+    progress.check_cancelled()?;
     let directory = normalize_path(directory, true)?;
     let source_metadata = tokio::fs::symlink_metadata(source)
         .await
@@ -721,6 +797,7 @@ async fn import_path(
         } else {
             import_directory(client, &source, &temporary, progress).await?;
         }
+        progress.check_cancelled()?;
         client
             .rename(temporary.clone(), target.clone())
             .await
@@ -744,6 +821,7 @@ async fn upload_regular_file(
     target: &str,
     progress: &mut TransferProgress,
 ) -> Result<u64, String> {
+    progress.check_cancelled()?;
     let metadata = tokio::fs::symlink_metadata(source)
         .await
         .map_err(|error| format!("unable to inspect import source: {error}"))?;
@@ -757,21 +835,25 @@ async fn upload_regular_file(
         .open(target.to_owned(), AfcFopenMode::WrOnly)
         .await
         .map_err(|error| format!("unable to create device file: {error:?}"))?;
-    let bytes = progress
-        .copy(&mut local, &mut remote)
-        .await
-        .map_err(|error| format!("unable to import device file: {error}"))?;
-    if bytes != metadata.len() {
-        return Err("import source changed while it was being transferred".into());
+    let transfer_result: Result<u64, String> = async {
+        let bytes = progress
+            .copy(&mut local, &mut remote)
+            .await
+            .map_err(|error| format!("unable to import device file: {error}"))?;
+        if bytes != metadata.len() {
+            return Err("import source changed while it was being transferred".into());
+        }
+        remote
+            .shutdown()
+            .await
+            .map_err(|error| format!("unable to flush imported device file: {error}"))?;
+        progress.check_cancelled()?;
+        Ok(bytes)
     }
-    remote
-        .shutdown()
-        .await
-        .map_err(|error| format!("unable to flush imported device file: {error}"))?;
-    remote
-        .close()
-        .await
-        .map_err(|error| format!("unable to close imported device file: {error:?}"))?;
+    .await;
+    let close_result = remote.close().await;
+    close_result.map_err(|error| format!("unable to close imported device file: {error:?}"))?;
+    let bytes = transfer_result?;
     progress.file();
     Ok(bytes)
 }
@@ -782,6 +864,7 @@ async fn import_directory(
     target: &str,
     progress: &mut TransferProgress,
 ) -> Result<DeviceFileTransfer, String> {
+    progress.check_cancelled()?;
     client
         .mk_dir(target.to_owned())
         .await
@@ -794,6 +877,7 @@ async fn import_directory(
     let mut entries_seen = 0usize;
     let mut pending = vec![(source.to_owned(), target.to_owned(), 0usize)];
     while let Some((local_directory, remote_directory, depth)) = pending.pop() {
+        progress.check_cancelled()?;
         if depth >= MAX_TRANSFER_DEPTH {
             return Err("import directory exceeds the maximum nesting depth".into());
         }
@@ -805,6 +889,7 @@ async fn import_directory(
             .await
             .map_err(|error| format!("unable to read import directory: {error}"))?
         {
+            progress.check_cancelled()?;
             entries_seen += 1;
             if entries_seen > MAX_TRANSFER_ENTRIES {
                 return Err("import directory contains too many entries".into());
@@ -838,6 +923,7 @@ async fn import_directory(
             }
         }
     }
+    progress.check_cancelled()?;
     Ok(transfer)
 }
 
@@ -1070,6 +1156,37 @@ mod tests {
         assert_eq!(view.state, DeviceFileActivityState::Running);
         assert_eq!(view.bytes_transferred, 0);
         assert_eq!(view.error, None);
+    }
+
+    #[test]
+    fn transfer_cancellation_is_scoped_to_the_running_activity() {
+        let slot = DeviceFileActivitySlot::default();
+        assert!(!slot.cancel());
+
+        let cancelled = slot.start(DeviceFileActivityKind::Export, "/old".into());
+        assert!(slot.cancel());
+        assert!(slot.is_cancelled(cancelled));
+        slot.finish(cancelled, &Err(TRANSFER_CANCELLED.into()));
+        assert_eq!(slot.get().state, DeviceFileActivityState::Cancelled);
+        assert!(!slot.cancel());
+
+        let current = slot.start(DeviceFileActivityKind::Import, "/new".into());
+        assert!(!slot.is_cancelled(cancelled));
+        assert!(!slot.is_cancelled(current));
+    }
+
+    #[tokio::test]
+    async fn transfer_copy_stops_when_cancelled() {
+        let slot = DeviceFileActivitySlot::default();
+        let id = slot.start(DeviceFileActivityKind::Export, "/DCIM/photo.heic".into());
+        let mut progress = TransferProgress::new(slot.clone(), id);
+        assert!(slot.cancel());
+
+        let error = progress
+            .copy(&mut tokio::io::empty(), &mut tokio::io::sink())
+            .await
+            .unwrap_err();
+        assert_eq!(error, TRANSFER_CANCELLED);
     }
 
     #[tokio::test]

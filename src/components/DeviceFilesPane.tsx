@@ -13,6 +13,7 @@ import {
   ReloadOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
+  StopOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
@@ -55,6 +56,9 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
   const [sortField, setSortField] = useState<AfcSortField>("name");
   const [sortDirection, setSortDirection] = useState<AfcSortDirection>("ascending");
   const [activity, setActivity] = useState<DeviceFileActivity | null>(null);
+  const [cancelPending, setCancelPending] = useState(false);
+  const [cancelRequested, setCancelRequested] = useState(false);
+  const cancelRequestedRef = useRef(false);
   const requestVersion = useRef(0);
 
   const load = useCallback(async () => {
@@ -85,6 +89,9 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
     setError(null);
     setBusy(null);
     setActivity(null);
+    setCancelPending(false);
+    setCancelRequested(false);
+    cancelRequestedRef.current = false;
   }, [deviceId]);
 
   const transferBusy = busy === "import" || busy?.startsWith("export:") === true;
@@ -168,17 +175,31 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
       return true;
     } catch (mutationError) {
       if (requestVersion.current === version) {
-        void message.error(t("deviceInspector.deviceFileOperationFailed", { error: String(mutationError) }));
+        if (operation === "import" && (cancelRequestedRef.current || String(mutationError).includes("device file transfer cancelled"))) {
+          void message.info(t("deviceInspector.deviceFileTransferCancelled"));
+        } else {
+          void message.error(t("deviceInspector.deviceFileOperationFailed", { error: String(mutationError) }));
+        }
       }
       return false;
     } finally {
-      if (requestVersion.current === version) setBusy(null);
+      if (requestVersion.current === version) {
+        setBusy(null);
+        if (operation === "import") {
+          setCancelPending(false);
+          setCancelRequested(false);
+          cancelRequestedRef.current = false;
+        }
+      }
     }
   };
 
   const importPath = async (directory: boolean) => {
     const source = await openDialog({ multiple: false, directory });
     if (!source || Array.isArray(source)) return;
+    setCancelPending(false);
+    setCancelRequested(false);
+    cancelRequestedRef.current = false;
     await mutate(
       "import",
       () => request("/api/device/files/import", {
@@ -195,6 +216,9 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
     const destination = await save({ defaultPath: entry.name });
     if (!destination) return;
     const version = ++requestVersion.current;
+    setCancelPending(false);
+    setCancelRequested(false);
+    cancelRequestedRef.current = false;
     setBusy(`export:${entry.path}`);
     try {
       const response = await request("/api/device/files/export", {
@@ -212,10 +236,39 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
       }
     } catch (exportError) {
       if (requestVersion.current === version) {
-        void message.error(t("deviceInspector.deviceFileExportFailed", { error: String(exportError) }));
+        if (cancelRequestedRef.current || String(exportError).includes("device file transfer cancelled")) {
+          void message.info(t("deviceInspector.deviceFileTransferCancelled"));
+        } else {
+          void message.error(t("deviceInspector.deviceFileExportFailed", { error: String(exportError) }));
+        }
       }
     } finally {
-      if (requestVersion.current === version) setBusy(null);
+      if (requestVersion.current === version) {
+        setBusy(null);
+        setCancelPending(false);
+        setCancelRequested(false);
+        cancelRequestedRef.current = false;
+      }
+    }
+  };
+
+  const cancelTransfer = async () => {
+    if (!transferBusy || cancelPending || cancelRequested) return;
+    const version = requestVersion.current;
+    setCancelPending(true);
+    try {
+      const response = await request("/api/device/files/activity", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      if (requestVersion.current === version) {
+        cancelRequestedRef.current = true;
+        setCancelRequested(true);
+      }
+    } catch (cancelError) {
+      if (requestVersion.current === version) {
+        void message.error(t("deviceInspector.deviceFileCancelFailed", { error: String(cancelError) }));
+      }
+    } finally {
+      if (requestVersion.current === version) setCancelPending(false);
     }
   };
 
@@ -360,22 +413,39 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
         </Tooltip>
       </div>
       {transferBusy && (
-        <div className="app-document-transfer" role="status">
+        <div className="app-document-transfer">
           <div className="app-document-transfer-heading">
             <Typography.Text>
-              {t(busy === "import"
-                ? "deviceInspector.deviceFileTransferImporting"
-                : "deviceInspector.deviceFileTransferExporting")}
+              {t(cancelRequested
+                ? "deviceInspector.deviceFileTransferCancelling"
+                : busy === "import"
+                  ? "deviceInspector.deviceFileTransferImporting"
+                  : "deviceInspector.deviceFileTransferExporting")}
             </Typography.Text>
-            {activity?.state === "running" ? (
-              <Typography.Text type="secondary">
-                {t("deviceInspector.deviceFileTransferProgress", {
-                  size: formatFileSize(activity.bytes_transferred),
-                  files: activity.files_transferred,
-                  directories: activity.directories_transferred,
-                })}
-              </Typography.Text>
-            ) : <Spin size="small" />}
+            <div className="app-document-transfer-actions">
+              {activity?.state === "running" || activity?.state === "cancelled" ? (
+                <Typography.Text type="secondary">
+                  {t("deviceInspector.deviceFileTransferProgress", {
+                    size: formatFileSize(activity.bytes_transferred),
+                    files: activity.files_transferred,
+                    directories: activity.directories_transferred,
+                  })}
+                </Typography.Text>
+              ) : <Spin size="small" />}
+              <Tooltip title={t(cancelRequested
+                ? "deviceInspector.deviceFileTransferCancelling"
+                : "deviceInspector.cancelDeviceFileTransfer")}>
+                <Button
+                  size="small"
+                  danger
+                  icon={<StopOutlined />}
+                  aria-label={t("deviceInspector.cancelDeviceFileTransfer")}
+                  loading={cancelPending}
+                  disabled={cancelRequested}
+                  onClick={() => void cancelTransfer()}
+                />
+              </Tooltip>
+            </div>
           </div>
           {activity?.state === "running" && activity.bytes_total !== null && (
             <Progress

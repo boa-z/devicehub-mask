@@ -222,7 +222,10 @@ pub fn router(state: AppState, token: String) -> Router {
             "/api/device/files",
             get(device_files).delete(delete_device_file),
         )
-        .route("/api/device/files/activity", get(device_file_activity))
+        .route(
+            "/api/device/files/activity",
+            get(device_file_activity).delete(cancel_device_file_activity),
+        )
         .route("/api/device/files/export", put(export_device_file))
         .route("/api/device/files/import", put(import_device_file))
         .route(
@@ -1673,6 +1676,19 @@ async fn device_file_activity(
     Json(state.device_file_activity.get())
 }
 
+async fn cancel_device_file_activity(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if state.device_file_activity.cancel() {
+        Ok(StatusCode::ACCEPTED)
+    } else {
+        Err((
+            StatusCode::CONFLICT,
+            "no device file transfer is running".into(),
+        ))
+    }
+}
+
 async fn export_device_file(
     State(state): State<AppState>,
     Json(request): Json<ExportDeviceFileRequest>,
@@ -1795,7 +1811,9 @@ async fn await_device_file_response<T>(
             )
         })?
         .map_err(|error| {
-            let status = if error.contains("already exists") {
+            let status = if crate::device_files::is_transfer_cancelled(&error)
+                || error.contains("already exists")
+            {
                 StatusCode::CONFLICT
             } else if error.starts_with("invalid ")
                 || error.contains("cannot be exported")
@@ -4470,8 +4488,27 @@ mod tests {
     #[tokio::test]
     async fn device_file_endpoints_dispatch_typed_commands() {
         use crate::device_files::{
-            DeviceFileCommand, DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer,
+            DeviceFileActivityKind, DeviceFileCommand, DeviceFileEntry, DeviceFileKind,
+            DeviceFileList, DeviceFileTransfer,
         };
+
+        let (cancel_state, _) = test_state();
+        assert_eq!(
+            cancel_device_file_activity(State(cancel_state.clone()))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::CONFLICT
+        );
+        cancel_state
+            .device_file_activity
+            .start(DeviceFileActivityKind::Export, "/DCIM".into());
+        assert_eq!(
+            cancel_device_file_activity(State(cancel_state))
+                .await
+                .unwrap(),
+            StatusCode::ACCEPTED
+        );
 
         let (state, mut input_rx) = test_state();
         assert_eq!(
