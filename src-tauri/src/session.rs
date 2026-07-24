@@ -645,6 +645,9 @@ const IDLE_RESCAN: Duration = Duration::from_secs(2);
 /// Cap on how long we wait for a session to tear down when switching/quitting, so
 /// a wedged session can't hang the transition forever.
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
+/// Briefly yield after a Wi-Fi transport failure before rebuilding the complete
+/// RemotePairing tunnel. Child services cannot repair a dead parent tunnel.
+const WIFI_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// Per-device budget for resolving `DeviceName` over lockdown; on timeout we fall
 /// back to the UDID so a flaky/locked device doesn't stall the picker.
 const NAME_TIMEOUT: Duration = Duration::from_secs(2);
@@ -653,6 +656,8 @@ const NAME_TIMEOUT: Duration = Duration::from_secs(2);
 enum Next {
     /// Connect to this UDID.
     Switch(String),
+    /// Rebuild a dropped Wi-Fi session while preserving the selected transport.
+    RetryWifi(String),
     /// Go idle (no device); wait for the user to pick one.
     Idle,
     /// The UI is gone - exit the manager entirely.
@@ -849,6 +854,7 @@ pub async fn manage(
             continue;
         };
         let udid = endpoint.udid().to_owned();
+        let connection = endpoint.connection();
 
         // Per-session input channel, published so the UI's input reaches it.
         let (in_tx, in_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -896,11 +902,17 @@ pub async fn manage(
         let outcome = loop {
             tokio::select! {
                 res = &mut session => {
-                    if let Err(e) = res {
-                        tracing::error!("session ended: {e}");
-                        error.set(Some(e));
+                    match res {
+                        Ok(()) => break Next::Idle,
+                        Err(e) => {
+                            tracing::error!(connection = connection.label(), "session ended: {e}");
+                            error.set(Some(e));
+                            if connection == ConnKind::Network {
+                                break Next::RetryWifi(selection_id.clone());
+                            }
+                            break Next::Idle;
+                        }
                     }
-                    break Next::Idle;
                 }
                 cmd = control_rx.recv() => match cmd {
                     Some(ControlCmd::Connect(u)) if u != selection_id && u != udid => break Next::Switch(u),
@@ -922,7 +934,7 @@ pub async fn manage(
 
         // For user-initiated transitions the session is still live: stop it and
         // wait for teardown so two sessions never fight over the same media stream.
-        if !matches!(outcome, Next::Idle) {
+        if matches!(outcome, Next::Switch(_) | Next::Quit) {
             let _ = in_tx.send(InputCmd::Shutdown);
             let _ = tokio::time::timeout(SWITCH_GRACE, &mut session).await;
         }
@@ -932,6 +944,14 @@ pub async fn manage(
 
         match outcome {
             Next::Switch(u) => target = Some(u),
+            Next::RetryWifi(u) => {
+                tracing::info!(
+                    retry_ms = WIFI_RECONNECT_DELAY.as_millis(),
+                    "Wi-Fi session transport dropped; rebuilding the complete tunnel"
+                );
+                target = Some(u);
+                tokio::time::sleep(WIFI_RECONNECT_DELAY).await;
+            }
             Next::Idle => target = None,
             Next::Quit => return,
         }
@@ -1025,10 +1045,18 @@ async fn enumerate_devices(
     // not a USB CoreDevice proxy. Routing it through `connect_usb_core_tunnel`
     // makes the device close the TLS stream during CoreDeviceProxy negotiation.
     // Wi-Fi control is always represented by the RemotePairing endpoint below.
-    let mut selected = devs
-        .into_iter()
-        .filter(|device| uses_usbmuxd_core_proxy(&device.connection_type))
-        .collect::<Vec<_>>();
+    let mut selected = Vec::with_capacity(devs.len());
+    for device in devs {
+        if uses_usbmuxd_core_proxy(&device.connection_type) {
+            selected.push(device);
+        } else if let Connection::Unknown(connection_type) = &device.connection_type {
+            tracing::warn!(
+                device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
+                %connection_type,
+                "ignoring usbmuxd device with an ambiguous transport"
+            );
+        }
+    }
     selected.sort_by(|a, b| {
         a.udid.cmp(&b.udid).then_with(|| {
             connection_priority(&a.connection_type).cmp(&connection_priority(&b.connection_type))
@@ -4540,7 +4568,7 @@ fn connection_priority(connection: &Connection) -> u8 {
 }
 
 fn uses_usbmuxd_core_proxy(connection: &Connection) -> bool {
-    !matches!(connection, Connection::Network(_))
+    matches!(connection, Connection::Usb)
 }
 
 fn connection_kind(connection: &Connection) -> ConnKind {
@@ -4879,6 +4907,9 @@ mod tests {
         assert!(uses_usbmuxd_core_proxy(&Connection::Usb));
         assert!(!uses_usbmuxd_core_proxy(&Connection::Network(
             [192, 0, 2, 1].into()
+        )));
+        assert!(!uses_usbmuxd_core_proxy(&Connection::Unknown(
+            "Network".into()
         )));
     }
 
