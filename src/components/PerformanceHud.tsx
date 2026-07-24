@@ -7,6 +7,7 @@ type Props = {
   view: PerformanceView | null;
   streamMetrics: StreamMetrics;
   renderFps: number;
+  avoidFullscreenToolbar?: boolean;
 };
 
 function number(value: number | null | undefined, digits = 1) {
@@ -26,7 +27,7 @@ function byteRate(value: number | null | undefined) {
   return `${value.toFixed(0)} B/s`;
 }
 
-export function PerformanceHud({ items, view, streamMetrics, renderFps }: Props) {
+export function PerformanceHud({ items, view, streamMetrics, renderFps, avoidFullscreenToolbar = false }: Props) {
   const { t } = useTranslation();
   const sample = view?.sample;
   const values: Record<PerformanceHudItem, string> = {
@@ -46,7 +47,7 @@ export function PerformanceHud({ items, view, streamMetrics, renderFps }: Props)
 
   if (items.length === 0) return null;
   return (
-    <aside className="performance-hud" aria-label={t("performance.hud.label")}>
+    <aside className={`performance-hud${avoidFullscreenToolbar ? " is-toolbar-visible" : ""}`} aria-label={t("performance.hud.label")}>
       {items.map((item) => (
         <div key={item}>
           <span>{t(`performance.hud.items.${item}`)}</span>

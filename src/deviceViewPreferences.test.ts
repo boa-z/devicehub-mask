@@ -13,13 +13,33 @@ describe("device view preferences", () => {
       controlOverlayVisible: false,
       rotationControlsLocked: true,
       fullscreenToolbarAutoHide: false,
+      deviceInspectorVisible: false,
+      mappingInspectorVisible: false,
     }))).toEqual({
       scale: "1.5",
       controlOverlayVisible: false,
       rotationControlsLocked: true,
       fullscreenToolbarAutoHide: false,
+      deviceInspectorVisible: false,
+      mappingInspectorVisible: false,
     });
     expect(parseDeviceViewPreferences('{"scale":"3"}')).toEqual(defaultDeviceViewPreferences);
+  });
+
+  it("adds visible inspectors when migrating older preferences", () => {
+    expect(parseDeviceViewPreferences(JSON.stringify({
+      scale: "1",
+      controlOverlayVisible: false,
+      rotationControlsLocked: true,
+      fullscreenToolbarAutoHide: false,
+    }))).toEqual({
+      scale: "1",
+      controlOverlayVisible: false,
+      rotationControlsLocked: true,
+      fullscreenToolbarAutoHide: false,
+      deviceInspectorVisible: true,
+      mappingInspectorVisible: true,
+    });
   });
 
   it("maps fit and fixed scales", () => {

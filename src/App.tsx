@@ -3,7 +3,6 @@ import {
   ApiOutlined,
   AudioMutedOutlined,
   CameraOutlined,
-  CompressOutlined,
   CustomerServiceOutlined,
   EditOutlined,
   ExpandOutlined,
@@ -35,6 +34,7 @@ import { Button, Dropdown, Input, Popover, Segmented, Select, Space, Switch, Tag
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
+import { DeviceFullscreenToolbar } from "./components/DeviceFullscreenToolbar";
 import { KeyboardIcon } from "./components/KeyboardIcon";
 import type { MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingOverlay } from "./components/MappingOverlay";
@@ -148,8 +148,10 @@ export default function App() {
   const [deviceFullscreen, setDeviceFullscreen] = useState(false);
   const [deviceViewPreferences, setDeviceViewPreferences] = useState<DeviceViewPreferences>(readDeviceViewPreferences);
   const [fullscreenToolbarVisible, setFullscreenToolbarVisible] = useState(true);
+  const [fullscreenToolbarHovered, setFullscreenToolbarHovered] = useState(false);
+  const [fullscreenToolbarFocused, setFullscreenToolbarFocused] = useState(false);
+  const [fullscreenOverflowOpen, setFullscreenOverflowOpen] = useState(false);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const [inspectorVisible, setInspectorVisible] = useState(true);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [audioPlayback, setAudioPlaybackPreferences] = useState<DeviceAudioPreferences>(defaultDeviceAudioPreferences);
   const [deviceAudioEnabled, setDeviceAudioEnabled] = useState<boolean | null>(null);
@@ -453,12 +455,15 @@ export default function App() {
     if (!deviceFullscreen || !deviceViewPreferences.fullscreenToolbarAutoHide) return;
     setFullscreenToolbarVisible(true);
     if (fullscreenToolbarTimerRef.current !== null) window.clearTimeout(fullscreenToolbarTimerRef.current);
+    if (fullscreenToolbarHovered || fullscreenToolbarFocused || fullscreenOverflowOpen || textInputOpen || displayScaleOpen) {
+      fullscreenToolbarTimerRef.current = null;
+      return;
+    }
     fullscreenToolbarTimerRef.current = window.setTimeout(() => {
       fullscreenToolbarTimerRef.current = null;
-      if (textInputOpen || displayScaleOpen) return;
       setFullscreenToolbarVisible(false);
     }, 2_200);
-  }, [deviceFullscreen, deviceViewPreferences.fullscreenToolbarAutoHide, displayScaleOpen, textInputOpen]);
+  }, [deviceFullscreen, deviceViewPreferences.fullscreenToolbarAutoHide, displayScaleOpen, fullscreenOverflowOpen, fullscreenToolbarFocused, fullscreenToolbarHovered, textInputOpen]);
 
   useEffect(() => {
     if (!deviceFullscreen || !deviceViewPreferences.fullscreenToolbarAutoHide) {
@@ -1002,6 +1007,7 @@ export default function App() {
   const toggleDeviceFullscreen = () => {
     releaseAllControls();
     setFullscreenToolbarVisible(true);
+    setFullscreenOverflowOpen(false);
     setDeviceFullscreen((active) => !active);
     setPage("device");
   };
@@ -1190,17 +1196,18 @@ export default function App() {
       />
     </Tooltip>
   );
-  const hardwareControls = (
+  const hardwareControlEntries = [
+    ["home", <HomeOutlined />],
+    ["lock", <LockOutlined />],
+    ["volume-up", <PlusOutlined />],
+    ["volume-down", <MinusOutlined />],
+    ["mute", <AudioMutedOutlined />],
+    ["siri", <CustomerServiceOutlined />],
+    ["action", <ThunderboltOutlined />],
+  ] as const;
+  const renderHardwareControls = (includeHome: boolean) => (
     <div className="hardware-controls" role="toolbar" aria-label={t("hardware.toolbar")}>
-      {([
-        ["home", <HomeOutlined />],
-        ["lock", <LockOutlined />],
-        ["volume-up", <PlusOutlined />],
-        ["volume-down", <MinusOutlined />],
-        ["mute", <AudioMutedOutlined />],
-        ["siri", <CustomerServiceOutlined />],
-        ["action", <ThunderboltOutlined />],
-      ] as const).map(([name, icon]) => {
+      {hardwareControlEntries.filter(([name]) => includeHome || name !== "home").map(([name, icon]) => {
         const label = t(`hardware.${name}`);
         return (
           <Tooltip key={name} title={`${label}${controlProfile.hardwareBindings[name] ? ` · ${controlProfile.hardwareBindings[name]}` : ""}`}>
@@ -1210,6 +1217,8 @@ export default function App() {
       })}
     </div>
   );
+  const hardwareControls = renderHardwareControls(true);
+  const secondaryHardwareControls = renderHardwareControls(false);
   const recordingSupported = typeof MediaRecorder !== "undefined"
     && typeof HTMLCanvasElement !== "undefined"
     && typeof HTMLCanvasElement.prototype.captureStream === "function";
@@ -1345,7 +1354,8 @@ export default function App() {
           <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedDeviceId} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
           {page === "mappings" && <Tooltip title={t("device.saveMappings")}><Button icon={<SaveOutlined />} onClick={() => void save()} /></Tooltip>}
           <Tooltip title={t(alwaysOnTop ? "device.unpin" : "device.pin")}><Button type={alwaysOnTop ? "primary" : "default"} icon={alwaysOnTop ? <PushpinFilled /> : <PushpinOutlined />} onClick={() => void toggleAlwaysOnTop()} /></Tooltip>
-          {page === "mappings" && <Tooltip title={t(inspectorVisible ? "device.hideInspector" : "device.showInspector")}><Button icon={inspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => setInspectorVisible((visible) => !visible)} /></Tooltip>}
+          {page === "device" && <Tooltip title={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")}><Button aria-label={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")} icon={deviceViewPreferences.deviceInspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => patchDeviceViewPreferences({ deviceInspectorVisible: !deviceViewPreferences.deviceInspectorVisible })} /></Tooltip>}
+          {page === "mappings" && <Tooltip title={t(deviceViewPreferences.mappingInspectorVisible ? "device.hideInspector" : "device.showInspector")}><Button aria-label={t(deviceViewPreferences.mappingInspectorVisible ? "device.hideInspector" : "device.showInspector")} icon={deviceViewPreferences.mappingInspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => patchDeviceViewPreferences({ mappingInspectorVisible: !deviceViewPreferences.mappingInspectorVisible })} /></Tooltip>}
           <Tooltip title={t("device.enterDeviceFullscreen")}><Button icon={<ExpandOutlined />} onClick={toggleDeviceFullscreen} /></Tooltip>
           <Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>
         </Space>
@@ -1360,13 +1370,11 @@ export default function App() {
             <SettingsPage
               alwaysOnTop={alwaysOnTop}
               systemFullscreen={systemFullscreen}
-              inspectorVisible={inspectorVisible}
               deviceView={deviceViewPreferences}
               performanceHud={performanceHud}
               audioPlayback={audioPlayback}
               onAlwaysOnTopChange={() => void toggleAlwaysOnTop()}
               onSystemFullscreenChange={() => void toggleSystemFullscreen()}
-              onInspectorVisibleChange={setInspectorVisible}
               onDeviceViewChange={updateDeviceViewPreferences}
               onPerformanceHudChange={updatePerformanceHud}
               onAudioPlaybackChange={(preferences) => void updateAudioPlayback(preferences)}
@@ -1406,38 +1414,42 @@ export default function App() {
                   onImport={importProfile}
                 />
               )}
-              <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" ? "device-workspace" : page === "mappings" && inspectorVisible ? "mapping-workspace" : "inspector-hidden"}`}>
+              <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" && deviceViewPreferences.deviceInspectorVisible ? "device-workspace" : page === "mappings" && deviceViewPreferences.mappingInspectorVisible ? "mapping-workspace" : "inspector-hidden"}`}>
                 <section className="stage-column">
                   {deviceFullscreen ? (
-                    <div className={`device-fullscreen-toolbar${fullscreenToolbarVisible ? "" : " is-hidden"}`} role="toolbar" aria-label={t("device.deviceFullscreenControls")}>
-                      <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedDeviceId} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
-                      {controlProfileSelector}
-                      <Segmented<ControlMode>
-                        value={controlMode}
-                        options={[
-                          { label: <Tooltip title={t("device.mappingMode")}><AimOutlined /></Tooltip>, value: "mapping" },
-                          { label: <Tooltip title={t("device.keyboardMode")}><KeyboardIcon /></Tooltip>, value: "keyboard" },
-                        ]}
-                        onChange={(mode) => {
-                          releaseAllControls();
-                          setControlMode(mode);
-                          if (mode === "keyboard") setEditing(false);
-                        }}
-                      />
-                      <Tooltip title={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}>
-                        <Button
-                          aria-label={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}
-                          icon={controlOverlayVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                          onClick={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
-                        />
-                      </Tooltip>
-                      {deviceDisplayControls}
-                      <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
-                      <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
-                      {hardwareControls}
-                      <Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>
-                      <Tooltip title={t("device.exitDeviceFullscreen")}><Button icon={<CompressOutlined />} onClick={toggleDeviceFullscreen} /></Tooltip>
-                    </div>
+                    <DeviceFullscreenToolbar
+                      visible={fullscreenToolbarVisible}
+                      canReconnect={Boolean(backend && selectedDeviceId)}
+                      controlMode={controlMode}
+                      controlOverlayVisible={controlOverlayVisible}
+                      rotationControlsLocked={deviceViewPreferences.rotationControlsLocked}
+                      overflowOpen={fullscreenOverflowOpen}
+                      profileSelector={controlProfileSelector}
+                      displayControls={deviceDisplayControls}
+                      secondaryHardwareControls={secondaryHardwareControls}
+                      systemFullscreenControl={<Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button aria-label={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")} icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>}
+                      onReconnect={() => void reconnectDevice()}
+                      onControlModeChange={(mode) => {
+                        releaseAllControls();
+                        setControlMode(mode);
+                        if (mode === "keyboard") setEditing(false);
+                      }}
+                      onControlOverlayChange={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
+                      onHome={() => command({ type: "button", name: "home" })}
+                      onRotateLeft={() => command({ type: "rotate", direction: "left" })}
+                      onRotateRight={() => command({ type: "rotate", direction: "right" })}
+                      onOverflowOpenChange={(open) => {
+                        setFullscreenOverflowOpen(open);
+                        setFullscreenToolbarVisible(true);
+                      }}
+                      onExit={toggleDeviceFullscreen}
+                      onPointerEnter={() => setFullscreenToolbarHovered(true)}
+                      onPointerLeave={() => setFullscreenToolbarHovered(false)}
+                      onFocus={() => setFullscreenToolbarFocused(true)}
+                      onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFullscreenToolbarFocused(false);
+                      }}
+                    />
                   ) : <div className="stage-toolbar">
                     <div className="stream-status">
                       <Space><ApiOutlined /><Typography.Text>{t(connected ? "status.websocketConnected" : "status.reconnecting")}</Typography.Text></Space>
@@ -1519,7 +1531,7 @@ export default function App() {
                       >
                       <canvas ref={bindCanvas} />
                       {page === "device" && performanceHud.enabled && (
-                        <PerformanceHud items={performanceHud.items} view={performanceView} streamMetrics={streamMetrics} renderFps={renderFps} />
+                        <PerformanceHud items={performanceHud.items} view={performanceView} streamMetrics={streamMetrics} renderFps={renderFps} avoidFullscreenToolbar={deviceFullscreen && fullscreenToolbarVisible} />
                       )}
                       {page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot && (
                         <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />
@@ -1543,7 +1555,7 @@ export default function App() {
                     </Dropdown>
                   </div>
                 </section>
-                {page === "mappings" && inspectorVisible && (
+                {page === "mappings" && deviceViewPreferences.mappingInspectorVisible && (
                   <MappingInspector
                     mappings={profile.mappings}
                     selectedId={selectedId}
@@ -1557,18 +1569,20 @@ export default function App() {
                   />
                 )}
                 {page === "device" && !deviceFullscreen && (
-                  <Suspense fallback={<WorkspaceLoading inspector />}>
-                    <DeviceInspector
-                      activeUdid={status.active_udid}
-                      request={request}
-                      activeProfile={activeProfile}
-                      appProfileBindings={appProfileBindings}
-                      bindingConflicts={appBindingConflicts}
-                      deviceEvent={deviceEvent}
-                      onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
-                      onAppProfileBindingChange={changeAppProfileBinding}
-                    />
-                  </Suspense>
+                  <div className={`device-inspector-slot${deviceViewPreferences.deviceInspectorVisible ? "" : " is-hidden"}`}>
+                    <Suspense fallback={<WorkspaceLoading inspector />}>
+                      <DeviceInspector
+                        activeUdid={status.active_udid}
+                        request={request}
+                        activeProfile={activeProfile}
+                        appProfileBindings={appProfileBindings}
+                        bindingConflicts={appBindingConflicts}
+                        deviceEvent={deviceEvent}
+                        onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
+                        onAppProfileBindingChange={changeAppProfileBinding}
+                      />
+                    </Suspense>
+                  </div>
                 )}
               </main>
             </>

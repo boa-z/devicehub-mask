@@ -7,6 +7,8 @@ export type DeviceViewPreferences = {
   controlOverlayVisible: boolean;
   rotationControlsLocked: boolean;
   fullscreenToolbarAutoHide: boolean;
+  deviceInspectorVisible: boolean;
+  mappingInspectorVisible: boolean;
 };
 
 export const defaultDeviceViewPreferences: DeviceViewPreferences = {
@@ -14,6 +16,8 @@ export const defaultDeviceViewPreferences: DeviceViewPreferences = {
   controlOverlayVisible: true,
   rotationControlsLocked: false,
   fullscreenToolbarAutoHide: true,
+  deviceInspectorVisible: true,
+  mappingInspectorVisible: true,
 };
 
 const storageKey = "devicehub-mask.device-view";
@@ -38,6 +42,12 @@ export function parseDeviceViewPreferences(value: string | null): DeviceViewPref
       fullscreenToolbarAutoHide: typeof candidate.fullscreenToolbarAutoHide === "boolean"
         ? candidate.fullscreenToolbarAutoHide
         : defaultDeviceViewPreferences.fullscreenToolbarAutoHide,
+      deviceInspectorVisible: typeof candidate.deviceInspectorVisible === "boolean"
+        ? candidate.deviceInspectorVisible
+        : defaultDeviceViewPreferences.deviceInspectorVisible,
+      mappingInspectorVisible: typeof candidate.mappingInspectorVisible === "boolean"
+        ? candidate.mappingInspectorVisible
+        : defaultDeviceViewPreferences.mappingInspectorVisible,
     };
   } catch {
     return { ...defaultDeviceViewPreferences };

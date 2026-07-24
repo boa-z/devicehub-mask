@@ -25,13 +25,11 @@ import { UpdateButton } from "./UpdateButton";
 type Props = {
   alwaysOnTop: boolean;
   systemFullscreen: boolean;
-  inspectorVisible: boolean;
   deviceView: DeviceViewPreferences;
   performanceHud: PerformanceHudPreferences;
   audioPlayback: DeviceAudioPreferences;
   onAlwaysOnTopChange: () => void;
   onSystemFullscreenChange: () => void;
-  onInspectorVisibleChange: (visible: boolean) => void;
   onDeviceViewChange: (preferences: DeviceViewPreferences) => void;
   onPerformanceHudChange: (preferences: PerformanceHudPreferences) => void;
   onAudioPlaybackChange: (preferences: DeviceAudioPreferences) => void;
@@ -41,13 +39,11 @@ type Props = {
 export function SettingsPage({
   alwaysOnTop,
   systemFullscreen,
-  inspectorVisible,
   deviceView,
   performanceHud,
   audioPlayback,
   onAlwaysOnTopChange,
   onSystemFullscreenChange,
-  onInspectorVisibleChange,
   onDeviceViewChange,
   onPerformanceHudChange,
   onAudioPlaybackChange,
@@ -178,7 +174,8 @@ export function SettingsPage({
         <Typography.Title level={5}>{t("settings.window")}</Typography.Title>
         <label><span>{t("settings.alwaysOnTop")}</span><Switch checked={alwaysOnTop} onChange={onAlwaysOnTopChange} /></label>
         <label><span>{t("settings.systemFullscreen")}</span><Switch checked={systemFullscreen} onChange={onSystemFullscreenChange} /></label>
-        <label><span>{t("settings.inspector")}</span><Switch checked={inspectorVisible} onChange={onInspectorVisibleChange} /></label>
+        <label><span>{t("settings.deviceInspector")}</span><Switch checked={deviceView.deviceInspectorVisible} onChange={(deviceInspectorVisible) => onDeviceViewChange({ ...deviceView, deviceInspectorVisible })} /></label>
+        <label><span>{t("settings.mappingInspector")}</span><Switch checked={deviceView.mappingInspectorVisible} onChange={(mappingInspectorVisible) => onDeviceViewChange({ ...deviceView, mappingInspectorVisible })} /></label>
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.deviceControl")}</Typography.Title>
