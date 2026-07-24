@@ -256,6 +256,8 @@ App 意外退出后，可调用 `list_crash_reports` 获取按时间倒序的元
 当 WebDriverAgent 已在活动设备上完成安装、签名并运行时，`wda_status` 可探测设备端口
 8100。如果已安装开发者 App 的 Bundle ID 以 `.xctrunner` 结尾，可通过 App 列表行上的
 WDA 按钮或 MCP `wda_start` 显式使用 XCTest 启动，启动等待上限为 30 秒。
+设备必须已启用开发者模式并挂载匹配的开发者磁盘镜像，“设备信息”会显示当前镜像状态。
+可使用 Xcode 或其他可信开发工具挂载对应镜像；DeviceHub Mask 不会自动下载或挂载镜像。
 `wda_runner_status` 只报告由 DeviceHub Mask 监督的 Runner，`wda_stop` 也只停止该 Runner，
 不会终止外部启动的 WDA。设备会话结束时会自动清理 Runner。DeviceHub Mask 不负责安装、
 签名或静默自动启动 WDA。

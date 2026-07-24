@@ -1507,7 +1507,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Return refreshed Lockdown device metadata, storage, battery, activation, and Developer Mode state. Stable hardware identifiers are omitted unless include_identifiers is true."
+        description = "Return refreshed Lockdown device metadata, storage, battery, activation, Developer Mode, and Developer Disk Image state. Stable hardware identifiers are omitted unless include_identifiers is true."
     )]
     async fn device_details(
         &self,
@@ -1538,6 +1538,7 @@ impl DeviceHub {
                 "storage": details.storage,
                 "activation_state": details.activation_state,
                 "developer_mode_enabled": details.developer_mode_enabled,
+                "developer_image_mounted": details.developer_image_mounted,
                 "battery": details.battery,
                 "identifiers": identifiers,
             })
@@ -2003,6 +2004,7 @@ mod tests {
             storage: None,
             activation_state: Some(crate::protocol::DeviceActivationState::Activated),
             developer_mode_enabled: Some(true),
+            developer_image_mounted: Some(true),
             battery: None,
         }
     }
@@ -2117,6 +2119,7 @@ mod tests {
                 .find_map(|content| content.as_text().map(|text| text.text.as_str()))
                 .unwrap();
             assert!(text.contains("Test iPhone"));
+            assert!(text.contains("\"developer_image_mounted\":true"));
             assert_eq!(text.contains("private-serial"), include_identifiers);
             assert_eq!(text.contains("private-udid"), include_identifiers);
         }

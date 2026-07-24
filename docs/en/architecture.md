@@ -163,7 +163,14 @@ metadata values may be absent, and companion identifiers remain sensitive.
 
 WebDriverAgent automation is an on-demand optional service over the active
 `IdeviceProvider`. It never probes in the background and does not install, sign,
-or launch WDA. MCP commands enter a four-item queue, carry a 12-second deadline,
+or silently launch WDA. An explicit runner start first queries MobileImageMounter
+for the version-appropriate `Developer` image before XCTest starts; iOS 17 and
+later use the `Personalized` image type. A definite not-mounted response stops
+startup with an actionable error, while an unavailable preflight preserves the
+existing XCTest attempt for compatibility. The refreshed device-details response
+exposes the same result as a nullable readiness field without returning image
+signatures or personalization identifiers. MCP commands enter a four-item queue,
+carry a 12-second deadline,
 and allow only six selector strategies, 1,024-byte selector expressions, twenty
 matches, and a 1 MiB UI-tree response. The worker owns one WDA session, deletes
 or discards it after transport failure, and reports `device.wda` health without

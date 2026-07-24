@@ -7,6 +7,7 @@ mod companion_devices;
 mod crash_reports;
 mod decode;
 mod demand;
+mod developer_image;
 mod developer_mode;
 mod device_backup;
 mod device_conditions;

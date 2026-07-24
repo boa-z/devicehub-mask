@@ -2303,6 +2303,7 @@ impl DeviceManagement {
                         details_result,
                         battery_result,
                         developer_mode_result,
+                        developer_image_result,
                         activation_state_result,
                     ) = tokio::join!(
                         tokio::time::timeout(
@@ -2316,6 +2317,13 @@ impl DeviceManagement {
                         tokio::time::timeout(
                             Duration::from_secs(3),
                             read_developer_mode_status(provider.as_ref()),
+                        ),
+                        tokio::time::timeout(
+                            Duration::from_secs(3),
+                            crate::developer_image::is_mounted(
+                                provider.as_ref(),
+                                &details.product_version,
+                            ),
                         ),
                         tokio::time::timeout(
                             Duration::from_secs(3),
@@ -2354,6 +2362,18 @@ impl DeviceManagement {
                         }
                         Err(_) => {
                             tracing::warn!("developer mode status timed out");
+                        }
+                    }
+                    match developer_image_result {
+                        Ok(Ok(mounted)) => {
+                            tracing::debug!(mounted, "developer image status refreshed");
+                            details.developer_image_mounted = Some(mounted);
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "developer image status unavailable");
+                        }
+                        Err(_) => {
+                            tracing::warn!("developer image status timed out");
                         }
                     }
                     match activation_state_result {
@@ -4059,6 +4079,7 @@ async fn read_device_details(
         storage,
         activation_state: None,
         developer_mode_enabled: None,
+        developer_image_mounted: None,
         battery: None,
     })
 }
@@ -5291,6 +5312,7 @@ mod tests {
             storage: None,
             activation_state: None,
             developer_mode_enabled: None,
+            developer_image_mounted: None,
             battery: None,
         };
 

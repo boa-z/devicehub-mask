@@ -708,6 +708,9 @@ export function DeviceInspector({
     [t("deviceInspector.developerMode"), details.developer_mode_enabled == null
       ? t("deviceInspector.developerModeStates.unknown")
       : t(`deviceInspector.developerModeStates.${details.developer_mode_enabled ? "enabled" : "disabled"}`)],
+    [t("deviceInspector.developerImage"), details.developer_image_mounted == null
+      ? t("deviceInspector.developerImageStates.unknown")
+      : t(`deviceInspector.developerImageStates.${details.developer_image_mounted ? "mounted" : "missing"}`)],
     [t("deviceInspector.batteryLevel"), details.battery?.level_percent == null ? "-" : `${details.battery.level_percent}%`],
     [t("deviceInspector.batteryState"), details.battery?.fully_charged
       ? t("deviceInspector.batteryStates.full")
@@ -797,6 +800,14 @@ export function DeviceInspector({
                   {t("deviceInspector.revealDeveloperMode")}
                 </Button>
               )}
+            />
+          )}
+          {details?.developer_mode_enabled === true && details.developer_image_mounted === false && (
+            <Alert
+              type="info"
+              showIcon
+              message={t("deviceInspector.developerImageMissing")}
+              description={t("deviceInspector.developerImageHint")}
             />
           )}
           <div className="device-info-list">

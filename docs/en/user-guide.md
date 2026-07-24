@@ -359,7 +359,11 @@ When WebDriverAgent is already installed, signed, and running on the active
 device, `wda_status` can probe it on device port 8100. If an installed developer
 app has a bundle ID ending in `.xctrunner`, its Apps-row WDA button or the MCP
 `wda_start` tool can explicitly start it through XCTest. Startup is bounded to
-30 seconds. `wda_runner_status` reports only a runner supervised by DeviceHub
+30 seconds. Developer Mode must be enabled and a compatible Developer Disk Image
+must already be mounted; the Info tab reports the current image state. Xcode or
+another trusted developer tool can mount the matching image. DeviceHub Mask does
+not download or mount one automatically. `wda_runner_status` reports only a runner
+supervised by DeviceHub
 Mask, and `wda_stop` stops only that managed runner; an externally launched WDA
 is never terminated. Runner ownership is released automatically when the device
 session ends. DeviceHub Mask does not install, sign, or silently auto-start WDA.

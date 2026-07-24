@@ -320,6 +320,24 @@ async fn start_runner(
         return Err("WebDriverAgent is already reachable; DeviceHub Mask will not replace an externally managed runner".into());
     }
 
+    match tokio::time::timeout(
+        Duration::from_secs(4),
+        crate::developer_image::is_mounted_for_device(provider.as_ref()),
+    )
+    .await
+    {
+        Ok(Ok(true)) => {}
+        Ok(Ok(false)) => {
+            return Err("a compatible Developer Disk Image is not mounted; mount it before starting WebDriverAgent".into());
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "developer image preflight unavailable; continuing WDA startup");
+        }
+        Err(_) => {
+            tracing::warn!("developer image preflight timed out; continuing WDA startup");
+        }
+    }
+
     let mut installation = InstallationProxyClient::connect(provider.as_ref())
         .await
         .map_err(|error| format!("unable to inspect WDA runner: {error:?}"))?;

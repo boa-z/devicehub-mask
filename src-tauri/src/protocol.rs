@@ -511,6 +511,7 @@ pub struct DeviceDetails {
     pub storage: Option<DeviceStorage>,
     pub activation_state: Option<DeviceActivationState>,
     pub developer_mode_enabled: Option<bool>,
+    pub developer_image_mounted: Option<bool>,
     pub battery: Option<DeviceBattery>,
 }
 

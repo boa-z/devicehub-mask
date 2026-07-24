@@ -160,6 +160,7 @@ export type DeviceDetails = {
   storage: DeviceStorage | null;
   activation_state: DeviceActivationState | null;
   developer_mode_enabled: boolean | null;
+  developer_image_mounted: boolean | null;
   battery: DeviceBattery | null;
 };
 export type CompanionDevice = {
