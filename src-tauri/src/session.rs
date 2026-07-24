@@ -775,11 +775,7 @@ pub async fn manage(
     let mut names: HashMap<String, String> = HashMap::new();
     let mut netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), resource_dir);
     let prefer_netmuxd = netmuxd.is_forced();
-    let mut wifi = if prefer_netmuxd {
-        None
-    } else {
-        start_wifi_discovery(&pairing_dir)
-    };
+    let mut wifi = start_wifi_discovery(&pairing_dir);
     // Auto-pick the first device only when no UDID was given, and only until we've
     // connected once: after a session ends we drop to idle rather than hot-loop.
     let mut auto_pick = initial_udid.is_none();
@@ -957,15 +953,8 @@ async fn enumerate_devices(
     } else {
         None
     };
-    match (prefer_netmuxd, netmuxd_addr.is_some(), wifi.is_some()) {
-        (true, true, true) => {
-            tracing::info!("netmuxd recovered; stopping direct Wi-Fi discovery fallback");
-            *wifi = None;
-        }
-        (_, false, false) => {
-            *wifi = start_wifi_discovery(pairing_dir);
-        }
-        _ => {}
+    if wifi.is_none() {
+        *wifi = start_wifi_discovery(pairing_dir);
     }
     let system_addr = UsbmuxdAddr::from_env_var().map_err(|error| {
         tracing::warn!(?error, "invalid usbmuxd address; USB discovery disabled");
@@ -1004,7 +993,10 @@ async fn enumerate_devices(
     };
 
     if let (Some(discovery), Some(usbmuxd)) = (wifi.as_mut(), usbmuxd.as_mut()) {
-        for device in &devs {
+        for device in devs
+            .iter()
+            .filter(|device| matches!(device.connection_type, Connection::Usb))
+        {
             if !discovery.pairing_needs_refresh(&device.udid) {
                 continue;
             }
@@ -1029,7 +1021,14 @@ async fn enumerate_devices(
         }
     }
 
-    let mut selected = devs;
+    // A network device exposed through usbmuxd/netmuxd is a Lockdown transport,
+    // not a USB CoreDevice proxy. Routing it through `connect_usb_core_tunnel`
+    // makes the device close the TLS stream during CoreDeviceProxy negotiation.
+    // Wi-Fi control is always represented by the RemotePairing endpoint below.
+    let mut selected = devs
+        .into_iter()
+        .filter(|device| uses_usbmuxd_core_proxy(&device.connection_type))
+        .collect::<Vec<_>>();
     selected.sort_by(|a, b| {
         a.udid.cmp(&b.udid).then_with(|| {
             connection_priority(&a.connection_type).cmp(&connection_priority(&b.connection_type))
@@ -1069,9 +1068,7 @@ async fn enumerate_devices(
         }
     }
 
-    // Direct discovery is active only while netmuxd is unavailable, so exactly
-    // one process owns Bonjour and the device heartbeat at a time.
-    if !using_netmuxd && let Some(discovery) = wifi.as_mut() {
+    if let Some(discovery) = wifi.as_mut() {
         for endpoint in discovery.refresh() {
             let id = device_selector(&endpoint.udid, ConnKind::Network);
             if endpoints.contains_key(&id) {
@@ -1419,7 +1416,8 @@ async fn run(
         supervisor.shutdown_receiver(),
     ));
     supervisor.spawn(crate::device_logs::supervise(
-        provider.clone(),
+        adapter.clone(),
+        handshake.clone(),
         views.device_logs.clone(),
         supervisor.reporter("device.logs"),
         views.device_log_demand.subscribe(),
@@ -1520,7 +1518,8 @@ async fn run(
     ));
     let (provisioning_sender, provisioning_receiver) = tokio::sync::mpsc::channel(4);
     supervisor.spawn(crate::provisioning::supervise(
-        provider.clone(),
+        adapter.clone(),
+        handshake.clone(),
         provisioning_receiver,
         supervisor.reporter("device.provisioning"),
         supervisor.shutdown_receiver(),
@@ -4526,6 +4525,10 @@ fn connection_priority(connection: &Connection) -> u8 {
     }
 }
 
+fn uses_usbmuxd_core_proxy(connection: &Connection) -> bool {
+    !matches!(connection, Connection::Network(_))
+}
+
 fn connection_kind(connection: &Connection) -> ConnKind {
     match connection {
         Connection::Network(_) => ConnKind::Network,
@@ -4855,6 +4858,14 @@ mod tests {
             resolve_device_selection("phone::wifi", &devices).as_deref(),
             Some("phone::wifi")
         );
+    }
+
+    #[test]
+    fn network_usbmuxd_devices_never_use_the_usb_coredevice_proxy() {
+        assert!(uses_usbmuxd_core_proxy(&Connection::Usb));
+        assert!(!uses_usbmuxd_core_proxy(&Connection::Network(
+            [192, 0, 2, 1].into()
+        )));
     }
 
     #[test]

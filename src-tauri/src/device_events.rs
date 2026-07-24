@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use idevice::RsdService;
 use idevice::rsd::RsdHandshake;
@@ -14,6 +14,7 @@ use tokio::sync::{broadcast, watch};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+const DISK_USAGE_EVENT_INTERVAL: Duration = Duration::from_secs(1);
 const OBSERVED_NOTIFICATIONS: &[&str] = &[
     "com.apple.mobile.application_installed",
     "com.apple.mobile.application_uninstalled",
@@ -73,6 +74,23 @@ fn normalize_notification(name: &str) -> Option<DeviceEventKind> {
         "com.apple.mobile.lockdown.device_name_changed" => Some(DeviceEventKind::DeviceNameChanged),
         _ => None,
     }
+}
+
+fn should_publish(
+    kind: DeviceEventKind,
+    last_disk_usage_event: &mut Option<Instant>,
+    now: Instant,
+) -> bool {
+    if kind != DeviceEventKind::DiskUsageChanged {
+        return true;
+    }
+    if last_disk_usage_event
+        .is_some_and(|last| now.saturating_duration_since(last) < DISK_USAGE_EVENT_INTERVAL)
+    {
+        return false;
+    }
+    *last_disk_usage_event = Some(now);
+    true
 }
 
 pub async fn supervise(
@@ -135,6 +153,7 @@ async fn run_once(
     .map_err(|_| "device notification registration timed out".to_string())?
     .map_err(|error| format!("device notification registration failed: {error:?}"))?;
     reporter.ready(attempt);
+    let mut last_disk_usage_event = None;
 
     loop {
         tokio::select! {
@@ -146,7 +165,9 @@ async fn run_once(
             notification = client.receive_notification() => {
                 let name = notification
                     .map_err(|error| format!("device notification stream failed: {error:?}"))?;
-                if let Some(kind) = normalize_notification(&name) {
+                if let Some(kind) = normalize_notification(&name)
+                    && should_publish(kind, &mut last_disk_usage_event, Instant::now())
+                {
                     tracing::debug!(?kind, "received normalized device notification");
                     events.publish(kind);
                 }
@@ -192,5 +213,31 @@ mod tests {
         assert_eq!(first.kind, DeviceEventKind::AppInstalled);
         assert_eq!(second.kind, DeviceEventKind::AppInstalled);
         assert_eq!(second.sequence, first.sequence + 1);
+    }
+
+    #[test]
+    fn disk_usage_events_are_coalesced_without_delaying_other_events() {
+        let start = Instant::now();
+        let mut last_disk_usage_event = None;
+        assert!(should_publish(
+            DeviceEventKind::DiskUsageChanged,
+            &mut last_disk_usage_event,
+            start,
+        ));
+        assert!(!should_publish(
+            DeviceEventKind::DiskUsageChanged,
+            &mut last_disk_usage_event,
+            start + Duration::from_millis(500),
+        ));
+        assert!(should_publish(
+            DeviceEventKind::AppInstalled,
+            &mut last_disk_usage_event,
+            start + Duration::from_millis(500),
+        ));
+        assert!(should_publish(
+            DeviceEventKind::DiskUsageChanged,
+            &mut last_disk_usage_event,
+            start + DISK_USAGE_EVENT_INTERVAL,
+        ));
     }
 }

@@ -1,16 +1,16 @@
 use std::future::Future;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use cms::content_info::ContentInfo;
 use cms::signed_data::SignedData;
 use der::Decode;
 use der::asn1::{ObjectIdentifier, OctetString};
-use idevice::IdeviceService;
+use idevice::RsdService;
 use idevice::misagent::MisagentClient;
-use idevice::provider::IdeviceProvider;
+use idevice::rsd::RsdHandshake;
+use idevice::tcp::handle::AdapterHandle;
 use plist::{Dictionary, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -77,7 +77,8 @@ pub enum ProvisioningCommand {
 }
 
 pub async fn supervise(
-    provider: Arc<dyn IdeviceProvider>,
+    mut adapter: AdapterHandle,
+    mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<ProvisioningCommand>,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -89,27 +90,29 @@ pub async fn supervise(
         }
         attempt += 1;
         reporter.connecting(attempt);
-        let mut client =
-            match tokio::time::timeout(CONNECT_TIMEOUT, MisagentClient::connect(provider.as_ref()))
-                .await
-            {
-                Ok(Ok(client)) => client,
-                Ok(Err(error)) => {
-                    let error = format!("provisioning profile service unavailable: {error:?}");
-                    reporter.retrying(attempt, error);
-                    if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
-                        break;
-                    }
-                    continue;
+        let mut client = match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            MisagentClient::connect_rsd(&mut adapter, &mut handshake),
+        )
+        .await
+        {
+            Ok(Ok(client)) => client,
+            Ok(Err(error)) => {
+                let error = format!("provisioning profile service unavailable: {error:?}");
+                reporter.retrying(attempt, error);
+                if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+                    break;
                 }
-                Err(_) => {
-                    reporter.retrying(attempt, "provisioning profile service connection timed out");
-                    if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
-                        break;
-                    }
-                    continue;
+                continue;
+            }
+            Err(_) => {
+                reporter.retrying(attempt, "provisioning profile service connection timed out");
+                if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+                    break;
                 }
-            };
+                continue;
+            }
+        };
         reporter.ready(attempt);
 
         let failure = loop {
@@ -540,7 +543,37 @@ mod tests {
     use cms::signed_data::{EncapsulatedContentInfo, SignerInfos};
     use der::Encode;
     use der::asn1::{Any, OctetString, SetOfVec};
+    use idevice::IdeviceService;
+    use idevice::core_device_proxy::CoreDeviceProxy;
+    use idevice::rsd::RsdHandshake;
+    use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
     use std::time::Duration;
+
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn lists_profiles_over_rsd_from_hardware() {
+        let address = UsbmuxdAddr::default();
+        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
+        let device = usbmuxd
+            .get_devices()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|device| matches!(device.connection_type, idevice::usbmuxd::Connection::Usb))
+            .expect("no USB device connected");
+        let provider = device.to_provider(address, "devicehub-mask-provisioning-test");
+        let proxy = CoreDeviceProxy::connect(&provider).await.unwrap();
+        let rsd_port = proxy.tunnel_info().server_rsd_port;
+        let mut adapter = proxy.create_software_tunnel().unwrap().to_async_handle();
+        let stream = adapter.connect(rsd_port).await.unwrap();
+        let mut handshake = RsdHandshake::new(stream).await.unwrap();
+        let mut client = MisagentClient::connect_rsd(&mut adapter, &mut handshake)
+            .await
+            .unwrap();
+
+        let profiles = client.copy_all().await.unwrap();
+        assert!(profiles.len() <= MAX_PROFILE_COUNT);
+    }
 
     fn profile_value(expiration: SystemTime) -> Value {
         let mut entitlements = Dictionary::new();

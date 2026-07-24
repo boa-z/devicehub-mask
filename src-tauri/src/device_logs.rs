@@ -4,10 +4,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use idevice::IdeviceService;
+use idevice::RsdService;
 use idevice::os_trace_relay::{LogLevel, OsTraceRelayClient, OsTraceRelayReceiver};
-use idevice::provider::IdeviceProvider;
+use idevice::rsd::RsdHandshake;
 use idevice::syslog_relay::SyslogRelayClient;
+use idevice::tcp::handle::AdapterHandle;
 use serde::Serialize;
 use tokio::sync::watch;
 
@@ -184,7 +185,8 @@ impl DeviceLogDemand {
 }
 
 pub async fn supervise(
-    provider: Arc<dyn IdeviceProvider>,
+    mut adapter: AdapterHandle,
+    mut handshake: RsdHandshake,
     slot: DeviceLogSlot,
     reporter: ServiceReporter,
     mut enabled: watch::Receiver<bool>,
@@ -201,7 +203,8 @@ pub async fn supervise(
         attempt += 1;
         reporter.connecting(attempt);
         let result = run_once(
-            provider.clone(),
+            &mut adapter,
+            &mut handshake,
             slot.clone(),
             &reporter,
             attempt,
@@ -227,15 +230,17 @@ pub async fn supervise(
 }
 
 async fn run_once(
-    provider: Arc<dyn IdeviceProvider>,
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
     slot: DeviceLogSlot,
     reporter: &ServiceReporter,
     attempt: u32,
     enabled: &mut watch::Receiver<bool>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), String> {
+    let mut ready = false;
     let unified = tokio::time::timeout(CONNECT_TIMEOUT, async {
-        let client = OsTraceRelayClient::connect(provider.as_ref()).await?;
+        let client = OsTraceRelayClient::connect_rsd(adapter, handshake).await?;
         client.start_trace(None).await
     })
     .await;
@@ -243,7 +248,17 @@ async fn run_once(
         Ok(Ok(receiver)) => {
             slot.set_source(Some(DeviceLogSource::Unified));
             reporter.ready(attempt);
-            return run_unified(receiver, slot, enabled, shutdown).await;
+            ready = true;
+            match run_unified(receiver, slot.clone(), enabled, shutdown).await {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "unified device log stream failed; falling back to syslog relay"
+                    );
+                    slot.set_source(None);
+                }
+            }
         }
         Ok(Err(error)) => {
             tracing::info!(
@@ -258,13 +273,15 @@ async fn run_once(
 
     let mut client = tokio::time::timeout(
         CONNECT_TIMEOUT,
-        SyslogRelayClient::connect(provider.as_ref()),
+        SyslogRelayClient::connect_rsd(adapter, handshake),
     )
     .await
     .map_err(|_| "device syslog connection timed out".to_string())?
     .map_err(|error| format!("device syslog connection failed: {error:?}"))?;
     slot.set_source(Some(DeviceLogSource::Syslog));
-    reporter.ready(attempt);
+    if !ready {
+        reporter.ready(attempt);
+    }
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -400,6 +417,7 @@ fn unix_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idevice::IdeviceService;
     use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
 
     #[test]
