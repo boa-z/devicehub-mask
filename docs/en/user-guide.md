@@ -225,6 +225,11 @@ Lockdown Installation Proxy when necessary. When AppService process data is
 available, running apps are marked and can be stopped or restarted. It can also
 select an IPA with the native file dialog, report installation stages, and
 remove confirmed removable user apps.
+When iOS reports Installation Proxy disk-usage metadata, each row shows the
+combined installed and data size. Hovering the value shows both components, and
+the sort menu can order known totals from largest to smallest; apps without a
+reported value remain at the end. These are device-reported usage values, not a
+recursive scan of the app container.
 App icons are read on demand from SpringBoardServices as their rows approach the
 visible area. If an icon is unavailable, the list keeps its letter fallback and
 all management actions remain usable.

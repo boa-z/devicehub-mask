@@ -2869,21 +2869,17 @@ async fn list_device_apps(
     if let Some(client) = app_service {
         match client.list_apps(false, true, false, false, false).await {
             Ok(entries) => {
-                let document_apps = match installation_proxy.as_deref_mut() {
+                let installation_apps = match installation_proxy.as_deref_mut() {
                     Some(client) => match client.get_apps(Some("User"), None).await {
-                        Ok(apps) => apps
-                            .iter()
-                            .filter(|(_, value)| installation_supports_documents(value))
-                            .map(|(bundle_id, _)| bundle_id.clone())
-                            .collect::<std::collections::HashSet<_>>(),
+                        Ok(apps) => apps,
                         Err(error) => {
                             tracing::warn!(
-                                "app document capability metadata unavailable: {error:?}"
+                                "installation proxy app metadata unavailable: {error:?}"
                             );
-                            std::collections::HashSet::new()
+                            std::collections::HashMap::new()
                         }
                     },
-                    None => std::collections::HashSet::new(),
+                    None => std::collections::HashMap::new(),
                 };
                 let processes = match client.list_processes().await {
                     Ok(processes) => Some(processes),
@@ -2896,8 +2892,14 @@ async fn list_device_apps(
                     entries
                         .into_iter()
                         .map(|entry| {
+                            let metadata = installation_apps.get(&entry.bundle_identifier);
                             let documents_available =
-                                document_apps.contains(&entry.bundle_identifier);
+                                metadata.is_some_and(installation_supports_documents);
+                            let (
+                                static_disk_usage_bytes,
+                                dynamic_disk_usage_bytes,
+                                total_disk_usage_bytes,
+                            ) = metadata.map(app_disk_usage).unwrap_or((None, None, None));
                             DeviceApp {
                                 is_running: processes.as_ref().map(|processes| {
                                     processes.iter().any(|process| {
@@ -2917,6 +2919,9 @@ async fn list_device_apps(
                                 is_first_party: entry.is_first_party,
                                 is_developer_app: entry.is_developer_app,
                                 documents_available,
+                                static_disk_usage_bytes,
+                                dynamic_disk_usage_bytes,
+                                total_disk_usage_bytes,
                             }
                         })
                         .collect(),
@@ -2955,6 +2960,8 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
         .or_else(|| string("CFBundleName"))
         .unwrap_or_else(|| bundle_id.clone());
     let signer = string("SignerIdentity").unwrap_or_default();
+    let (static_disk_usage_bytes, dynamic_disk_usage_bytes, total_disk_usage_bytes) =
+        app_disk_usage(value);
     Some(DeviceApp {
         bundle_id,
         name,
@@ -2966,8 +2973,34 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
         is_developer_app: boolean("IsXcodeManaged").unwrap_or(false)
             || signer.contains("Apple Development"),
         documents_available: installation_supports_documents(value),
+        static_disk_usage_bytes,
+        dynamic_disk_usage_bytes,
+        total_disk_usage_bytes,
         is_running: None,
     })
+}
+
+const MAX_APP_DISK_USAGE_BYTES: u64 = 16 * 1_000_000_000_000;
+
+fn app_disk_usage(value: &plist::Value) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let Some(fields) = value.as_dictionary() else {
+        return (None, None, None);
+    };
+    let bounded = |key: &str| {
+        fields
+            .get(key)
+            .and_then(plist::Value::as_unsigned_integer)
+            .filter(|bytes| *bytes <= MAX_APP_DISK_USAGE_BYTES)
+    };
+    let static_bytes = bounded("StaticDiskUsage");
+    let dynamic_bytes = bounded("DynamicDiskUsage");
+    let total_bytes = match (static_bytes, dynamic_bytes) {
+        (Some(static_bytes), Some(dynamic_bytes)) => static_bytes.checked_add(dynamic_bytes),
+        (Some(bytes), None) | (None, Some(bytes)) => Some(bytes),
+        (None, None) => None,
+    }
+    .filter(|bytes| *bytes <= MAX_APP_DISK_USAGE_BYTES);
+    (static_bytes, dynamic_bytes, total_bytes)
 }
 
 fn installation_supports_documents(value: &plist::Value) -> bool {
@@ -5535,6 +5568,14 @@ mod tests {
                 String::from("UIFileSharingEnabled"),
                 plist::Value::Boolean(true),
             ),
+            (
+                String::from("StaticDiskUsage"),
+                plist::Value::Integer(1_500_000_u64.into()),
+            ),
+            (
+                String::from("DynamicDiskUsage"),
+                plist::Value::Integer(2_500_000_u64.into()),
+            ),
         ]));
 
         let app = device_app_from_installation("com.example.game".into(), &value).unwrap();
@@ -5544,8 +5585,30 @@ mod tests {
         assert_eq!(app.bundle_version.as_deref(), Some("42"));
         assert!(app.is_developer_app);
         assert!(app.documents_available);
+        assert_eq!(app.static_disk_usage_bytes, Some(1_500_000));
+        assert_eq!(app.dynamic_disk_usage_bytes, Some(2_500_000));
+        assert_eq!(app.total_disk_usage_bytes, Some(4_000_000));
         assert!(!app.is_removable);
         assert_eq!(app.is_running, None);
+    }
+
+    #[test]
+    fn bounds_untrusted_installation_proxy_disk_usage() {
+        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([
+            (
+                String::from("StaticDiskUsage"),
+                plist::Value::Integer((MAX_APP_DISK_USAGE_BYTES + 1).into()),
+            ),
+            (
+                String::from("DynamicDiskUsage"),
+                plist::Value::Integer(750_000_u64.into()),
+            ),
+        ]));
+        assert_eq!(app_disk_usage(&value), (None, Some(750_000), Some(750_000)));
+        assert_eq!(
+            app_disk_usage(&plist::Value::String("invalid".into())),
+            (None, None, None)
+        );
     }
 
     #[test]

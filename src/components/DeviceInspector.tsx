@@ -1,6 +1,7 @@
 import {
   AppstoreOutlined,
   BugOutlined,
+  CheckOutlined,
   CopyOutlined,
   DatabaseOutlined,
   DeleteOutlined,
@@ -17,16 +18,18 @@ import {
   ReloadOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
+  SortAscendingOutlined,
+  SortDescendingOutlined,
   StopOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
-import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
@@ -126,6 +129,7 @@ export function DeviceInspector({
   const [crashReports, setCrashReports] = useState<DeviceCrashReport[]>([]);
   const [crashReportsTruncated, setCrashReportsTruncated] = useState(false);
   const [query, setQuery] = useState("");
+  const [appSort, setAppSort] = useState<DeviceAppSort>("name");
   const [profileStatus, setProfileStatus] = useState<ProfileStatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -380,7 +384,14 @@ export function DeviceInspector({
     }
   }, [appOperation, load, t, tab]);
 
-  const visibleApps = useMemo(() => filterDeviceApps(apps, query), [apps, query]);
+  const visibleApps = useMemo(
+    () => sortDeviceApps(
+      filterDeviceApps(apps, query),
+      appSort,
+      i18n.resolvedLanguage ?? i18n.language,
+    ),
+    [appSort, apps, i18n.language, i18n.resolvedLanguage, query],
+  );
   const homeScreenLocations = useMemo(
     () => new Map(homeScreenLayout?.apps.map((location) => [location.bundle_id, location]) ?? []),
     [homeScreenLayout],
@@ -1185,6 +1196,22 @@ export function DeviceInspector({
               placeholder={t("deviceInspector.searchApps")}
               onChange={(event) => setQuery(event.target.value)}
             />
+            <Dropdown
+              menu={{
+                items: [
+                  { key: "name", icon: appSort === "name" ? <CheckOutlined /> : <SortAscendingOutlined />, label: t("deviceInspector.sortAppsByName") },
+                  { key: "storage", icon: appSort === "storage" ? <CheckOutlined /> : <DatabaseOutlined />, label: t("deviceInspector.sortAppsByStorage") },
+                ],
+                onClick: ({ key }) => setAppSort(key as DeviceAppSort),
+              }}
+            >
+              <Tooltip title={t("deviceInspector.sortApps")}>
+                <Button
+                  aria-label={t("deviceInspector.sortApps")}
+                  icon={appSort === "storage" ? <SortDescendingOutlined /> : <SortAscendingOutlined />}
+                />
+              </Tooltip>
+            </Dropdown>
             <Tooltip title={t("deviceInspector.installApp")}>
               <Button icon={<UploadOutlined />} disabled={appMutationRunning} onClick={() => void installApp()} />
             </Tooltip>
@@ -1283,6 +1310,14 @@ export function DeviceInspector({
                   <Typography.Text type="secondary" ellipsis={{ tooltip: app.bundle_id }}>{app.bundle_id}</Typography.Text>
                   <div className="device-app-tags">
                     {app.version && <Tag>{app.version}</Tag>}
+                    {app.total_disk_usage_bytes !== null && (
+                      <Tooltip title={t("deviceInspector.appStorageBreakdown", {
+                        installed: app.static_disk_usage_bytes === null ? "-" : formatFileSize(app.static_disk_usage_bytes),
+                        data: app.dynamic_disk_usage_bytes === null ? "-" : formatFileSize(app.dynamic_disk_usage_bytes),
+                      })}>
+                        <Tag icon={<DatabaseOutlined />}>{formatFileSize(app.total_disk_usage_bytes)}</Tag>
+                      </Tooltip>
+                    )}
                     {locationLabel && <Tooltip title={locationTooltip}><Tag color="cyan">{locationLabel}</Tag></Tooltip>}
                     {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
                     {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}

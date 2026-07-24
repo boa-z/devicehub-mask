@@ -577,6 +577,9 @@ pub struct DeviceApp {
     pub is_first_party: bool,
     pub is_developer_app: bool,
     pub documents_available: bool,
+    pub static_disk_usage_bytes: Option<u64>,
+    pub dynamic_disk_usage_bytes: Option<u64>,
+    pub total_disk_usage_bytes: Option<u64>,
     /// `None` means the process list was unavailable for this request.
     pub is_running: Option<bool>,
 }

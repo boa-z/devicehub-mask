@@ -126,7 +126,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-power-actions > div .ant-typography { margin: 0; font-size: 11px; }
 .device-power-actions > .ant-btn { width: 100%; min-width: 0; }
 .device-apps-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
-.device-app-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 6px; }
+.device-app-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, 32px); gap: 6px; }
 .device-app-toolbar .ant-btn { width: 32px; padding-inline: 0; }
 .device-app-operation { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid #3b4345; background: #202628; }
 .device-app-operation-label { min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 11px; }
@@ -138,7 +138,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-app-icon img { width: 40px; height: 40px; border-radius: inherit; object-fit: cover; }
 .device-app-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .device-app-meta > .ant-typography { margin: 0; }
-.device-app-tags { min-height: 18px; display: flex; gap: 4px; }
+.device-app-tags { min-height: 18px; display: flex; flex-wrap: wrap; gap: 4px; }
 .device-app-tags .ant-tag { margin: 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
 .device-app-actions { width: 80px; display: grid; grid-template-columns: repeat(3, 24px); justify-content: end; gap: 4px; }
 .app-documents-modal .ant-modal-body { min-height: min(520px, 70vh); display: flex; flex-direction: column; gap: 10px; }

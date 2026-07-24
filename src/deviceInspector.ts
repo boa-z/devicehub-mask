@@ -2,6 +2,7 @@ import type { DeviceApp, DeviceCrashReport, DeviceEvent, ProvisioningProfile } f
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
+export type DeviceAppSort = "name" | "storage";
 export type DeviceInspectorTab = "info" | "apps" | "profiles" | "crashes";
 
 export function normalizeDeviceNameInput(name: string): string | null {
@@ -13,7 +14,24 @@ export function normalizeDeviceNameInput(name: string): string | null {
 
 export function shouldRefreshDeviceInspector(kind: DeviceEvent["kind"], tab: DeviceInspectorTab): boolean {
   if (kind === "app_installed" || kind === "app_uninstalled") return tab === "apps";
-  return (kind === "activation_state_changed" || kind === "disk_usage_changed" || kind === "device_name_changed") && tab === "info";
+  if (kind === "disk_usage_changed") return tab === "info" || tab === "apps";
+  return (kind === "activation_state_changed" || kind === "device_name_changed") && tab === "info";
+}
+
+export function sortDeviceApps(apps: DeviceApp[], sort: DeviceAppSort, locale: string): DeviceApp[] {
+  const collator = new Intl.Collator(locale, { sensitivity: "base", numeric: true });
+  return [...apps].sort((left, right) => {
+    if (sort === "storage") {
+      const leftBytes = left.total_disk_usage_bytes;
+      const rightBytes = right.total_disk_usage_bytes;
+      if (leftBytes !== null || rightBytes !== null) {
+        if (leftBytes === null) return 1;
+        if (rightBytes === null) return -1;
+        if (leftBytes !== rightBytes) return rightBytes - leftBytes;
+      }
+    }
+    return collator.compare(left.name, right.name) || left.bundle_id.localeCompare(right.bundle_id);
+  });
 }
 
 export function appProfileBindingState(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "./deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -12,6 +12,9 @@ const apps: DeviceApp[] = [
     is_first_party: false,
     is_developer_app: true,
     documents_available: true,
+    static_disk_usage_bytes: 2_000_000,
+    dynamic_disk_usage_bytes: 8_000_000,
+    total_disk_usage_bytes: 10_000_000,
     is_running: true,
   },
   {
@@ -23,6 +26,9 @@ const apps: DeviceApp[] = [
     is_first_party: false,
     is_developer_app: false,
     documents_available: false,
+    static_disk_usage_bytes: null,
+    dynamic_disk_usage_bytes: null,
+    total_disk_usage_bytes: null,
     is_running: null,
   },
 ];
@@ -85,9 +91,18 @@ describe("device inspector", () => {
     expect(shouldRefreshDeviceInspector("app_installed", "apps")).toBe(true);
     expect(shouldRefreshDeviceInspector("app_uninstalled", "info")).toBe(false);
     expect(shouldRefreshDeviceInspector("disk_usage_changed", "info")).toBe(true);
+    expect(shouldRefreshDeviceInspector("disk_usage_changed", "apps")).toBe(true);
     expect(shouldRefreshDeviceInspector("activation_state_changed", "info")).toBe(true);
     expect(shouldRefreshDeviceInspector("lock_state_changed", "info")).toBe(false);
     expect(shouldRefreshDeviceInspector("device_name_changed", "apps")).toBe(false);
+  });
+
+  it("sorts app storage descending and keeps unavailable usage last", () => {
+    const smaller = { ...apps[0], bundle_id: "com.example.small", name: "Small", total_disk_usage_bytes: 5_000_000 };
+    expect(sortDeviceApps([apps[1], smaller, apps[0]], "storage", "en-US"))
+      .toEqual([apps[0], smaller, apps[1]]);
+    expect(sortDeviceApps([apps[1], apps[0]], "name", "en-US"))
+      .toEqual([apps[0], apps[1]]);
   });
 
   it("formats decimal device capacity without exposing invalid values", () => {

@@ -219,6 +219,9 @@ export type DeviceApp = {
   is_first_party: boolean;
   is_developer_app: boolean;
   documents_available: boolean;
+  static_disk_usage_bytes: number | null;
+  dynamic_disk_usage_bytes: number | null;
+  total_disk_usage_bytes: number | null;
   is_running: boolean | null;
 };
 export type WdaRunnerStatus = {
