@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
+import { appProfileBindingState, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -11,6 +11,7 @@ const apps: DeviceApp[] = [
     is_removable: true,
     is_first_party: false,
     is_developer_app: true,
+    is_app_clip: false,
     documents_available: true,
     static_disk_usage_bytes: 2_000_000,
     dynamic_disk_usage_bytes: 8_000_000,
@@ -25,6 +26,7 @@ const apps: DeviceApp[] = [
     is_removable: true,
     is_first_party: false,
     is_developer_app: false,
+    is_app_clip: true,
     documents_available: false,
     static_disk_usage_bytes: null,
     dynamic_disk_usage_bytes: null,
@@ -81,6 +83,13 @@ const crashReports: DeviceCrashReport[] = [
 ];
 
 describe("device inspector", () => {
+  it("builds independent CoreDevice app scope queries", () => {
+    expect(deviceAppScopeQuery(false, false)).toBe("");
+    expect(deviceAppScopeQuery(true, false)).toBe("?include_system=true");
+    expect(deviceAppScopeQuery(false, true)).toBe("?include_app_clips=true");
+    expect(deviceAppScopeQuery(true, true)).toBe("?include_system=true&include_app_clips=true");
+  });
+
   it("normalizes safe Unicode device names", () => {
     expect(normalizeDeviceNameInput("  Boa 的 iPhone  ")).toBe("Boa 的 iPhone");
     expect(normalizeDeviceNameInput("bad\nname")).toBeNull();

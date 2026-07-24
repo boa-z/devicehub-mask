@@ -9,6 +9,7 @@ import {
   DownloadOutlined,
   EditOutlined,
   FileTextOutlined,
+  FilterOutlined,
   FolderOpenOutlined,
   InfoCircleOutlined,
   LinkOutlined,
@@ -21,6 +22,7 @@ import {
   SortAscendingOutlined,
   SortDescendingOutlined,
   StopOutlined,
+  ThunderboltOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -28,7 +30,7 @@ import { Alert, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import { appProfileBindingState, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
@@ -131,7 +133,8 @@ export function DeviceInspector({
   const [query, setQuery] = useState("");
   const [appSort, setAppSort] = useState<DeviceAppSort>("name");
   const [showSystemApps, setShowSystemApps] = useState(false);
-  const [systemAppsLoading, setSystemAppsLoading] = useState(false);
+  const [showAppClips, setShowAppClips] = useState(false);
+  const [appScopesLoading, setAppScopesLoading] = useState(false);
   const [profileStatus, setProfileStatus] = useState<ProfileStatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -159,8 +162,9 @@ export function DeviceInspector({
   const handledDeveloperImageState = useRef<string>("");
   const homeScreenRequest = useRef(0);
   const appListRequest = useRef(0);
-  const systemAppsRequest = useRef(0);
+  const appScopesRequest = useRef(0);
   const showSystemAppsRef = useRef(false);
+  const showAppClipsRef = useRef(false);
 
   const loadHomeScreen = useCallback(async () => {
     const requestId = ++homeScreenRequest.current;
@@ -179,9 +183,12 @@ export function DeviceInspector({
     }
   }, [request]);
 
-  const loadApps = useCallback(async (includeSystem = showSystemAppsRef.current) => {
+  const loadApps = useCallback(async (
+    includeSystem = showSystemAppsRef.current,
+    includeAppClips = showAppClipsRef.current,
+  ) => {
     const requestId = ++appListRequest.current;
-    const suffix = includeSystem ? "?include_system=true" : "";
+    const suffix = deviceAppScopeQuery(includeSystem, includeAppClips);
     const nextApps = await readJson<DeviceApp[]>(await request(`/api/device/apps${suffix}`));
     if (appListRequest.current !== requestId) return false;
     setApps(nextApps);
@@ -253,10 +260,12 @@ export function DeviceInspector({
   useEffect(() => {
     homeScreenRequest.current += 1;
     appListRequest.current += 1;
-    systemAppsRequest.current += 1;
+    appScopesRequest.current += 1;
     showSystemAppsRef.current = false;
+    showAppClipsRef.current = false;
     setShowSystemApps(false);
-    setSystemAppsLoading(false);
+    setShowAppClips(false);
+    setAppScopesLoading(false);
     setDetails(null);
     setCompanions([]);
     setCompanionError(null);
@@ -396,21 +405,24 @@ export function DeviceInspector({
     return operation;
   }, [readAppOperation]);
 
-  const toggleSystemApps = async () => {
-    if (loading || systemAppsLoading) return;
-    const next = !showSystemApps;
-    const requestId = ++systemAppsRequest.current;
-    setSystemAppsLoading(true);
+  const toggleAppScope = async (scope: "system" | "clips") => {
+    if (loading || appScopesLoading) return;
+    const nextSystem = scope === "system" ? !showSystemApps : showSystemApps;
+    const nextAppClips = scope === "clips" ? !showAppClips : showAppClips;
+    const requestId = ++appScopesRequest.current;
+    setAppScopesLoading(true);
     try {
-      if (await loadApps(next)) {
-        showSystemAppsRef.current = next;
-        setShowSystemApps(next);
+      if (await loadApps(nextSystem, nextAppClips)) {
+        showSystemAppsRef.current = nextSystem;
+        showAppClipsRef.current = nextAppClips;
+        setShowSystemApps(nextSystem);
+        setShowAppClips(nextAppClips);
       }
-    } catch (systemAppsError) {
-      if (systemAppsRequest.current !== requestId) return;
-      void message.error(t("deviceInspector.systemAppsUnavailable", { error: String(systemAppsError) }));
+    } catch (scopeError) {
+      if (appScopesRequest.current !== requestId) return;
+      void message.error(t("deviceInspector.appScopesUnavailable", { error: String(scopeError) }));
     } finally {
-      if (systemAppsRequest.current === requestId) setSystemAppsLoading(false);
+      if (appScopesRequest.current === requestId) setAppScopesLoading(false);
     }
   };
 
@@ -1394,17 +1406,35 @@ export function DeviceInspector({
                 />
               </Tooltip>
             </Dropdown>
-            <Tooltip title={t(showSystemApps ? "deviceInspector.hideSystemApps" : "deviceInspector.showSystemApps")}>
-              <Button
-                type={showSystemApps ? "primary" : "default"}
-                aria-label={t(showSystemApps ? "deviceInspector.hideSystemApps" : "deviceInspector.showSystemApps")}
-                aria-pressed={showSystemApps}
-                icon={<AppstoreOutlined />}
-                loading={systemAppsLoading}
-                disabled={loading || systemAppsLoading}
-                onClick={() => void toggleSystemApps()}
-              />
-            </Tooltip>
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                selectable: false,
+                items: [
+                  {
+                    key: "system",
+                    icon: showSystemApps ? <CheckOutlined /> : <AppstoreOutlined />,
+                    label: t("deviceInspector.systemApps"),
+                  },
+                  {
+                    key: "clips",
+                    icon: showAppClips ? <CheckOutlined /> : <ThunderboltOutlined />,
+                    label: t("deviceInspector.appClips"),
+                  },
+                ],
+                onClick: ({ key }) => void toggleAppScope(key as "system" | "clips"),
+              }}
+            >
+              <Tooltip title={t("deviceInspector.appScopes")}>
+                <Button
+                  type={showSystemApps || showAppClips ? "primary" : "default"}
+                  aria-label={t("deviceInspector.appScopes")}
+                  icon={<FilterOutlined />}
+                  loading={appScopesLoading}
+                  disabled={loading || appScopesLoading}
+                />
+              </Tooltip>
+            </Dropdown>
             <Tooltip title={t("deviceInspector.installApp")}>
               <Button icon={<UploadOutlined />} disabled={appMutationRunning} onClick={() => void installApp()} />
             </Tooltip>
@@ -1515,6 +1545,7 @@ export function DeviceInspector({
                     {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
                     {app.is_first_party && <Tag color="gold">{t("deviceInspector.systemApp")}</Tag>}
                     {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}
+                    {app.is_app_clip && <Tag color="processing">{t("deviceInspector.appClip")}</Tag>}
                     {activeWdaRunner && wdaRunnerStatus?.phase === "starting" && <Tag color="processing">{t("deviceInspector.wdaRunnerStarting")}</Tag>}
                     {activeWdaRunner && wdaRunnerStatus?.phase === "running" && <Tag color="success">{t("deviceInspector.wdaRunnerRunning")}</Tag>}
                     {activeWdaRunner && wdaRunnerStatus?.phase === "failed" && <Tooltip title={wdaRunnerStatus.last_error}><Tag color="error">{t("deviceInspector.wdaRunnerFailed")}</Tag></Tooltip>}
@@ -1577,7 +1608,7 @@ export function DeviceInspector({
                       />
                     </Tooltip>
                   )}
-                  {app.is_removable && !app.is_first_party && (
+                  {app.is_removable && !app.is_first_party && !app.is_app_clip && (
                     <Tooltip title={t("deviceInspector.uninstallApp")}>
                       <Button
                         danger

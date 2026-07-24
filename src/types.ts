@@ -228,6 +228,7 @@ export type DeviceApp = {
   is_removable: boolean;
   is_first_party: boolean;
   is_developer_app: boolean;
+  is_app_clip: boolean;
   documents_available: boolean;
   static_disk_usage_bytes: number | null;
   dynamic_disk_usage_bytes: number | null;

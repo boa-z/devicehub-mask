@@ -302,6 +302,7 @@ pub enum InputCmd {
     /// List user-facing applications through CoreDevice AppService.
     ListApps {
         include_system: bool,
+        include_app_clips: bool,
         reply: oneshot::Sender<Result<Vec<DeviceApp>, String>>,
     },
     /// List Apple Watch devices paired with the active iPhone through CompanionProxy.
@@ -319,7 +320,7 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
-    /// Capture a lossless PNG directly through CoreDevice ScreenCaptureService.
+    /// Capture a normalized PNG through the active native screenshot backend.
     TakeScreenshot(oneshot::Sender<Result<Vec<u8>, String>>),
     /// Start or stop a bounded pcapd capture owned by the active device session.
     NetworkCapture(crate::network_capture::NetworkCaptureCommand),
@@ -581,6 +582,7 @@ pub struct DeviceApp {
     pub is_removable: bool,
     pub is_first_party: bool,
     pub is_developer_app: bool,
+    pub is_app_clip: bool,
     pub documents_available: bool,
     pub static_disk_usage_bytes: Option<u64>,
     pub dynamic_disk_usage_bytes: Option<u64>,

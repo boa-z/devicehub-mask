@@ -2524,12 +2524,14 @@ impl DeviceManagement {
             }
             InputCmd::ListApps {
                 include_system,
+                include_app_clips,
                 reply,
             } => {
                 let result = list_device_apps(
                     self.app_service.as_mut(),
                     self.installation_proxy.as_mut(),
                     include_system,
+                    include_app_clips,
                 )
                 .await;
                 let _ = reply.send(result);
@@ -2942,10 +2944,11 @@ async fn list_device_apps(
     app_service: Option<&mut AppServiceClient<Box<dyn ReadWrite>>>,
     mut installation_proxy: Option<&mut InstallationProxyClient>,
     include_system: bool,
+    include_app_clips: bool,
 ) -> Result<Vec<DeviceApp>, String> {
     if let Some(client) = app_service {
         match client
-            .list_apps(false, true, false, false, include_system)
+            .list_apps(include_app_clips, true, false, false, include_system)
             .await
         {
             Ok(entries) => {
@@ -3010,6 +3013,7 @@ async fn list_device_apps(
                                 is_removable: entry.is_removable,
                                 is_first_party: entry.is_first_party,
                                 is_developer_app: entry.is_developer_app,
+                                is_app_clip: entry.is_app_clip,
                                 documents_available,
                                 static_disk_usage_bytes,
                                 dynamic_disk_usage_bytes,
@@ -3020,9 +3024,9 @@ async fn list_device_apps(
                 ));
             }
             Err(error) => {
-                if include_system {
+                if let Some(scope) = extended_app_scope(include_system, include_app_clips) {
                     return Err(format!(
-                        "system app listing requires CoreDevice AppService: {error:?}"
+                        "{scope} listing requires CoreDevice AppService: {error:?}"
                     ));
                 }
                 tracing::warn!(
@@ -3030,6 +3034,12 @@ async fn list_device_apps(
                 );
             }
         }
+    }
+
+    if let Some(scope) = extended_app_scope(include_system, include_app_clips) {
+        return Err(format!(
+            "{scope} listing requires CoreDevice AppService, but it is unavailable"
+        ));
     }
 
     let client =
@@ -3044,6 +3054,15 @@ async fn list_device_apps(
             .filter_map(|(bundle_id, value)| device_app_from_installation(bundle_id, &value))
             .collect(),
     ))
+}
+
+fn extended_app_scope(include_system: bool, include_app_clips: bool) -> Option<&'static str> {
+    match (include_system, include_app_clips) {
+        (true, true) => Some("system app and App Clip"),
+        (true, false) => Some("system app"),
+        (false, true) => Some("App Clip"),
+        (false, false) => None,
+    }
 }
 
 fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Option<DeviceApp> {
@@ -3071,6 +3090,7 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
             .unwrap_or_else(|| signer.contains("Apple iPhone OS Application Signing")),
         is_developer_app: boolean("IsXcodeManaged").unwrap_or(false)
             || signer.contains("Apple Development"),
+        is_app_clip: false,
         documents_available: installation_supports_documents(value),
         static_disk_usage_bytes,
         dynamic_disk_usage_bytes,
@@ -3135,7 +3155,7 @@ async fn stop_device_app(
     bundle_id: &str,
 ) -> Result<bool, String> {
     let apps = client
-        .list_apps(false, true, false, false, false)
+        .list_apps(true, true, false, false, false)
         .await
         .map_err(|error| format!("unable to resolve app before stopping it: {error:?}"))?;
     let app = apps
@@ -5710,12 +5730,25 @@ mod tests {
         assert_eq!(app.version.as_deref(), Some("2.4"));
         assert_eq!(app.bundle_version.as_deref(), Some("42"));
         assert!(app.is_developer_app);
+        assert!(!app.is_app_clip);
         assert!(app.documents_available);
         assert_eq!(app.static_disk_usage_bytes, Some(1_500_000));
         assert_eq!(app.dynamic_disk_usage_bytes, Some(2_500_000));
         assert_eq!(app.total_disk_usage_bytes, Some(4_000_000));
         assert!(!app.is_removable);
         assert_eq!(app.is_running, None);
+    }
+
+    #[tokio::test]
+    async fn extended_app_scopes_require_coredevice_app_service() {
+        assert_eq!(
+            list_device_apps(None, None, false, true).await.unwrap_err(),
+            "App Clip listing requires CoreDevice AppService, but it is unavailable"
+        );
+        assert_eq!(
+            list_device_apps(None, None, true, true).await.unwrap_err(),
+            "system app and App Clip listing requires CoreDevice AppService, but it is unavailable"
+        );
     }
 
     #[test]

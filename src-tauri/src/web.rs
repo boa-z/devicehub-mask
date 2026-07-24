@@ -1222,6 +1222,8 @@ async fn dispatch_device_power_command(
 struct DeviceAppsQuery {
     #[serde(default)]
     include_system: bool,
+    #[serde(default)]
+    include_app_clips: bool,
 }
 
 async fn device_apps(
@@ -1231,6 +1233,7 @@ async fn device_apps(
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::ListApps {
         include_system: query.include_system,
+        include_app_clips: query.include_app_clips,
         reply,
     }) {
         return Err((
@@ -4344,17 +4347,20 @@ mod tests {
             State(state),
             Query(DeviceAppsQuery {
                 include_system: true,
+                include_app_clips: true,
             }),
         ));
 
         let InputCmd::ListApps {
             include_system,
+            include_app_clips,
             reply,
         } = input_rx.recv().await.unwrap()
         else {
             panic!("expected app list command");
         };
         assert!(include_system);
+        assert!(include_app_clips);
         reply.send(Ok(Vec::new())).unwrap();
         assert!(request.await.unwrap().unwrap().0.is_empty());
     }

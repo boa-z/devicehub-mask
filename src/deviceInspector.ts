@@ -3,6 +3,14 @@ import type { DeviceApp, DeviceCrashReport, DeviceEvent, ProvisioningProfile } f
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
 export type DeviceAppSort = "name" | "storage";
+
+export function deviceAppScopeQuery(includeSystem: boolean, includeAppClips: boolean): string {
+  const params = new URLSearchParams();
+  if (includeSystem) params.set("include_system", "true");
+  if (includeAppClips) params.set("include_app_clips", "true");
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
 export type DeviceInspectorTab = "info" | "apps" | "profiles" | "crashes";
 
 export function normalizeDeviceNameInput(name: string): string | null {

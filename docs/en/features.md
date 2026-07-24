@@ -8,7 +8,7 @@ This page is the concise inventory of functionality already implemented in Devic
 
 | Workspace | Implemented capabilities |
 | --- | --- |
-| **Device** | USB and Wi-Fi device selection, explicit reconnect, live screen, direct touch, mapping and keyboard-passthrough modes, rotation, native screenshot, WebView-supported screen recording, Unicode paste, device audio mute, hardware buttons, focused device fullscreen, and the device inspector |
+| **Device** | USB and Wi-Fi device selection, explicit reconnect, live screen, direct touch, mapping and keyboard-passthrough modes, rotation, native screenshot, WebView-supported screen recording, Unicode paste, device audio mute, hardware buttons, focused device fullscreen, and a device inspector with regular/system/App Clip scopes |
 | **Key Mapping** | Visual placement and editing, live or frozen screenshot background, profile create/duplicate/rename/import/export, scrcpy-mask `0.0.1` compatibility, PlayCover `2.0.0` import, app-profile associations, and hardware-button shortcuts |
 | **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and read-only crash-report export |
 | **Performance** | iPhone CPU/process/memory/energy data, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, network PCAP, and Bluetooth HCI PCAP |

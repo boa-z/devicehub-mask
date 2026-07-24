@@ -216,6 +216,8 @@ struct ListAppsParams {
     query: Option<String>,
     /// Include Apple default apps through CoreDevice AppService. Defaults to false.
     include_system: Option<bool>,
+    /// Include App Clips through CoreDevice AppService. Defaults to false.
+    include_app_clips: Option<bool>,
     /// Maximum returned apps. Defaults to 100 and is clamped to 1..200.
     limit: Option<usize>,
 }
@@ -1113,16 +1115,18 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "List launchable apps on the connected iPhone. User-installed apps are returned by default; include_system additionally requests Apple default apps through CoreDevice AppService. Filter by app name or bundle ID."
+        description = "List launchable apps on the connected iPhone. User-installed apps are returned by default; include_system requests Apple default apps and include_app_clips requests App Clips through CoreDevice AppService. Filter by app name or bundle ID."
     )]
     async fn list_apps(
         &self,
         Parameters(params): Parameters<ListAppsParams>,
     ) -> Result<CallToolResult, McpError> {
         let include_system = params.include_system.unwrap_or(false);
+        let include_app_clips = params.include_app_clips.unwrap_or(false);
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::ListApps {
             include_system,
+            include_app_clips,
             reply,
         })?;
         let mut apps = tokio::time::timeout(APP_WAIT, response)
