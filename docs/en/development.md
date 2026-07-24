@@ -130,6 +130,13 @@ Build all bundles configured for the current host:
 npm run tauri:build
 ```
 
+This command first downloads checksum-pinned netmuxd and LGPL FFmpeg sidecars
+for the current host. Sidecar executables are generated under
+`src-tauri/resources` and remain ignored by Git. Packaged applications prefer
+the bundled FFmpeg; `DEVICEHUB_FFMPEG` remains an explicit override for testing.
+An existing FFmpeg is reused only after its architecture and required capabilities
+pass validation; use `npm run ffmpeg:prepare -- --force` to rebuild it explicitly.
+
 Pass explicit Tauri flags when needed:
 
 ```sh
@@ -146,8 +153,9 @@ npm run tauri:build
 ```
 
 NSIS and MSI packages are written under
-`src-tauri/target/release/bundle/nsis` and `bundle/msi`. FFmpeg and Apple Mobile
-Device Service remain runtime prerequisites and are not bundled.
+`src-tauri/target/release/bundle/nsis` and `bundle/msi`. FFmpeg is bundled and
+starts without a console window. Apple Mobile Device Service remains a runtime
+prerequisite.
 
 ### Linux
 
@@ -163,8 +171,15 @@ Outputs are under `bundle/appimage` and `bundle/deb`.
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run ffmpeg:prepare -- --target universal-apple-darwin
+npm run netmuxd:prepare -- --target universal-apple-darwin
 npm run tauri -- build --target universal-apple-darwin --bundles app
 ```
+
+The FFmpeg preparation step builds an LGPL-only universal executable from the
+checksum-pinned upstream source. Windows and Linux preparation downloads pinned
+LGPL static builds and verifies their SHA-256 hashes. `THIRD_PARTY_NOTICES.txt`
+and the complete FFmpeg license are included beside the binary.
 
 Artifacts are written under
 `src-tauri/target/universal-apple-darwin/release/bundle/macos`.

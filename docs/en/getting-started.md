@@ -10,7 +10,8 @@ All platforms require:
 - Developer Mode enabled when required by the iOS version
 - Rust stable
 - Node.js 22 or newer and npm
-- FFmpeg available on `PATH` or through `DEVICEHUB_FFMPEG`
+- For `tauri dev`, FFmpeg on `PATH` or through `DEVICEHUB_FFMPEG`; packaged
+  builds prepare and include their own checksum-verified FFmpeg
 
 The UI uses the native system font stack. No web font is downloaded or bundled.
 
@@ -29,7 +30,7 @@ Open a new shell, then verify `rustc`, `node`, `npm`, and `ffmpeg`.
 ### Windows
 
 Windows 10/11 requires WebView2, the Rust MSVC toolchain, Visual Studio Build
-Tools with **Desktop development with C++**, CMake, NASM, FFmpeg, and Apple
+Tools with **Desktop development with C++**, CMake, NASM, and Apple
 Mobile Device Service. The desktop iTunes package provides the Apple service and
 the usbmuxd endpoint at `127.0.0.1:27015`.
 
@@ -40,7 +41,6 @@ decoder; the app probes support and falls back automatically.
 ```powershell
 winget install --id Rustlang.Rustup --exact
 winget install --id OpenJS.NodeJS.LTS --exact
-winget install --id Gyan.FFmpeg --exact
 winget install --id Kitware.CMake --exact
 winget install --id NASM.NASM --exact
 winget install --id 9NP83LWLPZ9K --source msstore
@@ -51,7 +51,8 @@ Get-Service "Apple Mobile Device Service"
 
 Python 3.12 is used only by the preparation helper. CMake and NASM build the
 bundled static libjpeg-turbo; a separate TurboJPEG DLL is not required at
-runtime. Connect and trust the device once in iTunes.
+runtime. Install a system FFmpeg only when using `tauri dev` without first
+running `npm run ffmpeg:prepare`. Connect and trust the device once in iTunes.
 
 ### Linux
 

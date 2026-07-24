@@ -229,12 +229,18 @@ App 意外退出后，可调用 `list_crash_reports` 获取按时间倒序的元
 路径穿越、目录和超限请求。
 
 当 WebDriverAgent 已在活动设备上完成安装、签名并运行时，`wda_status` 可探测设备端口
-8100。`wda_ui_tree` 返回长度受限的辅助功能 XML 树，`wda_find_elements` 返回带画面矩形的
+8100。如果已安装开发者 App 的 Bundle ID 以 `.xctrunner` 结尾，可通过 App 列表行上的
+WDA 按钮或 MCP `wda_start` 显式使用 XCTest 启动，启动等待上限为 30 秒。
+`wda_runner_status` 只报告由 DeviceHub Mask 监督的 Runner，`wda_stop` 也只停止该 Runner，
+不会终止外部启动的 WDA。设备会话结束时会自动清理 Runner。DeviceHub Mask 不负责安装、
+签名或静默自动启动 WDA。
+
+`wda_ui_tree` 返回长度受限的辅助功能 XML 树，`wda_find_elements` 返回带画面矩形的
 零基匹配结果，`wda_click` 则在一次请求中查找并点击指定结果。支持的策略为
 `accessibility id`、`name`、`class name`、`xpath`、`-ios predicate string` 和
 `-ios class chain`。应优先使用辅助功能 ID 或名称；复杂页面上的宽泛 XPath 查询可能较慢。
 
-DeviceHub Mask 不负责安装、签名、启动或持续轮询 WDA。首次语义请求按需建立 WDA 会话；
+首次语义请求按需建立 WDA 会话；
 设备断开或请求失败时会丢弃该会话，而不会重启主画面控制会话。UI 树可能包含密码、消息及
 其他可见文本，应按敏感 MCP 输出处理。未提供有效辅助功能元数据的 App 仍需使用截图坐标
 控制。

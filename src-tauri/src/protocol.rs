@@ -307,6 +307,8 @@ pub enum InputCmd {
     GetHomeScreenLayout(oneshot::Sender<Result<crate::home_screen::HomeScreenLayout, String>>),
     /// Perform bounded, on-demand semantic automation through WebDriverAgent.
     WdaAutomation(crate::wda_automation::WdaAutomationCommand),
+    /// Manage one installed WebDriverAgent XCTest runner for the active session.
+    WdaRunner(crate::wda_runner::WdaRunnerCommand),
     /// Read one validated PNG application icon through SpringBoardServices.
     GetAppIcon {
         bundle_id: String,

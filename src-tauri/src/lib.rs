@@ -26,6 +26,7 @@ mod session;
 mod settings;
 mod supervisor;
 mod wda_automation;
+mod wda_runner;
 mod web;
 mod wifi_devices;
 
@@ -392,6 +393,7 @@ pub fn run() {
             app.manage(settings.clone());
             let app_data_dir = app.path().app_data_dir()?;
             let resource_dir = app.path().resource_dir().ok();
+            decode::set_resource_dir(resource_dir.clone());
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| app_data_dir.join("profiles"));

@@ -170,6 +170,12 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/device/details", get(device_details))
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
+        .route(
+            "/api/device/wda-runner",
+            get(wda_runner_status)
+                .put(start_wda_runner)
+                .delete(stop_wda_runner),
+        )
         .route("/api/device/name", put(rename_device))
         .route(
             "/api/device/developer-mode/reveal",
@@ -518,6 +524,7 @@ async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String
 }
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const WDA_RUNNER_START_TIMEOUT: Duration = Duration::from_secs(35);
 const PROVISIONING_REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
 const SCREENSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 const CRASH_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -838,6 +845,113 @@ async fn device_apps(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(apps))
+}
+
+#[derive(Deserialize)]
+struct StartWdaRunnerRequest {
+    bundle_id: String,
+}
+
+async fn wda_runner_status(
+    State(state): State<AppState>,
+) -> Result<Json<crate::wda_runner::WdaRunnerStatus>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::WdaRunner(
+        crate::wda_runner::WdaRunnerCommand::Status { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let status = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "WDA runner status timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?;
+    Ok(Json(status))
+}
+
+async fn start_wda_runner(
+    State(state): State<AppState>,
+    Json(request): Json<StartWdaRunnerRequest>,
+) -> Result<Json<crate::wda_runner::WdaRunnerStatus>, (StatusCode, String)> {
+    crate::wda_runner::validate_runner_bundle_id(&request.bundle_id)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.into()))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::WdaRunner(
+        crate::wda_runner::WdaRunnerCommand::Start {
+            bundle_id: request.bundle_id,
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let status = tokio::time::timeout(WDA_RUNNER_START_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "WDA runner startup timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| {
+            let status = if error.contains("already") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, error)
+        })?;
+    Ok(Json(status))
+}
+
+async fn stop_wda_runner(
+    State(state): State<AppState>,
+) -> Result<Json<crate::wda_runner::WdaRunnerStatus>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::WdaRunner(
+        crate::wda_runner::WdaRunnerCommand::Stop { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let status = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "WDA runner stop timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(status))
 }
 
 async fn device_companions(
@@ -3193,6 +3307,67 @@ mod tests {
         assert_eq!(response.0.apps[0].bundle_id, "com.example.game");
         assert_eq!(response.0.metrics.unwrap().columns, Some(5));
         assert_eq!(response.0.apps[0].page, Some(2));
+    }
+
+    #[tokio::test]
+    async fn wda_runner_endpoints_validate_and_dispatch_lifecycle_commands() {
+        let (state, mut input_rx) = test_state();
+        let running = crate::wda_runner::WdaRunnerStatus {
+            phase: crate::wda_runner::WdaRunnerPhase::Running,
+            managed: true,
+            runner_bundle_id: Some("com.example.WDARunner.xctrunner".into()),
+            last_error: None,
+        };
+
+        let status_request = tokio::spawn(wda_runner_status(State(state.clone())));
+        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Status { reply }) =
+            input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA runner status command");
+        };
+        reply.send(running.clone()).unwrap();
+        assert_eq!(status_request.await.unwrap().unwrap().0, running);
+
+        let start_request = tokio::spawn(start_wda_runner(
+            State(state.clone()),
+            Json(StartWdaRunnerRequest {
+                bundle_id: "com.example.WDARunner.xctrunner".into(),
+            }),
+        ));
+        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Start { bundle_id, reply }) =
+            input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA runner start command");
+        };
+        assert_eq!(bundle_id, "com.example.WDARunner.xctrunner");
+        reply.send(Ok(running.clone())).unwrap();
+        assert_eq!(start_request.await.unwrap().unwrap().0, running);
+
+        let stop_request = tokio::spawn(stop_wda_runner(State(state.clone())));
+        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Stop { reply }) =
+            input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA runner stop command");
+        };
+        reply
+            .send(Ok(crate::wda_runner::WdaRunnerStatus::default()))
+            .unwrap();
+        assert_eq!(
+            stop_request.await.unwrap().unwrap().0,
+            crate::wda_runner::WdaRunnerStatus::default()
+        );
+
+        assert!(matches!(
+            start_wda_runner(
+                State(state),
+                Json(StartWdaRunnerRequest {
+                    bundle_id: "com.example.not-a-runner".into(),
+                }),
+            )
+            .await,
+            Err((StatusCode::BAD_REQUEST, _))
+        ));
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[tokio::test]

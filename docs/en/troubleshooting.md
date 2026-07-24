@@ -44,9 +44,13 @@ captures.
 
 ## FFmpeg Is Missing or No Frames Appear
 
-- macOS: `brew install ffmpeg`. Packaged apps also search
+- Packaged applications include a checksum-verified FFmpeg executable and use
+  it before `PATH`. Development builds can use `brew install ffmpeg` on macOS.
+  They also search
   `/opt/homebrew/bin/ffmpeg`, `/usr/local/bin/ffmpeg`, and
   `/opt/local/bin/ffmpeg` because they do not inherit the shell `PATH`.
+- Set `DEVICEHUB_FFMPEG` to an absolute executable path to explicitly override
+  the bundled or system copy while diagnosing decoder behavior.
 - Windows: `winget install --id Gyan.FFmpeg --exact`, then open a new terminal.
 - Custom path: set `DEVICEHUB_FFMPEG` to the executable's absolute path for the
   application process.

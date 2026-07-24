@@ -1541,6 +1541,13 @@ async fn run(
         supervisor.reporter("device.wda"),
         supervisor.shutdown_receiver(),
     ));
+    let (wda_runner_sender, wda_runner_receiver) = tokio::sync::mpsc::channel(2);
+    supervisor.spawn(crate::wda_runner::serve(
+        provider.clone(),
+        wda_runner_receiver,
+        supervisor.reporter("device.wda_runner"),
+        supervisor.shutdown_receiver(),
+    ));
     let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
     supervisor.spawn(crate::app_documents::serve(
         adapter.clone(),
@@ -1586,6 +1593,7 @@ async fn run(
         companions: companion_sender,
         home_screen: home_screen_sender,
         wda: wda_sender,
+        wda_runner: wda_runner_sender,
         documents: app_documents_sender,
         screen_capture: screen_capture_sender,
         network_capture: network_capture_sender,
@@ -1973,6 +1981,7 @@ struct DeviceManagementServices {
     companions: tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
     home_screen: tokio::sync::mpsc::Sender<crate::home_screen::HomeScreenCommand>,
     wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
+    wda_runner: tokio::sync::mpsc::Sender<crate::wda_runner::WdaRunnerCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
@@ -2346,6 +2355,20 @@ impl DeviceManagement {
                         }
                     };
                     reject_wda_command(command, reason);
+                }
+                None
+            }
+            InputCmd::WdaRunner(command) => {
+                if let Err(error) = self.services.wda_runner.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("WDA runner service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("WDA runner service is unavailable", command)
+                        }
+                    };
+                    command.reject(reason);
                 }
                 None
             }
@@ -3342,6 +3365,7 @@ async fn dispatch(
         | InputCmd::ListCompanionDevices(_)
         | InputCmd::GetHomeScreenLayout(_)
         | InputCmd::WdaAutomation(_)
+        | InputCmd::WdaRunner(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
         | InputCmd::NetworkCapture(_)

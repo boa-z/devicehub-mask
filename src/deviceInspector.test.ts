@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "./deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -103,6 +103,12 @@ describe("device inspector", () => {
     expect(filterDeviceApps(apps, " game ")).toEqual([apps[1]]);
     expect(filterDeviceApps(apps, "CAMERA")).toEqual([apps[0]]);
     expect(filterDeviceApps(apps, "")).toBe(apps);
+  });
+
+  it("offers WDA startup only for developer xctrunner applications", () => {
+    expect(isEligibleWdaRunner({ ...apps[0], bundle_id: "com.example.WDARunner.xctrunner" })).toBe(true);
+    expect(isEligibleWdaRunner(apps[0])).toBe(false);
+    expect(isEligibleWdaRunner({ ...apps[1], bundle_id: "com.example.WDARunner.xctrunner" })).toBe(false);
   });
 
   it("filters and formats crash reports", () => {

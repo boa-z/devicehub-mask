@@ -165,6 +165,12 @@ export type DeviceApp = {
   documents_available: boolean;
   is_running: boolean | null;
 };
+export type WdaRunnerStatus = {
+  phase: "stopped" | "starting" | "running" | "failed";
+  managed: boolean;
+  runner_bundle_id: string | null;
+  last_error: string | null;
+};
 export type HomeScreenFolderStep = {
   name: string | null;
   page: number;

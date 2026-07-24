@@ -24,9 +24,9 @@ import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Too
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile } from "../types";
+import type { AppOperation, CompanionDevice, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -117,6 +117,7 @@ export function DeviceInspector({
   const [companionError, setCompanionError] = useState<string | null>(null);
   const [companionLoading, setCompanionLoading] = useState(false);
   const [apps, setApps] = useState<DeviceApp[]>([]);
+  const [wdaRunnerStatus, setWdaRunnerStatus] = useState<WdaRunnerStatus | null>(null);
   const [homeScreenLayout, setHomeScreenLayout] = useState<HomeScreenLayout | null>(null);
   const [homeScreenError, setHomeScreenError] = useState<string | null>(null);
   const [homeScreenLoading, setHomeScreenLoading] = useState(false);
@@ -128,6 +129,7 @@ export function DeviceInspector({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appProcessAction, setAppProcessAction] = useState<{ bundleId: string; kind: "launch" | "stop" } | null>(null);
+  const [wdaRunnerAction, setWdaRunnerAction] = useState<string | null>(null);
   const [exportingReport, setExportingReport] = useState<string | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
@@ -163,6 +165,14 @@ export function DeviceInspector({
     setApps(await readJson<DeviceApp[]>(await request("/api/device/apps")));
   }, [request]);
 
+  const loadWdaRunnerStatus = useCallback(async () => {
+    try {
+      setWdaRunnerStatus(await readJson<WdaRunnerStatus>(await request("/api/device/wda-runner")));
+    } catch {
+      setWdaRunnerStatus(null);
+    }
+  }, [request]);
+
   const load = useCallback(async () => {
     if (!activeUdid) return;
     setLoading(true);
@@ -184,7 +194,7 @@ export function DeviceInspector({
           }
         }
       } else if (tab === "apps") {
-        await Promise.all([loadApps(), loadHomeScreen()]);
+        await Promise.all([loadApps(), loadHomeScreen(), loadWdaRunnerStatus()]);
       } else if (tab === "profiles") {
         setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
       } else {
@@ -197,7 +207,7 @@ export function DeviceInspector({
     } finally {
       setLoading(false);
     }
-  }, [activeUdid, loadApps, loadHomeScreen, request, tab]);
+  }, [activeUdid, loadApps, loadHomeScreen, loadWdaRunnerStatus, request, tab]);
 
   useEffect(() => {
     homeScreenRequest.current += 1;
@@ -206,6 +216,8 @@ export function DeviceInspector({
     setCompanionError(null);
     setCompanionLoading(false);
     setApps([]);
+    setWdaRunnerStatus(null);
+    setWdaRunnerAction(null);
     setHomeScreenLayout(null);
     setHomeScreenError(null);
     setHomeScreenLoading(false);
@@ -339,6 +351,48 @@ export function DeviceInspector({
       void message.error(t("deviceInspector.appStopFailed", { error: String(stopError) }));
     } finally {
       setAppProcessAction(null);
+    }
+  };
+
+  const startWdaRunner = (app: DeviceApp) => {
+    Modal.confirm({
+      title: t("deviceInspector.startWdaRunner"),
+      content: t("deviceInspector.startWdaRunnerConfirm", { name: app.name, bundleId: app.bundle_id }),
+      okText: t("deviceInspector.startWdaRunner"),
+      cancelText: t("common.cancel"),
+      async onOk() {
+        setWdaRunnerAction(app.bundle_id);
+        try {
+          const response = await request("/api/device/wda-runner", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ bundle_id: app.bundle_id }),
+          });
+          const status = await readJson<WdaRunnerStatus>(response);
+          setWdaRunnerStatus(status);
+          void message.success(t("deviceInspector.wdaRunnerStarted", { name: app.name }));
+        } catch (runnerError) {
+          await loadWdaRunnerStatus();
+          void message.error(t("deviceInspector.wdaRunnerStartFailed", { error: String(runnerError) }));
+          throw runnerError;
+        } finally {
+          setWdaRunnerAction(null);
+        }
+      },
+    });
+  };
+
+  const stopWdaRunner = async () => {
+    const bundleId = wdaRunnerStatus?.runner_bundle_id;
+    setWdaRunnerAction(bundleId ?? "stop");
+    try {
+      const status = await readJson<WdaRunnerStatus>(await request("/api/device/wda-runner", { method: "DELETE" }));
+      setWdaRunnerStatus(status);
+      void message.success(t("deviceInspector.wdaRunnerStopped"));
+    } catch (runnerError) {
+      void message.error(t("deviceInspector.wdaRunnerStopFailed", { error: String(runnerError) }));
+    } finally {
+      setWdaRunnerAction(null);
     }
   };
 
@@ -837,6 +891,8 @@ export function DeviceInspector({
                 : undefined;
               const bindingState = appProfileBindingState(app.bundle_id, activeProfile, appProfileBindings, bindingConflicts);
               const boundProfile = appProfileBindings[app.bundle_id];
+              const eligibleWdaRunner = isEligibleWdaRunner(app);
+              const activeWdaRunner = wdaRunnerStatus?.runner_bundle_id === app.bundle_id;
               const bindingTooltip = bindingState === "conflict"
                 ? t("deviceInspector.appProfileConflict")
                 : bindingState === "other"
@@ -852,6 +908,9 @@ export function DeviceInspector({
                     {locationLabel && <Tooltip title={locationTooltip}><Tag color="cyan">{locationLabel}</Tag></Tooltip>}
                     {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
                     {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}
+                    {activeWdaRunner && wdaRunnerStatus?.phase === "starting" && <Tag color="processing">{t("deviceInspector.wdaRunnerStarting")}</Tag>}
+                    {activeWdaRunner && wdaRunnerStatus?.phase === "running" && <Tag color="success">{t("deviceInspector.wdaRunnerRunning")}</Tag>}
+                    {activeWdaRunner && wdaRunnerStatus?.phase === "failed" && <Tooltip title={wdaRunnerStatus.last_error}><Tag color="error">{t("deviceInspector.wdaRunnerFailed")}</Tag></Tooltip>}
                     {bindingState === "conflict"
                       ? <Tag color="error">{t("deviceInspector.appProfileConflictTag")}</Tag>
                       : boundProfile && <Tag color={bindingState === "active" ? "success" : "default"}>{t("deviceInspector.appProfileTag", { profile: boundProfile })}</Tag>}
@@ -874,6 +933,19 @@ export function DeviceInspector({
                   {app.documents_available && (
                     <Tooltip title={t("deviceInspector.appDocuments")}>
                       <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setDocumentsApp(app)} />
+                    </Tooltip>
+                  )}
+                  {eligibleWdaRunner && (
+                    <Tooltip title={t(activeWdaRunner && wdaRunnerStatus?.managed ? "deviceInspector.stopWdaRunner" : "deviceInspector.startWdaRunner")}>
+                      <Button
+                        size="small"
+                        danger={activeWdaRunner && wdaRunnerStatus?.managed}
+                        type={activeWdaRunner && wdaRunnerStatus?.managed ? "default" : "primary"}
+                        icon={activeWdaRunner && wdaRunnerStatus?.managed ? <StopOutlined /> : <BugOutlined />}
+                        loading={wdaRunnerAction === app.bundle_id}
+                        disabled={wdaRunnerAction !== null || (wdaRunnerStatus?.managed === true && !activeWdaRunner)}
+                        onClick={() => activeWdaRunner && wdaRunnerStatus?.managed ? void stopWdaRunner() : startWdaRunner(app)}
+                      />
                     </Tooltip>
                   )}
                   <Tooltip title={t(app.is_running ? "deviceInspector.restartApp" : "deviceInspector.launchApp")}>

@@ -20,6 +20,15 @@ use crate::protocol::{
 const AUDIO_CHUNK_MILLIS: usize = 20;
 const AUDIO_DIAGNOSTIC_CHUNKS: u64 = 5_000 / AUDIO_CHUNK_MILLIS as u64;
 const AUDIO_ACTIVE_SAMPLE_THRESHOLD: i32 = 32;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_resource_dir(resource_dir: Option<PathBuf>) {
+    if let Some(resource_dir) = resource_dir {
+        let _ = RESOURCE_DIR.set(resource_dir);
+    }
+}
 
 #[derive(Default)]
 struct AudioSignalWindow {
@@ -75,7 +84,9 @@ pub async fn spawn_audio_ffmpeg()
         rtp_address.port()
     );
     tracing::info!(path = %ffmpeg.display(), %rtp_address, "using ffmpeg AAC-ELD audio decoder");
-    let mut child = Command::new(ffmpeg)
+    let mut command = Command::new(ffmpeg);
+    hide_windows_console(&mut command);
+    let mut child = command
         .args(["-protocol_whitelist", "pipe,udp,rtp"])
         .args(["-f", "sdp", "-i", "pipe:0"])
         .args(["-vn", "-acodec", "pcm_s16le"])
@@ -149,6 +160,7 @@ pub fn spawn_ffmpeg(
     );
     tracing::info!(path = %ffmpeg.display(), ?max_dimension, ?frame_format, "using ffmpeg");
     let mut command = Command::new(ffmpeg);
+    hide_windows_console(&mut command);
     command
         // Do *not* add `-fflags nobuffer`: it makes ffmpeg skip the opening IDR +
         // parameter sets, so every P-frame fails with "Could not find ref".
@@ -236,6 +248,8 @@ fn resolve_ffmpeg() -> std::io::Result<PathBuf> {
     let candidates = ffmpeg_candidates(
         std::env::var_os("DEVICEHUB_FFMPEG"),
         std::env::var_os("PATH"),
+        RESOURCE_DIR.get().map(PathBuf::as_path),
+        std::env::current_exe().ok().as_deref(),
     );
     if let Some(path) = candidates.iter().find(|path| path.is_file()) {
         return Ok(path.clone());
@@ -255,10 +269,24 @@ fn resolve_ffmpeg() -> std::io::Result<PathBuf> {
     ))
 }
 
-fn ffmpeg_candidates(configured: Option<OsString>, path: Option<OsString>) -> Vec<PathBuf> {
+fn ffmpeg_candidates(
+    configured: Option<OsString>,
+    path: Option<OsString>,
+    resource_dir: Option<&std::path::Path>,
+    current_exe: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(configured) = configured.filter(|value| !value.is_empty()) {
         candidates.push(PathBuf::from(configured));
+    }
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(resource_dir.join(ffmpeg_executable()));
+    }
+    if let Some(parent) = current_exe.and_then(std::path::Path::parent) {
+        let adjacent = parent.join(ffmpeg_executable());
+        if !candidates.contains(&adjacent) {
+            candidates.push(adjacent);
+        }
     }
     if let Some(path) = path {
         candidates.extend(
@@ -277,6 +305,15 @@ fn ffmpeg_candidates(configured: Option<OsString>, path: Option<OsString>) -> Ve
     }
     candidates
 }
+
+#[cfg(windows)]
+fn hide_windows_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_windows_console(_command: &mut Command) {}
 
 fn ffmpeg_executable() -> &'static str {
     if cfg!(windows) {
@@ -546,16 +583,28 @@ mod tests {
     fn configured_ffmpeg_precedes_path_and_common_locations() {
         let search_path = std::env::join_paths([PathBuf::from("first"), PathBuf::from("second")])
             .expect("build test PATH");
-        let candidates =
-            ffmpeg_candidates(Some(OsString::from("/custom/ffmpeg")), Some(search_path));
+        let candidates = ffmpeg_candidates(
+            Some(OsString::from("/custom/ffmpeg")),
+            Some(search_path),
+            Some(std::path::Path::new("/bundle/resources")),
+            Some(std::path::Path::new("/bundle/devicehub-mask")),
+        );
 
         assert_eq!(candidates[0], PathBuf::from("/custom/ffmpeg"));
         assert_eq!(
             candidates[1],
-            PathBuf::from("first").join(ffmpeg_executable())
+            PathBuf::from("/bundle/resources").join(ffmpeg_executable())
         );
         assert_eq!(
             candidates[2],
+            PathBuf::from("/bundle").join(ffmpeg_executable())
+        );
+        assert_eq!(
+            candidates[3],
+            PathBuf::from("first").join(ffmpeg_executable())
+        );
+        assert_eq!(
+            candidates[4],
             PathBuf::from("second").join(ffmpeg_executable())
         );
         assert!(candidates.contains(&PathBuf::from("/opt/homebrew/bin/ffmpeg")));

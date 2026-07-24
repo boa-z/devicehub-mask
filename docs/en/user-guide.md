@@ -315,15 +315,22 @@ read-only and rejects relative paths, traversal, directories, and oversized
 requests.
 
 When WebDriverAgent is already installed, signed, and running on the active
-device, `wda_status` can probe it on device port 8100. `wda_ui_tree` returns a
+device, `wda_status` can probe it on device port 8100. If an installed developer
+app has a bundle ID ending in `.xctrunner`, its Apps-row WDA button or the MCP
+`wda_start` tool can explicitly start it through XCTest. Startup is bounded to
+30 seconds. `wda_runner_status` reports only a runner supervised by DeviceHub
+Mask, and `wda_stop` stops only that managed runner; an externally launched WDA
+is never terminated. Runner ownership is released automatically when the device
+session ends. DeviceHub Mask does not install, sign, or silently auto-start WDA.
+
+`wda_ui_tree` returns a
 bounded accessibility XML tree, `wda_find_elements` returns zero-based matches
 with screen rectangles, and `wda_click` finds and clicks one match atomically.
 The supported strategies are `accessibility id`, `name`, `class name`, `xpath`,
 `-ios predicate string`, and `-ios class chain`. Prefer accessibility IDs or
 names; broad XPath queries can be expensive on complex screens.
 
-DeviceHub Mask does not install, sign, launch, or continuously poll WDA. The
-first semantic request creates a WDA session on demand, and device disconnect or
+The first semantic request creates a WDA session on demand, and device disconnect or
 request failure discards it without restarting the main screen-control session.
 UI trees can contain passwords, messages, and other visible text, so treat them
 as sensitive MCP output. Apps that do not expose useful accessibility metadata

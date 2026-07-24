@@ -8,13 +8,15 @@
     "build": "tsc -b && vite build",
     "docs:check": "node scripts/check-docs.mjs",
     "netmuxd:prepare": "node scripts/prepare-netmuxd.mjs",
+    "ffmpeg:prepare": "node scripts/prepare-ffmpeg.mjs",
+    "sidecars:prepare": "npm run netmuxd:prepare && npm run ffmpeg:prepare",
     "lint": "eslint .",
     "test": "vitest run",
     "verify": "node scripts/verify.mjs",
     "verify:full": "node scripts/verify.mjs --full",
     "tauri": "tauri",
     "tauri:dev": "cross-env CARGO_TARGET_DIR=target/tauri-dev tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "npm run sidecars:prepare && tauri build",
     "tauri:build:debug": "tauri build --debug --no-bundle"
   },
   "dependencies": {

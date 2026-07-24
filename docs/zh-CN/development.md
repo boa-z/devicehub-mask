@@ -117,6 +117,11 @@ npm run verify:full
 npm run tauri:build
 ```
 
+该命令会先为当前主机下载经过固定 SHA-256 校验的 netmuxd 和 LGPL FFmpeg sidecar。
+生成的可执行文件位于 `src-tauri/resources` 且不会纳入 Git。安装包优先使用内置 FFmpeg；
+测试时仍可用 `DEVICEHUB_FFMPEG` 显式覆盖。已有 FFmpeg 只有在目标架构和必需能力均通过
+校验后才会复用；需要明确重建时使用 `npm run ffmpeg:prepare -- --force`。
+
 需要额外参数时可直接传给 Tauri：
 
 ```sh
@@ -132,8 +137,8 @@ npm run tauri -- build --bundles app
 npm run tauri:build
 ```
 
-NSIS 和 MSI 位于 `src-tauri/target/release/bundle/nsis` 与 `bundle/msi`。FFmpeg 和
-Apple Mobile Device Service 仍是运行时依赖，不会打进安装包。
+NSIS 和 MSI 位于 `src-tauri/target/release/bundle/nsis` 与 `bundle/msi`。FFmpeg 已内置，
+启动时不会弹出控制台窗口；Apple Mobile Device Service 仍是运行时依赖。
 
 ### Linux
 
@@ -149,8 +154,14 @@ npm run tauri -- build --bundles appimage,deb
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run ffmpeg:prepare -- --target universal-apple-darwin
+npm run netmuxd:prepare -- --target universal-apple-darwin
 npm run tauri -- build --target universal-apple-darwin --bundles app
 ```
+
+FFmpeg 准备步骤会从固定校验和的上游源码构建仅启用 LGPL 组件的 universal 可执行文件；
+Windows 与 Linux 使用固定版本并校验 SHA-256 的 LGPL 静态构建。安装包同时包含
+`THIRD_PARTY_NOTICES.txt` 和完整 FFmpeg 许可证。
 
 产物位于 `src-tauri/target/universal-apple-darwin/release/bundle/macos`。
 

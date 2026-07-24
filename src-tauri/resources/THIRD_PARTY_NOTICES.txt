@@ -11,3 +11,19 @@ Source archive: https://github.com/jkcoxson/netmuxd/archive/refs/tags/v0.4.3.tar
 The complete license text is distributed as netmuxd-LICENSE.txt alongside
 this notice. DeviceHub Mask communicates with netmuxd over a private usbmuxd
 TCP socket; netmuxd is not linked into the DeviceHub Mask executable.
+
+DeviceHub Mask also includes the FFmpeg command-line executable as a separate
+media decoder process in packaged builds.
+
+FFmpeg 8.1.2 (macOS) / n8.1.2-30-g45f1910444 (Windows and Linux)
+Copyright (c) 2000-2026 the FFmpeg developers
+License: GNU Lesser General Public License v2.1 or later (LGPL-2.1-or-later)
+Project: https://ffmpeg.org/
+macOS exact source: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+Windows/Linux exact source commit: https://github.com/FFmpeg/FFmpeg/tree/45f1910444
+Windows/Linux build scripts: https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-07-23-14-16
+
+The complete license text is distributed as ffmpeg-LICENSE.txt alongside this
+notice. DeviceHub Mask invokes FFmpeg as an independent subprocess and does not
+link FFmpeg libraries into the DeviceHub Mask executable. The packaged builds
+disable GPL and non-free components.

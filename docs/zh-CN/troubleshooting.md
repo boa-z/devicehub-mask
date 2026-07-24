@@ -40,8 +40,10 @@ report。
 
 ## 找不到 FFmpeg 或没有画面
 
-- macOS：运行 `brew install ffmpeg`。打包应用不会继承终端 `PATH`，因此也会直接检查
+- 安装包已内置经过校验的 FFmpeg，并优先于 `PATH` 使用。macOS 开发构建可运行
+  `brew install ffmpeg`；由于应用不会继承终端 `PATH`，还会直接检查
   `/opt/homebrew/bin/ffmpeg`、`/usr/local/bin/ffmpeg` 和 `/opt/local/bin/ffmpeg`。
+- 调试解码器时可把 `DEVICEHUB_FFMPEG` 设置为绝对可执行路径，显式覆盖内置或系统版本。
 - Windows：运行 `winget install --id Gyan.FFmpeg --exact`，然后打开新终端。
 - 自定义路径：为应用进程设置 `DEVICEHUB_FFMPEG` 为可执行文件绝对路径。
 - 解锁并重新连接设备，关闭其他画面会话，在状态标识和 Rust 日志中检查 RSD 或

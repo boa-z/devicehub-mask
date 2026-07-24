@@ -81,6 +81,9 @@ jobs:
         shell: bash
         run: bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh
 
+      - name: Validate sidecar preparation scripts
+        run: node --check scripts/prepare-netmuxd.mjs && node --check scripts/prepare-ffmpeg.mjs
+
       - name: Build desktop application
         run: ${{ matrix.tauri }} build --debug --no-bundle
 
@@ -140,6 +143,9 @@ jobs:
       - name: Prepare netmuxd sidecar
         run: node scripts/prepare-netmuxd.mjs --target universal-apple-darwin
 
+      - name: Prepare FFmpeg sidecar
+        run: node scripts/prepare-ffmpeg.mjs --target universal-apple-darwin
+
       - name: Build Tauri application
         id: build
         shell: bash
@@ -184,6 +190,8 @@ jobs:
           APP_PATH="dist/dmg/DeviceHub Mask.app"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           test "$(lipo -archs "$APP_PATH/Contents/MacOS/devicehub-mask")" = "x86_64 arm64"
+          test "$(lipo -archs "$APP_PATH/Contents/Resources/ffmpeg")" = "x86_64 arm64"
+          "$APP_PATH/Contents/Resources/ffmpeg" -hide_banner -version
 
       - name: Prepare macOS updater artifact
         if: steps.build.outputs.updater_enabled == 'true'
@@ -270,6 +278,9 @@ jobs:
       - name: Prepare netmuxd sidecar
         run: node scripts/prepare-netmuxd.mjs --target x86_64-pc-windows-msvc
 
+      - name: Prepare FFmpeg sidecar
+        run: node scripts/prepare-ffmpeg.mjs --target x86_64-pc-windows-msvc
+
       - name: Build Windows installers
         id: build
         shell: pwsh
@@ -284,6 +295,10 @@ jobs:
           $config = @{ version = $env:UPDATE_VERSION; bundle = @{ createUpdaterArtifacts = $createUpdater } } | ConvertTo-Json -Compress -Depth 5
           $config | Set-Content -Encoding utf8 tauri.ci.windows.json
           & node_modules/.bin/tauri.cmd build --verbose --bundles nsis,msi --ignore-version-mismatches --config tauri.ci.windows.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundledFfmpeg = Get-ChildItem src-tauri/target/release -Recurse -File -Filter 'ffmpeg.exe' | Select-Object -First 1
+          if (-not $bundledFfmpeg) { throw 'Bundled FFmpeg executable is missing' }
+          & $bundledFfmpeg.FullName -hide_banner -version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect Windows artifacts
@@ -380,6 +395,9 @@ jobs:
       - name: Prepare netmuxd sidecar
         run: node scripts/prepare-netmuxd.mjs --target x86_64-unknown-linux-gnu
 
+      - name: Prepare FFmpeg sidecar
+        run: node scripts/prepare-ffmpeg.mjs --target x86_64-unknown-linux-gnu
+
       - name: Build Linux packages
         id: build
         shell: bash
@@ -402,6 +420,9 @@ jobs:
             --bundles appimage,deb \
             --ignore-version-mismatches \
             --config "$BUILD_CONFIG"
+          BUNDLED_FFMPEG=$(find src-tauri/target/release -type f -name ffmpeg -print -quit)
+          test -n "$BUNDLED_FFMPEG"
+          "$BUNDLED_FFMPEG" -hide_banner -version
 
       - name: Collect Linux artifacts
         shell: bash

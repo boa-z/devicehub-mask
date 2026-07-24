@@ -108,6 +108,7 @@ impl NetmuxdSupervisor {
         drop(listener);
 
         let mut command = Command::new(binary);
+        hide_windows_console(&mut command);
         command
             .arg("--disable-unix")
             .arg("--host")
@@ -174,6 +175,15 @@ impl NetmuxdSupervisor {
         self.address = None;
     }
 }
+
+#[cfg(windows)]
+fn hide_windows_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.as_std_mut().creation_flags(0x0800_0000);
+}
+
+#[cfg(not(windows))]
+fn hide_windows_console(_command: &mut Command) {}
 
 impl Drop for NetmuxdSupervisor {
     fn drop(&mut self) {

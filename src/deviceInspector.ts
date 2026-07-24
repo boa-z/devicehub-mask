@@ -49,6 +49,10 @@ export function filterDeviceApps(apps: DeviceApp[], query: string): DeviceApp[] 
     || app.bundle_id.toLocaleLowerCase().includes(needle));
 }
 
+export function isEligibleWdaRunner(app: DeviceApp): boolean {
+  return app.is_developer_app && app.bundle_id.endsWith(".xctrunner");
+}
+
 export function filterCrashReports(reports: DeviceCrashReport[], query: string): DeviceCrashReport[] {
   const needle = query.trim().toLocaleLowerCase();
   if (!needle) return reports;

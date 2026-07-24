@@ -54,6 +54,7 @@ const PERFORMANCE_WAIT_DEFAULT: Duration = Duration::from_millis(2500);
 const DEVICE_LOG_WAIT_DEFAULT: Duration = Duration::from_millis(1000);
 const WDA_WAIT: Duration = Duration::from_secs(15);
 const WDA_COMMAND_DEADLINE: Duration = Duration::from_secs(12);
+const WDA_RUNNER_START_WAIT: Duration = Duration::from_secs(35);
 
 #[derive(Clone, Default)]
 struct McpObservability {
@@ -281,6 +282,12 @@ struct WdaClickParams {
     value: String,
     /// Zero-based match index. Defaults to 0 and cannot exceed 19.
     index: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaStartParams {
+    /// Installed developer application bundle ID ending in .xctrunner, discovered with list_apps.
+    runner_bundle_id: String,
 }
 
 fn ok_text(value: impl Into<String>) -> Result<CallToolResult, McpError> {
@@ -1133,7 +1140,77 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Probe an already-running WebDriverAgent on the connected device. This does not install or launch WDA and performs no background polling."
+        description = "Read DeviceHub Mask's supervised WebDriverAgent Runner state. This reports only a runner started by DeviceHub Mask; call wda_status separately to probe an externally managed WDA."
+    )]
+    async fn wda_runner_status(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaRunner(
+            crate::wda_runner::WdaRunnerCommand::Status { reply },
+        ))?;
+        let status = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA runner status timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?;
+        ok_text(serde_json::to_string(&status).map_err(|error| {
+            McpError::internal_error(
+                format!("WDA runner status serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Explicitly start one installed, developer-signed WebDriverAgent .xctrunner through XCTest and wait up to 30 seconds for WDA readiness. Use list_apps to discover an eligible runner. This does not install or sign WDA."
+    )]
+    async fn wda_start(
+        &self,
+        Parameters(params): Parameters<WdaStartParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_runner::validate_runner_bundle_id(&params.runner_bundle_id)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaRunner(
+            crate::wda_runner::WdaRunnerCommand::Start {
+                bundle_id: params.runner_bundle_id,
+                reply,
+            },
+        ))?;
+        let status = tokio::time::timeout(WDA_RUNNER_START_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA runner startup timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&status).map_err(|error| {
+            McpError::internal_error(
+                format!("WDA runner status serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Stop only the WebDriverAgent Runner owned by DeviceHub Mask. This does not terminate an externally managed WDA instance."
+    )]
+    async fn wda_stop(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaRunner(
+            crate::wda_runner::WdaRunnerCommand::Stop { reply },
+        ))?;
+        let status = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA runner stop timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&status).map_err(|error| {
+            McpError::internal_error(
+                format!("WDA runner status serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Probe an already-running WebDriverAgent on the connected device, whether externally managed or started with wda_start. This performs no background polling."
     )]
     async fn wda_status(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
@@ -1815,7 +1892,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. When WebDriverAgent is already running on the device, use wda_status, wda_ui_tree, wda_find_elements, and wda_click for semantic accessibility automation; these tools do not install or launch WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -1937,6 +2014,9 @@ mod tests {
             "list_apps",
             "list_companion_devices",
             "home_screen_layout",
+            "wda_runner_status",
+            "wda_start",
+            "wda_stop",
             "wda_status",
             "wda_ui_tree",
             "wda_find_elements",
@@ -2283,6 +2363,77 @@ mod tests {
             .is_err()
         );
         assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn wda_runner_tools_dispatch_explicit_lifecycle_commands() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+        let running = crate::wda_runner::WdaRunnerStatus {
+            phase: crate::wda_runner::WdaRunnerPhase::Running,
+            managed: true,
+            runner_bundle_id: Some("com.example.WDARunner.xctrunner".into()),
+            last_error: None,
+        };
+
+        let status_hub = hub.clone();
+        let status_task =
+            tokio::spawn(async move { status_hub.wda_runner_status().await.unwrap() });
+        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Status { reply }) =
+            input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA runner status command");
+        };
+        reply.send(running.clone()).unwrap();
+        assert!(status_task.await.unwrap().content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""managed":true"#))
+        }));
+
+        let start_hub = hub.clone();
+        let start_task = tokio::spawn(async move {
+            start_hub
+                .wda_start(Parameters(WdaStartParams {
+                    runner_bundle_id: "com.example.WDARunner.xctrunner".into(),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Start { bundle_id, reply }) =
+            input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA runner start command");
+        };
+        assert_eq!(bundle_id, "com.example.WDARunner.xctrunner");
+        reply.send(Ok(running)).unwrap();
+        start_task.await.unwrap();
+
+        let stop_task = tokio::spawn(async move { hub.wda_stop().await.unwrap() });
+        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Stop { reply }) =
+            input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA runner stop command");
+        };
+        reply
+            .send(Ok(crate::wda_runner::WdaRunnerStatus::default()))
+            .unwrap();
+        stop_task.await.unwrap();
     }
 
     #[tokio::test]
