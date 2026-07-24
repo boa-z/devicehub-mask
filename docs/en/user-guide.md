@@ -191,9 +191,12 @@ visible area. If an icon is unavailable, the list keeps its letter fallback and
 all management actions remain usable.
 The same tab reads a bounded, normalized SpringBoard icon state and labels apps
 in the Dock, on a numbered home-screen page, or inside a named folder. Folder and
-page positions are 1-based ordinal positions, not screen coordinates. Widget
-configuration, Web Clip URLs, and private SpringBoard identifiers are omitted;
-failure of this optional query does not disable app management.
+page positions are 1-based ordinal positions, not screen coordinates. When the
+device provides icon metrics, the tab also shows the main grid, folder grid,
+layout size, and icon size. These values describe SpringBoard layout units and
+still are not exact `tap` coordinates. Widget configuration, Web Clip URLs, and
+private SpringBoard identifiers are omitted; failure of either optional query
+does not disable app management.
 
 The folder button on an application opens its **App Documents** workspace when
 the application exposes Documents through iOS File Sharing. You can browse
@@ -289,6 +292,9 @@ be handled as sensitive device metadata.
 `home_screen_layout` returns the same normalized Dock, page, and folder routes
 shown in the Apps tab. Its positions are ordinal context for finding an app, not
 pixel coordinates for `tap`; agents must use `screenshot` for visual targeting.
+When available, `metrics` adds device-reported screen-layout and icon dimensions,
+main/folder row and column counts, Dock capacity, and page limits. They describe
+SpringBoard layout units rather than the current screenshot coordinate space.
 The tool never returns raw icon-state plist, Widget configuration, Web Clip URLs,
 or private SpringBoard UUIDs.
 

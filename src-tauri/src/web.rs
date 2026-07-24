@@ -3173,11 +3173,25 @@ mod tests {
                     folders: Vec::new(),
                 }],
                 page_count: 2,
+                metrics: Some(crate::home_screen::HomeScreenIconMetrics {
+                    screen_width: Some(810),
+                    screen_height: Some(1080),
+                    icon_width: Some(68),
+                    icon_height: Some(68),
+                    columns: Some(5),
+                    rows: Some(6),
+                    dock_max_count: Some(20),
+                    folder_columns: Some(4),
+                    folder_rows: Some(4),
+                    max_pages: Some(15),
+                    folder_max_pages: Some(15),
+                }),
                 truncated: false,
             }))
             .unwrap();
         let response = request.await.unwrap().unwrap();
         assert_eq!(response.0.apps[0].bundle_id, "com.example.game");
+        assert_eq!(response.0.metrics.unwrap().columns, Some(5));
         assert_eq!(response.0.apps[0].page, Some(2));
     }
 

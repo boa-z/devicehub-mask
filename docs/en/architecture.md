@@ -141,8 +141,11 @@ Home-screen locations use another request-driven SpringBoardServices channel so
 layout reads cannot delay icon fetches or HID. The parser accepts at most 32
 lists, 256 items per list, four folder levels, and 1,024 unique bundle IDs. It
 returns only app names, bundle IDs, and 1-based ordinal Dock/page/folder routes;
-widgets, smart-stack configuration, Web Clip URLs, and raw plist never cross the
-private API or MCP boundary. A failed request discards the client before retry.
+an independent three-second channel optionally reads numeric icon metrics bounded
+to layout dimensions, grid counts, Dock capacity, and page limits. Widgets,
+smart-stack configuration, Web Clip URLs, and raw plist never cross the private
+API or MCP boundary. A failed layout request discards the main client before
+retry, while a failed metrics request leaves the layout result intact.
 Native screenshots use a separate bounded CoreDevice ScreenCaptureService
 channel. The worker accepts one queued request, validates the PNG and dimensions,
 and caps the response at 32 MiB; capture never occupies the HID dispatch loop.

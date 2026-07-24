@@ -285,6 +285,24 @@ export function DeviceInspector({
     () => new Map(homeScreenLayout?.apps.map((location) => [location.bundle_id, location]) ?? []),
     [homeScreenLayout],
   );
+  const homeScreenMetricSummary = useMemo(() => {
+    const metrics = homeScreenLayout?.metrics;
+    if (!metrics) return null;
+    const parts: string[] = [];
+    if (metrics.columns != null && metrics.rows != null) {
+      parts.push(t("deviceInspector.homeScreenGrid", { columns: metrics.columns, rows: metrics.rows }));
+    }
+    if (metrics.screen_width != null && metrics.screen_height != null) {
+      parts.push(t("deviceInspector.homeScreenLayoutSize", { width: metrics.screen_width, height: metrics.screen_height }));
+    }
+    if (metrics.icon_width != null && metrics.icon_height != null) {
+      parts.push(t("deviceInspector.homeScreenIconSize", { width: metrics.icon_width, height: metrics.icon_height }));
+    }
+    if (metrics.folder_columns != null && metrics.folder_rows != null) {
+      parts.push(t("deviceInspector.homeScreenFolderGrid", { columns: metrics.folder_columns, rows: metrics.folder_rows }));
+    }
+    return parts.length > 0 ? parts.join(" · ") : null;
+  }, [homeScreenLayout?.metrics, t]);
   const visibleProfiles = useMemo(
     () => filterProvisioningProfiles(profiles, query, profileStatus),
     [profileStatus, profiles, query],
@@ -784,6 +802,12 @@ export function DeviceInspector({
               showIcon
               message={t("deviceInspector.homeScreenTruncated")}
             />
+          )}
+          {homeScreenMetricSummary && (
+            <div className="device-home-screen-metrics">
+              <InfoCircleOutlined aria-hidden="true" />
+              <Typography.Text type="secondary">{homeScreenMetricSummary}</Typography.Text>
+            </div>
           )}
           <div className="device-app-count">{t("deviceInspector.appCount", { count: visibleApps.length })}</div>
           <div className="device-app-list">

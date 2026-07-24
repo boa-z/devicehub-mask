@@ -2103,6 +2103,19 @@ mod tests {
                     folders: Vec::new(),
                 }],
                 page_count: 3,
+                metrics: Some(crate::home_screen::HomeScreenIconMetrics {
+                    screen_width: Some(810),
+                    screen_height: Some(1080),
+                    icon_width: Some(68),
+                    icon_height: Some(68),
+                    columns: Some(5),
+                    rows: Some(6),
+                    dock_max_count: Some(20),
+                    folder_columns: Some(4),
+                    folder_rows: Some(4),
+                    max_pages: Some(15),
+                    folder_max_pages: Some(15),
+                }),
                 truncated: false,
             }))
             .unwrap();
@@ -2115,6 +2128,8 @@ mod tests {
         assert!(text.contains("com.example.game"));
         assert!(text.contains(r#""container":"dock""#));
         assert!(text.contains(r#""position":2"#));
+        assert!(text.contains(r#""columns":5"#));
+        assert!(text.contains(r#""screen_width":810"#));
     }
 
     #[tokio::test]

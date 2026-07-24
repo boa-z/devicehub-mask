@@ -15,12 +15,16 @@ use crate::supervisor::ServiceReporter;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const METRICS_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_LISTS: usize = 32;
 const MAX_ITEMS_PER_LIST: usize = 256;
 const MAX_FOLDER_DEPTH: usize = 4;
 const MAX_APPS: usize = 1_024;
 const MAX_BUNDLE_ID_BYTES: usize = 255;
 const MAX_NAME_CHARS: usize = 128;
+const MAX_LAYOUT_DIMENSION: u64 = 65_535;
+const MAX_GRID_COUNT: u64 = 64;
+const MAX_PAGE_COUNT: u64 = 255;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,10 +50,26 @@ pub struct HomeScreenAppLocation {
     pub folders: Vec<HomeScreenFolderStep>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct HomeScreenIconMetrics {
+    pub screen_width: Option<u32>,
+    pub screen_height: Option<u32>,
+    pub icon_width: Option<u32>,
+    pub icon_height: Option<u32>,
+    pub columns: Option<u16>,
+    pub rows: Option<u16>,
+    pub dock_max_count: Option<u16>,
+    pub folder_columns: Option<u16>,
+    pub folder_rows: Option<u16>,
+    pub max_pages: Option<u16>,
+    pub folder_max_pages: Option<u16>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HomeScreenLayout {
     pub apps: Vec<HomeScreenAppLocation>,
     pub page_count: u16,
+    pub metrics: Option<HomeScreenIconMetrics>,
     pub truncated: bool,
 }
 
@@ -94,6 +114,7 @@ pub async fn serve(
                         tracing::info!(
                             apps = layout.apps.len(),
                             pages = layout.page_count,
+                            metrics_available = layout.metrics.is_some(),
                             truncated = layout.truncated,
                             "home screen application locations listed"
                         );
@@ -131,7 +152,31 @@ async fn load_layout(
         .get_icon_state(Some("2"))
         .await
         .map_err(|error| format!("unable to read home screen layout: {error:?}"))?;
-    parse_layout(&value)
+    let mut layout = parse_layout(&value)?;
+    layout.metrics = load_metrics(adapter, handshake).await;
+    Ok(layout)
+}
+
+async fn load_metrics(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+) -> Option<HomeScreenIconMetrics> {
+    let result = tokio::time::timeout(METRICS_TIMEOUT, async {
+        let mut client = SpringBoardServicesClient::connect_rsd(adapter, handshake).await?;
+        client.get_homescreen_icon_metrics().await
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => normalize_metrics(&value),
+        Ok(Err(error)) => {
+            tracing::debug!(?error, "home screen icon metrics unavailable");
+            None
+        }
+        Err(_) => {
+            tracing::debug!("home screen icon metrics timed out");
+            None
+        }
+    }
 }
 
 fn parse_layout(value: &Value) -> Result<HomeScreenLayout, String> {
@@ -168,8 +213,37 @@ fn parse_layout(value: &Value) -> Result<HomeScreenLayout, String> {
         apps: parser.apps,
         page_count: u16::try_from(lists.len().saturating_sub(1).min(u16::MAX as usize))
             .unwrap_or(u16::MAX),
+        metrics: None,
         truncated: parser.truncated,
     })
+}
+
+fn normalize_metrics(value: &Dictionary) -> Option<HomeScreenIconMetrics> {
+    let metrics = HomeScreenIconMetrics {
+        screen_width: bounded_u32(value, "homeScreenWidth", MAX_LAYOUT_DIMENSION),
+        screen_height: bounded_u32(value, "homeScreenHeight", MAX_LAYOUT_DIMENSION),
+        icon_width: bounded_u32(value, "homeScreenIconWidth", MAX_LAYOUT_DIMENSION),
+        icon_height: bounded_u32(value, "homeScreenIconHeight", MAX_LAYOUT_DIMENSION),
+        columns: bounded_u16(value, "homeScreenIconColumns", MAX_GRID_COUNT),
+        rows: bounded_u16(value, "homeScreenIconRows", MAX_GRID_COUNT),
+        dock_max_count: bounded_u16(value, "homeScreenIconDockMaxCount", MAX_GRID_COUNT),
+        folder_columns: bounded_u16(value, "homeScreenIconFolderColumns", MAX_GRID_COUNT),
+        folder_rows: bounded_u16(value, "homeScreenIconFolderRows", MAX_GRID_COUNT),
+        max_pages: bounded_u16(value, "homeScreenIconMaxPages", MAX_PAGE_COUNT),
+        folder_max_pages: bounded_u16(value, "homeScreenIconFolderMaxPages", MAX_PAGE_COUNT),
+    };
+    (metrics != HomeScreenIconMetrics::default()).then_some(metrics)
+}
+
+fn bounded_u32(value: &Dictionary, key: &str, maximum: u64) -> Option<u32> {
+    let value = value.get(key)?.as_unsigned_integer()?;
+    (value > 0 && value <= maximum)
+        .then(|| u32::try_from(value).ok())
+        .flatten()
+}
+
+fn bounded_u16(value: &Dictionary, key: &str, maximum: u64) -> Option<u16> {
+    bounded_u32(value, key, maximum).and_then(|value| u16::try_from(value).ok())
 }
 
 struct LayoutParser {
@@ -350,5 +424,36 @@ mod tests {
         let layout = parse_layout(&raw).unwrap();
         assert!(layout.truncated);
         assert_eq!(layout.page_count as usize, MAX_LISTS);
+    }
+
+    #[test]
+    fn icon_metrics_are_numeric_bounded_and_ignore_private_fields() {
+        let raw = dictionary([
+            ("homeScreenWidth", Value::from(810_u64)),
+            ("homeScreenHeight", Value::from(1080_u64)),
+            ("homeScreenIconWidth", Value::from(68_u64)),
+            ("homeScreenIconHeight", Value::from(68_u64)),
+            ("homeScreenIconColumns", Value::from(5_u64)),
+            ("homeScreenIconRows", Value::from(6_u64)),
+            ("homeScreenIconDockMaxCount", Value::from(20_u64)),
+            ("homeScreenIconFolderColumns", Value::from(4_u64)),
+            ("homeScreenIconFolderRows", Value::from(4_u64)),
+            ("homeScreenIconMaxPages", Value::from(15_u64)),
+            ("homeScreenIconFolderMaxPages", Value::from(15_u64)),
+            ("privateIdentifier", Value::String("must-not-leak".into())),
+        ]);
+        let metrics = normalize_metrics(&raw).unwrap();
+        assert_eq!(metrics.screen_width, Some(810));
+        assert_eq!(metrics.columns, Some(5));
+        assert_eq!(metrics.dock_max_count, Some(20));
+        assert_eq!(metrics.folder_columns, Some(4));
+        assert!(!format!("{metrics:?}").contains("must-not-leak"));
+
+        let invalid = dictionary([
+            ("homeScreenWidth", Value::from(0_u64)),
+            ("homeScreenIconRows", Value::from(65_u64)),
+            ("homeScreenIconMaxPages", Value::from(256_u64)),
+        ]);
+        assert_eq!(normalize_metrics(&invalid), None);
     }
 }

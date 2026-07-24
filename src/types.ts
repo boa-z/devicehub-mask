@@ -181,7 +181,21 @@ export type HomeScreenAppLocation = {
 export type HomeScreenLayout = {
   apps: HomeScreenAppLocation[];
   page_count: number;
+  metrics: HomeScreenIconMetrics | null;
   truncated: boolean;
+};
+export type HomeScreenIconMetrics = {
+  screen_width: number | null;
+  screen_height: number | null;
+  icon_width: number | null;
+  icon_height: number | null;
+  columns: number | null;
+  rows: number | null;
+  dock_max_count: number | null;
+  folder_columns: number | null;
+  folder_rows: number | null;
+  max_pages: number | null;
+  folder_max_pages: number | null;
 };
 export type AppDocumentEntry = {
   name: string;
