@@ -321,9 +321,10 @@ Misagent channel。
 
 ## 依赖固定版本
 
-`idevice` 暂时固定到项目 fork 中已审查的 `a64b886` revision。该版本包含 iOS 27
-CoreDevice 修复，以及性能工作台使用的类型化 DVT NetworkMonitor 与 EnergyMonitor
-客户端。等价修复合并并正式发布后，应切回上游版本。
+`idevice` 暂时固定到项目 fork 中已审查的 `5e89583` revision。该版本包含 iOS 27
+CoreDevice 修复、iOS 27 AppService 所需的显式容器访问选项，以及性能工作台使用的
+类型化 DVT NetworkMonitor 与 EnergyMonitor 客户端。等价修复合并并正式发布后，
+应切回上游版本。
 
 ## 安全边界
 

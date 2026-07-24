@@ -457,8 +457,9 @@ are explicitly unavailable rather than hiding the whole device.
 
 ## Dependency Pin
 
-The `idevice` dependency is temporarily pinned to reviewed revision `a64b886`
-from the project fork. It includes the iOS 27 CoreDevice fixes and typed DVT
+The `idevice` dependency is temporarily pinned to reviewed revision `5e89583`
+from the project fork. It includes the iOS 27 CoreDevice fixes, the explicit
+AppService container-access option required by iOS 27, and typed DVT
 NetworkMonitor and EnergyMonitor clients used by the performance workspace.
 Replace this pin after equivalent fixes are merged and released upstream.
 
