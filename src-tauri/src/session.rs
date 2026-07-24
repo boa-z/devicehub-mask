@@ -14,7 +14,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver};
 
 use idevice::{
-    IdeviceError, IdeviceService, ReadWrite, RsdService,
+    IdeviceError, IdeviceService, ReadWrite, RemoteXpcClient, RsdService,
     core_device::{
         AppServiceClient, CallInfoBlob, CoreDeviceError, DataInclusionPolicy, DisplayServiceClient,
         GENERAL_PASTEBOARD, HevcDepacketizer, Orientation as DevOrientation,
@@ -35,6 +35,9 @@ use idevice::{
     mobile_image_mounter::ImageMounter,
     mobileactivationd::MobileActivationdClient,
     provider::{IdeviceProvider, TcpProvider},
+    remote_pairing::{
+        RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
+    },
     rsd::RsdHandshake,
     springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
     tcp::handle::{AdapterHandle, UdpSocketHandle},
@@ -771,17 +774,26 @@ pub async fn manage(
     // Cache of UDID -> DeviceName so a refresh doesn't re-query lockdown.
     let mut names: HashMap<String, String> = HashMap::new();
     let mut netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), resource_dir);
-    // Keep direct Bonjour discovery active even when netmuxd is available. On
-    // macOS, Local Network access can differ between the app and its child
-    // process, so a healthy sidecar may expose USB while missing Wi-Fi devices.
-    let mut wifi = start_wifi_discovery(&pairing_dir);
+    let prefer_netmuxd = netmuxd.is_forced();
+    let mut wifi = if prefer_netmuxd {
+        None
+    } else {
+        start_wifi_discovery(&pairing_dir)
+    };
     // Auto-pick the first device only when no UDID was given, and only until we've
     // connected once: after a session ends we drop to idle rather than hot-loop.
     let mut auto_pick = initial_udid.is_none();
     let mut target = initial_udid;
 
     loop {
-        let (devices, endpoints) = enumerate_devices(&mut names, &mut netmuxd, wifi.as_mut()).await;
+        let (devices, endpoints) = enumerate_devices(
+            &mut names,
+            &mut netmuxd,
+            &mut wifi,
+            &pairing_dir,
+            prefer_netmuxd,
+        )
+        .await;
         device_list.set(devices);
         let wifi_setup_required = wifi
             .as_ref()
@@ -824,11 +836,20 @@ pub async fn manage(
         };
 
         let Some(endpoint) = endpoints.get(&selection_id).cloned() else {
-            let message = format!("requested device transport ({selection_id}) not found");
-            tracing::warn!(%message);
+            tracing::debug!(
+                transport = %selection_id,
+                "requested device transport not discovered yet"
+            );
             active.set(None);
-            error.set(Some(message));
-            target = None;
+            status.set("waiting for selected device transport...");
+            tokio::select! {
+                cmd = control_rx.recv() => match cmd {
+                    Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
+                    Some(ControlCmd::Refresh) => names.clear(),
+                    Some(ControlCmd::Quit) | None => return,
+                },
+                _ = tokio::time::sleep(IDLE_RESCAN) => {}
+            }
             continue;
         };
         let udid = endpoint.udid().to_owned();
@@ -841,6 +862,7 @@ pub async fn manage(
 
         let session = run(
             endpoint,
+            pairing_dir.clone(),
             SessionVideo {
                 frame_format: settings.video_pixel_format(),
                 counters: video_counters.clone(),
@@ -890,13 +912,13 @@ pub async fn manage(
                     Some(ControlCmd::Reconnect(u)) => break Next::Switch(u),
                     Some(ControlCmd::Refresh) => {
                         names.clear();
-                        let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, wifi.as_mut()).await;
+                        let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, &mut wifi, &pairing_dir, prefer_netmuxd).await;
                         device_list.set(devices);
                     }
                     Some(ControlCmd::Quit) | None => break Next::Quit,
                 },
                 _ = active_rescan.tick() => {
-                    let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, wifi.as_mut()).await;
+                    let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, &mut wifi, &pairing_dir, prefer_netmuxd).await;
                     device_list.set(devices);
                 }
             }
@@ -926,9 +948,25 @@ pub async fn manage(
 async fn enumerate_devices(
     names: &mut HashMap<String, String>,
     netmuxd: &mut crate::netmuxd::NetmuxdSupervisor,
-    mut wifi: Option<&mut WifiDiscovery>,
+    wifi: &mut Option<WifiDiscovery>,
+    pairing_dir: &Path,
+    prefer_netmuxd: bool,
 ) -> (Vec<DeviceInfo>, HashMap<String, SessionEndpoint>) {
-    let netmuxd_addr = netmuxd.ensure_ready().await;
+    let netmuxd_addr = if prefer_netmuxd || wifi.is_none() {
+        netmuxd.ensure_ready().await
+    } else {
+        None
+    };
+    match (prefer_netmuxd, netmuxd_addr.is_some(), wifi.is_some()) {
+        (true, true, true) => {
+            tracing::info!("netmuxd recovered; stopping direct Wi-Fi discovery fallback");
+            *wifi = None;
+        }
+        (_, false, false) => {
+            *wifi = start_wifi_discovery(pairing_dir);
+        }
+        _ => {}
+    }
     let system_addr = UsbmuxdAddr::from_env_var().map_err(|error| {
         tracing::warn!(?error, "invalid usbmuxd address; USB discovery disabled");
     });
@@ -965,7 +1003,7 @@ async fn enumerate_devices(
         None => (None, None, Vec::new(), false),
     };
 
-    if let (Some(discovery), Some(usbmuxd)) = (wifi.as_deref_mut(), usbmuxd.as_mut()) {
+    if let (Some(discovery), Some(usbmuxd)) = (wifi.as_mut(), usbmuxd.as_mut()) {
         for device in &devs {
             if !discovery.pairing_needs_refresh(&device.udid) {
                 continue;
@@ -1031,11 +1069,9 @@ async fn enumerate_devices(
         }
     }
 
-    // Merge authenticated direct Bonjour results with the selected usbmuxd
-    // provider. This fills device-level gaps when netmuxd is reachable but its
-    // child process cannot browse the local network. Existing selectors win, so
-    // netmuxd remains the provider when both paths discover the same transport.
-    if let Some(discovery) = wifi {
+    // Direct discovery is active only while netmuxd is unavailable, so exactly
+    // one process owns Bonjour and the device heartbeat at a time.
+    if !using_netmuxd && let Some(discovery) = wifi.as_mut() {
         for endpoint in discovery.refresh() {
             let id = device_selector(&endpoint.udid, ConnKind::Network);
             if endpoints.contains_key(&id) {
@@ -1116,11 +1152,236 @@ async fn fetch_device_name_from_provider(provider: &dyn IdeviceProvider) -> Opti
         .flatten()
 }
 
+async fn connect_core_tunnel(
+    endpoint: &SessionEndpoint,
+    provider: &dyn IdeviceProvider,
+    pairing_dir: &Path,
+    status: &StatusSlot,
+) -> Result<(AdapterHandle, RsdHandshake), String> {
+    match endpoint {
+        SessionEndpoint::Usbmuxd(_) => connect_usb_core_tunnel(provider).await,
+        SessionEndpoint::Wifi(endpoint) => {
+            connect_wifi_core_tunnel(endpoint, pairing_dir, status).await
+        }
+    }
+}
+
+async fn connect_usb_core_tunnel(
+    provider: &dyn IdeviceProvider,
+) -> Result<(AdapterHandle, RsdHandshake), String> {
+    let proxy = CoreDeviceProxy::connect(provider)
+        .await
+        .map_err(|error| format!("no core device proxy: {error:?}"))?;
+    let rsd_port = proxy.tunnel_info().server_rsd_port;
+    let adapter = proxy
+        .create_software_tunnel()
+        .map_err(|error| format!("no software tunnel: {error:?}"))?;
+    let mut adapter = adapter.to_async_handle();
+    let stream = adapter
+        .connect(rsd_port)
+        .await
+        .map_err(|error| format!("RSD connect failed: {error:?}"))?;
+    let handshake = RsdHandshake::new(stream)
+        .await
+        .map_err(|error| format!("RSD handshake failed: {error:?}"))?;
+    Ok((adapter, handshake))
+}
+
+async fn connect_wifi_core_tunnel(
+    endpoint: &WifiEndpoint,
+    pairing_dir: &Path,
+    status: &StatusSlot,
+) -> Result<(AdapterHandle, RsdHandshake), String> {
+    let pairing_path = remote_pairing_path(pairing_dir, &endpoint.udid)?;
+    let mut pairing_file = match RpPairingFile::read_from_file(&pairing_path).await {
+        Ok(pairing_file) => pairing_file,
+        Err(_) => {
+            status.set("unlock the device and approve Wi-Fi control...");
+            tracing::info!(
+                device_id = %crate::diagnostics::device_id_fingerprint(&endpoint.udid),
+                "remote pairing credentials missing; authorizing over USB"
+            );
+            tokio::time::timeout(
+                Duration::from_secs(120),
+                pair_remote_via_usb(&endpoint.udid, &pairing_path),
+            )
+            .await
+            .map_err(|_| {
+                "initial Wi-Fi authorization timed out; unlock the device and accept its trust prompt"
+                    .to_string()
+            })??
+        }
+    };
+    status.set("verifying Wi-Fi control authorization...");
+    let address = scoped_socket_addr(
+        endpoint.remote_pairing_address,
+        endpoint.remote_pairing_scope_id,
+        endpoint.remote_pairing_port,
+    );
+    let stream = tokio::time::timeout(NAME_TIMEOUT, tokio::net::TcpStream::connect(address))
+        .await
+        .map_err(|_| "remote pairing connection timed out".to_string())?
+        .map_err(|error| format!("remote pairing connection failed: {error}"))?;
+    let socket = RpPairingSocket::new(stream);
+    let mut client = RemotePairingClient::new(socket, "devicehub-mask");
+    client
+        .connect(&mut pairing_file, async || "000000".to_string())
+        .await
+        .map_err(|error| format!("remote pairing verification failed: {error:?}"))?;
+
+    let tunnel_port = client
+        .create_tcp_listener()
+        .await
+        .map_err(|error| format!("remote tunnel listener failed: {error:?}"))?;
+    status.set("establishing secure Wi-Fi tunnel...");
+    let tunnel_address = scoped_socket_addr(
+        endpoint.remote_pairing_address,
+        endpoint.remote_pairing_scope_id,
+        tunnel_port,
+    );
+    let tunnel_stream =
+        tokio::time::timeout(NAME_TIMEOUT, tokio::net::TcpStream::connect(tunnel_address))
+            .await
+            .map_err(|_| "remote tunnel connection timed out".to_string())?
+            .map_err(|error| format!("remote tunnel connection failed: {error}"))?;
+    let tunnel = connect_tls_psk_tunnel_native(tunnel_stream, client.encryption_key())
+        .await
+        .map_err(|error| format!("remote TLS-PSK tunnel failed: {error:?}"))?;
+    let client_ip = tunnel
+        .info
+        .client_address
+        .parse()
+        .map_err(|error| format!("invalid remote tunnel client address: {error}"))?;
+    let server_ip = tunnel
+        .info
+        .server_address
+        .parse()
+        .map_err(|error| format!("invalid remote tunnel server address: {error}"))?;
+    let rsd_port = tunnel.info.server_rsd_port;
+    let mtu = tunnel.info.mtu as usize;
+    let mut adapter =
+        idevice::tcp::adapter::Adapter::new(Box::new(tunnel.into_inner()), client_ip, server_ip);
+    adapter.set_mss(mtu.saturating_sub(60));
+    let mut adapter = adapter.to_async_handle();
+    let rsd_stream = adapter
+        .connect(rsd_port)
+        .await
+        .map_err(|error| format!("remote RSD connect failed: {error:?}"))?;
+    let handshake = RsdHandshake::new(rsd_stream)
+        .await
+        .map_err(|error| format!("remote RSD handshake failed: {error:?}"))?;
+    tracing::info!(
+        device_id = %crate::diagnostics::device_id_fingerprint(&endpoint.udid),
+        "remote pairing CoreDevice tunnel established"
+    );
+    Ok((adapter, handshake))
+}
+
+async fn pair_remote_via_usb(udid: &str, path: &Path) -> Result<RpPairingFile, String> {
+    let address = UsbmuxdAddr::from_env_var()
+        .map_err(|error| format!("USB transport unavailable for remote pairing: {error:?}"))?;
+    let mut mux = address
+        .connect(0)
+        .await
+        .map_err(|error| format!("USB connection required for initial Wi-Fi pairing: {error:?}"))?;
+    let device = mux
+        .get_devices()
+        .await
+        .map_err(|error| format!("cannot list USB devices for remote pairing: {error:?}"))?
+        .into_iter()
+        .find(|device| device.udid == udid && matches!(device.connection_type, Connection::Usb))
+        .ok_or_else(|| "connect this device by USB once to authorize Wi-Fi control".to_string())?;
+    let provider = device.to_provider(address, "devicehub-mask-remote-pairing");
+    tracing::debug!(
+        device_id = %crate::diagnostics::device_id_fingerprint(udid),
+        "opening USB CoreDevice tunnel for remote pairing"
+    );
+    let (mut adapter, handshake) = connect_usb_core_tunnel(&provider).await?;
+    let service = handshake
+        .services
+        .get("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
+        .ok_or_else(|| "device does not expose the remote pairing service".to_string())?;
+    let stream = adapter
+        .connect(service.port)
+        .await
+        .map_err(|error| format!("remote pairing service connect failed: {error:?}"))?;
+    let mut connection = RemoteXpcClient::new(stream)
+        .await
+        .map_err(|error| format!("remote pairing XPC connection failed: {error:?}"))?;
+    connection
+        .do_handshake()
+        .await
+        .map_err(|error| format!("remote pairing XPC handshake failed: {error:?}"))?;
+    connection
+        .recv_root()
+        .await
+        .map_err(|error| format!("remote pairing XPC root failed: {error:?}"))?;
+    tracing::info!(
+        device_id = %crate::diagnostics::device_id_fingerprint(udid),
+        "waiting for device to authorize remote pairing"
+    );
+    let mut pairing_file = RpPairingFile::generate("devicehub-mask");
+    let mut client = RemotePairingClient::new(connection, "devicehub-mask");
+    client
+        .connect(&mut pairing_file, async || "000000".to_string())
+        .await
+        .map_err(|error| format!("USB remote pairing failed: {error:?}"))?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("cannot create remote pairing directory: {error}"))?;
+    }
+    pairing_file
+        .write_to_file(path)
+        .await
+        .map_err(|error| format!("cannot save remote pairing credentials: {error:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("cannot secure remote pairing credentials: {error}"))?;
+    }
+    tracing::info!(
+        device_id = %crate::diagnostics::device_id_fingerprint(udid),
+        "created remote pairing credentials over USB"
+    );
+    Ok(pairing_file)
+}
+
+fn remote_pairing_path(pairing_dir: &Path, udid: &str) -> Result<PathBuf, String> {
+    if udid.is_empty()
+        || !udid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("device UDID contains unsupported characters".into());
+    }
+    let base = pairing_dir.parent().unwrap_or(pairing_dir);
+    Ok(base.join("remote-pairings").join(format!("{udid}.plist")))
+}
+
+fn scoped_socket_addr(
+    address: std::net::IpAddr,
+    scope_id: Option<u32>,
+    port: u16,
+) -> std::net::SocketAddr {
+    match address {
+        std::net::IpAddr::V4(_) => std::net::SocketAddr::new(address, port),
+        std::net::IpAddr::V6(address) => std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+            address,
+            port,
+            0,
+            scope_id.unwrap_or(0),
+        )),
+    }
+}
+
 /// Run the whole session to completion. Returns an error string suitable for the
 /// status bar if setup fails; otherwise runs until a [`InputCmd::Shutdown`] (or
 /// the UI dropping the input channel).
 async fn run(
     endpoint: SessionEndpoint,
+    pairing_dir: PathBuf,
     video: SessionVideo,
     repaint: impl Fn() + Send + 'static,
     clipboard: ClipboardSlot,
@@ -1129,7 +1390,7 @@ async fn run(
 ) -> Result<(), String> {
     views.status.set("connecting to device...");
     let requested_udid = endpoint.udid().to_owned();
-    let (provider, connection) = connect_provider(endpoint).await?;
+    let (provider, connection) = connect_provider(endpoint.clone()).await?;
     let device_details = read_device_details(&*provider, requested_udid).await;
     if let Some(details) = &device_details {
         tracing::info!(
@@ -1146,21 +1407,8 @@ async fn run(
             None
         }
     };
-    let proxy = CoreDeviceProxy::connect(&*provider)
-        .await
-        .map_err(|e| format!("no core device proxy: {e:?}"))?;
-    let rsd_port = proxy.tunnel_info().server_rsd_port;
-    let adapter = proxy
-        .create_software_tunnel()
-        .map_err(|e| format!("no software tunnel: {e:?}"))?;
-    let mut adapter = adapter.to_async_handle();
-    let stream = adapter
-        .connect(rsd_port)
-        .await
-        .map_err(|e| format!("RSD connect failed: {e:?}"))?;
-    let mut handshake = RsdHandshake::new(stream)
-        .await
-        .map_err(|e| format!("RSD handshake failed: {e:?}"))?;
+    let (mut adapter, mut handshake) =
+        connect_core_tunnel(&endpoint, &*provider, &pairing_dir, &views.status).await?;
 
     views.performance.reset();
     views.device_logs.reset();
@@ -4606,6 +4854,20 @@ mod tests {
             resolve_device_selection("phone::wifi", &devices).as_deref(),
             Some("phone::wifi")
         );
+    }
+
+    #[test]
+    fn remote_pairing_credentials_stay_inside_application_data() {
+        let pairing_dir = Path::new("app-data").join("pairings");
+        assert_eq!(
+            remote_pairing_path(&pairing_dir, "00008030-001905C02106402E").unwrap(),
+            Path::new("app-data")
+                .join("remote-pairings")
+                .join("00008030-001905C02106402E.plist")
+        );
+        assert!(remote_pairing_path(&pairing_dir, "../outside").is_err());
+        assert!(remote_pairing_path(&pairing_dir, "phone/plist").is_err());
+        assert!(remote_pairing_path(&pairing_dir, "").is_err());
     }
 
     #[test]

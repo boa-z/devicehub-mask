@@ -17,6 +17,7 @@ const RESTART_BACKOFF: Duration = Duration::from_secs(5);
 
 pub struct NetmuxdSupervisor {
     binary: Option<PathBuf>,
+    forced: bool,
     pairing_dir: PathBuf,
     child: Option<Child>,
     address: Option<SocketAddr>,
@@ -25,13 +26,20 @@ pub struct NetmuxdSupervisor {
 
 impl NetmuxdSupervisor {
     pub fn new(pairing_dir: PathBuf, resource_dir: Option<PathBuf>) -> Self {
+        let forced = std::env::var_os("DEVICEHUB_NETMUXD")
+            .is_some_and(|value| !value.is_empty() && value != "off");
         Self {
             binary: find_binary(resource_dir.as_deref()),
+            forced,
             pairing_dir,
             child: None,
             address: None,
             retry_after: None,
         }
+    }
+
+    pub fn is_forced(&self) -> bool {
+        self.forced && self.binary.is_some()
     }
 
     /// Return the private shim address, starting or restarting our child when needed.
@@ -106,13 +114,17 @@ impl NetmuxdSupervisor {
             .arg(Ipv4Addr::LOCALHOST.to_string())
             .arg("--port")
             .arg(address.port().to_string())
+            // The application already owns a supervised heartbeat. netmuxd's
+            // heartbeat is racy when one Bonjour service resolves on multiple
+            // interfaces and can open duplicate TLS sessions for one device.
+            .arg("--disable-heartbeat")
             .arg("--upstream-usbmuxd")
             .arg(system_usbmuxd_address())
             .arg("--plist-storage")
             .arg(&self.pairing_dir)
             .env(
                 "RUST_LOG",
-                std::env::var("DEVICEHUB_NETMUXD_LOG").unwrap_or_else(|_| "info".into()),
+                std::env::var("DEVICEHUB_NETMUXD_LOG").unwrap_or_else(|_| "warn".into()),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

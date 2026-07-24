@@ -94,14 +94,18 @@ for legacy device selections. To authorize Wi-Fi discovery, connect the device
 by USB once while it is unlocked and trusted. The app stores a private copy of
 the pairing record in its application data directory (`0700` directory and
 `0600` files on Unix), then authenticates `_apple-mobdev2._tcp` Bonjour records
-before showing them. After **iPhone · Wi-Fi** appears, the cable can be removed.
+before showing them. On current iOS versions, the first Wi-Fi control connection
+also asks for approval on the unlocked device and creates separate RemotePairing
+credentials for the `_remotepairing._tcp` CoreDevice tunnel. Keep USB connected
+until that approval completes. After the Wi-Fi session starts, the cable can be
+removed.
 
-Packaged builds supervise a bundled `netmuxd` process that merges the system
-usbmuxd device list with authenticated Wi-Fi devices. It listens only on a
-private loopback port and is stopped with the app; DeviceHub Mask never replaces
-or terminates the system usbmuxd. Development builds use `netmuxd` from `PATH`
-or `DEVICEHUB_NETMUXD=/absolute/path/to/netmuxd`, and retain the built-in Bonjour
-implementation as a fallback. Set `DEVICEHUB_NETMUXD=off` to force that fallback.
+DeviceHub Mask uses its built-in authenticated Bonjour and RemotePairing path by
+default on all platforms. `netmuxd` remains an optional compatibility provider;
+set `DEVICEHUB_NETMUXD=/absolute/path/to/netmuxd` to force it. The supervised
+process listens only on private loopback and is stopped with the app. DeviceHub
+Mask never replaces or terminates the system usbmuxd. Set
+`DEVICEHUB_NETMUXD=off` to explicitly keep the built-in path.
 
 On older Apple stacks, enabling **Show this iPhone when on Wi-Fi** in Finder may
 still be necessary. Unauthenticated nearby Bonjour devices are never exposed as

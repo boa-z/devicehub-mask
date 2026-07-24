@@ -11,17 +11,23 @@ use std::net::IpAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use idevice::pairing_file::PairingFile;
 use mdns_sd::{Receiver, ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent};
 
 const SERVICE_TYPE: &str = "_apple-mobdev2._tcp.local.";
+const REMOTE_PAIRING_SERVICE_TYPE: &str = "_remotepairing._tcp.local.";
+const SERVICE_REMOVAL_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub struct WifiEndpoint {
     pub udid: String,
     pub address: IpAddr,
     pub scope_id: Option<u32>,
+    pub remote_pairing_address: IpAddr,
+    pub remote_pairing_scope_id: Option<u32>,
+    pub remote_pairing_port: u16,
     pub pairing_file: PairingFile,
 }
 
@@ -30,8 +36,12 @@ pub struct WifiDiscovery {
     pairing_files: HashMap<String, PairingFile>,
     refreshed_pairings: HashSet<String>,
     services: HashMap<String, ResolvedService>,
+    remote_pairing_services: HashMap<String, ResolvedService>,
+    pending_service_removals: HashMap<String, Instant>,
+    pending_remote_pairing_removals: HashMap<String, Instant>,
     announced: HashSet<String>,
     receiver: Receiver<ServiceEvent>,
+    remote_pairing_receiver: Receiver<ServiceEvent>,
     _daemon: ServiceDaemon,
 }
 
@@ -44,6 +54,9 @@ impl WifiDiscovery {
         let receiver = daemon
             .browse(SERVICE_TYPE)
             .map_err(|error| format!("cannot browse for iOS devices: {error}"))?;
+        let remote_pairing_receiver = daemon
+            .browse(REMOTE_PAIRING_SERVICE_TYPE)
+            .map_err(|error| format!("cannot browse for iOS remote pairing: {error}"))?;
         tracing::info!(
             cached_pairings = pairing_files.len(),
             service_type = SERVICE_TYPE,
@@ -54,8 +67,12 @@ impl WifiDiscovery {
             pairing_files,
             refreshed_pairings: HashSet::new(),
             services: HashMap::new(),
+            remote_pairing_services: HashMap::new(),
+            pending_service_removals: HashMap::new(),
+            pending_remote_pairing_removals: HashMap::new(),
             announced: HashSet::new(),
             receiver,
+            remote_pairing_receiver,
             _daemon: daemon,
         })
     }
@@ -89,14 +106,31 @@ impl WifiDiscovery {
     }
 
     pub fn refresh(&mut self) -> Vec<WifiEndpoint> {
+        self.expire_removed_services();
         while let Ok(event) = self.receiver.try_recv() {
             match event {
                 ServiceEvent::ServiceResolved(service) => {
+                    self.pending_service_removals.remove(&service.fullname);
                     self.services.insert(service.fullname.clone(), *service);
                 }
                 ServiceEvent::ServiceRemoved(_, fullname) => {
-                    self.services.remove(&fullname);
-                    self.announced.remove(&fullname);
+                    self.pending_service_removals
+                        .insert(fullname, Instant::now() + SERVICE_REMOVAL_GRACE);
+                }
+                _ => {}
+            }
+        }
+        while let Ok(event) = self.remote_pairing_receiver.try_recv() {
+            match event {
+                ServiceEvent::ServiceResolved(service) => {
+                    self.pending_remote_pairing_removals
+                        .remove(&service.fullname);
+                    self.remote_pairing_services
+                        .insert(service.fullname.clone(), *service);
+                }
+                ServiceEvent::ServiceRemoved(_, fullname) => {
+                    self.pending_remote_pairing_removals
+                        .insert(fullname, Instant::now() + SERVICE_REMOVAL_GRACE);
                 }
                 _ => {}
             }
@@ -104,7 +138,9 @@ impl WifiDiscovery {
 
         let mut by_udid = HashMap::<String, (WifiEndpoint, bool)>::new();
         for (fullname, service) in &self.services {
-            let Some((endpoint, ipv4)) = resolve_service(service, &self.pairing_files) else {
+            let Some((endpoint, ipv4)) =
+                resolve_service(service, &self.remote_pairing_services, &self.pairing_files)
+            else {
                 continue;
             };
             if self.announced.insert(fullname.clone()) {
@@ -132,15 +168,61 @@ impl WifiDiscovery {
             .collect()
     }
 
+    fn expire_removed_services(&mut self) {
+        let now = Instant::now();
+        let expired = self
+            .pending_service_removals
+            .iter()
+            .filter_map(|(fullname, deadline)| (*deadline <= now).then_some(fullname.clone()))
+            .collect::<Vec<_>>();
+        for fullname in expired {
+            self.pending_service_removals.remove(&fullname);
+            self.services.remove(&fullname);
+            self.announced.remove(&fullname);
+        }
+
+        let expired = self
+            .pending_remote_pairing_removals
+            .iter()
+            .filter_map(|(fullname, deadline)| (*deadline <= now).then_some(fullname.clone()))
+            .collect::<Vec<_>>();
+        for fullname in expired {
+            self.pending_remote_pairing_removals.remove(&fullname);
+            self.remote_pairing_services.remove(&fullname);
+        }
+    }
+
     pub fn requires_pairing(&self) -> bool {
         self.services
             .values()
-            .any(|service| resolve_service(service, &self.pairing_files).is_none())
+            .any(|service| !service_matches_pairing(service, &self.pairing_files))
     }
+}
+
+fn service_matches_pairing(
+    service: &ResolvedService,
+    pairing_files: &HashMap<String, PairingFile>,
+) -> bool {
+    let Some(identifier) = service
+        .get_property_val("identifier")
+        .and_then(|value| value)
+    else {
+        return false;
+    };
+    let auth_tags = service
+        .get_properties()
+        .iter()
+        .filter(|property| property.key() == "authTag" || property.key().starts_with("authTag#"))
+        .filter_map(|property| property.val())
+        .collect::<Vec<_>>();
+    pairing_files.values().any(|pairing_file| {
+        idevice::mdns::txt_record_matches(pairing_file.host_id.as_bytes(), identifier, &auth_tags)
+    })
 }
 
 fn resolve_service(
     service: &ResolvedService,
+    remote_pairing_services: &HashMap<String, ResolvedService>,
     pairing_files: &HashMap<String, PairingFile>,
 ) -> Option<(WifiEndpoint, bool)> {
     let identifier = service
@@ -159,23 +241,48 @@ fn resolve_service(
         idevice::mdns::txt_record_matches(pairing_file.host_id.as_bytes(), identifier, &auth_tags)
     })?;
     let (address, scope_id, ipv4) = preferred_address(service)?;
+    let remote_pairing = remote_pairing_services
+        .values()
+        .find(|candidate| service_addresses_overlap(service, candidate))?;
+    let (remote_pairing_address, remote_pairing_scope_id, _) = preferred_address(remote_pairing)?;
     Some((
         WifiEndpoint {
             udid: udid.clone(),
             address,
             scope_id,
+            remote_pairing_address,
+            remote_pairing_scope_id,
+            remote_pairing_port: remote_pairing.port,
             pairing_file: pairing_file.clone(),
         },
         ipv4,
     ))
 }
 
+fn service_addresses_overlap(left: &ResolvedService, right: &ResolvedService) -> bool {
+    left.addresses.iter().any(|left_address| {
+        right
+            .addresses
+            .iter()
+            .any(|right_address| left_address.to_ip_addr() == right_address.to_ip_addr())
+    })
+}
+
 fn preferred_address(service: &ResolvedService) -> Option<(IpAddr, Option<u32>, bool)> {
+    // A service may be advertised over both Wi-Fi and the USB network interface.
+    // Connecting to its 169.254/16 USB address can complete Lockdown but then lose
+    // the CoreDevice proxy. Prefer a routable LAN address deterministically.
     service
         .addresses
         .iter()
         .find_map(|address| match address {
-            ScopedIp::V4(address) => Some((IpAddr::V4(*address.addr()), None, true)),
+            ScopedIp::V4(address)
+                if !address.addr().is_link_local()
+                    && !address.addr().is_loopback()
+                    && !address.addr().is_unspecified() =>
+            {
+                Some((IpAddr::V4(*address.addr()), None, true))
+            }
             _ => None,
         })
         .or_else(|| {
@@ -185,6 +292,12 @@ fn preferred_address(service: &ResolvedService) -> Option<(IpAddr, Option<u32>, 
                     Some(address.scope_id().index),
                     false,
                 )),
+                _ => None,
+            })
+        })
+        .or_else(|| {
+            service.addresses.iter().find_map(|address| match address {
+                ScopedIp::V4(address) => Some((IpAddr::V4(*address.addr()), None, true)),
                 _ => None,
             })
         })
