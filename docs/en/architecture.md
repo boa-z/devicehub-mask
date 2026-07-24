@@ -105,7 +105,10 @@ Device rename accepts only a bounded, non-empty, control-free Unicode name. The
 session repeats validation, opens paired Lockdown, writes `DeviceName`, and reads
 the value back before returning success. Diagnostics record only the character
 count, not the requested name. Lockdown's name-change notification refreshes the
-device picker and active Info tab.
+device picker and active Info tab. After `StartSession` succeeds, the backend
+makes a bounded `StopSession` attempt on both rename success and failure. A
+cleanup error is logged without misreporting a name already accepted by the
+device as a failed rename.
 
 Device condition simulation owns an isolated DVT Condition Inducer channel and a
 bounded command queue. The backend bounds and sanitizes the device-provided

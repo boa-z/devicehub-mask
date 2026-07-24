@@ -8,6 +8,7 @@
 
 - [快速开始](getting-started.md)：平台依赖、获取源码、设备准备和首次开发运行
 - [使用指南](user-guide.md)：设备、映射、应用、键盘、硬件按键、截图、语言和更新工作流
+- [功能参考](features.md)：当前桌面工作区、设备管理操作、idevice 服务覆盖、MCP 工具和功能边界
 - [架构说明](architecture.md)：进程边界、私有传输、CoreDevice 会话、视频管线、HID 校验和数据所有权
 - [开发与构建](development.md)：仓库结构、环境变量、验证、本地生产构建和各平台打包
 - [发布与更新](distribution.md)：GitHub Actions、nightly 产物、更新签名、Apple 签名和版本规则

@@ -46,6 +46,10 @@ Mapping workspace does not bind right-click to Home.
 The screenshot button requests a lossless PNG directly from CoreDevice, so it
 still works before the video canvas has recovered. If native capture is
 temporarily unavailable, the current decoded canvas is saved instead.
+The recording button captures the rendered canvas through the system WebView's
+MediaRecorder and downloads MP4 or WebM according to platform support. Recording
+stops when leaving the Device workspace or changing devices. It records the
+picture only; audio played through the native host output is not included.
 The active saved control profile is shown in the stage toolbar and can be
 switched there without opening the mapping editor. It remains available in the
 focused device-view toolbar.
@@ -78,8 +82,9 @@ type; text previews are whitespace-collapsed and limited to 48 characters.
 The Device Info tab includes confirmed **Restart device** and **Shut down
 device** actions. Both end the current control session; restart reconnects only
 after iOS and the USB services are available again, while a shut-down device
-must be turned on manually. Lock screen remains available in the device-view
-toolbar and to agents through the one-way MCP `lock_device` tool.
+must be turned on manually. The device-view toolbar's Lock control simulates the
+hardware button and can wake an already locked device. Agents can instead use
+the one-way MCP `lock_device` tool when they must not wake it.
 
 Local Device Backup in the Info tab creates a standard, unencrypted
 MobileBackup2 backup in a host directory selected through the native dialog.

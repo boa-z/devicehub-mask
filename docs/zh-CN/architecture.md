@@ -98,7 +98,9 @@ activation-info 载荷。
 也不会发送设备确认 action；设备调用与 API 回复均有有界超时。
 设备重命名只接受有界、非空且不含控制字符的 Unicode 名称；会话层会再次校验，建立已配对
 的 Lockdown session，写入 `DeviceName` 并读回确认后才返回成功。诊断日志只记录字符数，
-不记录请求名称；Lockdown 名称变更通知会刷新设备选择器和当前信息标签页。
+不记录请求名称；Lockdown 名称变更通知会刷新设备选择器和当前信息标签页。成功执行
+`StartSession` 后，无论重命名成功或失败，后端都会有界尝试 `StopSession`。清理错误只进入
+日志，不会把设备已经接受的新名称误报为重命名失败。
 应用列表和生命周期控制优先复用同一会话长期持有的
 CoreDevice AppService，避免每次操作创建新的 RSD tunnel。只有可执行文件的直接父目录
 等于目标 App bundle 时才会匹配进程；停止操作会重新读取设备状态并发送固定 SIGTERM，

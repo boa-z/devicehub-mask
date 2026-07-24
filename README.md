@@ -21,9 +21,9 @@ exposed as a browser application.
   mapping editor with live or captured-screen backgrounds
 - Editable device identity, metadata and activation readiness, application browsing, running-state detection, launch,
   restart and stop controls, native app icons, IPA installation, safe app
-  removal, sandboxed App Documents transfer, read-only public AFC file browsing
-  and export, confirmed device
-  lock, restart and shutdown, and
+  removal, sandboxed App Documents transfer, bounded standard AFC file and
+  directory management, hardware-button lock, confirmed device restart and
+  shutdown, and
   provisioning profile inspection, validated installation and confirmed removal,
   bounded crash-report browsing and export, plus cancellable CoreDevice
   sysdiagnose collection
@@ -79,6 +79,7 @@ claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
 | Documentation home | [English docs](docs/en/README.md) | [中文文档](docs/zh-CN/README.md) |
 | Installation and first run | [Getting Started](docs/en/getting-started.md) | [快速开始](docs/zh-CN/getting-started.md) |
 | App workflows and controls | [User Guide](docs/en/user-guide.md) | [使用指南](docs/zh-CN/user-guide.md) |
+| Implemented feature inventory | [Feature Reference](docs/en/features.md) | [功能参考](docs/zh-CN/features.md) |
 | System design and protocols | [Architecture](docs/en/architecture.md) | [架构说明](docs/zh-CN/architecture.md) |
 | Development and local builds | [Development](docs/en/development.md) | [开发与构建](docs/zh-CN/development.md) |
 | CI, releases, and updates | [Distribution](docs/en/distribution.md) | [发布与更新](docs/zh-CN/distribution.md) |
