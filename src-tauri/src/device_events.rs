@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use idevice::IdeviceService;
-use idevice::provider::IdeviceProvider;
+use idevice::RsdService;
+use idevice::rsd::RsdHandshake;
 use idevice::services::notification_proxy::NotificationProxyClient;
+use idevice::tcp::handle::AdapterHandle;
 use serde::Serialize;
 use tokio::sync::{broadcast, watch};
 
@@ -75,7 +76,8 @@ fn normalize_notification(name: &str) -> Option<DeviceEventKind> {
 }
 
 pub async fn supervise(
-    provider: Arc<dyn IdeviceProvider>,
+    mut adapter: AdapterHandle,
+    mut handshake: RsdHandshake,
     events: DeviceEventSlot,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -88,7 +90,8 @@ pub async fn supervise(
         attempt += 1;
         reporter.connecting(attempt);
         let result = run_once(
-            provider.clone(),
+            &mut adapter,
+            &mut handshake,
             events.clone(),
             &reporter,
             attempt,
@@ -110,7 +113,8 @@ pub async fn supervise(
 }
 
 async fn run_once(
-    provider: Arc<dyn IdeviceProvider>,
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
     events: DeviceEventSlot,
     reporter: &ServiceReporter,
     attempt: u32,
@@ -118,7 +122,7 @@ async fn run_once(
 ) -> Result<(), String> {
     let mut client = tokio::time::timeout(
         CONNECT_TIMEOUT,
-        NotificationProxyClient::connect(provider.as_ref()),
+        NotificationProxyClient::connect_rsd(adapter, handshake),
     )
     .await
     .map_err(|_| "device notification connection timed out".to_string())?

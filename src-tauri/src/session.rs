@@ -1426,7 +1426,8 @@ async fn run(
         supervisor.shutdown_receiver(),
     ));
     supervisor.spawn(crate::device_events::supervise(
-        provider.clone(),
+        adapter.clone(),
+        handshake.clone(),
         views.device_events.clone(),
         supervisor.reporter("device.notifications"),
         supervisor.shutdown_receiver(),
