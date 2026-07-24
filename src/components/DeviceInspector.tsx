@@ -30,7 +30,7 @@ import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
+import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -144,6 +144,8 @@ export function DeviceInspector({
   const [backupStatus, setBackupStatus] = useState<DeviceBackupStatus | null>(null);
   const [backupFull, setBackupFull] = useState(false);
   const [backupAction, setBackupAction] = useState<"start" | "stop" | null>(null);
+  const [sysdiagnoseStatus, setSysdiagnoseStatus] = useState<SysdiagnoseStatus | null>(null);
+  const [sysdiagnoseAction, setSysdiagnoseAction] = useState<"start" | "stop" | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -197,6 +199,12 @@ export function DeviceInspector({
   const loadBackupStatus = useCallback(async () => {
     const status = await readJson<DeviceBackupStatus>(await request("/api/device/backup"));
     setBackupStatus(status);
+    return status;
+  }, [request]);
+
+  const loadSysdiagnoseStatus = useCallback(async () => {
+    const status = await readJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose"));
+    setSysdiagnoseStatus(status);
     return status;
   }, [request]);
 
@@ -274,6 +282,8 @@ export function DeviceInspector({
     handledDeveloperImageState.current = "";
     setBackupStatus(null);
     setBackupAction(null);
+    setSysdiagnoseStatus(null);
+    setSysdiagnoseAction(null);
     setError(null);
   }, [activeUdid]);
 
@@ -295,6 +305,30 @@ export function DeviceInspector({
       }
       if (!cancelled) {
         const active = next?.state === "starting" || next?.state === "backing_up";
+        timer = setTimeout(poll, active ? 350 : 2_000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeUdid, request]);
+
+  useEffect(() => {
+    if (!activeUdid) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      let next: SysdiagnoseStatus | null = null;
+      try {
+        next = await readJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose"));
+        if (!cancelled) setSysdiagnoseStatus(next);
+      } catch {
+        // The regular inspector request path surfaces connection errors.
+      }
+      if (!cancelled) {
+        const active = next != null && ["starting", "collecting", "downloading"].includes(next.state);
         timer = setTimeout(poll, active ? 350 : 2_000);
       }
     };
@@ -563,6 +597,54 @@ export function DeviceInspector({
       void message.error(t("deviceInspector.backupStopFailed", { error: String(backupError) }));
     } finally {
       setBackupAction(null);
+    }
+  };
+
+  const startSysdiagnose = async () => {
+    const selected = await save({
+      title: t("deviceInspector.sysdiagnoseSelectDestination"),
+      defaultPath: "sysdiagnose.tar.gz",
+      filters: [{ name: t("deviceInspector.sysdiagnoseArchive"), extensions: ["gz"] }],
+    });
+    if (!selected) return;
+    Modal.confirm({
+      title: t("deviceInspector.sysdiagnoseConfirmTitle"),
+      content: t("deviceInspector.sysdiagnoseConfirm"),
+      okText: t("deviceInspector.sysdiagnoseStart"),
+      okButtonProps: { danger: true },
+      cancelText: t("common.cancel"),
+      async onOk() {
+        setSysdiagnoseAction("start");
+        try {
+          const response = await request("/api/device/sysdiagnose", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ destination: selected }),
+          });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          await loadSysdiagnoseStatus();
+          void message.success(t("deviceInspector.sysdiagnoseStarted"));
+        } catch (sysdiagnoseError) {
+          void message.error(t("deviceInspector.sysdiagnoseStartFailed", { error: String(sysdiagnoseError) }));
+          throw sysdiagnoseError;
+        } finally {
+          setSysdiagnoseAction(null);
+        }
+      },
+    });
+  };
+
+  const stopSysdiagnose = async () => {
+    setSysdiagnoseAction("stop");
+    try {
+      const response = await request("/api/device/sysdiagnose", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadSysdiagnoseStatus();
+      void message.info(t("deviceInspector.sysdiagnoseCancelled"));
+    } catch (sysdiagnoseError) {
+      void message.error(t("deviceInspector.sysdiagnoseStopFailed", { error: String(sysdiagnoseError) }));
+    } finally {
+      setSysdiagnoseAction(null);
     }
   };
 
@@ -920,6 +1002,19 @@ export function DeviceInspector({
       : backupRunning
         ? "processing"
         : "default";
+  const sysdiagnoseRunning = sysdiagnoseStatus != null
+    && ["starting", "collecting", "downloading"].includes(sysdiagnoseStatus.state);
+  const sysdiagnoseProgress = sysdiagnoseStatus?.progress_percent
+    ?? (sysdiagnoseStatus && sysdiagnoseStatus.bytes_total > 0
+      ? Math.min(100, sysdiagnoseStatus.bytes_written * 100 / sysdiagnoseStatus.bytes_total)
+      : undefined);
+  const sysdiagnoseStatusColor = sysdiagnoseStatus?.state === "completed"
+    ? "success"
+    : sysdiagnoseStatus?.state === "failed"
+      ? "error"
+      : sysdiagnoseRunning
+        ? "processing"
+        : "default";
 
   return (
     <>
@@ -1195,6 +1290,60 @@ export function DeviceInspector({
                     disabled={backupAction !== null}
                     onClick={() => void startDeviceBackup()}
                   >{t("deviceInspector.backupStart")}</Button>
+                )}
+              </div>
+            </section>
+            <section className="device-sysdiagnose-section">
+              <div className="device-backup-heading">
+                <div>
+                  <Typography.Text strong>{t("deviceInspector.sysdiagnoseTitle")}</Typography.Text>
+                  <Typography.Text type="secondary">{t("deviceInspector.sysdiagnoseHint")}</Typography.Text>
+                </div>
+                {sysdiagnoseStatus && sysdiagnoseStatus.state !== "idle" && (
+                  <Tag color={sysdiagnoseStatusColor}>
+                    {t(`deviceInspector.sysdiagnoseStates.${sysdiagnoseStatus.state}`)}
+                  </Tag>
+                )}
+              </div>
+              {sysdiagnoseStatus && sysdiagnoseStatus.state !== "idle" && (
+                <div className="device-backup-progress">
+                  <Progress
+                    size="small"
+                    percent={sysdiagnoseProgress}
+                    status={sysdiagnoseStatus.state === "failed" ? "exception" : sysdiagnoseStatus.state === "completed" ? "success" : "active"}
+                  />
+                  <div className="device-backup-metrics">
+                    <span>{sysdiagnoseStatus.bytes_total > 0
+                      ? `${formatFileSize(sysdiagnoseStatus.bytes_written)} / ${formatFileSize(sysdiagnoseStatus.bytes_total)}`
+                      : t("deviceInspector.sysdiagnosePreparing")}</span>
+                    <span>{formatElapsed(sysdiagnoseStatus.elapsed_ms)}</span>
+                  </div>
+                  {sysdiagnoseStatus.destination_name && (
+                    <Typography.Text type="secondary" ellipsis={{ tooltip: sysdiagnoseStatus.destination_name }}>
+                      {t("deviceInspector.sysdiagnoseDestination", { name: sysdiagnoseStatus.destination_name })}
+                    </Typography.Text>
+                  )}
+                </div>
+              )}
+              {sysdiagnoseStatus?.state === "failed" && sysdiagnoseStatus.error && (
+                <Alert type="error" showIcon message={t("deviceInspector.sysdiagnoseFailed")} description={sysdiagnoseStatus.error} />
+              )}
+              <div className="device-backup-actions">
+                {sysdiagnoseRunning ? (
+                  <Button
+                    danger
+                    icon={<StopOutlined />}
+                    loading={sysdiagnoseAction === "stop"}
+                    disabled={sysdiagnoseAction !== null}
+                    onClick={() => void stopSysdiagnose()}
+                  >{t("deviceInspector.sysdiagnoseCancel")}</Button>
+                ) : (
+                  <Button
+                    icon={<BugOutlined />}
+                    loading={sysdiagnoseAction === "start"}
+                    disabled={sysdiagnoseAction !== null}
+                    onClick={() => void startSysdiagnose()}
+                  >{t("deviceInspector.sysdiagnoseStart")}</Button>
                 )}
               </div>
             </section>

@@ -104,7 +104,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-companion-meta > div { display: flex; flex-wrap: wrap; gap: 4px; }
 .device-companion-meta .ant-tag { margin: 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
 .device-companion-row > .ant-btn { width: 24px; height: 24px; padding: 0; }
-.device-backup-section { padding: 14px 4px; border-top: 1px solid #303638; display: flex; flex-direction: column; gap: 10px; }
+.device-backup-section, .device-sysdiagnose-section { padding: 14px 4px; border-top: 1px solid #303638; display: flex; flex-direction: column; gap: 10px; }
 .device-backup-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .device-backup-heading > div, .device-backup-mode > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .device-backup-heading .ant-typography, .device-backup-mode .ant-typography { margin: 0; font-size: 11px; overflow-wrap: anywhere; }

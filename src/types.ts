@@ -115,6 +115,16 @@ export type DeviceBackupStatus = {
   destination_name: string | null;
   error: string | null;
 };
+export type SysdiagnoseState = "idle" | "starting" | "collecting" | "downloading" | "completed" | "cancelled" | "failed";
+export type SysdiagnoseStatus = {
+  state: SysdiagnoseState;
+  bytes_written: number;
+  bytes_total: number;
+  progress_percent: number | null;
+  elapsed_ms: number;
+  destination_name: string | null;
+  error: string | null;
+};
 export type DeveloperImageMountState = "idle" | "validating" | "personalizing" | "uploading" | "mounting" | "unmounting" | "mounted" | "unmounted" | "cancelled" | "failed";
 export type DeveloperImageMountStatus = {
   state: DeveloperImageMountState;

@@ -709,6 +709,7 @@ struct SessionViews {
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     device_backup: crate::device_backup::DeviceBackupSlot,
+    sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     developer_image: crate::developer_image::DeveloperImageMountSlot,
     device_conditions: crate::device_conditions::DeviceConditionSlot,
 }
@@ -772,6 +773,7 @@ pub async fn manage(
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     device_backup: crate::device_backup::DeviceBackupSlot,
+    sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     developer_image: crate::developer_image::DeveloperImageMountSlot,
     device_conditions: crate::device_conditions::DeviceConditionSlot,
     orientation_view: OrientationSlot,
@@ -908,6 +910,7 @@ pub async fn manage(
                 network_capture: network_capture.clone(),
                 bluetooth_capture: bluetooth_capture.clone(),
                 device_backup: device_backup.clone(),
+                sysdiagnose: sysdiagnose.clone(),
                 developer_image: developer_image.clone(),
                 device_conditions: device_conditions.clone(),
             },
@@ -1640,6 +1643,15 @@ async fn run(
         supervisor.reporter("device.backup"),
         supervisor.shutdown_receiver(),
     ));
+    let (sysdiagnose_sender, sysdiagnose_receiver) = tokio::sync::mpsc::channel(4);
+    supervisor.spawn(crate::sysdiagnose::serve(
+        adapter.clone(),
+        handshake.clone(),
+        sysdiagnose_receiver,
+        views.sysdiagnose.clone(),
+        supervisor.reporter("device.sysdiagnose"),
+        supervisor.shutdown_receiver(),
+    ));
     let (developer_image_sender, developer_image_receiver) = tokio::sync::mpsc::channel(4);
     supervisor.spawn(crate::developer_image::serve(
         provider.clone(),
@@ -1677,6 +1689,7 @@ async fn run(
         network_capture: network_capture_sender,
         bluetooth_capture: bluetooth_capture_sender,
         device_backup: device_backup_sender,
+        sysdiagnose: sysdiagnose_sender,
         developer_image: developer_image_sender,
         device_conditions: device_condition_sender,
         provisioning: provisioning_sender,
@@ -2069,6 +2082,7 @@ struct DeviceManagementServices {
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
     bluetooth_capture: tokio::sync::mpsc::Sender<crate::bluetooth_capture::BluetoothCaptureCommand>,
     device_backup: tokio::sync::mpsc::Sender<crate::device_backup::DeviceBackupCommand>,
+    sysdiagnose: tokio::sync::mpsc::Sender<crate::sysdiagnose::SysdiagnoseCommand>,
     developer_image: tokio::sync::mpsc::Sender<crate::developer_image::DeveloperImageMountCommand>,
     device_conditions: tokio::sync::mpsc::Sender<crate::device_conditions::DeviceConditionCommand>,
     provisioning: tokio::sync::mpsc::Sender<crate::provisioning::ProvisioningCommand>,
@@ -2155,6 +2169,16 @@ fn reject_device_backup_command(command: crate::device_backup::DeviceBackupComma
 
     match command {
         DeviceBackupCommand::Start { reply, .. } | DeviceBackupCommand::Stop { reply } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+    }
+}
+
+fn reject_sysdiagnose_command(command: crate::sysdiagnose::SysdiagnoseCommand, reason: &str) {
+    use crate::sysdiagnose::SysdiagnoseCommand;
+
+    match command {
+        SysdiagnoseCommand::Start { reply, .. } | SysdiagnoseCommand::Stop { reply } => {
             let _ = reply.send(Err(reason.into()));
         }
     }
@@ -2611,6 +2635,20 @@ impl DeviceManagement {
                         }
                     };
                     reject_device_backup_command(command, reason);
+                }
+                None
+            }
+            InputCmd::Sysdiagnose(command) => {
+                if let Err(error) = self.services.sysdiagnose.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("sysdiagnose service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("sysdiagnose service is unavailable", command)
+                        }
+                    };
+                    reject_sysdiagnose_command(command, reason);
                 }
                 None
             }
@@ -3658,6 +3696,7 @@ async fn dispatch(
         | InputCmd::NetworkCapture(_)
         | InputCmd::BluetoothCapture(_)
         | InputCmd::DeviceBackup(_)
+        | InputCmd::Sysdiagnose(_)
         | InputCmd::DeveloperImageMount(_)
         | InputCmd::DeviceCondition(_)
         | InputCmd::AppDocuments(_)

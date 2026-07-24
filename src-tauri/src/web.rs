@@ -41,6 +41,7 @@ pub struct AppState {
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
     pub bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     pub device_backup: crate::device_backup::DeviceBackupSlot,
+    pub sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     pub developer_image: crate::developer_image::DeveloperImageMountSlot,
     pub device_conditions: crate::device_conditions::DeviceConditionSlot,
     pub video_counters: VideoCounters,
@@ -184,6 +185,12 @@ pub fn router(state: AppState, token: String) -> Router {
             get(device_backup_status)
                 .put(start_device_backup)
                 .delete(stop_device_backup),
+        )
+        .route(
+            "/api/device/sysdiagnose",
+            get(sysdiagnose_status)
+                .put(start_sysdiagnose)
+                .delete(stop_sysdiagnose),
         )
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
@@ -644,6 +651,81 @@ async fn await_device_backup_command(
         })?;
     result.map_err(|error| {
         let status = if error.contains("already running") || error.contains("no device backup") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
+        (status, error)
+    })
+}
+
+async fn sysdiagnose_status(
+    State(state): State<AppState>,
+) -> Json<crate::sysdiagnose::SysdiagnoseStatus> {
+    Json(state.sysdiagnose.get())
+}
+
+#[derive(Deserialize)]
+struct StartSysdiagnoseRequest {
+    destination: PathBuf,
+}
+
+async fn start_sysdiagnose(
+    State(state): State<AppState>,
+    Json(request): Json<StartSysdiagnoseRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let destination = crate::sysdiagnose::prepare_destination(&request.destination)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::Sysdiagnose(
+        crate::sysdiagnose::SysdiagnoseCommand::Start { destination, reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_sysdiagnose_command(response, "start sysdiagnose export").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn stop_sysdiagnose(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::Sysdiagnose(
+        crate::sysdiagnose::SysdiagnoseCommand::Stop { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_sysdiagnose_command(response, "stop sysdiagnose export").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn await_sysdiagnose_command(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    let result = tokio::time::timeout(Duration::from_secs(10), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?;
+    result.map_err(|error| {
+        let status = if error.contains("already running") || error.contains("no sysdiagnose") {
             StatusCode::CONFLICT
         } else {
             StatusCode::SERVICE_UNAVAILABLE
@@ -3126,6 +3208,7 @@ mod tests {
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),
                 bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot::default(),
                 device_backup: crate::device_backup::DeviceBackupSlot::default(),
+                sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot::default(),
                 developer_image: crate::developer_image::DeveloperImageMountSlot::default(),
                 device_conditions: crate::device_conditions::DeviceConditionSlot::default(),
                 video_counters: VideoCounters::default(),
@@ -3553,6 +3636,57 @@ mod tests {
         let stop = tokio::spawn(stop_device_backup(State(state)));
         match input_rx.recv().await.unwrap() {
             InputCmd::DeviceBackup(crate::device_backup::DeviceBackupCommand::Stop { reply }) => {
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn sysdiagnose_endpoints_validate_and_dispatch_commands() {
+        let (state, mut input_rx) = test_state();
+        let invalid = start_sysdiagnose(
+            State(state.clone()),
+            Json(StartSysdiagnoseRequest {
+                destination: PathBuf::from("relative.tar.gz"),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+
+        let destination = std::env::temp_dir().join(format!(
+            "devicehub-mask-web-sysdiagnose-{}.tar.gz",
+            uuid::Uuid::new_v4()
+        ));
+        let expected = crate::sysdiagnose::prepare_destination(&destination)
+            .await
+            .unwrap();
+        let start = tokio::spawn(start_sysdiagnose(
+            State(state.clone()),
+            Json(StartSysdiagnoseRequest { destination }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::Sysdiagnose(crate::sysdiagnose::SysdiagnoseCommand::Start {
+                destination,
+                reply,
+            }) => {
+                assert_eq!(destination, expected);
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            sysdiagnose_status(State(state.clone())).await.0.state,
+            crate::sysdiagnose::SysdiagnoseState::Idle
+        );
+
+        let stop = tokio::spawn(stop_sysdiagnose(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::Sysdiagnose(crate::sysdiagnose::SysdiagnoseCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
             }
             _ => panic!("unexpected command"),

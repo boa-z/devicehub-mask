@@ -90,6 +90,16 @@ received so the same directory can be used for a later incremental run. Backup
 contents can include private application and account data and must be protected
 accordingly. This version intentionally does not expose restore or erase.
 
+**System diagnostics** in the same Info tab collects a full Apple sysdiagnose
+through CoreDevice DiagnosticsService. Choose a `.tar.gz` destination and
+confirm the privacy warning before starting. Device-side collection can take
+several minutes before download progress begins, and a typical archive occupies
+1–2 GB. Keep the device unlocked and connected. Cancelling, disconnecting, or a
+stream failure removes the partial host file; an existing destination is
+replaced only after the complete archive has been flushed and synchronized.
+Sysdiagnose can contain logs, app activity, network metadata, and other private
+device information, so share and retain it accordingly.
+
 The top-level **AFC files** workspace opens the standard AFC media container
 exposed by the connected device. Its contents depend on iOS and may include
 directories such as `DCIM`. You can import and export files or complete folder
@@ -158,7 +168,8 @@ is left, so monitoring does not add permanent device load. The service-health
 section reports whether device heartbeat, virtual location, device conditions,
 device notifications, system monitoring, graphics monitoring, network
 monitoring, energy monitoring, paired Apple Watch discovery, home-screen layout
-reads, app activity monitoring, packet capture, and Bluetooth HCI capture are
+reads, app activity monitoring, packet capture, Bluetooth HCI capture, and
+system diagnostics are
 connecting, ready,
 recovering, unavailable, or stopped.
 The heartbeat responds to the device's Lockdown keep-alive requests throughout

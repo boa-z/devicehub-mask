@@ -29,6 +29,7 @@ mod screen_capture;
 mod session;
 mod settings;
 mod supervisor;
+mod sysdiagnose;
 mod wda_automation;
 mod wda_runner;
 mod web;
@@ -207,6 +208,7 @@ fn spawn_backend(
                 let network_capture = network_capture::NetworkCaptureSlot::default();
                 let bluetooth_capture = bluetooth_capture::BluetoothCaptureSlot::default();
                 let device_backup = device_backup::DeviceBackupSlot::default();
+                let sysdiagnose = sysdiagnose::SysdiagnoseSlot::default();
                 let developer_image = developer_image::DeveloperImageMountSlot::default();
                 let device_conditions = device_conditions::DeviceConditionSlot::default();
                 let orientation = OrientationSlot::default();
@@ -258,6 +260,7 @@ fn spawn_backend(
                     network_capture.clone(),
                     bluetooth_capture.clone(),
                     device_backup.clone(),
+                    sysdiagnose.clone(),
                     developer_image.clone(),
                     device_conditions.clone(),
                     orientation.clone(),
@@ -285,6 +288,7 @@ fn spawn_backend(
                         network_capture,
                         bluetooth_capture,
                         device_backup,
+                        sysdiagnose,
                         developer_image,
                         device_conditions,
                         video_counters,

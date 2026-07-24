@@ -227,6 +227,17 @@ file paths. Cancellation drops the DeviceLink session immediately and retains
 already transferred data for a later incremental backup. Restore, erase, backup
 password changes, and automatic/background backup are outside this boundary.
 
+Sysdiagnose export is a separate explicit CoreDevice DiagnosticsService worker
+on the cloned RSD tunnel. The request returns after a same-directory temporary
+file is reserved, while device collection and streaming continue under the
+session supervisor. The worker runs for at most 45 minutes, accepts at most 8
+GiB, rejects oversized chunks
+or a stream that differs from the device-declared length, and publishes only
+bounded counters and the selected file name. Cancellation and session shutdown
+drop the service stream and remove the partial file. Completion flushes and
+synchronizes the archive before atomically replacing the selected destination;
+diagnostic contents never cross the private API or MCP boundary.
+
 Device packet capture is a separate, user-initiated pcapd worker. USB sessions
 first open the traditional lockdown pcapd service and retain the cloned RSD
 tunnel as a fallback; Wi-Fi sessions use the CoreDevice remote pcapd shim over

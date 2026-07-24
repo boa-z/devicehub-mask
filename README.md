@@ -25,7 +25,8 @@ exposed as a browser application.
   and export, confirmed device
   lock, restart and shutdown, and
   provisioning profile inspection, validated installation and confirmed removal,
-  plus bounded crash-report browsing and export
+  bounded crash-report browsing and export, plus cancellable CoreDevice
+  sysdiagnose collection
 - One-shot Unicode text paste and optional bidirectional text/image clipboard
   synchronization through the CoreDevice Pasteboard Service
 - On-demand structured iPhone Unified Log console with level/context filtering,
