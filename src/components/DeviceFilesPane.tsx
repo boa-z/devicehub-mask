@@ -16,13 +16,13 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
-import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Spin, Tooltip, Typography, message } from "antd";
+import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Progress, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeAfcPath, sortAfcEntries } from "../afcBrowser";
 import type { AfcSortDirection, AfcSortField } from "../afcBrowser";
 import { formatFileSize } from "../deviceInspector";
-import type { DeviceFileEntry, DeviceFileList } from "../types";
+import type { DeviceFileActivity, DeviceFileEntry, DeviceFileList } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -54,6 +54,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
   const [pathDraft, setPathDraft] = useState("/");
   const [sortField, setSortField] = useState<AfcSortField>("name");
   const [sortDirection, setSortDirection] = useState<AfcSortDirection>("ascending");
+  const [activity, setActivity] = useState<DeviceFileActivity | null>(null);
   const requestVersion = useRef(0);
 
   const load = useCallback(async () => {
@@ -83,7 +84,31 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
     setListing(null);
     setError(null);
     setBusy(null);
+    setActivity(null);
   }, [deviceId]);
+
+  const transferBusy = busy === "import" || busy?.startsWith("export:") === true;
+  useEffect(() => {
+    if (!deviceId || !transferBusy) {
+      setActivity(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await readJson<DeviceFileActivity>(await request("/api/device/files/activity"));
+        if (!cancelled) setActivity(next);
+      } catch {
+        // The transfer request reports the authoritative error.
+      }
+    };
+    void poll();
+    const interval = window.setInterval(() => void poll(), 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [deviceId, request, transferBusy]);
 
   useEffect(() => {
     void load();
@@ -334,6 +359,35 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
           <Button icon={<ReloadOutlined />} aria-label={t("deviceInspector.refreshDeviceFiles")} disabled={busy !== null} onClick={() => void load()} />
         </Tooltip>
       </div>
+      {transferBusy && (
+        <div className="app-document-transfer" role="status">
+          <div className="app-document-transfer-heading">
+            <Typography.Text>
+              {t(busy === "import"
+                ? "deviceInspector.deviceFileTransferImporting"
+                : "deviceInspector.deviceFileTransferExporting")}
+            </Typography.Text>
+            {activity?.state === "running" ? (
+              <Typography.Text type="secondary">
+                {t("deviceInspector.deviceFileTransferProgress", {
+                  size: formatFileSize(activity.bytes_transferred),
+                  files: activity.files_transferred,
+                  directories: activity.directories_transferred,
+                })}
+              </Typography.Text>
+            ) : <Spin size="small" />}
+          </div>
+          {activity?.state === "running" && activity.bytes_total !== null && (
+            <Progress
+              size="small"
+              status="active"
+              percent={activity.bytes_total === 0
+                ? 100
+                : Math.min(100, Math.floor(activity.bytes_transferred * 100 / activity.bytes_total))}
+            />
+          )}
+        </div>
+      )}
       {error ? (
         <Alert type="error" showIcon message={t("deviceInspector.deviceFilesUnavailable")} description={error} />
       ) : busy === "list" && !listing ? (

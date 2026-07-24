@@ -268,6 +268,12 @@ but resets when the selected device changes. Direct path input mirrors the
 backend's UTF-8 byte and component limits before issuing a request; the backend
 remains the authoritative confinement boundary.
 
+Public AFC imports and exports publish a separate session-scoped activity
+snapshot. The transfer reuses one 64 KiB buffer across all files and publishes
+byte and entry counters at most every 100 ms. Single files expose a known byte
+total; directories stay indeterminate to avoid a second device traversal. The
+AFC tab polls the snapshot only while its transfer request is active.
+
 Clipboard synchronization connects CoreDevice Pasteboard Service only when its
 persisted opt-in setting is enabled for a newly connected session. Device changes
 are push-driven when available, while host changes use a bounded-rate poll with

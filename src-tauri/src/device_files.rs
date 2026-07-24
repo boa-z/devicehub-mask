@@ -1,8 +1,8 @@
 //! Bounded file management for the device's public AFC media container.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use idevice::afc::AfcClient;
 use idevice::afc::opcode::AfcFopenMode;
@@ -11,7 +11,7 @@ use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use idevice::{IdeviceService, RsdService};
 use serde::Serialize;
-use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::protocol::ConnKind;
@@ -25,6 +25,7 @@ const MAX_PATH_BYTES: usize = 1_024;
 const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_TRANSFER_ENTRIES: usize = 100_000;
 const MAX_TRANSFER_DEPTH: usize = 64;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +56,167 @@ pub struct DeviceFileTransfer {
     pub bytes_transferred: u64,
     pub files_transferred: u64,
     pub directories_transferred: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceFileActivityKind {
+    Export,
+    Import,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceFileActivityState {
+    #[default]
+    Idle,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DeviceFileActivityView {
+    pub id: u64,
+    pub kind: Option<DeviceFileActivityKind>,
+    pub state: DeviceFileActivityState,
+    pub path: Option<String>,
+    pub bytes_transferred: u64,
+    pub bytes_total: Option<u64>,
+    pub files_transferred: u64,
+    pub directories_transferred: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct DeviceFileActivitySlot(Arc<Mutex<DeviceFileActivityView>>);
+
+impl DeviceFileActivitySlot {
+    fn start(&self, kind: DeviceFileActivityKind, path: String) -> u64 {
+        let mut view = self.0.lock().expect("device file activity lock poisoned");
+        let id = view.id.wrapping_add(1).max(1);
+        *view = DeviceFileActivityView {
+            id,
+            kind: Some(kind),
+            state: DeviceFileActivityState::Running,
+            path: Some(path),
+            ..DeviceFileActivityView::default()
+        };
+        id
+    }
+
+    fn update(&self, id: u64, transfer: DeviceFileTransfer) {
+        let mut view = self.0.lock().expect("device file activity lock poisoned");
+        if view.id == id && view.state == DeviceFileActivityState::Running {
+            view.bytes_transferred = transfer.bytes_transferred;
+            view.files_transferred = transfer.files_transferred;
+            view.directories_transferred = transfer.directories_transferred;
+        }
+    }
+
+    fn set_total(&self, id: u64, bytes_total: u64) {
+        let mut view = self.0.lock().expect("device file activity lock poisoned");
+        if view.id == id && view.state == DeviceFileActivityState::Running {
+            view.bytes_total = Some(bytes_total);
+        }
+    }
+
+    fn finish(&self, id: u64, result: &Result<(), String>) {
+        let mut view = self.0.lock().expect("device file activity lock poisoned");
+        if view.id != id || view.state != DeviceFileActivityState::Running {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                view.state = DeviceFileActivityState::Succeeded;
+                if let Some(total) = view.bytes_total {
+                    view.bytes_transferred = total;
+                }
+            }
+            Err(error) => {
+                view.state = DeviceFileActivityState::Failed;
+                view.error = Some(error.chars().take(512).collect());
+            }
+        }
+    }
+
+    pub fn get(&self) -> DeviceFileActivityView {
+        self.0
+            .lock()
+            .expect("device file activity lock poisoned")
+            .clone()
+    }
+
+    fn reset(&self) {
+        *self.0.lock().expect("device file activity lock poisoned") =
+            DeviceFileActivityView::default();
+    }
+}
+
+struct TransferProgress {
+    slot: DeviceFileActivitySlot,
+    id: u64,
+    transfer: DeviceFileTransfer,
+    last_published: Instant,
+    buffer: Vec<u8>,
+}
+
+impl TransferProgress {
+    fn new(slot: DeviceFileActivitySlot, id: u64) -> Self {
+        Self {
+            slot,
+            id,
+            transfer: DeviceFileTransfer::default(),
+            last_published: Instant::now(),
+            buffer: vec![0u8; TRANSFER_BUFFER_BYTES],
+        }
+    }
+
+    fn set_total(&self, bytes_total: u64) {
+        self.slot.set_total(self.id, bytes_total);
+    }
+
+    fn file(&mut self) {
+        self.transfer.files_transferred = self.transfer.files_transferred.saturating_add(1);
+        self.publish(true);
+    }
+
+    fn directory(&mut self) {
+        self.transfer.directories_transferred =
+            self.transfer.directories_transferred.saturating_add(1);
+        self.publish(true);
+    }
+
+    fn publish(&mut self, force: bool) {
+        if force || self.last_published.elapsed() >= PROGRESS_INTERVAL {
+            self.slot.update(self.id, self.transfer);
+            self.last_published = Instant::now();
+        }
+    }
+
+    async fn copy<R, W>(&mut self, reader: &mut R, writer: &mut W) -> std::io::Result<u64>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let mut total = 0u64;
+        loop {
+            let read = reader.read(&mut self.buffer).await?;
+            if read == 0 {
+                return Ok(total);
+            }
+            writer.write_all(&self.buffer[..read]).await?;
+            let read = read as u64;
+            total = total.saturating_add(read);
+            self.transfer.bytes_transferred = self.transfer.bytes_transferred.saturating_add(read);
+            self.publish(false);
+        }
+    }
+
+    fn finish(mut self) -> DeviceFileTransfer {
+        self.publish(true);
+        self.transfer
+    }
 }
 
 #[derive(Debug)]
@@ -156,21 +318,23 @@ impl DeviceFileTransport {
 pub async fn serve(
     mut transport: DeviceFileTransport,
     mut commands: mpsc::Receiver<DeviceFileCommand>,
+    activity: DeviceFileActivitySlot,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    activity.reset();
     let mut client = None;
     let mut attempt = 0;
     reporter.stopped(attempt);
     loop {
         let command = tokio::select! {
             changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() { return; }
+                if changed.is_err() || *shutdown.borrow() { break; }
                 continue;
             }
             command = commands.recv() => command,
         };
-        let Some(command) = command else { return };
+        let Some(command) = command else { break };
         if client.is_none() {
             attempt += 1;
             reporter.connecting(attempt);
@@ -186,15 +350,25 @@ pub async fn serve(
                 }
             }
         }
-        let result = handle(client.as_mut().expect("AFC client initialized"), command).await;
+        let result = handle(
+            client.as_mut().expect("AFC client initialized"),
+            command,
+            &activity,
+        )
+        .await;
         if result.is_err() {
             client.take();
             reporter.stopped(attempt);
         }
     }
+    activity.reset();
 }
 
-async fn handle(client: &mut AfcClient, command: DeviceFileCommand) -> Result<(), ()> {
+async fn handle(
+    client: &mut AfcClient,
+    command: DeviceFileCommand,
+    activity: &DeviceFileActivitySlot,
+) -> Result<(), ()> {
     match command {
         DeviceFileCommand::List { path, reply } => {
             let result = tokio::time::timeout(METADATA_TIMEOUT, list_files(client, &path))
@@ -209,10 +383,17 @@ async fn handle(client: &mut AfcClient, command: DeviceFileCommand) -> Result<()
             destination,
             reply,
         } => {
-            let result =
-                tokio::time::timeout(TRANSFER_TIMEOUT, export_file(client, &path, &destination))
-                    .await
-                    .unwrap_or_else(|_| Err("device file export timed out".into()));
+            let id = activity.start(DeviceFileActivityKind::Export, path.clone());
+            let mut progress = TransferProgress::new(activity.clone(), id);
+            let result = tokio::time::timeout(
+                TRANSFER_TIMEOUT,
+                export_file(client, &path, &destination, &mut progress),
+            )
+            .await
+            .unwrap_or_else(|_| Err("device file export timed out".into()));
+            let _ = progress.finish();
+            let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
+            activity.finish(id, &outcome);
             let failed = result.is_err();
             let _ = reply.send(result);
             if failed { Err(()) } else { Ok(()) }
@@ -222,10 +403,17 @@ async fn handle(client: &mut AfcClient, command: DeviceFileCommand) -> Result<()
             source,
             reply,
         } => {
-            let result =
-                tokio::time::timeout(TRANSFER_TIMEOUT, import_path(client, &directory, &source))
-                    .await
-                    .unwrap_or_else(|_| Err("device file import timed out".into()));
+            let id = activity.start(DeviceFileActivityKind::Import, directory.clone());
+            let mut progress = TransferProgress::new(activity.clone(), id);
+            let result = tokio::time::timeout(
+                TRANSFER_TIMEOUT,
+                import_path(client, &directory, &source, &mut progress),
+            )
+            .await
+            .unwrap_or_else(|_| Err("device file import timed out".into()));
+            let _ = progress.finish();
+            let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
+            activity.finish(id, &outcome);
             let failed = result.is_err();
             let _ = reply.send(result);
             if failed { Err(()) } else { Ok(()) }
@@ -337,6 +525,7 @@ async fn export_file(
     client: &mut AfcClient,
     path: &str,
     destination: &Path,
+    progress: &mut TransferProgress,
 ) -> Result<DeviceFileTransfer, String> {
     let path = normalize_path(path, false)?;
     let info = client
@@ -347,14 +536,17 @@ async fn export_file(
         return Err("symbolic links cannot be exported".into());
     }
     match info.st_ifmt.as_str() {
-        "S_IFREG" => export_regular_file(client, &path, destination, info.size as u64)
-            .await
-            .map(|bytes_transferred| DeviceFileTransfer {
-                bytes_transferred,
-                files_transferred: 1,
-                directories_transferred: 0,
-            }),
-        "S_IFDIR" => export_directory(client, &path, destination).await,
+        "S_IFREG" => {
+            progress.set_total(info.size as u64);
+            export_regular_file(client, &path, destination, info.size as u64, progress)
+                .await
+                .map(|bytes_transferred| DeviceFileTransfer {
+                    bytes_transferred,
+                    files_transferred: 1,
+                    directories_transferred: 0,
+                })
+        }
+        "S_IFDIR" => export_directory(client, &path, destination, progress).await,
         _ => Err("only regular device files and directories can be exported".into()),
     }
 }
@@ -364,6 +556,7 @@ async fn export_regular_file(
     path: &str,
     destination: &Path,
     expected_size: u64,
+    progress: &mut TransferProgress,
 ) -> Result<u64, String> {
     validate_export_destination(destination).await?;
     let temporary = crate::app_documents::temporary_sibling(destination, "device-export")?;
@@ -377,7 +570,8 @@ async fn export_regular_file(
             .await
             .map_err(|error| format!("unable to create export file: {error}"))?;
         let mut local = BufWriter::with_capacity(TRANSFER_BUFFER_BYTES, local);
-        let bytes = tokio::io::copy(&mut remote, &mut local)
+        let bytes = progress
+            .copy(&mut remote, &mut local)
             .await
             .map_err(|error| format!("unable to export device file: {error}"))?;
         if bytes != expected_size {
@@ -393,6 +587,7 @@ async fn export_regular_file(
             .await
             .map_err(|error| format!("unable to close device file: {error:?}"))?;
         crate::app_documents::replace_local_file(&temporary, destination).await?;
+        progress.file();
         Ok(bytes)
     }
     .await;
@@ -406,12 +601,14 @@ async fn export_directory(
     client: &mut AfcClient,
     path: &str,
     destination: &Path,
+    progress: &mut TransferProgress,
 ) -> Result<DeviceFileTransfer, String> {
     validate_new_directory_destination(destination).await?;
     let temporary = crate::app_documents::temporary_sibling(destination, "device-export-dir")?;
     tokio::fs::create_dir(&temporary)
         .await
         .map_err(|error| format!("unable to create temporary export directory: {error}"))?;
+    progress.directory();
     let result = async {
         let mut transfer = DeviceFileTransfer {
             directories_transferred: 1,
@@ -452,6 +649,7 @@ async fn export_directory(
                             format!("unable to create exported directory: {error}")
                         })?;
                         transfer.directories_transferred += 1;
+                        progress.directory();
                         pending.push((remote_path, local_path, depth + 1));
                     }
                     "S_IFREG" => {
@@ -460,6 +658,7 @@ async fn export_directory(
                             &remote_path,
                             &local_path,
                             info.size as u64,
+                            progress,
                         )
                         .await?;
                         transfer.files_transferred += 1;
@@ -488,6 +687,7 @@ async fn import_path(
     client: &mut AfcClient,
     directory: &str,
     source: &Path,
+    progress: &mut TransferProgress,
 ) -> Result<DeviceFileEntry, String> {
     let directory = normalize_path(directory, true)?;
     let source_metadata = tokio::fs::symlink_metadata(source)
@@ -516,9 +716,10 @@ async fn import_path(
 
     let result = async {
         if source_metadata.is_file() {
-            upload_regular_file(client, &source, &temporary).await?;
+            progress.set_total(source_metadata.len());
+            upload_regular_file(client, &source, &temporary, progress).await?;
         } else {
-            import_directory(client, &source, &temporary).await?;
+            import_directory(client, &source, &temporary, progress).await?;
         }
         client
             .rename(temporary.clone(), target.clone())
@@ -541,6 +742,7 @@ async fn upload_regular_file(
     client: &mut AfcClient,
     source: &Path,
     target: &str,
+    progress: &mut TransferProgress,
 ) -> Result<u64, String> {
     let metadata = tokio::fs::symlink_metadata(source)
         .await
@@ -555,7 +757,8 @@ async fn upload_regular_file(
         .open(target.to_owned(), AfcFopenMode::WrOnly)
         .await
         .map_err(|error| format!("unable to create device file: {error:?}"))?;
-    let bytes = tokio::io::copy(&mut local, &mut remote)
+    let bytes = progress
+        .copy(&mut local, &mut remote)
         .await
         .map_err(|error| format!("unable to import device file: {error}"))?;
     if bytes != metadata.len() {
@@ -569,6 +772,7 @@ async fn upload_regular_file(
         .close()
         .await
         .map_err(|error| format!("unable to close imported device file: {error:?}"))?;
+    progress.file();
     Ok(bytes)
 }
 
@@ -576,11 +780,13 @@ async fn import_directory(
     client: &mut AfcClient,
     source: &Path,
     target: &str,
+    progress: &mut TransferProgress,
 ) -> Result<DeviceFileTransfer, String> {
     client
         .mk_dir(target.to_owned())
         .await
         .map_err(|error| format!("unable to create device directory: {error:?}"))?;
+    progress.directory();
     let mut transfer = DeviceFileTransfer {
         directories_transferred: 1,
         ..DeviceFileTransfer::default()
@@ -621,10 +827,11 @@ async fn import_directory(
                     .await
                     .map_err(|error| format!("unable to create device directory: {error:?}"))?;
                 transfer.directories_transferred += 1;
+                progress.directory();
                 pending.push((entry.path(), remote_path, depth + 1));
             } else if metadata.is_file() {
                 transfer.bytes_transferred +=
-                    upload_regular_file(client, &entry.path(), &remote_path).await?;
+                    upload_regular_file(client, &entry.path(), &remote_path, progress).await?;
                 transfer.files_transferred += 1;
             } else {
                 return Err("import source contains an unsupported entry type".into());
@@ -817,6 +1024,52 @@ mod tests {
         for name in ["", ".", "..", "a/b", r"a\b", "a\0b"] {
             assert!(validate_name(name).is_err(), "accepted {name:?}");
         }
+    }
+
+    #[test]
+    fn transfer_activity_tracks_progress_and_completion() {
+        let slot = DeviceFileActivitySlot::default();
+        let id = slot.start(DeviceFileActivityKind::Export, "/DCIM/photo.heic".into());
+        slot.set_total(id, 100);
+        slot.update(
+            id,
+            DeviceFileTransfer {
+                bytes_transferred: 42,
+                files_transferred: 0,
+                directories_transferred: 0,
+            },
+        );
+        let running = slot.get();
+        assert_eq!(running.state, DeviceFileActivityState::Running);
+        assert_eq!(running.bytes_transferred, 42);
+        assert_eq!(running.bytes_total, Some(100));
+
+        slot.finish(id, &Ok(()));
+        let completed = slot.get();
+        assert_eq!(completed.state, DeviceFileActivityState::Succeeded);
+        assert_eq!(completed.bytes_transferred, 100);
+    }
+
+    #[test]
+    fn stale_transfer_activity_updates_are_ignored() {
+        let slot = DeviceFileActivitySlot::default();
+        let stale = slot.start(DeviceFileActivityKind::Export, "/old".into());
+        let current = slot.start(DeviceFileActivityKind::Import, "/new".into());
+        slot.update(
+            stale,
+            DeviceFileTransfer {
+                bytes_transferred: 99,
+                ..DeviceFileTransfer::default()
+            },
+        );
+        slot.finish(stale, &Err("stale failure".into()));
+
+        let view = slot.get();
+        assert_eq!(view.id, current);
+        assert_eq!(view.kind, Some(DeviceFileActivityKind::Import));
+        assert_eq!(view.state, DeviceFileActivityState::Running);
+        assert_eq!(view.bytes_transferred, 0);
+        assert_eq!(view.error, None);
     }
 
     #[tokio::test]

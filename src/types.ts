@@ -274,6 +274,17 @@ export type AppDocumentActivity = {
   directories_transferred: number;
   error: string | null;
 };
+export type DeviceFileActivity = {
+  id: number;
+  kind: "export" | "import" | null;
+  state: "idle" | "running" | "succeeded" | "failed";
+  path: string | null;
+  bytes_transferred: number;
+  bytes_total: number | null;
+  files_transferred: number;
+  directories_transferred: number;
+  error: string | null;
+};
 export type DeviceCrashReport = {
   path: string;
   name: string;

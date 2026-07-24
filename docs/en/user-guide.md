@@ -255,6 +255,9 @@ by iOS. Its path bar accepts a direct absolute or root-relative path, and the
 sort menu keeps directories first while sorting each entry type by name, size,
 or modification time. Tab changes preserve the current AFC path and sort order;
 switching devices resets the workspace to the root.
+Imports and exports show live transferred bytes and item counts. A single file
+also shows an exact percentage; directory operations use an ongoing counter so
+the device tree is not scanned twice.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or

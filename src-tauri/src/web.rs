@@ -51,6 +51,7 @@ pub struct AppState {
     pub error: ErrorSlot,
     pub app_operation: AppOperationSlot,
     pub app_document_activity: crate::app_documents::AppDocumentActivitySlot,
+    pub device_file_activity: crate::device_files::DeviceFileActivitySlot,
     pub location: LocationStatusSlot,
     pub performance: PerformanceSlot,
     pub performance_demand: PerformanceDemand,
@@ -221,6 +222,7 @@ pub fn router(state: AppState, token: String) -> Router {
             "/api/device/files",
             get(device_files).delete(delete_device_file),
         )
+        .route("/api/device/files/activity", get(device_file_activity))
         .route("/api/device/files/export", put(export_device_file))
         .route("/api/device/files/import", put(import_device_file))
         .route(
@@ -1665,6 +1667,12 @@ async fn device_files(
     ))
 }
 
+async fn device_file_activity(
+    State(state): State<AppState>,
+) -> Json<crate::device_files::DeviceFileActivityView> {
+    Json(state.device_file_activity.get())
+}
+
 async fn export_device_file(
     State(state): State<AppState>,
     Json(request): Json<ExportDeviceFileRequest>,
@@ -3082,6 +3090,7 @@ mod tests {
                 error: ErrorSlot::default(),
                 app_operation: AppOperationSlot::default(),
                 app_document_activity: crate::app_documents::AppDocumentActivitySlot::default(),
+                device_file_activity: crate::device_files::DeviceFileActivitySlot::default(),
                 location: LocationStatusSlot::default(),
                 performance: PerformanceSlot::default(),
                 performance_demand: PerformanceDemand::default(),
@@ -4465,6 +4474,10 @@ mod tests {
         };
 
         let (state, mut input_rx) = test_state();
+        assert_eq!(
+            device_file_activity(State(state.clone())).await.0.state,
+            crate::device_files::DeviceFileActivityState::Idle
+        );
         let list = tokio::spawn(device_files(
             State(state.clone()),
             Query(DeviceFileQuery {
