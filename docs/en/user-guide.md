@@ -237,9 +237,10 @@ that expose iOS File Sharing start in **Documents**; developer-signed apps can
 switch to **Container**. The segmented control switches between the vended
 Documents root and the full app data container when iOS permits either request.
 You can browse folders, upload or download files and complete folders, create
-folders, rename items, and delete files or empty folders. Recursive transfers
-reject symbolic links and special entries and are limited to 64 levels and
-100,000 entries. Uploads never overwrite an existing name. Container changes can damage app data, so use that
+folders, rename items, and delete files or directory trees after confirmation.
+Recursive operations reject symbolic links and special entries and are limited
+to 64 levels and 100,000 entries. Uploads never overwrite an existing name.
+Container changes can damage app data, so use that
 scope only when inspecting or debugging an app you can recover. Apps that expose
 neither file sharing nor a developer container do not show the storage button.
 

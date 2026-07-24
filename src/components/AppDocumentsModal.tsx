@@ -206,12 +206,18 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
     if (!app) return;
     Modal.confirm({
       title: t("deviceInspector.deleteDocument"),
-      content: t("deviceInspector.deleteDocumentConfirm", { name: entry.name }),
+      content: t(entry.kind === "directory"
+        ? "deviceInspector.deleteDocumentDirectoryConfirm"
+        : "deviceInspector.deleteDocumentConfirm", { name: entry.name }),
       okText: t("common.delete"),
       cancelText: t("common.cancel"),
       okButtonProps: { danger: true },
       async onOk() {
-        const query = new URLSearchParams({ path: entry.path, scope });
+        const query = new URLSearchParams({
+          path: entry.path,
+          scope,
+          recursive: String(entry.kind === "directory"),
+        });
         const succeeded = await mutate(
           `delete:${entry.path}`,
           () => request(`${endpoint(app.bundle_id)}?${query}`, { method: "DELETE" }),

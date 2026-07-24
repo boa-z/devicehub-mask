@@ -1366,6 +1366,8 @@ struct AppDocumentQuery {
     path: String,
     #[serde(default)]
     scope: crate::app_documents::AppStorageScope,
+    #[serde(default)]
+    recursive: bool,
 }
 
 fn app_document_root() -> String {
@@ -1527,6 +1529,7 @@ async fn delete_app_document(
             bundle_id,
             scope: query.scope,
             path: query.path,
+            recursive: query.recursive,
             reply,
         },
     )?;
@@ -1575,8 +1578,14 @@ async fn await_app_document_response<T>(
             )
         })?
         .map_err(|error| {
-            let status = if error.contains("already exists") {
+            let status = if error.contains("already exists")
+                || error.contains("changed during recursive deletion")
+            {
                 StatusCode::CONFLICT
+            } else if error.contains("too many entries")
+                || error.contains("exceeds the maximum nesting depth")
+            {
+                StatusCode::PAYLOAD_TOO_LARGE
             } else if error.starts_with("invalid ")
                 || error.contains("root cannot be modified")
                 || error.contains("must be a regular file")
@@ -4057,6 +4066,7 @@ mod tests {
                 Query(AppDocumentQuery {
                     path: "/".into(),
                     scope: crate::app_documents::AppStorageScope::Documents,
+                    recursive: false,
                 }),
             )
             .await,
@@ -4274,6 +4284,7 @@ mod tests {
             Query(AppDocumentQuery {
                 path: "/Saves".into(),
                 scope: AppStorageScope::Container,
+                recursive: false,
             }),
         ));
         match input_rx.recv().await.unwrap() {
@@ -4372,11 +4383,18 @@ mod tests {
             Query(AppDocumentQuery {
                 path: "/Saves/slot-2.dat".into(),
                 scope: AppStorageScope::Documents,
+                recursive: true,
             }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::AppDocuments(AppDocumentCommand::Delete { path, reply, .. }) => {
+            InputCmd::AppDocuments(AppDocumentCommand::Delete {
+                path,
+                recursive,
+                reply,
+                ..
+            }) => {
                 assert_eq!(path, "/Saves/slot-2.dat");
+                assert!(recursive);
                 reply.send(Ok(())).unwrap();
             }
             _ => panic!("unexpected command"),
@@ -4559,12 +4577,28 @@ mod tests {
         for error in [
             "an application document with this name already exists",
             "directory export destination already exists",
+            "application entry changed during recursive deletion",
         ] {
             let (reply, response) = oneshot::channel::<Result<(), String>>();
             reply.send(Err(error.into())).unwrap();
             assert!(matches!(
                 await_app_document_response(response, "transfer").await,
                 Err((StatusCode::CONFLICT, _))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn app_document_recursive_limits_are_reported_as_payload_too_large() {
+        for error in [
+            "application directory deletion contains too many entries",
+            "application directory deletion exceeds the maximum nesting depth",
+        ] {
+            let (reply, response) = oneshot::channel::<Result<(), String>>();
+            reply.send(Err(error.into())).unwrap();
+            assert!(matches!(
+                await_app_document_response(response, "recursive delete").await,
+                Err((StatusCode::PAYLOAD_TOO_LARGE, _))
             ));
         }
     }

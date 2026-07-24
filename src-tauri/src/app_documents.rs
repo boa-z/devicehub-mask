@@ -43,7 +43,7 @@ pub struct AppDocumentEntry {
     pub modified: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppDocumentKind {
     File,
@@ -105,6 +105,7 @@ pub enum AppDocumentCommand {
         bundle_id: String,
         scope: AppStorageScope,
         path: String,
+        recursive: bool,
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -318,11 +319,12 @@ async fn handle(command: AppDocumentCommand, transport: &mut AppStorageTransport
             bundle_id,
             scope,
             path,
+            recursive,
             reply,
         } => {
             let result = tokio::time::timeout(
-                METADATA_TIMEOUT,
-                delete_document(transport, &bundle_id, scope, &path),
+                TRANSFER_TIMEOUT,
+                delete_document(transport, &bundle_id, scope, &path, recursive),
             )
             .await
             .unwrap_or_else(|_| Err("application document deletion timed out".into()));
@@ -761,16 +763,132 @@ async fn delete_document(
     bundle_id: &str,
     scope: AppStorageScope,
     path: &str,
+    recursive: bool,
 ) -> Result<(), String> {
     let path = normalize_path(path, false)?;
     let mut client = transport.connect(bundle_id, scope).await?;
     ensure_no_symlink_components(&mut client, scope, &path).await?;
-    client
-        .remove(afc_path(scope, &path))
+    let info = client
+        .get_file_info(afc_path(scope, &path))
         .await
-        .map_err(|error| {
-            format!("unable to delete application document; directories must be empty: {error:?}")
-        })
+        .map_err(|error| format!("unable to inspect application storage item: {error:?}"))?;
+    if info.st_link_target.is_some() {
+        return Err("symbolic links cannot be deleted".into());
+    }
+    match info.st_ifmt.as_str() {
+        "S_IFREG" => remove_checked(&mut client, scope, &path, AppDocumentKind::File).await,
+        "S_IFDIR" if recursive => {
+            let plan = build_recursive_delete_plan(&mut client, scope, &path).await?;
+            for entry in plan {
+                remove_checked(&mut client, scope, &entry.path, entry.kind).await?;
+            }
+            Ok(())
+        }
+        "S_IFDIR" => client
+            .remove(afc_path(scope, &path))
+            .await
+            .map_err(|error| {
+                format!("unable to delete application directory; it must be empty: {error:?}")
+            }),
+        _ => Err("unsupported application storage item cannot be deleted".into()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeletePlanEntry {
+    path: String,
+    kind: AppDocumentKind,
+}
+
+async fn build_recursive_delete_plan(
+    client: &mut AfcClient,
+    scope: AppStorageScope,
+    root: &str,
+) -> Result<Vec<DeletePlanEntry>, String> {
+    let mut plan = Vec::new();
+    let mut entries_seen = 0usize;
+    let mut pending = vec![(root.to_owned(), false, 0usize)];
+    while let Some((path, expanded, depth)) = pending.pop() {
+        if expanded {
+            plan.push(DeletePlanEntry {
+                path,
+                kind: AppDocumentKind::Directory,
+            });
+            continue;
+        }
+        let info = client
+            .get_file_info(afc_path(scope, &path))
+            .await
+            .map_err(|error| {
+                format!("unable to inspect application entry before deletion: {error:?}")
+            })?;
+        if info.st_link_target.is_some() {
+            return Err(format!(
+                "symbolic link cannot be recursively deleted: {path}"
+            ));
+        }
+        match info.st_ifmt.as_str() {
+            "S_IFREG" => plan.push(DeletePlanEntry {
+                path,
+                kind: AppDocumentKind::File,
+            }),
+            "S_IFDIR" => {
+                if depth >= MAX_TRANSFER_DEPTH {
+                    return Err(
+                        "application directory deletion exceeds the maximum nesting depth".into(),
+                    );
+                }
+                let names = client
+                    .list_dir(afc_path(scope, &path))
+                    .await
+                    .map_err(|error| {
+                        format!("unable to list application directory before deletion: {error:?}")
+                    })?;
+                pending.push((path.clone(), true, depth));
+                for name in names.into_iter().filter(|name| name != "." && name != "..") {
+                    validate_name(&name)?;
+                    entries_seen += 1;
+                    if entries_seen > MAX_TRANSFER_ENTRIES {
+                        return Err(
+                            "application directory deletion contains too many entries".into()
+                        );
+                    }
+                    pending.push((join_path(&path, &name)?, false, depth + 1));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported application entry cannot be recursively deleted: {path}"
+                ));
+            }
+        }
+    }
+    Ok(plan)
+}
+
+async fn remove_checked(
+    client: &mut AfcClient,
+    scope: AppStorageScope,
+    path: &str,
+    expected: AppDocumentKind,
+) -> Result<(), String> {
+    ensure_no_symlink_components(client, scope, path).await?;
+    let info = client
+        .get_file_info(afc_path(scope, path))
+        .await
+        .map_err(|error| format!("unable to revalidate application entry: {error:?}"))?;
+    let actual = match info.st_ifmt.as_str() {
+        "S_IFREG" if info.st_link_target.is_none() => AppDocumentKind::File,
+        "S_IFDIR" if info.st_link_target.is_none() => AppDocumentKind::Directory,
+        _ => return Err("application entry changed during recursive deletion".into()),
+    };
+    if actual != expected {
+        return Err("application entry changed during recursive deletion".into());
+    }
+    client
+        .remove(afc_path(scope, path))
+        .await
+        .map_err(|error| format!("unable to delete application storage item: {error:?}"))
 }
 
 async fn ensure_name_available(
