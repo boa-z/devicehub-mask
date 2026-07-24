@@ -1268,7 +1268,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Wait for a normalized device metadata event: app_installed, app_uninstalled, disk_usage_changed, or device_name_changed. Pass the returned sequence as after_sequence for race-free incremental waiting."
+        description = "Wait for a normalized device event: app_installed, app_uninstalled, activation_state_changed, disk_usage_changed, device_name_changed, or lock_state_changed. A lock_state_changed event reports only that the state changed; take a screenshot to observe the current screen. Pass the returned sequence as after_sequence for race-free incremental waiting."
     )]
     async fn wait_for_device_event(
         &self,

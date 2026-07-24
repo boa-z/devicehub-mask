@@ -100,6 +100,7 @@ export const enUS = {
       "location": "Virtual location",
       "device.heartbeat": "Device heartbeat",
       "device.logs": "Device logs",
+      "device.notifications": "Device notifications",
       "device.companions": "Paired Apple Watch",
       "performance.system": "System monitor",
       "performance.graphics": "Graphics monitor",

@@ -19,8 +19,10 @@ const DISK_USAGE_EVENT_INTERVAL: Duration = Duration::from_secs(1);
 const OBSERVED_NOTIFICATIONS: &[&str] = &[
     "com.apple.mobile.application_installed",
     "com.apple.mobile.application_uninstalled",
+    "com.apple.mobile.lockdown.activation_state",
     "com.apple.mobile.lockdown.disk_usage_changed",
     "com.apple.mobile.lockdown.device_name_changed",
+    "com.apple.springboard.lockstate",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -28,8 +30,10 @@ const OBSERVED_NOTIFICATIONS: &[&str] = &[
 pub enum DeviceEventKind {
     AppInstalled,
     AppUninstalled,
+    ActivationStateChanged,
     DiskUsageChanged,
     DeviceNameChanged,
+    LockStateChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -83,8 +87,12 @@ fn normalize_notification(name: &str) -> Option<DeviceEventKind> {
     match name {
         "com.apple.mobile.application_installed" => Some(DeviceEventKind::AppInstalled),
         "com.apple.mobile.application_uninstalled" => Some(DeviceEventKind::AppUninstalled),
+        "com.apple.mobile.lockdown.activation_state" => {
+            Some(DeviceEventKind::ActivationStateChanged)
+        }
         "com.apple.mobile.lockdown.disk_usage_changed" => Some(DeviceEventKind::DiskUsageChanged),
         "com.apple.mobile.lockdown.device_name_changed" => Some(DeviceEventKind::DeviceNameChanged),
+        "com.apple.springboard.lockstate" => Some(DeviceEventKind::LockStateChanged),
         _ => None,
     }
 }
@@ -204,12 +212,20 @@ mod tests {
             Some(DeviceEventKind::AppUninstalled)
         );
         assert_eq!(
+            normalize_notification("com.apple.mobile.lockdown.activation_state"),
+            Some(DeviceEventKind::ActivationStateChanged)
+        );
+        assert_eq!(
             normalize_notification("com.apple.mobile.lockdown.disk_usage_changed"),
             Some(DeviceEventKind::DiskUsageChanged)
         );
         assert_eq!(
             normalize_notification("com.apple.mobile.lockdown.device_name_changed"),
             Some(DeviceEventKind::DeviceNameChanged)
+        );
+        assert_eq!(
+            normalize_notification("com.apple.springboard.lockstate"),
+            Some(DeviceEventKind::LockStateChanged)
         );
         assert_eq!(normalize_notification("private.payload.event"), None);
     }

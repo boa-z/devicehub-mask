@@ -72,6 +72,13 @@ condition-inducer, graphics, network-monitor, and energy-monitor channels
 reconnect independently with bounded exponential backoff; one broken channel
 cannot terminate video or HID.
 
+The supervised Notification Proxy reduces vendor notification names to a fixed
+event enum. App, disk, name, and activation changes refresh only the affected
+frontend data. SpringBoard lock-state changes release all active input and are
+forwarded without inventing a locked/unlocked value because the notification
+contains no state payload. MCP consumers use the monotonic event sequence to
+wait without a read/subscribe race.
+
 Device-detail refresh reads activation state through MobileActivationd in
 parallel with Lockdown metadata, DiagnosticsRelay battery data, and
 AMFI Developer Mode status with a MobileImageMounter fallback. The backend

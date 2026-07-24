@@ -28,7 +28,7 @@ export type ClipboardEvent = {
 };
 export type DeviceEvent = {
   sequence: number;
-  kind: "app_installed" | "app_uninstalled" | "disk_usage_changed" | "device_name_changed";
+  kind: "app_installed" | "app_uninstalled" | "activation_state_changed" | "disk_usage_changed" | "device_name_changed" | "lock_state_changed";
 };
 export type ServicePhase = "connecting" | "ready" | "recovering" | "unavailable" | "stopped";
 export type ServiceHealth = {

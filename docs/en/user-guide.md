@@ -117,9 +117,9 @@ it can contain addresses, protocol metadata, and unencrypted application data.
 Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health
 section reports whether device heartbeat, virtual location, device conditions,
-system monitoring, graphics monitoring, network monitoring, energy monitoring,
-paired Apple Watch discovery, and packet capture are connecting, ready,
-recovering, unavailable, or stopped.
+device notifications, system monitoring, graphics monitoring, network
+monitoring, energy monitoring, paired Apple Watch discovery, and packet capture
+are connecting, ready, recovering, unavailable, or stopped.
 The heartbeat responds to the device's Lockdown keep-alive requests throughout
 the active session; sleep, timeout, or transport failures are recovered under
 the same bounded supervisor. A service reconnect does not tear down video or
@@ -262,10 +262,16 @@ virtual location, frame synchronization, crash diagnosis, and session status.
 model, storage, activation, Developer Mode, and battery diagnostics. UDID,
 serial number, and ECID are omitted by default; set `include_identifiers` only
 when stable hardware identity is required. `wait_for_device_event` waits without
-polling for normalized app installation/removal, disk-usage, or device-name
-changes. Pass the returned event `sequence` as `after_sequence` on the next call
-to close subscription races; raw notification names and payloads are never
-returned.
+polling for normalized app installation/removal, activation, disk-usage,
+device-name, or lock-state changes. Pass the returned event `sequence` as
+`after_sequence` on the next call to close subscription races; raw notification
+names and payloads are never returned.
+
+Activation-state notifications also refresh the Info tab. A SpringBoard lock
+state notification releases every active desktop input and is exposed as
+`lock_state_changed`. Notification Proxy does not include the resulting lock
+value, so agents must inspect a new screenshot rather than interpreting the
+event itself as either locked or unlocked.
 
 `list_companion_devices` performs the same bounded, read-only CompanionProxy
 query as the Info tab and returns available metadata for Apple Watch devices

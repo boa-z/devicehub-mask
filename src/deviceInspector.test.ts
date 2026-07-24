@@ -85,6 +85,8 @@ describe("device inspector", () => {
     expect(shouldRefreshDeviceInspector("app_installed", "apps")).toBe(true);
     expect(shouldRefreshDeviceInspector("app_uninstalled", "info")).toBe(false);
     expect(shouldRefreshDeviceInspector("disk_usage_changed", "info")).toBe(true);
+    expect(shouldRefreshDeviceInspector("activation_state_changed", "info")).toBe(true);
+    expect(shouldRefreshDeviceInspector("lock_state_changed", "info")).toBe(false);
     expect(shouldRefreshDeviceInspector("device_name_changed", "apps")).toBe(false);
   });
 

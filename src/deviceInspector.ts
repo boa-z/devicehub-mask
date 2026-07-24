@@ -13,7 +13,7 @@ export function normalizeDeviceNameInput(name: string): string | null {
 
 export function shouldRefreshDeviceInspector(kind: DeviceEvent["kind"], tab: DeviceInspectorTab): boolean {
   if (kind === "app_installed" || kind === "app_uninstalled") return tab === "apps";
-  return (kind === "disk_usage_changed" || kind === "device_name_changed") && tab === "info";
+  return (kind === "activation_state_changed" || kind === "disk_usage_changed" || kind === "device_name_changed") && tab === "info";
 }
 
 export function appProfileBindingState(

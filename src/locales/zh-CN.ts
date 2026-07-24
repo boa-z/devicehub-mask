@@ -89,6 +89,7 @@ export const zhCN = {
       "location": "虚拟定位",
       "device.heartbeat": "设备心跳",
       "device.logs": "设备日志",
+      "device.notifications": "设备通知",
       "device.companions": "配对 Apple Watch",
       "performance.system": "系统监控",
       "performance.graphics": "图形监控",

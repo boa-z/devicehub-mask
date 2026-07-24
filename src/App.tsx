@@ -839,7 +839,8 @@ export default function App() {
     if (deviceEvent?.kind === "device_name_changed") {
       void request("/api/devices/refresh", { method: "PUT" });
     }
-  }, [deviceEvent, request]);
+    if (deviceEvent?.kind === "lock_state_changed") releaseAllControls();
+  }, [deviceEvent, releaseAllControls, request]);
 
   useEffect(() => () => {
     if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
