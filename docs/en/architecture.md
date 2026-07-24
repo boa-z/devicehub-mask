@@ -155,6 +155,16 @@ Only selected display metadata is read; Watch service startup, control, and port
 forwarding are outside this boundary. Empty registries are valid, individual
 metadata values may be absent, and companion identifiers remain sensitive.
 
+WebDriverAgent automation is an on-demand optional service over the active
+`IdeviceProvider`. It never probes in the background and does not install, sign,
+or launch WDA. MCP commands enter a four-item queue, carry a 12-second deadline,
+and allow only six selector strategies, 1,024-byte selector expressions, twenty
+matches, and a 1 MiB UI-tree response. The worker owns one WDA session, deletes
+or discards it after transport failure, and reports `device.wda` health without
+tearing down display, HID, or management services. Only normalized status,
+bounded XML, match indexes, and finite rectangles cross the MCP boundary; WDA
+session and element identifiers remain private to the worker.
+
 Device packet capture is a separate, user-initiated pcapd worker over a cloned
 RSD tunnel. It writes normalized Ethernet records directly to a same-directory
 temporary host file, caps packets at the negotiated 256 KiB snapshot size and
@@ -318,7 +328,8 @@ Replace this pin after equivalent fixes are merged and released upstream.
 
 - The private API remains loopback-only and token-authenticated.
 - MCP is loopback-only by default, is unauthenticated, exposes potentially
-  sensitive screenshots, process names, device logs, and crash reports, and
+  sensitive screenshots, UI trees, process names, device logs, and crash
+  reports, and
   warns on non-loopback binds.
 - Frontend app metadata is never accepted as uninstall authorization.
 - HID reports are built only after backend validation.

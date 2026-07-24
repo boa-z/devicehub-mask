@@ -1534,6 +1534,13 @@ async fn run(
         supervisor.reporter("device.home_screen"),
         supervisor.shutdown_receiver(),
     ));
+    let (wda_sender, wda_receiver) = tokio::sync::mpsc::channel(4);
+    supervisor.spawn(crate::wda_automation::serve(
+        provider.clone(),
+        wda_receiver,
+        supervisor.reporter("device.wda"),
+        supervisor.shutdown_receiver(),
+    ));
     let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
     supervisor.spawn(crate::app_documents::serve(
         adapter.clone(),
@@ -1578,6 +1585,7 @@ async fn run(
         icons: app_icon_sender,
         companions: companion_sender,
         home_screen: home_screen_sender,
+        wda: wda_sender,
         documents: app_documents_sender,
         screen_capture: screen_capture_sender,
         network_capture: network_capture_sender,
@@ -1964,6 +1972,7 @@ struct DeviceManagementServices {
     icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
     companions: tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
     home_screen: tokio::sync::mpsc::Sender<crate::home_screen::HomeScreenCommand>,
+    wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
@@ -1984,6 +1993,25 @@ fn reject_provisioning_command(command: crate::provisioning::ProvisioningCommand
         }
         ProvisioningCommand::Remove { reply, .. } => {
             let _ = reply.send(Err(failure()));
+        }
+    }
+}
+
+fn reject_wda_command(command: crate::wda_automation::WdaAutomationCommand, reason: &str) {
+    use crate::wda_automation::WdaAutomationCommand;
+
+    match command {
+        WdaAutomationCommand::Status { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::Source { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::Find { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::Click { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
         }
     }
 }
@@ -2304,6 +2332,20 @@ impl DeviceManagement {
                     };
                     let crate::home_screen::HomeScreenCommand::Get { reply } = command;
                     let _ = reply.send(Err(reason.into()));
+                }
+                None
+            }
+            InputCmd::WdaAutomation(command) => {
+                if let Err(error) = self.services.wda.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("WDA automation service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("WDA automation service is unavailable", command)
+                        }
+                    };
+                    reject_wda_command(command, reason);
                 }
                 None
             }
@@ -3299,6 +3341,7 @@ async fn dispatch(
         | InputCmd::ListApps(_)
         | InputCmd::ListCompanionDevices(_)
         | InputCmd::GetHomeScreenLayout(_)
+        | InputCmd::WdaAutomation(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
         | InputCmd::NetworkCapture(_)

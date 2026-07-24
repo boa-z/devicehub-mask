@@ -25,6 +25,7 @@ mod screen_capture;
 mod session;
 mod settings;
 mod supervisor;
+mod wda_automation;
 mod web;
 mod wifi_devices;
 

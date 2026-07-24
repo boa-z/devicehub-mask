@@ -52,6 +52,8 @@ const OBSERVABILITY_WAIT_MAX: Duration = Duration::from_secs(10);
 const SCREENSHOT_WAIT: Duration = Duration::from_secs(18);
 const PERFORMANCE_WAIT_DEFAULT: Duration = Duration::from_millis(2500);
 const DEVICE_LOG_WAIT_DEFAULT: Duration = Duration::from_millis(1000);
+const WDA_WAIT: Duration = Duration::from_secs(15);
+const WDA_COMMAND_DEADLINE: Duration = Duration::from_secs(12);
 
 #[derive(Clone, Default)]
 struct McpObservability {
@@ -253,6 +255,32 @@ struct DeviceLogParams {
     level: Option<String>,
     /// Optional case-insensitive text filter across message and metadata.
     query: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaUiTreeParams {
+    /// Maximum XML characters returned. Defaults to 131072 and cannot exceed 1048576.
+    max_characters: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaFindParams {
+    /// WDA strategy: accessibility id, name, class name, xpath, -ios predicate string, or -ios class chain.
+    using: String,
+    /// Selector expression interpreted by WebDriverAgent.
+    value: String,
+    /// Maximum returned matches. Defaults to 10 and cannot exceed 20.
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaClickParams {
+    /// WDA strategy: accessibility id, name, class name, xpath, -ios predicate string, or -ios class chain.
+    using: String,
+    /// Selector expression interpreted by WebDriverAgent.
+    value: String,
+    /// Zero-based match index. Defaults to 0 and cannot exceed 19.
+    index: Option<usize>,
 }
 
 fn ok_text(value: impl Into<String>) -> Result<CallToolResult, McpError> {
@@ -1105,6 +1133,146 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Probe an already-running WebDriverAgent on the connected device. This does not install or launch WDA and performs no background polling."
+    )]
+    async fn wda_status(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::Status {
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let status = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA status request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&status).map_err(|error| {
+            McpError::internal_error(format!("WDA status serialization failed: {error}"), None)
+        })?)
+    }
+
+    #[tool(
+        description = "Read a size-bounded XML accessibility tree from an already-running WebDriverAgent. The tree may contain sensitive on-screen text."
+    )]
+    async fn wda_ui_tree(
+        &self,
+        Parameters(params): Parameters<WdaUiTreeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let max_characters = params
+            .max_characters
+            .unwrap_or(crate::wda_automation::DEFAULT_SOURCE_CHARS);
+        if !(1..=crate::wda_automation::MAX_SOURCE_CHARS).contains(&max_characters) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "max_characters must be between 1 and {}",
+                    crate::wda_automation::MAX_SOURCE_CHARS
+                ),
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::Source {
+                max_characters,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let tree = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA UI tree request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&tree).map_err(|error| {
+            McpError::internal_error(format!("WDA UI tree serialization failed: {error}"), None)
+        })?)
+    }
+
+    #[tool(
+        description = "Find up to 20 accessibility elements through an already-running WebDriverAgent and return zero-based match indexes with screen rectangles."
+    )]
+    async fn wda_find_elements(
+        &self,
+        Parameters(params): Parameters<WdaFindParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_selector(&params.using, &params.value)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let limit = params.limit.unwrap_or(10);
+        if !(1..=crate::wda_automation::MAX_ELEMENTS).contains(&limit) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "limit must be between 1 and {}",
+                    crate::wda_automation::MAX_ELEMENTS
+                ),
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::Find {
+                using: params.using,
+                value: params.value,
+                limit,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let elements = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA element search timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(
+            json!({
+                "elements": elements,
+                "returned": elements.len(),
+                "indexes_are_zero_based": true,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Find and click one accessibility element through an already-running WebDriverAgent. index is the zero-based order returned by wda_find_elements."
+    )]
+    async fn wda_click(
+        &self,
+        Parameters(params): Parameters<WdaClickParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_selector(&params.using, &params.value)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let index = params.index.unwrap_or(0);
+        if index >= crate::wda_automation::MAX_ELEMENTS {
+            return Err(McpError::invalid_params(
+                format!(
+                    "index must be between 0 and {}",
+                    crate::wda_automation::MAX_ELEMENTS - 1
+                ),
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::Click {
+                using: params.using,
+                value: params.value,
+                index,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let element = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA element click timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(json!({ "clicked": true, "element": element }).to_string())
+    }
+
+    #[tool(
         description = "Launch an installed app by bundle ID, or restart it when already running, and optionally wait for its screen to become stable. Use list_apps to discover bundle IDs and running state."
     )]
     async fn launch_app(
@@ -1647,7 +1815,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. When WebDriverAgent is already running on the device, use wda_status, wda_ui_tree, wda_find_elements, and wda_click for semantic accessibility automation; these tools do not install or launch WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -1769,6 +1937,10 @@ mod tests {
             "list_apps",
             "list_companion_devices",
             "home_screen_layout",
+            "wda_status",
+            "wda_ui_tree",
+            "wda_find_elements",
+            "wda_click",
             "launch_app",
             "stop_app",
             "list_crash_reports",
@@ -1943,6 +2115,159 @@ mod tests {
         assert!(text.contains("com.example.game"));
         assert!(text.contains(r#""container":"dock""#));
         assert!(text.contains(r#""position":2"#));
+    }
+
+    #[tokio::test]
+    async fn wda_tools_dispatch_only_bounded_semantic_commands() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+
+        let status_hub = hub.clone();
+        let status_task = tokio::spawn(async move { status_hub.wda_status().await.unwrap() });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Status {
+            reply,
+            expires_at,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA status command");
+        };
+        assert!(expires_at > tokio::time::Instant::now());
+        reply
+            .send(Ok(crate::wda_automation::WdaStatus {
+                reachable: true,
+                ready: Some(true),
+                message: None,
+            }))
+            .unwrap();
+        let status = status_task.await.unwrap();
+        assert!(status.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""reachable":true"#))
+        }));
+
+        let source_hub = hub.clone();
+        let source_task = tokio::spawn(async move {
+            source_hub
+                .wda_ui_tree(Parameters(WdaUiTreeParams {
+                    max_characters: Some(4096),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Source {
+            max_characters,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA source command");
+        };
+        assert_eq!(max_characters, 4096);
+        reply
+            .send(Ok(crate::wda_automation::WdaUiTree {
+                xml: "<App/>".into(),
+                total_characters: 6,
+                truncated: false,
+            }))
+            .unwrap();
+        assert!(source_task.await.unwrap().content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains("<App/>"))
+        }));
+
+        let find_hub = hub.clone();
+        let find_task = tokio::spawn(async move {
+            find_hub
+                .wda_find_elements(Parameters(WdaFindParams {
+                    using: "accessibility id".into(),
+                    value: "Play".into(),
+                    limit: Some(2),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Find {
+            using,
+            value,
+            limit,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA find command");
+        };
+        assert_eq!(
+            (using.as_str(), value.as_str(), limit),
+            ("accessibility id", "Play", 2)
+        );
+        reply.send(Ok(Vec::new())).unwrap();
+        assert!(find_task.await.unwrap().content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""returned":0"#))
+        }));
+
+        let click_hub = hub.clone();
+        let click_task = tokio::spawn(async move {
+            click_hub
+                .wda_click(Parameters(WdaClickParams {
+                    using: "name".into(),
+                    value: "Continue".into(),
+                    index: Some(1),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Click {
+            using,
+            value,
+            index,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA click command");
+        };
+        assert_eq!(
+            (using.as_str(), value.as_str(), index),
+            ("name", "Continue", 1)
+        );
+        reply
+            .send(Ok(crate::wda_automation::WdaElement { index, rect: None }))
+            .unwrap();
+        assert!(click_task.await.unwrap().content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""clicked":true"#))
+        }));
+
+        assert!(
+            hub.wda_find_elements(Parameters(WdaFindParams {
+                using: "css selector".into(),
+                value: "button".into(),
+                limit: None,
+            }))
+            .await
+            .is_err()
+        );
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[tokio::test]

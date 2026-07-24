@@ -308,6 +308,21 @@ never more than 1 MiB, with `truncated` and `lossy_utf8` flags. The tool is
 read-only and rejects relative paths, traversal, directories, and oversized
 requests.
 
+When WebDriverAgent is already installed, signed, and running on the active
+device, `wda_status` can probe it on device port 8100. `wda_ui_tree` returns a
+bounded accessibility XML tree, `wda_find_elements` returns zero-based matches
+with screen rectangles, and `wda_click` finds and clicks one match atomically.
+The supported strategies are `accessibility id`, `name`, `class name`, `xpath`,
+`-ios predicate string`, and `-ios class chain`. Prefer accessibility IDs or
+names; broad XPath queries can be expensive on complex screens.
+
+DeviceHub Mask does not install, sign, launch, or continuously poll WDA. The
+first semantic request creates a WDA session on demand, and device disconnect or
+request failure discards it without restarting the main screen-control session.
+UI trees can contain passwords, messages, and other visible text, so treat them
+as sensitive MCP output. Apps that do not expose useful accessibility metadata
+still require screenshot-based coordinate control.
+
 Use `type_text` for printable ASCII HID keystrokes. Use `paste_text` for CJK or
 other Unicode text; it waits for the device pasteboard write and Cmd+V before
 returning success.
