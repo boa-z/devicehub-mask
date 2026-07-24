@@ -12,10 +12,18 @@ export const enUS = {
     label: "Main navigation",
     device: "Device",
     mappings: "Keyboard mappings",
+    afc: "AFC files",
     performance: "Performance",
     logs: "Device logs",
     location: "Virtual location",
     settings: "Application settings",
+  },
+  afc: {
+    title: "AFC files",
+    subtitle: "Browse and transfer files in the active device's public media container.",
+    connected: "Device connected",
+    disconnected: "No device",
+    connectDevice: "Connect an iPhone or iPad to browse its public files.",
   },
   performance: {
     title: "Performance",

@@ -91,7 +91,7 @@ received so the same directory can be used for a later incremental run. Backup
 contents can include private application and account data and must be protected
 accordingly. This version intentionally does not expose restore or erase.
 
-**Device public files** in the Info tab opens the standard AFC media container
+The top-level **AFC files** workspace opens the standard AFC media container
 exposed by the connected device. Its contents depend on iOS and may include
 directories such as `DCIM`. You can import and export files or complete folder
 trees, create folders, rename entries, and recursively delete a confirmed

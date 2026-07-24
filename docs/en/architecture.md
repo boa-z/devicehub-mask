@@ -266,11 +266,12 @@ Writes reject name collisions, root mutation, and unsupported local entry types;
 recursive deletion requires an explicit frontend confirmation. No AFC2 path or
 MCP mutation crosses this boundary.
 
-The standard AFC browser is a persistent Device Inspector tab rather than a
-modal. It stays mounted across tab changes so navigation and sort state survive,
-but resets when the selected device changes. Direct path input mirrors the
-backend's UTF-8 byte and component limits before issuing a request; the backend
-remains the authoritative confinement boundary.
+The standard AFC browser is a top-level application workspace rather than a
+Device Inspector tab or modal. It stays mounted across workspace changes so
+navigation, sorting, and active transfer controls survive, but only loads a
+directory while selected and resets when the device changes. Direct path input
+mirrors the backend's UTF-8 byte and component limits before issuing a request;
+the backend remains the authoritative confinement boundary.
 
 Public AFC imports and exports publish a separate session-scoped activity
 snapshot. The transfer reuses one 64 KiB buffer across all files and publishes

@@ -36,6 +36,7 @@ import { Button, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip,
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
+import { AfcPage } from "./components/AfcPage";
 import { DeviceInspector } from "./components/DeviceInspector";
 import { DeviceLogsPage } from "./components/DeviceLogsPage";
 import { LocationPage } from "./components/LocationPage";
@@ -1680,7 +1681,8 @@ export default function App() {
       <div className="desktop-body">
         {!deviceFullscreen && <AppNavigation page={page} onChange={(next) => { releaseAllControls(); setPage(next); }} />}
         <div className="page-content">
-          {page === "settings" ? (
+          <AfcPage active={page === "afc"} activeUdid={status.active_udid} request={request} />
+          {page === "afc" ? null : page === "settings" ? (
             <SettingsPage
               alwaysOnTop={alwaysOnTop}
               systemFullscreen={systemFullscreen}

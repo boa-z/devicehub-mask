@@ -5,7 +5,14 @@ type LocaleShape<T> = { [Key in keyof T]: T[Key] extends string ? string : Local
 export const zhCN = {
   common: { confirm: "确认", cancel: "取消", create: "新建", rename: "重命名", delete: "删除", back: "返回" },
   brand: { subtitle: "iOS 游戏控制" },
-  navigation: { label: "主导航", device: "设备", mappings: "键盘映射", performance: "性能", logs: "设备日志", location: "虚拟定位", settings: "应用设置" },
+  navigation: { label: "主导航", device: "设备", mappings: "键盘映射", afc: "AFC 文件", performance: "性能", logs: "设备日志", location: "虚拟定位", settings: "应用设置" },
+  afc: {
+    title: "AFC 文件",
+    subtitle: "浏览并传输当前设备公共媒体容器中的文件。",
+    connected: "设备已连接",
+    disconnected: "未连接设备",
+    connectDevice: "连接 iPhone 或 iPad 后可浏览设备公共文件。",
+  },
   performance: {
     title: "性能工作台",
     subtitle: "查看当前会话的设备性能与视频管线遥测。",
