@@ -41,6 +41,9 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Control iOS games with configurable multi-touch mappings",
+    "resources": {
+      "resources/**/*": ""
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -38,7 +38,7 @@ use idevice::{
     rsd::RsdHandshake,
     springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
     tcp::handle::{AdapterHandle, UdpSocketHandle},
-    usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection, UsbmuxdDevice},
+    usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
     utils::installation::install_package_with_callback,
 };
 use tokio::process::ChildStdin;
@@ -710,22 +710,28 @@ struct SessionVideo {
 }
 
 #[derive(Clone, Debug)]
+struct UsbmuxdEndpoint {
+    device: UsbmuxdDevice,
+    address: UsbmuxdAddr,
+}
+
+#[derive(Clone, Debug)]
 enum SessionEndpoint {
-    Usbmuxd(UsbmuxdDevice),
+    Usbmuxd(Box<UsbmuxdEndpoint>),
     Wifi(Box<WifiEndpoint>),
 }
 
 impl SessionEndpoint {
     fn udid(&self) -> &str {
         match self {
-            Self::Usbmuxd(device) => &device.udid,
+            Self::Usbmuxd(endpoint) => &endpoint.device.udid,
             Self::Wifi(endpoint) => &endpoint.udid,
         }
     }
 
     fn connection(&self) -> ConnKind {
         match self {
-            Self::Usbmuxd(device) => connection_kind(&device.connection_type),
+            Self::Usbmuxd(endpoint) => connection_kind(&endpoint.device.connection_type),
             Self::Wifi(_) => ConnKind::Network,
         }
     }
@@ -737,6 +743,7 @@ impl SessionEndpoint {
 pub async fn manage(
     initial_udid: Option<String>,
     pairing_dir: PathBuf,
+    resource_dir: Option<PathBuf>,
     settings: Arc<crate::settings::AppSettings>,
     video_counters: VideoCounters,
     repaint: impl Fn() + Send + Clone + 'static,
@@ -763,6 +770,7 @@ pub async fn manage(
 ) {
     // Cache of UDID -> DeviceName so a refresh doesn't re-query lockdown.
     let mut names: HashMap<String, String> = HashMap::new();
+    let mut netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), resource_dir);
     let mut wifi = match WifiDiscovery::start(pairing_dir) {
         Ok(discovery) => Some(discovery),
         Err(error) => {
@@ -776,7 +784,7 @@ pub async fn manage(
     let mut target = initial_udid;
 
     loop {
-        let (devices, endpoints) = enumerate_devices(&mut names, wifi.as_mut()).await;
+        let (devices, endpoints) = enumerate_devices(&mut names, &mut netmuxd, wifi.as_mut()).await;
         device_list.set(devices);
         let wifi_setup_required = wifi
             .as_ref()
@@ -881,7 +889,7 @@ pub async fn manage(
                     Some(ControlCmd::Reconnect(u)) => break Next::Switch(u),
                     Some(ControlCmd::Refresh) => {
                         names.clear();
-                        let (devices, _) = enumerate_devices(&mut names, wifi.as_mut()).await;
+                        let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, wifi.as_mut()).await;
                         device_list.set(devices);
                     }
                     Some(ControlCmd::Quit) | None => break Next::Quit,
@@ -912,33 +920,44 @@ pub async fn manage(
 /// than erroring, and an un-nameable device falls back to its UDID.
 async fn enumerate_devices(
     names: &mut HashMap<String, String>,
+    netmuxd: &mut crate::netmuxd::NetmuxdSupervisor,
     mut wifi: Option<&mut WifiDiscovery>,
 ) -> (Vec<DeviceInfo>, HashMap<String, SessionEndpoint>) {
-    let addr = UsbmuxdAddr::from_env_var().map_err(|error| {
+    let netmuxd_addr = netmuxd.ensure_ready().await;
+    let system_addr = UsbmuxdAddr::from_env_var().map_err(|error| {
         tracing::warn!(?error, "invalid usbmuxd address; USB discovery disabled");
     });
-    let mut usbmuxd = match UsbmuxdConnection::default().await {
-        Ok(connection) => Some(connection),
-        Err(error) => {
-            tracing::warn!(
-                ?error,
-                "unable to connect to usbmuxd; continuing with Wi-Fi discovery"
-            );
-            None
-        }
-    };
-    let devs = match usbmuxd.as_mut() {
-        Some(usbmuxd) => match usbmuxd.get_devices().await {
-            Ok(devices) => devices,
-            Err(error) => {
-                tracing::warn!(
+    let mut candidates = Vec::new();
+    if let Some(address) = netmuxd_addr.clone() {
+        candidates.push((address, true));
+    }
+    if let Ok(address) = system_addr {
+        candidates.push((address, false));
+    }
+    let mut selected_mux = None;
+    for (address, is_netmuxd) in candidates {
+        match address.connect(0).await {
+            Ok(mut connection) => match connection.get_devices().await {
+                Ok(devices) => {
+                    selected_mux = Some((address, connection, devices, is_netmuxd));
+                    break;
+                }
+                Err(error) => tracing::warn!(
                     ?error,
-                    "unable to list usbmuxd devices; continuing with Wi-Fi discovery"
-                );
-                Vec::new()
-            }
-        },
-        None => Vec::new(),
+                    is_netmuxd,
+                    "unable to list usbmuxd devices; trying transport fallback"
+                ),
+            },
+            Err(error) => tracing::warn!(
+                ?error,
+                is_netmuxd,
+                "unable to connect to usbmuxd; trying transport fallback"
+            ),
+        }
+    }
+    let (addr, mut usbmuxd, devs, using_netmuxd) = match selected_mux {
+        Some(selected) => (Some(selected.0), Some(selected.1), selected.2, selected.3),
+        None => (None, None, Vec::new(), false),
     };
 
     if let (Some(discovery), Some(usbmuxd)) = (wifi.as_deref_mut(), usbmuxd.as_mut()) {
@@ -983,8 +1002,8 @@ async fn enumerate_devices(
             Some(n) => n.clone(),
             None => {
                 let n = match &addr {
-                    Ok(addr) => fetch_device_name(&dev, addr).await,
-                    Err(()) => None,
+                    Some(addr) => fetch_device_name(&dev, addr).await,
+                    None => None,
                 }
                 .unwrap_or_else(|| dev.udid.clone());
                 names.insert(dev.udid.clone(), n.clone());
@@ -997,10 +1016,19 @@ async fn enumerate_devices(
             name,
             connection,
         });
-        endpoints.entry(id).or_insert(SessionEndpoint::Usbmuxd(dev));
+        if let Some(address) = addr.clone() {
+            endpoints
+                .entry(id)
+                .or_insert(SessionEndpoint::Usbmuxd(Box::new(UsbmuxdEndpoint {
+                    device: dev,
+                    address,
+                })));
+        }
     }
 
-    if let Some(discovery) = wifi {
+    // netmuxd already performs authenticated Bonjour discovery. Run our scanner
+    // only as the fallback so one process owns discovery at a time.
+    if !using_netmuxd && let Some(discovery) = wifi {
         for endpoint in discovery.refresh() {
             let id = device_selector(&endpoint.udid, ConnKind::Network);
             if endpoints.contains_key(&id) {
@@ -4191,11 +4219,11 @@ async fn connect_provider(
     let udid = endpoint.udid().to_owned();
     let connection = endpoint.connection();
     let provider: Arc<dyn IdeviceProvider> = match endpoint {
-        SessionEndpoint::Usbmuxd(device) => {
-            let address = UsbmuxdAddr::from_env_var()
-                .map_err(|error| format!("bad usbmuxd addr: {error:?}"))?;
-            Arc::new(device.to_provider(address, "devicehub_rs"))
-        }
+        SessionEndpoint::Usbmuxd(endpoint) => Arc::new(
+            endpoint
+                .device
+                .to_provider(endpoint.address, "devicehub_rs"),
+        ),
         SessionEndpoint::Wifi(endpoint) => Arc::new(wifi_provider(&endpoint)),
     };
     tracing::info!(
@@ -4318,15 +4346,17 @@ fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use idevice::usbmuxd::UsbmuxdConnection;
 
     #[tokio::test]
     #[ignore = "requires a connected physical device"]
     async fn reads_developer_mode_status_from_hardware() {
         let mut usbmuxd = UsbmuxdConnection::default().await.expect("connect usbmuxd");
         let devices = usbmuxd.get_devices().await.expect("list devices");
-        let endpoint = SessionEndpoint::Usbmuxd(
-            select_preferred_usbmuxd_device(devices, None).expect("connected device"),
-        );
+        let endpoint = SessionEndpoint::Usbmuxd(Box::new(UsbmuxdEndpoint {
+            device: select_preferred_usbmuxd_device(devices, None).expect("connected device"),
+            address: UsbmuxdAddr::default(),
+        }));
         let (provider, _) = connect_provider(endpoint)
             .await
             .expect("connect device provider");

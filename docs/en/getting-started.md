@@ -96,6 +96,13 @@ the pairing record in its application data directory (`0700` directory and
 `0600` files on Unix), then authenticates `_apple-mobdev2._tcp` Bonjour records
 before showing them. After **iPhone · Wi-Fi** appears, the cable can be removed.
 
+Packaged builds supervise a bundled `netmuxd` process that merges the system
+usbmuxd device list with authenticated Wi-Fi devices. It listens only on a
+private loopback port and is stopped with the app; DeviceHub Mask never replaces
+or terminates the system usbmuxd. Development builds use `netmuxd` from `PATH`
+or `DEVICEHUB_NETMUXD=/absolute/path/to/netmuxd`, and retain the built-in Bonjour
+implementation as a fallback. Set `DEVICEHUB_NETMUXD=off` to force that fallback.
+
 On older Apple stacks, enabling **Show this iPhone when on Wi-Fi** in Finder may
 still be necessary. Unauthenticated nearby Bonjour devices are never exposed as
 connectable devices; the status bar instead asks for the one-time USB setup.

@@ -12,3 +12,5 @@
 /.devicehub
 .DS_Store
 *.log
+/src-tauri/resources/netmuxd
+/src-tauri/resources/netmuxd.exe

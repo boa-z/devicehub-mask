@@ -1,0 +1,13 @@
+DeviceHub Mask includes the netmuxd executable as an optional, separately
+supervised transport process in packaged builds.
+
+netmuxd v0.4.3
+Copyright (c) 2020 Jackson Coxson
+License: GNU Lesser General Public License v2.1 only (LGPL-2.1-only)
+Project: https://github.com/jkcoxson/netmuxd
+Exact source: https://github.com/jkcoxson/netmuxd/tree/v0.4.3
+Source archive: https://github.com/jkcoxson/netmuxd/archive/refs/tags/v0.4.3.tar.gz
+
+The complete license text is distributed as netmuxd-LICENSE.txt alongside
+this notice. DeviceHub Mask communicates with netmuxd over a private usbmuxd
+TCP socket; netmuxd is not linked into the DeviceHub Mask executable.

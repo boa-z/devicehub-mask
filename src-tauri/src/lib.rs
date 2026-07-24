@@ -12,6 +12,7 @@ mod heartbeat;
 mod hid;
 mod location;
 mod mcp;
+mod netmuxd;
 mod network_capture;
 mod performance;
 mod protocol;
@@ -154,6 +155,7 @@ fn spawn_backend(
     initial_udid: Option<String>,
     profile_dir: PathBuf,
     pairing_dir: PathBuf,
+    resource_dir: Option<PathBuf>,
     settings: Arc<settings::AppSettings>,
     audio: audio_output::AudioOutput,
 ) -> Result<BackendHandle, String> {
@@ -213,6 +215,7 @@ fn spawn_backend(
                 let manager = session::manage(
                     initial_udid,
                     pairing_dir,
+                    resource_dir,
                     settings,
                     video_counters.clone(),
                     || {},
@@ -357,6 +360,7 @@ pub fn run() {
             app.manage(audio_output.clone());
             app.manage(settings.clone());
             let app_data_dir = app.path().app_data_dir()?;
+            let resource_dir = app.path().resource_dir().ok();
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| app_data_dir.join("profiles"));
@@ -364,6 +368,7 @@ pub fn run() {
                 initial_udid,
                 profile_dir,
                 app_data_dir.join("pairings"),
+                resource_dir,
                 settings,
                 audio_output,
             )

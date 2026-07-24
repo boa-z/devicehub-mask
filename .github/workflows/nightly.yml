@@ -137,6 +137,9 @@ jobs:
             echo "updater=devicehub-mask_${APP_VERSION}-${BUILD_NUMBER}_universal.app.tar.gz"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare netmuxd sidecar
+        run: node scripts/prepare-netmuxd.mjs --target universal-apple-darwin
+
       - name: Build Tauri application
         id: build
         shell: bash
@@ -264,6 +267,9 @@ jobs:
           "nsis=devicehub-mask_${appVersion}+${buildNumber}_x64-setup.exe" >> $env:GITHUB_OUTPUT
           "msi=devicehub-mask_${appVersion}+${buildNumber}_x64.msi" >> $env:GITHUB_OUTPUT
 
+      - name: Prepare netmuxd sidecar
+        run: node scripts/prepare-netmuxd.mjs --target x86_64-pc-windows-msvc
+
       - name: Build Windows installers
         id: build
         shell: pwsh
@@ -370,6 +376,9 @@ jobs:
             echo "appimage=devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}_amd64.AppImage"
             echo "deb=devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}_amd64.deb"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare netmuxd sidecar
+        run: node scripts/prepare-netmuxd.mjs --target x86_64-unknown-linux-gnu
 
       - name: Build Linux packages
         id: build
