@@ -225,13 +225,18 @@ client-supplied DiagnosticsRelay operation. Each opens an independent relay
 connection in a bounded task, so waiting for the device acknowledgement does
 not stall HID dispatch. The frontend requires a device-named confirmation.
 
-App Documents uses a dedicated supervised House Arrest worker over a cloned RSD
-tunnel. Each command vends only the selected application's Documents root and
-opens a fresh AFC session. Remote paths reject traversal and separators in item
-names. Downloads and uploads stream between AFC and host files; downloads use a
-rollback-capable local replacement, while uploads write a uniquely named remote
-temporary file and rename it only after the stream closes. Uploads do not
-silently replace an existing item, and deletes are non-recursive.
+App storage uses a dedicated supervised House Arrest worker. USB first attempts
+House Arrest through the paired Lockdown provider and falls back to a cloned RSD
+tunnel; Wi-Fi uses RSD only. Every command carries an explicit `documents` or
+`container` scope and opens a fresh AFC session using `VendDocuments` or
+`VendContainer`; omitted API scope defaults to Documents for compatibility.
+Logical paths are rooted at `/Documents` or `/` accordingly and reject traversal
+and separators in item names. Symbolic links are exposed only as non-actionable
+special entries.
+Downloads use rollback-capable local replacement, while uploads write a unique
+remote temporary file and rename it only after the stream closes. Uploads do not
+silently replace an existing item, root mutation is rejected, and deletes are
+non-recursive.
 
 Public device files use a separate supervised standard-AFC worker. USB first
 opens `com.apple.afc` through the paired lockdown provider and can fall back to

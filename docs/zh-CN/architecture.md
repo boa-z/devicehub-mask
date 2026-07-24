@@ -159,10 +159,13 @@ pcapd shim。它将标准化
 命令都在有超时的独立任务中建立 relay 连接，因此等待设备确认不会阻塞 HID 分发；前端
 必须显示包含设备名称的二次确认。
 
-App 文档由独立受监督的 House Arrest worker 处理，并使用克隆的 RSD tunnel。每条命令只
-vend 所选 App 的 Documents 根目录，并建立新的 AFC 会话；远端路径拒绝目录穿越和名称中
-的路径分隔符。下载和上传都在 AFC 与主机文件间流式复制：下载使用可回滚的本地替换，
-上传先写入唯一远端临时文件，关闭成功后才改名。上传不会静默覆盖同名项目，删除也不递归。
+App 存储由独立受监督的 House Arrest worker 处理。USB 会先通过已配对的 Lockdown provider
+连接 House Arrest，失败时回退到克隆的 RSD tunnel；Wi-Fi 只使用 RSD。每条命令都显式
+携带 `documents` 或 `container` 范围，并通过 `VendDocuments` 或 `VendContainer` 建立
+新的 AFC 会话；API 未传范围时为兼容旧客户端而默认 Documents。逻辑路径分别绑定到
+`/Documents` 或 `/`，并拒绝目录穿越和名称中的路径分隔符；符号链接只显示为不可操作的
+特殊条目。下载使用可回滚的本地替换，上传先写入唯一远端临时文件，关闭成功后才改名。
+上传不会静默覆盖同名项目，根目录禁止修改，删除也不递归。
 
 设备公共文件由另一条受监督的标准 AFC worker 处理。USB 会先通过已配对的 lockdown provider
 打开 `com.apple.afc`，失败时可回退到克隆的 RSD tunnel；Wi-Fi 通过 RSD 使用

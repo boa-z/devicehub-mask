@@ -1560,8 +1560,12 @@ async fn run(
     ));
     let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
     supervisor.spawn(crate::app_documents::serve(
-        adapter.clone(),
-        handshake.clone(),
+        crate::app_documents::AppStorageTransport::new(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+        ),
         app_documents_receiver,
         supervisor.shutdown_receiver(),
     ));

@@ -1336,7 +1336,7 @@ export function DeviceInspector({
                   <Tooltip title={t("deviceInspector.copyBundleId")}>
                     <Button size="small" icon={<CopyOutlined />} onClick={() => void copyBundleId(app.bundle_id)} />
                   </Tooltip>
-                  {app.documents_available && (
+                  {(app.documents_available || app.is_developer_app) && (
                     <Tooltip title={t("deviceInspector.appDocuments")}>
                       <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setDocumentsApp(app)} />
                     </Tooltip>

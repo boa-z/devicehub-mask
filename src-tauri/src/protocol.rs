@@ -328,7 +328,7 @@ pub enum InputCmd {
     DeviceFiles(crate::device_files::DeviceFileCommand),
     /// Apply or clear a DVT device-wide network/thermal condition.
     DeviceCondition(crate::device_conditions::DeviceConditionCommand),
-    /// Access one application's vended Documents root through House Arrest.
+    /// Access one application's vended Documents or container root through House Arrest.
     AppDocuments(crate::app_documents::AppDocumentCommand),
     /// Lock the active device through DiagnosticsRelay without toggling wake state.
     LockDevice(oneshot::Sender<Result<(), String>>),

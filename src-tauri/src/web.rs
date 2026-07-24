@@ -249,6 +249,26 @@ pub fn router(state: AppState, token: String) -> Router {
             "/api/device/apps/{bundle_id}/documents/rename",
             put(rename_app_document),
         )
+        .route(
+            "/api/device/apps/{bundle_id}/storage",
+            get(app_documents).delete(delete_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/export",
+            put(export_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/import",
+            put(import_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/directory",
+            put(create_app_document_directory),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/rename",
+            put(rename_app_document),
+        )
         .route("/api/device/apps/operation", get(app_operation))
         .route("/api/device/apps/install", put(install_app))
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
@@ -1344,6 +1364,8 @@ async fn device_app_icon(
 struct AppDocumentQuery {
     #[serde(default = "app_document_root")]
     path: String,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
 }
 
 fn app_document_root() -> String {
@@ -1354,24 +1376,32 @@ fn app_document_root() -> String {
 struct ExportAppDocumentRequest {
     path: String,
     destination: PathBuf,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
 }
 
 #[derive(Deserialize)]
 struct ImportAppDocumentRequest {
     directory: String,
     source: PathBuf,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
 }
 
 #[derive(Deserialize)]
 struct CreateAppDocumentDirectoryRequest {
     directory: String,
     name: String,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
 }
 
 #[derive(Deserialize)]
 struct RenameAppDocumentRequest {
     path: String,
     name: String,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
 }
 
 async fn app_documents(
@@ -1385,6 +1415,7 @@ async fn app_documents(
         &state,
         crate::app_documents::AppDocumentCommand::List {
             bundle_id,
+            scope: query.scope,
             path: query.path,
             reply,
         },
@@ -1405,6 +1436,7 @@ async fn export_app_document(
         &state,
         crate::app_documents::AppDocumentCommand::Export {
             bundle_id,
+            scope: request.scope,
             path: request.path,
             destination: request.destination,
             reply,
@@ -1426,6 +1458,7 @@ async fn import_app_document(
         &state,
         crate::app_documents::AppDocumentCommand::Import {
             bundle_id,
+            scope: request.scope,
             directory: request.directory,
             source: request.source,
             reply,
@@ -1447,6 +1480,7 @@ async fn create_app_document_directory(
         &state,
         crate::app_documents::AppDocumentCommand::CreateDirectory {
             bundle_id,
+            scope: request.scope,
             directory: request.directory,
             name: request.name,
             reply,
@@ -1467,6 +1501,7 @@ async fn rename_app_document(
         &state,
         crate::app_documents::AppDocumentCommand::Rename {
             bundle_id,
+            scope: request.scope,
             path: request.path,
             name: request.name,
             reply,
@@ -1487,6 +1522,7 @@ async fn delete_app_document(
         &state,
         crate::app_documents::AppDocumentCommand::Delete {
             bundle_id,
+            scope: query.scope,
             path: query.path,
             reply,
         },
@@ -1542,6 +1578,8 @@ async fn await_app_document_response<T>(
                 || error.contains("root cannot be modified")
                 || error.contains("must be a regular file")
                 || error.contains("only regular application documents")
+                || error.contains("cannot traverse symbolic links")
+                || error.contains("non-directory component")
             {
                 StatusCode::BAD_REQUEST
             } else {
@@ -4009,7 +4047,10 @@ mod tests {
             app_documents(
                 State(state.clone()),
                 Path("com.example.game".into()),
-                Query(AppDocumentQuery { path: "/".into() }),
+                Query(AppDocumentQuery {
+                    path: "/".into(),
+                    scope: crate::app_documents::AppStorageScope::Documents,
+                }),
             )
             .await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
@@ -4213,9 +4254,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_document_endpoints_dispatch_typed_commands() {
+    async fn app_storage_endpoints_dispatch_scoped_commands() {
         use crate::app_documents::{
-            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList,
+            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList, AppStorageScope,
         };
 
         let (state, mut input_rx) = test_state();
@@ -4224,15 +4265,18 @@ mod tests {
             Path("com.example.game".into()),
             Query(AppDocumentQuery {
                 path: "/Saves".into(),
+                scope: AppStorageScope::Container,
             }),
         ));
         match input_rx.recv().await.unwrap() {
             InputCmd::AppDocuments(AppDocumentCommand::List {
                 bundle_id,
+                scope,
                 path,
                 reply,
             }) => {
                 assert_eq!(bundle_id, "com.example.game");
+                assert_eq!(scope, AppStorageScope::Container);
                 assert_eq!(path, "/Saves");
                 reply
                     .send(Ok(AppDocumentList {
@@ -4252,6 +4296,7 @@ mod tests {
             Json(ImportAppDocumentRequest {
                 directory: "/Saves".into(),
                 source: PathBuf::from("slot.dat"),
+                scope: AppStorageScope::Documents,
             }),
         ));
         match input_rx.recv().await.unwrap() {
@@ -4283,6 +4328,7 @@ mod tests {
             Json(CreateAppDocumentDirectoryRequest {
                 directory: "/".into(),
                 name: "Saves".into(),
+                scope: AppStorageScope::Documents,
             }),
         ));
         match input_rx.recv().await.unwrap() {
@@ -4300,6 +4346,7 @@ mod tests {
             Json(RenameAppDocumentRequest {
                 path: "/Saves/slot.dat".into(),
                 name: "slot-2.dat".into(),
+                scope: AppStorageScope::Documents,
             }),
         ));
         match input_rx.recv().await.unwrap() {
@@ -4316,6 +4363,7 @@ mod tests {
             Path("com.example.game".into()),
             Query(AppDocumentQuery {
                 path: "/Saves/slot-2.dat".into(),
+                scope: AppStorageScope::Documents,
             }),
         ));
         match input_rx.recv().await.unwrap() {
@@ -4333,6 +4381,7 @@ mod tests {
             Json(ExportAppDocumentRequest {
                 path: "/Saves/slot-2.dat".into(),
                 destination: PathBuf::from("slot-2.dat"),
+                scope: AppStorageScope::Documents,
             }),
         ));
         match input_rx.recv().await.unwrap() {

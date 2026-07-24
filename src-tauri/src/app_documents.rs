@@ -1,23 +1,35 @@
-//! Sandboxed application Documents access through House Arrest and AFC.
+//! Sandboxed application storage access through House Arrest and AFC.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use idevice::RsdService;
 use idevice::afc::AfcClient;
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::house_arrest::HouseArrestClient;
+use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
-use serde::Serialize;
+use idevice::{IdeviceService, RsdService};
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::{mpsc, oneshot, watch};
+
+use crate::protocol::ConnKind;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_DIRECTORY_ENTRIES: usize = 500;
 const MAX_PATH_BYTES: usize = 1_024;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppStorageScope {
+    #[default]
+    Documents,
+    Container,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppDocumentEntry {
@@ -47,43 +59,157 @@ pub struct AppDocumentList {
 pub enum AppDocumentCommand {
     List {
         bundle_id: String,
+        scope: AppStorageScope,
         path: String,
         reply: oneshot::Sender<Result<AppDocumentList, String>>,
     },
     Export {
         bundle_id: String,
+        scope: AppStorageScope,
         path: String,
         destination: PathBuf,
         reply: oneshot::Sender<Result<u64, String>>,
     },
     Import {
         bundle_id: String,
+        scope: AppStorageScope,
         directory: String,
         source: PathBuf,
         reply: oneshot::Sender<Result<AppDocumentEntry, String>>,
     },
     CreateDirectory {
         bundle_id: String,
+        scope: AppStorageScope,
         directory: String,
         name: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Rename {
         bundle_id: String,
+        scope: AppStorageScope,
         path: String,
         name: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Delete {
         bundle_id: String,
+        scope: AppStorageScope,
         path: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
+pub struct AppStorageTransport {
+    provider: Arc<dyn IdeviceProvider>,
+    connection: ConnKind,
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+}
+
+impl AppStorageTransport {
+    pub fn new(
+        provider: Arc<dyn IdeviceProvider>,
+        connection: ConnKind,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+    ) -> Self {
+        Self {
+            provider,
+            connection,
+            adapter,
+            handshake,
+        }
+    }
+
+    async fn connect(
+        &mut self,
+        bundle_id: &str,
+        scope: AppStorageScope,
+    ) -> Result<AfcClient, String> {
+        validate_bundle_id(bundle_id)?;
+        let mut failures = Vec::new();
+        if self.connection == ConnKind::Usb {
+            let direct = tokio::time::timeout(CONNECT_TIMEOUT, async {
+                let client = HouseArrestClient::connect(self.provider.as_ref()).await?;
+                vend_storage(client, bundle_id, scope).await
+            })
+            .await;
+            match direct {
+                Ok(Ok(client)) => {
+                    tracing::debug!(
+                        ?scope,
+                        transport = "lockdown-usb",
+                        "House Arrest storage connected"
+                    );
+                    return Ok(client);
+                }
+                Ok(Err(error)) => {
+                    tracing::debug!(?scope, ?error, "USB House Arrest failed; trying RSD");
+                    failures.push(format!("USB lockdown: {error:?}"));
+                }
+                Err(_) => {
+                    tracing::debug!(?scope, "USB House Arrest timed out; trying RSD");
+                    failures.push("USB lockdown: connection timed out".into());
+                }
+            }
+        }
+
+        let remote = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            let client =
+                HouseArrestClient::connect_rsd(&mut self.adapter, &mut self.handshake).await?;
+            vend_storage(client, bundle_id, scope).await
+        })
+        .await;
+        match remote {
+            Ok(Ok(client)) => {
+                tracing::debug!(
+                    ?scope,
+                    transport = "coredevice-rsd",
+                    "House Arrest storage connected"
+                );
+                Ok(client)
+            }
+            Ok(Err(error)) => {
+                failures.push(format!("CoreDevice RSD: {error:?}"));
+                Err(storage_unavailable(scope, &failures))
+            }
+            Err(_) => {
+                failures.push("CoreDevice RSD: connection timed out".into());
+                Err(storage_unavailable(scope, &failures))
+            }
+        }
+    }
+}
+
+async fn vend_storage(
+    client: HouseArrestClient,
+    bundle_id: &str,
+    scope: AppStorageScope,
+) -> Result<AfcClient, idevice::IdeviceError> {
+    match scope {
+        AppStorageScope::Documents => client.vend_documents(bundle_id.to_owned()).await,
+        AppStorageScope::Container => client.vend_container(bundle_id.to_owned()).await,
+    }
+}
+
+fn storage_unavailable(scope: AppStorageScope, failures: &[String]) -> String {
+    if scope == AppStorageScope::Container
+        && failures
+            .iter()
+            .any(|failure| failure.contains("InstallationLookupFailed"))
+    {
+        return "application container is unavailable; verify the app is installed and developer-signed"
+            .into();
+    }
+    let name = match scope {
+        AppStorageScope::Documents => "application Documents",
+        AppStorageScope::Container => "application container",
+    };
+    format!("{name} is unavailable: {}", failures.join("; "))
+}
+
 pub async fn serve(
-    mut adapter: AdapterHandle,
-    mut handshake: RsdHandshake,
+    mut transport: AppStorageTransport,
     mut commands: mpsc::Receiver<AppDocumentCommand>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -96,26 +222,23 @@ pub async fn serve(
             }
             command = commands.recv() => {
                 let Some(command) = command else { return };
-                handle(command, &mut adapter, &mut handshake).await;
+                handle(command, &mut transport).await;
             }
         }
     }
 }
 
-async fn handle(
-    command: AppDocumentCommand,
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-) {
+async fn handle(command: AppDocumentCommand, transport: &mut AppStorageTransport) {
     match command {
         AppDocumentCommand::List {
             bundle_id,
+            scope,
             path,
             reply,
         } => {
             let result = tokio::time::timeout(
                 METADATA_TIMEOUT,
-                list_documents(adapter, handshake, &bundle_id, &path),
+                list_documents(transport, &bundle_id, scope, &path),
             )
             .await
             .unwrap_or_else(|_| Err("application document listing timed out".into()));
@@ -123,13 +246,14 @@ async fn handle(
         }
         AppDocumentCommand::Export {
             bundle_id,
+            scope,
             path,
             destination,
             reply,
         } => {
             let result = tokio::time::timeout(
                 TRANSFER_TIMEOUT,
-                export_document(adapter, handshake, &bundle_id, &path, &destination),
+                export_document(transport, &bundle_id, scope, &path, &destination),
             )
             .await
             .unwrap_or_else(|_| Err("application document export timed out".into()));
@@ -137,13 +261,14 @@ async fn handle(
         }
         AppDocumentCommand::Import {
             bundle_id,
+            scope,
             directory,
             source,
             reply,
         } => {
             let result = tokio::time::timeout(
                 TRANSFER_TIMEOUT,
-                import_document(adapter, handshake, &bundle_id, &directory, &source),
+                import_document(transport, &bundle_id, scope, &directory, &source),
             )
             .await
             .unwrap_or_else(|_| Err("application document upload timed out".into()));
@@ -151,13 +276,14 @@ async fn handle(
         }
         AppDocumentCommand::CreateDirectory {
             bundle_id,
+            scope,
             directory,
             name,
             reply,
         } => {
             let result = tokio::time::timeout(
                 METADATA_TIMEOUT,
-                create_directory(adapter, handshake, &bundle_id, &directory, &name),
+                create_directory(transport, &bundle_id, scope, &directory, &name),
             )
             .await
             .unwrap_or_else(|_| Err("application directory creation timed out".into()));
@@ -165,13 +291,14 @@ async fn handle(
         }
         AppDocumentCommand::Rename {
             bundle_id,
+            scope,
             path,
             name,
             reply,
         } => {
             let result = tokio::time::timeout(
                 METADATA_TIMEOUT,
-                rename_document(adapter, handshake, &bundle_id, &path, &name),
+                rename_document(transport, &bundle_id, scope, &path, &name),
             )
             .await
             .unwrap_or_else(|_| Err("application document rename timed out".into()));
@@ -179,12 +306,13 @@ async fn handle(
         }
         AppDocumentCommand::Delete {
             bundle_id,
+            scope,
             path,
             reply,
         } => {
             let result = tokio::time::timeout(
                 METADATA_TIMEOUT,
-                delete_document(adapter, handshake, &bundle_id, &path),
+                delete_document(transport, &bundle_id, scope, &path),
             )
             .await
             .unwrap_or_else(|_| Err("application document deletion timed out".into()));
@@ -193,38 +321,20 @@ async fn handle(
     }
 }
 
-async fn connect_documents(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-    bundle_id: &str,
-) -> Result<AfcClient, String> {
-    validate_bundle_id(bundle_id)?;
-    let house_arrest = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        HouseArrestClient::connect_rsd(adapter, handshake),
-    )
-    .await
-    .map_err(|_| "House Arrest connection timed out".to_string())?
-    .map_err(|error| format!("House Arrest service unavailable: {error:?}"))?;
-    house_arrest
-        .vend_documents(bundle_id.to_owned())
-        .await
-        .map_err(|error| format!("application does not expose Documents: {error:?}"))
-}
-
 async fn list_documents(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
+    transport: &mut AppStorageTransport,
     bundle_id: &str,
+    scope: AppStorageScope,
     path: &str,
 ) -> Result<AppDocumentList, String> {
     let path = normalize_path(path, true)?;
-    let mut client = connect_documents(adapter, handshake, bundle_id).await?;
-    let device_path = afc_path(&path);
+    let mut client = transport.connect(bundle_id, scope).await?;
+    ensure_no_symlink_components(&mut client, scope, &path).await?;
+    let device_path = afc_path(scope, &path);
     let mut names = client
         .list_dir(device_path)
         .await
-        .map_err(|error| format!("unable to list application Documents: {error:?}"))?;
+        .map_err(|error| format!("unable to list application storage: {error:?}"))?;
     names.retain(|name| name != "." && name != "..");
     names.sort_by_key(|name| name.to_lowercase());
     let truncated = names.len() > MAX_DIRECTORY_ENTRIES;
@@ -237,7 +347,7 @@ async fn list_documents(
             continue;
         }
         let entry_path = join_path(&path, &name)?;
-        let info = match client.get_file_info(afc_path(&entry_path)).await {
+        let info = match client.get_file_info(afc_path(scope, &entry_path)).await {
             Ok(info) => info,
             Err(error) => {
                 tracing::debug!(%bundle_id, path = %entry_path, ?error, "AFC entry disappeared during listing");
@@ -260,8 +370,8 @@ async fn list_documents(
 
 fn entry_from_info(name: String, path: String, info: &idevice::afc::FileInfo) -> AppDocumentEntry {
     let kind = match info.st_ifmt.as_str() {
-        "S_IFREG" => AppDocumentKind::File,
-        "S_IFDIR" => AppDocumentKind::Directory,
+        "S_IFREG" if info.st_link_target.is_none() => AppDocumentKind::File,
+        "S_IFDIR" if info.st_link_target.is_none() => AppDocumentKind::Directory,
         _ => AppDocumentKind::Other,
     };
     AppDocumentEntry {
@@ -282,21 +392,23 @@ fn document_kind_order(kind: AppDocumentKind) -> u8 {
 }
 
 async fn export_document(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
+    transport: &mut AppStorageTransport,
     bundle_id: &str,
+    scope: AppStorageScope,
     path: &str,
     destination: &Path,
 ) -> Result<u64, String> {
     let path = normalize_path(path, false)?;
-    let mut client = connect_documents(adapter, handshake, bundle_id).await?;
+    let mut client = transport.connect(bundle_id, scope).await?;
+    ensure_no_symlink_components(&mut client, scope, &path).await?;
     let info = client
-        .get_file_info(afc_path(&path))
+        .get_file_info(afc_path(scope, &path))
         .await
         .map_err(|error| format!("unable to inspect application document: {error:?}"))?;
-    if info.st_ifmt != "S_IFREG" {
+    if info.st_ifmt != "S_IFREG" || info.st_link_target.is_some() {
         return Err("only regular application documents can be exported".into());
     }
+    let expected_size = info.size as u64;
     let parent = destination
         .parent()
         .ok_or_else(|| "export destination has no parent directory".to_string())?;
@@ -306,7 +418,7 @@ async fn export_document(
     let temporary = temporary_sibling(destination, "export")?;
     let result = async {
         let mut remote = client
-            .open(afc_path(&path), AfcFopenMode::RdOnly)
+            .open(afc_path(scope, &path), AfcFopenMode::RdOnly)
             .await
             .map_err(|error| format!("unable to open application document: {error:?}"))?;
         let local = tokio::fs::File::create(&temporary)
@@ -316,6 +428,9 @@ async fn export_document(
         let bytes = tokio::io::copy(&mut remote, &mut local)
             .await
             .map_err(|error| format!("unable to export application document: {error}"))?;
+        if bytes != expected_size {
+            return Err("application document changed while it was being exported".into());
+        }
         local
             .flush()
             .await
@@ -335,13 +450,19 @@ async fn export_document(
 }
 
 async fn import_document(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
+    transport: &mut AppStorageTransport,
     bundle_id: &str,
+    scope: AppStorageScope,
     directory: &str,
     source: &Path,
 ) -> Result<AppDocumentEntry, String> {
     let directory = normalize_path(directory, true)?;
+    let source_metadata = tokio::fs::symlink_metadata(source)
+        .await
+        .map_err(|error| format!("upload source is unavailable: {error}"))?;
+    if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
+        return Err("upload source must be a regular file".into());
+    }
     let source = tokio::fs::canonicalize(source)
         .await
         .map_err(|error| format!("upload source is unavailable: {error}"))?;
@@ -358,9 +479,10 @@ async fn import_document(
         .to_owned();
     validate_name(&name)?;
     let target = join_path(&directory, &name)?;
-    let mut client = connect_documents(adapter, handshake, bundle_id).await?;
+    let mut client = transport.connect(bundle_id, scope).await?;
+    ensure_no_symlink_components(&mut client, scope, &directory).await?;
     let existing = client
-        .list_dir(afc_path(&directory))
+        .list_dir(afc_path(scope, &directory))
         .await
         .map_err(|error| format!("unable to inspect upload directory: {error:?}"))?;
     if existing.iter().any(|entry| entry == &name) {
@@ -374,7 +496,7 @@ async fn import_document(
             .await
             .map_err(|error| format!("unable to open upload source: {error}"))?;
         let mut remote = client
-            .open(afc_path(&temporary), AfcFopenMode::WrOnly)
+            .open(afc_path(scope, &temporary), AfcFopenMode::WrOnly)
             .await
             .map_err(|error| format!("unable to create remote temporary file: {error:?}"))?;
         tokio::io::copy(&mut local, &mut remote)
@@ -389,44 +511,45 @@ async fn import_document(
             .await
             .map_err(|error| format!("unable to close application document: {error:?}"))?;
         client
-            .rename(afc_path(&temporary), afc_path(&target))
+            .rename(afc_path(scope, &temporary), afc_path(scope, &target))
             .await
             .map_err(|error| format!("unable to finish application document upload: {error:?}"))?;
         let info = client
-            .get_file_info(afc_path(&target))
+            .get_file_info(afc_path(scope, &target))
             .await
             .map_err(|error| format!("unable to inspect uploaded document: {error:?}"))?;
         Ok(entry_from_info(name, target, &info))
     }
     .await;
     if result.is_err() {
-        let _ = client.remove(afc_path(&temporary)).await;
+        let _ = client.remove(afc_path(scope, &temporary)).await;
     }
     result
 }
 
 async fn create_directory(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
+    transport: &mut AppStorageTransport,
     bundle_id: &str,
+    scope: AppStorageScope,
     directory: &str,
     name: &str,
 ) -> Result<(), String> {
     let directory = normalize_path(directory, true)?;
     validate_name(name)?;
     let target = join_path(&directory, name)?;
-    let mut client = connect_documents(adapter, handshake, bundle_id).await?;
-    ensure_name_available(&mut client, &directory, name).await?;
+    let mut client = transport.connect(bundle_id, scope).await?;
+    ensure_no_symlink_components(&mut client, scope, &directory).await?;
+    ensure_name_available(&mut client, scope, &directory, name).await?;
     client
-        .mk_dir(afc_path(&target))
+        .mk_dir(afc_path(scope, &target))
         .await
         .map_err(|error| format!("unable to create application directory: {error:?}"))
 }
 
 async fn rename_document(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
+    transport: &mut AppStorageTransport,
     bundle_id: &str,
+    scope: AppStorageScope,
     path: &str,
     name: &str,
 ) -> Result<(), String> {
@@ -434,34 +557,40 @@ async fn rename_document(
     validate_name(name)?;
     let parent = parent_path(&path);
     let target = join_path(&parent, name)?;
-    let mut client = connect_documents(adapter, handshake, bundle_id).await?;
-    ensure_name_available(&mut client, &parent, name).await?;
+    let mut client = transport.connect(bundle_id, scope).await?;
+    ensure_no_symlink_components(&mut client, scope, &path).await?;
+    ensure_name_available(&mut client, scope, &parent, name).await?;
     client
-        .rename(afc_path(&path), afc_path(&target))
+        .rename(afc_path(scope, &path), afc_path(scope, &target))
         .await
         .map_err(|error| format!("unable to rename application document: {error:?}"))
 }
 
 async fn delete_document(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
+    transport: &mut AppStorageTransport,
     bundle_id: &str,
+    scope: AppStorageScope,
     path: &str,
 ) -> Result<(), String> {
     let path = normalize_path(path, false)?;
-    let mut client = connect_documents(adapter, handshake, bundle_id).await?;
-    client.remove(afc_path(&path)).await.map_err(|error| {
-        format!("unable to delete application document; directories must be empty: {error:?}")
-    })
+    let mut client = transport.connect(bundle_id, scope).await?;
+    ensure_no_symlink_components(&mut client, scope, &path).await?;
+    client
+        .remove(afc_path(scope, &path))
+        .await
+        .map_err(|error| {
+            format!("unable to delete application document; directories must be empty: {error:?}")
+        })
 }
 
 async fn ensure_name_available(
     client: &mut AfcClient,
+    scope: AppStorageScope,
     directory: &str,
     name: &str,
 ) -> Result<(), String> {
     let entries = client
-        .list_dir(afc_path(directory))
+        .list_dir(afc_path(scope, directory))
         .await
         .map_err(|error| format!("unable to inspect application directory: {error:?}"))?;
     if entries.iter().any(|entry| entry == name) {
@@ -469,6 +598,34 @@ async fn ensure_name_available(
     } else {
         Ok(())
     }
+}
+
+async fn ensure_no_symlink_components(
+    client: &mut AfcClient,
+    scope: AppStorageScope,
+    path: &str,
+) -> Result<(), String> {
+    let mut components = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .peekable();
+    let mut current = String::new();
+    while let Some(component) = components.next() {
+        current.push('/');
+        current.push_str(component);
+        let info = client
+            .get_file_info(afc_path(scope, &current))
+            .await
+            .map_err(|error| format!("unable to inspect application storage path: {error:?}"))?;
+        if info.st_link_target.is_some() {
+            return Err("application storage paths cannot traverse symbolic links".into());
+        }
+        if components.peek().is_some() && info.st_ifmt != "S_IFDIR" {
+            return Err("application storage path contains a non-directory component".into());
+        }
+    }
+    Ok(())
 }
 
 fn validate_bundle_id(bundle_id: &str) -> Result<(), String> {
@@ -501,7 +658,7 @@ fn normalize_path(path: &str, allow_root: bool) -> Result<String, String> {
         return if allow_root {
             Ok("/".into())
         } else {
-            Err("the application Documents root cannot be modified".into())
+            Err("the application storage root cannot be modified".into())
         };
     }
     Ok(format!("/{}", components.join("/")))
@@ -537,11 +694,11 @@ fn parent_path(path: &str) -> String {
         .to_owned()
 }
 
-fn afc_path(path: &str) -> String {
-    if path == "/" {
-        "/Documents".into()
-    } else {
-        format!("/Documents{path}")
+fn afc_path(scope: AppStorageScope, path: &str) -> String {
+    match scope {
+        AppStorageScope::Documents if path == "/" => "/Documents".into(),
+        AppStorageScope::Documents => format!("/Documents{path}"),
+        AppStorageScope::Container => path.to_owned(),
     }
 }
 
@@ -596,8 +753,13 @@ mod tests {
             normalize_path("/Save Games/slot 1", false).unwrap(),
             "/Save Games/slot 1"
         );
-        assert_eq!(afc_path("/"), "/Documents");
-        assert_eq!(afc_path("/Save Games"), "/Documents/Save Games");
+        assert_eq!(afc_path(AppStorageScope::Documents, "/"), "/Documents");
+        assert_eq!(
+            afc_path(AppStorageScope::Documents, "/Save Games"),
+            "/Documents/Save Games"
+        );
+        assert_eq!(afc_path(AppStorageScope::Container, "/"), "/");
+        assert_eq!(afc_path(AppStorageScope::Container, "/Library"), "/Library");
         for path in [
             "..",
             "/safe/../escape",
@@ -608,6 +770,37 @@ mod tests {
             assert!(normalize_path(path, true).is_err(), "accepted {path:?}");
         }
         assert!(normalize_path("/", false).is_err());
+    }
+
+    #[test]
+    fn storage_scope_is_explicit_and_symlinks_are_non_actionable() {
+        assert_eq!(AppStorageScope::default(), AppStorageScope::Documents);
+        assert_eq!(
+            serde_json::from_str::<AppStorageScope>(r#""container""#).unwrap(),
+            AppStorageScope::Container
+        );
+        assert!(
+            storage_unavailable(
+                AppStorageScope::Container,
+                &["CoreDevice RSD: InstallationLookupFailed".into()],
+            )
+            .contains("developer-signed")
+        );
+        let timestamp = "1970-01-01T00:00:00".parse().unwrap();
+        let entry = entry_from_info(
+            "linked-library".into(),
+            "/linked-library".into(),
+            &idevice::afc::FileInfo {
+                size: 0,
+                blocks: 0,
+                creation: timestamp,
+                modified: timestamp,
+                st_nlink: "1".into(),
+                st_ifmt: "S_IFDIR".into(),
+                st_link_target: Some("/Library".into()),
+            },
+        );
+        assert!(matches!(entry.kind, AppDocumentKind::Other));
     }
 
     #[test]
@@ -655,7 +848,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a connected physical device with a file-sharing application"]
-    async fn lists_documents_from_hardware() {
+    async fn lists_storage_scopes_from_hardware() {
         use idevice::IdeviceService;
         use idevice::core_device_proxy::CoreDeviceProxy;
         use idevice::installation_proxy::InstallationProxyClient;
@@ -669,14 +862,15 @@ mod tests {
             .into_iter()
             .next()
             .expect("no connected device");
-        let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-document-test");
-        let apps = InstallationProxyClient::connect(&provider)
+        let provider: Arc<dyn IdeviceProvider> =
+            Arc::new(device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-document-test"));
+        let apps = InstallationProxyClient::connect(provider.as_ref())
             .await
             .unwrap()
             .get_apps(Some("User"), None)
             .await
             .unwrap();
-        let bundle_id = apps
+        let documents_bundle_id = apps
             .iter()
             .find_map(|(bundle_id, value)| {
                 let fields = value.as_dictionary()?;
@@ -691,19 +885,53 @@ mod tests {
                 shared.then(|| bundle_id.clone())
             })
             .expect("device has no file-sharing application");
-        let proxy = CoreDeviceProxy::connect(&provider).await.unwrap();
+        let container_bundle_id = apps.iter().find_map(|(bundle_id, value)| {
+            let fields = value.as_dictionary()?;
+            let developer = fields
+                .get("IsXcodeManaged")
+                .and_then(plist::Value::as_boolean)
+                .unwrap_or(false)
+                || fields
+                    .get("SignerIdentity")
+                    .and_then(plist::Value::as_string)
+                    .is_some_and(|signer| signer.contains("Development"));
+            developer.then(|| bundle_id.clone())
+        });
+        let proxy = CoreDeviceProxy::connect(provider.as_ref()).await.unwrap();
         let rsd_port = proxy.tunnel_info().server_rsd_port;
         let adapter = proxy.create_software_tunnel().unwrap();
         let mut adapter = adapter.to_async_handle();
         let stream = adapter.connect(rsd_port).await.unwrap();
-        let mut handshake = RsdHandshake::new(stream).await.unwrap();
+        let handshake = RsdHandshake::new(stream).await.unwrap();
+        let mut transport = AppStorageTransport::new(provider, ConnKind::Usb, adapter, handshake);
 
-        let listing = list_documents(&mut adapter, &mut handshake, &bundle_id, "/")
+        let documents = list_documents(
+            &mut transport,
+            &documents_bundle_id,
+            AppStorageScope::Documents,
+            "/",
+        )
+        .await
+        .unwrap();
+        if let Some(container_bundle_id) = container_bundle_id {
+            let container = list_documents(
+                &mut transport,
+                &container_bundle_id,
+                AppStorageScope::Container,
+                "/",
+            )
             .await
             .unwrap();
-        println!(
-            "listed {} Documents entries for {bundle_id}",
-            listing.entries.len()
-        );
+            println!(
+                "listed {} Documents entries for {documents_bundle_id} and {} container entries for {container_bundle_id}",
+                documents.entries.len(),
+                container.entries.len()
+            );
+        } else {
+            println!(
+                "listed {} Documents entries for {documents_bundle_id}; no developer-signed app is installed for a container probe",
+                documents.entries.len()
+            );
+        }
     }
 }

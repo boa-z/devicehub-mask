@@ -232,17 +232,20 @@ still are not exact `tap` coordinates. Widget configuration, Web Clip URLs, and
 private SpringBoard identifiers are omitted; failure of either optional query
 does not disable app management.
 
-The folder button on an application opens its **App Documents** workspace when
-the application exposes Documents through iOS File Sharing. You can browse
-folders, upload a new local file, download a regular file, create folders,
-rename items, and delete files or empty folders. Uploads never overwrite an
-existing name; rename the existing item or the local file first. House Arrest
-confines every operation to that application's vended Documents root.
+The folder button on an application opens its **App storage** workspace. Apps
+that expose iOS File Sharing start in **Documents**; developer-signed apps can
+switch to **Container**. The segmented control switches between the vended
+Documents root and the full app data container when iOS permits either request. You can
+browse folders, upload a new local file, download a regular file, create
+folders, rename items, and delete files or empty folders. Uploads never
+overwrite an existing name. Container changes can damage app data, so use that
+scope only when inspecting or debugging an app you can recover. Apps that expose
+neither file sharing nor a developer container do not show the storage button.
 
-App Documents and Device public files are separate boundaries. App Documents
-uses House Arrest for one file-sharing application's sandbox and supports
-explicit mutations. Device public files uses the device-wide standard AFC media
-container; its available content and write permissions remain controlled by iOS.
+App storage and Device public files are separate boundaries. App storage uses
+House Arrest for one selected application's vended Documents or container root.
+Device public files uses the device-wide standard AFC media container; available
+content and write permissions for both boundaries remain controlled by iOS.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or
