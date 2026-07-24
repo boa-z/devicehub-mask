@@ -22,9 +22,13 @@ The repository follows the standard Tauri 2 layout. Vite builds the React UI
 from `src/`; Rust desktop code and Tauri configuration live in `src-tauri/`.
 Tauri embeds production frontend assets and owns the application lifecycle.
 
-Key mapping imports are normalized in the frontend before entering the existing
-profile persistence path. JSON handles native and scrcpy-mask formats, while a
-lazy-loaded structured XML parser handles PlayCover `2.0.0` plists. PlayCover
+Key mapping imports pass through a frontend source-adapter registry before
+entering the existing profile persistence path. Each adapter declares its ID,
+accepted file types, size limit, parser, and conversion to the shared import
+result. The UI selects the adapter explicitly, so adding another source does
+not add format guessing to the profile manager. JSON handles native and
+scrcpy-mask formats, while a lazy-loaded structured XML parser handles
+PlayCover `2.0.0` plists. PlayCover
 imports allow only the standard Apple plist DTD declaration, reject entities,
 and enforce file-size, nesting, node-count, and model-count limits before
 converting supported keyboard controls to the shared normalized mapping model.

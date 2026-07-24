@@ -20,6 +20,11 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .profile-manager > .ant-space { margin-left: auto; }
 .profile-app-bindings { width: 100%; }
 .profile-app-bindings-hint { margin: 10px 0 0; color: #899493; font-size: 12px; }
+.profile-import-form { padding-top: 4px; display: flex; flex-direction: column; gap: 14px; }
+.profile-import-form label { display: grid; gap: 6px; color: #9ba5a4; font-size: 12px; }
+.profile-import-file { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
+.profile-import-file .ant-typography { min-width: 0; margin: 0; }
+.profile-import-formats { margin: 0; font-size: 11px; }
 .file-input { display: none; }
 .workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
 .workspace.device-workspace { grid-template-columns: minmax(0, 1fr) 360px; }

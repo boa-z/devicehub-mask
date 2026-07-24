@@ -161,11 +161,12 @@ Unicode 字符写入设备剪贴板，再发送 Cmd+V；使用前需要先聚焦
 激活对应的已保存控制配置。App 列表会显示当前关联，并可将尚未关联的 App 一键关联到
 当前配置，或解除当前配置的关联。跨配置关联和冲突需要在配置编辑器中明确处理。
 
-DeviceHub Mask 可以导入和导出 scrcpy-mask `0.0.1` JSON。全部十三种控制器类型均会
+导入弹窗需要明确选择 DeviceHub Mask、scrcpy-mask 或 PlayCover 来源格式，避免存在歧义
+的 JSON 文件被错误转换。DeviceHub Mask 可以导入和导出 scrcpy-mask `0.0.1` JSON。全部十三种控制器类型均会
 保留，包括嵌套序列坐标、绑定、释放模式、计时和脚本字段。配置兼容不代表支持 Android
 传输。
 
-同一个导入按钮也支持 PlayCover `2.0.0` `.playmap` 文件。键盘按钮、键盘拖拽按钮和键盘
+PlayCover 来源支持 `2.0.0` `.playmap` 文件。键盘按钮、键盘拖拽按钮和键盘
 方向盘会转换，PlayCover Bundle ID 会成为配置的 App 关联。由于 DeviceHub Mask 尚未提供
 等价的输入源，PlayCover 鼠标区域和负数鼠标/手柄键码会被跳过并计入导入提示。运行时仍
 限制每份 HID report 最多包含五个同时触点。

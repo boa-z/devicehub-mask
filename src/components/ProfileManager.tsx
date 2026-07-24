@@ -9,12 +9,12 @@ import {
   SaveOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
-import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, message } from "antd";
+import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, Typography, message } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { importPlayCoverConfig, MAX_PLAYMAP_BYTES, parsePlayCoverPlist } from "../playCoverCompat";
-import { exportScrcpyMaskConfig, importScrcpyMaskConfig } from "../scrcpyCompat";
-import { defaultHardwareBindings, type Profile } from "../types";
+import { importMappingFile, mappingImportSource, mappingImportSources, uniqueImportedProfileName, type MappingImportSourceId } from "../mappingImport";
+import { exportScrcpyMaskConfig } from "../scrcpyCompat";
+import type { Profile } from "../types";
 
 type DialogKind = "create" | "duplicate" | "rename";
 
@@ -72,6 +72,10 @@ export function ProfileManager({
   const [nextName, setNextName] = useState("");
   const [appDialog, setAppDialog] = useState(false);
   const [nextBundleIdentifiers, setNextBundleIdentifiers] = useState<string[]>([]);
+  const [importDialog, setImportDialog] = useState(false);
+  const [importSource, setImportSource] = useState<MappingImportSourceId>("devicehub-mask");
+  const [selectedImportFile, setSelectedImportFile] = useState<File | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
   const hasBindingConflict = profile.bundleIdentifiers.some((bundleId) => bindingConflicts.includes(bundleId));
 
   const openDialog = (kind: DialogKind) => {
@@ -109,56 +113,37 @@ export function ProfileManager({
         .catch((error) => message.error(String(error)));
     },
   });
-  const importFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const chooseImportFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
     event.target.value = "";
-    if (!file) return;
+    setSelectedImportFile(file);
+  };
+  const submitImport = async () => {
+    if (!selectedImportFile) return;
+    setImportBusy(true);
     try {
-      const isPlayCover = /\.playmap$/i.test(file.name);
-      if (isPlayCover && file.size > MAX_PLAYMAP_BYTES) throw new Error(t("profile.invalidPlayCover"));
-      const text = await file.text();
-      const value = isPlayCover
-        ? await parsePlayCoverPlist(text, t("profile.invalidPlayCover"))
-        : JSON.parse(text) as unknown;
-      const importedName = file.name
-        .replace(/(?:\.scrcpy-mask)?\.(?:json|playmap)$/i, "")
-        .replace(/[^A-Za-z0-9_-]+/g, "-")
-        .slice(0, 80);
-      const baseName = profileName(importedName) ?? `import-${Date.now()}`;
-      let name = baseName;
-      let suffix = 2;
-      while (profiles.includes(name)) {
-        name = `${baseName}-import-${suffix}`;
-        suffix += 1;
-      }
-      if (isPlayCover) {
-        const result = importPlayCoverConfig(value, name, frameSize, {
-          invalidConfigMessage: t("profile.invalidPlayCover"),
-          buttonLabel: t("profile.playCoverButton"),
-          draggableLabel: t("profile.playCoverDrag"),
-          joystickLabel: t("profile.playCoverJoystick"),
-        });
-        await onImport(result.profile, result.imported, result.skipped);
-        return;
-      }
-      const native = value as Partial<Profile>;
-      if (native.version === 1 && Array.isArray(native.mappings)) {
-        await onImport({
-          version: 1,
-          name,
-          mappings: native.mappings,
-          hardwareBindings: { ...defaultHardwareBindings, ...native.hardwareBindings },
-          bundleIdentifiers: Array.isArray(native.bundleIdentifiers) ? native.bundleIdentifiers : [],
-        } as Profile, native.mappings.length, 0);
-        return;
-      }
-      const result = importScrcpyMaskConfig(value, name, {
-        invalidConfigMessage: t("profile.invalidScrcpy"),
+      const result = await importMappingFile(importSource, selectedImportFile, {
+        profileName: uniqueImportedProfileName(selectedImportFile.name, profiles),
+        frameSize,
+        invalidMessages: {
+          "devicehub-mask": t("profile.invalidNative"),
+          "scrcpy-mask": t("profile.invalidScrcpy"),
+          playcover: t("profile.invalidPlayCover"),
+        },
+        playCoverLabels: {
+          button: t("profile.playCoverButton"),
+          draggable: t("profile.playCoverDrag"),
+          joystick: t("profile.playCoverJoystick"),
+        },
         dpadLabel: t("mapping.dpad"),
       });
       await onImport(result.profile, result.imported, result.skipped);
+      setImportDialog(false);
+      setSelectedImportFile(null);
     } catch (error) {
       void message.error(t("profile.importFailed", { error: String(error) }));
+    } finally {
+      setImportBusy(false);
     }
   };
 
@@ -188,7 +173,7 @@ export function ProfileManager({
             }}
           />
         </Tooltip>
-        <Tooltip title={t("profile.importConfig")}><Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()} /></Tooltip>
+        <Tooltip title={t("profile.importConfig")}><Button icon={<UploadOutlined />} onClick={() => setImportDialog(true)} /></Tooltip>
         <Dropdown
           menu={{
             items: [
@@ -207,7 +192,7 @@ export function ProfileManager({
           <Tooltip title={t("profile.exportJson")}><Button icon={<DownloadOutlined />} /></Tooltip>
         </Dropdown>
       </Space>
-      <input ref={fileRef} className="file-input" type="file" accept="application/json,.json,application/xml,text/xml,.playmap" onChange={(event) => void importFile(event)} />
+      <input ref={fileRef} className="file-input" type="file" accept={mappingImportSource(importSource).accept} onChange={chooseImportFile} />
       <Modal
         open={dialog !== null}
         title={dialog === "create" ? t("profile.createTitle") : dialog === "duplicate" ? t("profile.duplicateTitle") : t("profile.renameTitle")}
@@ -244,6 +229,46 @@ export function ProfileManager({
           onChange={setNextBundleIdentifiers}
         />
         <p className="profile-app-bindings-hint">{t("profile.appBindingsHint")}</p>
+      </Modal>
+      <Modal
+        open={importDialog}
+        title={t("profile.importTitle")}
+        okText={t("profile.importConfig")}
+        cancelText={t("common.cancel")}
+        okButtonProps={{ disabled: selectedImportFile === null }}
+        confirmLoading={importBusy}
+        onOk={() => void submitImport()}
+        onCancel={() => {
+          if (importBusy) return;
+          setImportDialog(false);
+          setSelectedImportFile(null);
+        }}
+      >
+        <div className="profile-import-form">
+          <label>
+            <span>{t("profile.importSource")}</span>
+            <Select
+              value={importSource}
+              options={mappingImportSources.map((source) => ({
+                value: source.id,
+                label: t(`profile.importSources.${source.id}`),
+              }))}
+              onChange={(source) => {
+                setImportSource(source);
+                setSelectedImportFile(null);
+              }}
+            />
+          </label>
+          <div className="profile-import-file">
+            <Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()}>{t("profile.chooseImportFile")}</Button>
+            <Typography.Text ellipsis={{ tooltip: selectedImportFile?.name }} type={selectedImportFile ? undefined : "secondary"}>
+              {selectedImportFile?.name ?? t("profile.noImportFile")}
+            </Typography.Text>
+          </div>
+          <Typography.Text type="secondary" className="profile-import-formats">
+            {t("profile.importFormats", { formats: mappingImportSource(importSource).extensions.join(", ") })}
+          </Typography.Text>
+        </div>
       </Modal>
     </div>
   );

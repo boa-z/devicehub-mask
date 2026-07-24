@@ -230,12 +230,15 @@ list shows the current association and can associate an unassigned app with the
 active profile or remove that association. Conflicting or cross-profile
 associations must be resolved explicitly in the profile editor.
 
-DeviceHub Mask imports and exports scrcpy-mask `0.0.1` JSON. All thirteen
+The import dialog requires an explicit source format: DeviceHub Mask,
+scrcpy-mask, or PlayCover. This prevents ambiguous JSON files from being
+interpreted by the wrong converter. DeviceHub Mask imports and exports
+scrcpy-mask `0.0.1` JSON. All thirteen
 controller types are preserved, including nested sequence positions, bindings,
 release modes, timing, and script fields. Import compatibility does not imply
 Android transport support.
 
-The same import button accepts PlayCover `2.0.0` `.playmap` files. Keyboard
+The PlayCover source accepts `2.0.0` `.playmap` files. Keyboard
 buttons, draggable buttons, and keyboard-controlled joysticks are converted,
 and the PlayCover bundle identifier becomes the profile's app association.
 PlayCover mouse areas and negative mouse/controller key codes are skipped and
