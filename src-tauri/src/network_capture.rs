@@ -55,7 +55,9 @@ pub enum NetworkCaptureStopReason {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct NetworkCaptureStatus {
     pub state: NetworkCaptureState,
+    pub process_id: Option<u32>,
     pub packet_count: u64,
+    pub filtered_packet_count: u64,
     pub bytes_written: u64,
     pub elapsed_ms: u64,
     pub duration_seconds: Option<u64>,
@@ -85,6 +87,7 @@ pub enum NetworkCaptureCommand {
     Start {
         destination: PathBuf,
         duration_seconds: u64,
+        process_id: Option<u32>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Stop {
@@ -168,8 +171,10 @@ struct ActiveCapture {
     client: PcapdClient,
     writer: CaptureWriter,
     duration_seconds: u64,
+    process_id: Option<u32>,
     started: Instant,
     packet_count: u64,
+    filtered_packet_count: u64,
 }
 
 pub struct NetworkCaptureTransport {
@@ -223,11 +228,13 @@ pub async fn serve(
             NetworkCaptureCommand::Start {
                 destination,
                 duration_seconds,
+                process_id,
                 reply,
             } => {
                 attempt += 1;
                 status.set(NetworkCaptureStatus {
                     state: NetworkCaptureState::Starting,
+                    process_id,
                     duration_seconds: Some(duration_seconds),
                     ..NetworkCaptureStatus::default()
                 });
@@ -239,6 +246,7 @@ pub async fn serve(
                     &mut transport.handshake,
                     destination,
                     duration_seconds,
+                    process_id,
                 )
                 .await;
                 let active = match active {
@@ -246,6 +254,7 @@ pub async fn serve(
                     Err(error) => {
                         status.set(NetworkCaptureStatus {
                             state: NetworkCaptureState::Failed,
+                            process_id,
                             duration_seconds: Some(duration_seconds),
                             error: Some(error.clone()),
                             ..NetworkCaptureStatus::default()
@@ -282,6 +291,7 @@ async fn begin_capture(
     handshake: &mut RsdHandshake,
     destination: PathBuf,
     duration_seconds: u64,
+    process_id: Option<u32>,
 ) -> Result<ActiveCapture, String> {
     validate_request(&destination, duration_seconds).await?;
     let client = connect_client(provider, connection, adapter, handshake).await?;
@@ -290,8 +300,10 @@ async fn begin_capture(
         client,
         writer,
         duration_seconds,
+        process_id,
         started: Instant::now(),
         packet_count: 0,
+        filtered_packet_count: 0,
     })
 }
 
@@ -404,6 +416,9 @@ async fn capture(
                 }
             },
             packet = active.client.next_packet() => match packet {
+                Ok(packet) if !packet_matches_process(&packet, active.process_id) => {
+                    active.filtered_packet_count = active.filtered_packet_count.saturating_add(1);
+                }
                 Ok(packet) => match active.writer.can_write(&packet) {
                     Ok(true) => {
                         if let Err(error) = active.writer.write_packet(&packet).await {
@@ -427,8 +442,10 @@ async fn capture(
     };
 
     let packet_count = active.packet_count;
+    let filtered_packet_count = active.filtered_packet_count;
     let elapsed_ms = active.started.elapsed().as_millis() as u64;
     let duration_seconds = active.duration_seconds;
+    let process_id = active.process_id;
     let attempted_bytes = active.writer.bytes_written;
     let finish_result = active.writer.finish().await;
     let bytes_written = finish_result.as_ref().copied().unwrap_or(attempted_bytes);
@@ -442,7 +459,9 @@ async fn capture(
         Some(error) => {
             status.set(NetworkCaptureStatus {
                 state: NetworkCaptureState::Failed,
+                process_id,
                 packet_count,
+                filtered_packet_count,
                 bytes_written,
                 elapsed_ms,
                 duration_seconds: Some(duration_seconds),
@@ -455,7 +474,9 @@ async fn capture(
         None => {
             status.set(NetworkCaptureStatus {
                 state: NetworkCaptureState::Completed,
+                process_id,
                 packet_count,
+                filtered_packet_count,
                 bytes_written,
                 elapsed_ms,
                 duration_seconds: Some(duration_seconds),
@@ -465,6 +486,8 @@ async fn capture(
             reporter.stopped(attempt);
             tracing::info!(
                 packet_count,
+                filtered_packet_count,
+                process_id,
                 bytes_written,
                 elapsed_ms,
                 ?reason,
@@ -482,13 +505,19 @@ async fn capture(
 fn capture_status(active: &ActiveCapture, state: NetworkCaptureState) -> NetworkCaptureStatus {
     NetworkCaptureStatus {
         state,
+        process_id: active.process_id,
         packet_count: active.packet_count,
+        filtered_packet_count: active.filtered_packet_count,
         bytes_written: active.writer.bytes_written,
         elapsed_ms: active.started.elapsed().as_millis() as u64,
         duration_seconds: Some(active.duration_seconds),
         stop_reason: None,
         error: None,
     }
+}
+
+fn packet_matches_process(packet: &DevicePacket, process_id: Option<u32>) -> bool {
+    process_id.is_none_or(|process_id| packet.pid == process_id || packet.epid == process_id)
 }
 
 fn validate_duration(duration_seconds: u64) -> Result<(), String> {
@@ -727,6 +756,7 @@ mod tests {
             &mut handshake,
             destination.clone(),
             10,
+            None,
         )
         .await
         .unwrap();
@@ -752,5 +782,16 @@ mod tests {
             describe_service_error(&idevice::IdeviceError::ServiceNotFound)
                 .contains("ServiceNotFound")
         );
+    }
+
+    #[test]
+    fn process_filter_matches_primary_or_effective_pid() {
+        let mut packet = packet(vec![0xaa]);
+        packet.pid = 42;
+        packet.epid = 84;
+        assert!(packet_matches_process(&packet, None));
+        assert!(packet_matches_process(&packet, Some(42)));
+        assert!(packet_matches_process(&packet, Some(84)));
+        assert!(!packet_matches_process(&packet, Some(7)));
     }
 }

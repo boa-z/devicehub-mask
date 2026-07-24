@@ -105,7 +105,9 @@ export type NetworkCaptureState = "idle" | "starting" | "capturing" | "completed
 export type NetworkCaptureStopReason = "user_requested" | "duration_limit" | "size_limit" | "session_ended" | "stream_ended";
 export type NetworkCaptureStatus = {
   state: NetworkCaptureState;
+  process_id: number | null;
   packet_count: number;
+  filtered_packet_count: number;
   bytes_written: number;
   elapsed_ms: number;
   duration_seconds: number | null;

@@ -15,7 +15,7 @@ DeviceHub Mask 是一个基于 Tauri 2 的 iOS 游戏桌面控制应用，支持
 - 通过 CoreDevice Pasteboard Service 支持单次 Unicode 文本粘贴，并可选启用文本与图片双向同步
 - 按需读取结构化 iPhone 统一日志，支持级别与上下文筛选、受监督 SyslogRelay 回退和有界缓冲
 - 面向开发者 App 与第三方 App 的显式带控制台启动，提供仅限当前会话的有界 stdout/stderr 采集
-- 按需采集归一化 iPhone CPU、高负载进程 CPU/内存与相对能耗排行、可搜索的 DVT 运行进程清单、Core Animation FPS、GPU 内存与设备网络速率，并监督 DVT 服务恢复；支持设备级 DVT 网络/热状态模拟，还可有界导出网络与蓝牙 HCI PCAP
+- 按需采集归一化 iPhone CPU、高负载进程 CPU/内存与相对能耗排行、可搜索的 DVT 运行进程清单、Core Animation FPS、GPU 内存与设备网络速率，并监督 DVT 服务恢复；支持设备级 DVT 网络/热状态模拟，还可有界导出全设备或按进程过滤的网络 PCAP 与蓝牙 HCI PCAP
 - 内置 Streamable HTTP MCP 服务，支持截图、低延迟多点触控、App 启动、帧同步、设备切换、DVT 虚拟定位、有界进程/性能检查、设备日志筛选、崩溃报告诊断、刷新设备详情和事件等待
 - 原生 Tauri 2 桌面控件、中英文界面和签名 nightly 自动更新
 - 使用 GitHub Actions 验证并打包 macOS、Windows 和 Linux 版本

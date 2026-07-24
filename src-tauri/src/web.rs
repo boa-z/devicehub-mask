@@ -493,6 +493,8 @@ async fn await_device_condition_command(
 struct StartNetworkCaptureRequest {
     destination: PathBuf,
     duration_seconds: u64,
+    #[serde(default)]
+    process_id: Option<u32>,
 }
 
 async fn start_network_capture(
@@ -507,6 +509,7 @@ async fn start_network_capture(
         crate::network_capture::NetworkCaptureCommand::Start {
             destination: request.destination,
             duration_seconds: request.duration_seconds,
+            process_id: request.process_id,
             reply,
         },
     )) {
@@ -4096,6 +4099,7 @@ mod tests {
             Json(StartNetworkCaptureRequest {
                 destination: destination.clone(),
                 duration_seconds: 0,
+                process_id: None,
             }),
         )
         .await
@@ -4108,16 +4112,19 @@ mod tests {
             Json(StartNetworkCaptureRequest {
                 destination: destination.clone(),
                 duration_seconds: 30,
+                process_id: Some(42),
             }),
         ));
         match input_rx.recv().await.unwrap() {
             InputCmd::NetworkCapture(crate::network_capture::NetworkCaptureCommand::Start {
                 destination: actual,
                 duration_seconds,
+                process_id,
                 reply,
             }) => {
                 assert_eq!(actual, destination);
                 assert_eq!(duration_seconds, 30);
+                assert_eq!(process_id, Some(42));
                 reply.send(Ok(())).unwrap();
             }
             _ => panic!("unexpected command"),

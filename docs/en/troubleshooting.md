@@ -89,6 +89,10 @@ npm run tauri:dev
 
 Set it to `0` only when diagnosing native resolution. Record CPU usage, all FPS metrics, JPEG latency, device resolution, GPU, and whether the installed release or a debug build was tested. Debug builds are not representative of release performance.
 
+## A Process-Filtered Network Capture Contains No Packets
+
+The filter uses the PID snapshot selected before capture. Relaunching the app assigns a new PID; refresh the running-process inventory, select the new entry, and start another capture. A nonzero Excluded packets count with zero written packets means pcapd traffic was present but none was attributed to the selected primary or effective PID. Choose All processes to determine whether the service itself is producing packets.
+
 ## Bluetooth Capture Contains No Packets
 
 Install Apple's Bluetooth Logging configuration profile on the iPhone before starting an HCI capture. `BTPacketLogger` can accept the connection without that profile but remain silent, so a valid 24-byte PCAP containing only the global header is expected in that case. Keep the target Bluetooth controller or audio device active during the capture and inspect `bluetooth.capture` in Service health if starting the service itself fails.

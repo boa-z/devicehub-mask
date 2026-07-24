@@ -11,7 +11,7 @@ This page is the concise inventory of functionality already implemented in Devic
 | **Device** | USB and Wi-Fi device selection, in-app USB trust pairing, explicit reconnect, live screen, direct touch, mapping and keyboard-passthrough modes, rotation, native screenshot, WebView-supported screen recording, Unicode paste, device audio mute, hardware buttons, focused device fullscreen, and a device inspector with regular/system/App Clip scopes |
 | **Key Mapping** | Visual placement and editing, live or frozen screenshot background, profile create/duplicate/rename/import/export, scrcpy-mask `0.0.1` compatibility, PlayCover `2.0.0` import, app-profile associations, and hardware-button shortcuts |
 | **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and confirmed crash-report deletion |
-| **Performance** | iPhone CPU/process/memory/energy data, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, network PCAP, and Bluetooth HCI PCAP |
+| **Performance** | iPhone CPU/process/memory/energy data, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, all-device or per-process network PCAP, and Bluetooth HCI PCAP |
 | **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, recovery state, and confirmed 1/6/24-hour offline Unified Log archive export |
 | **Location** | DVT-first virtual location with legacy service fallback, numeric coordinate entry, built-in presets, backend status, and explicit restoration of the real device location |
 | **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, rotation-control lock, device-fullscreen toolbar behavior, decoder and pixel format, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
@@ -80,7 +80,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Device logs and offline archive | OsTraceRelay / SyslogRelay |
 | Performance, processes, and conditions | DVT DeviceInfo, Sysmontap, Graphics, Energy, Network Monitor, Notifications, and Condition Inducer |
 | Virtual location | DVT Location Simulation with `com.apple.dt.simulatelocation` fallback |
-| Network/Bluetooth capture | pcapd and BTPacketLogger |
+| All-device/per-process network and Bluetooth capture | pcapd packet PID/effective PID metadata and BTPacketLogger |
 | Watch metadata | CompanionProxy |
 | App icons | CoreDevice AppService with SpringBoardServices fallback |
 | Home-screen layout | SpringBoardServices |

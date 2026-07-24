@@ -5,7 +5,9 @@ import type { NetworkCaptureStatus } from "./types";
 function status(state: NetworkCaptureStatus["state"]): NetworkCaptureStatus {
   return {
     state,
+    process_id: null,
     packet_count: 0,
+    filtered_packet_count: 0,
     bytes_written: 0,
     elapsed_ms: 0,
     duration_seconds: null,

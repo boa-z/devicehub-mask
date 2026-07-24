@@ -11,7 +11,7 @@
 | **设备** | USB/Wi-Fi 设备选择、应用内 USB 信任配对、显式重新连接、实时画面、鼠标直接触控、映射与键盘透传模式、旋转、原生截图、WebView 支持时的画面录制、Unicode 粘贴、设备音频静音、硬件按键、设备画面全屏，以及支持普通/系统/轻 App 范围的设备检查器 |
 | **键盘映射** | 可视化放置与编辑、实时或冻结截图背景、配置创建/复制/重命名/导入/导出、scrcpy-mask `0.0.1` 兼容、PlayCover `2.0.0` 导入、App 与配置关联、硬件按键快捷键 |
 | **AFC** | 统一的公共 AFC、App Documents、App Container 与崩溃报告工作台；可搜索 App 选择、有界浏览与传输、新建、重命名、确认式递归删除、进度、取消及确认式崩溃报告删除 |
-| **性能** | iPhone CPU/进程/内存/能耗、可搜索的按需运行进程清单、Core Animation FPS、GPU 内存、网络速率、App 活动、视频管线指标、服务健康、DVT 网络/热状态、网络 PCAP 和蓝牙 HCI PCAP |
+| **性能** | iPhone CPU/进程/内存/能耗、可搜索的按需运行进程清单、Core Animation FPS、GPU 内存、网络速率、App 活动、视频管线指标、服务健康、DVT 网络/热状态、全设备或按进程过滤的网络 PCAP 和蓝牙 HCI PCAP |
 | **设备日志** | 按需结构化统一日志、SyslogRelay 回退、搜索、级别筛选、暂停、自动滚动、复制、清空、有界缓冲、恢复状态，以及经确认导出最近 1/6/24 小时的离线统一日志归档 |
 | **虚拟定位** | DVT 优先并回退传统服务的定位设置、经纬度输入、内置地点预设、后端状态和显式恢复真实定位 |
 | **设置** | 语言、窗口置顶、系统全屏、检查器显示、画面比例、映射覆盖层、旋转控制锁定、设备全屏工具栏行为、解码器与像素格式、音频、剪贴板同步、可配置性能 HUD、更新、Debug 日志和日志目录 |
@@ -80,7 +80,7 @@
 | 设备日志与离线归档 | OsTraceRelay / SyslogRelay |
 | 性能、进程与设备状态模拟 | DVT DeviceInfo、Sysmontap、Graphics、Energy、Network Monitor、Notifications、Condition Inducer |
 | 虚拟定位 | DVT Location Simulation，并回退 `com.apple.dt.simulatelocation` |
-| 网络/蓝牙抓包 | pcapd 和 BTPacketLogger |
+| 全设备/按进程网络抓包与蓝牙抓包 | pcapd 数据包 PID/effective PID 元数据和 BTPacketLogger |
 | Watch 元数据 | CompanionProxy |
 | App 图标 | CoreDevice AppService，回退 SpringBoardServices |
 | 主屏幕布局 | SpringBoardServices |

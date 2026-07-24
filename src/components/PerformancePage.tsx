@@ -93,6 +93,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const [history, setHistory] = useState<PerformanceSnapshot[]>([]);
   const [processSort, setProcessSort] = useState<ProcessSort>("cpu");
   const [captureDuration, setCaptureDuration] = useState<number>(30);
+  const [captureProcessId, setCaptureProcessId] = useState<number | null>(null);
   const [captureBusy, setCaptureBusy] = useState(false);
   const [bluetoothDuration, setBluetoothDuration] = useState<number>(30);
   const [bluetoothBusy, setBluetoothBusy] = useState(false);
@@ -137,6 +138,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
     setProcessInventoryError(null);
     setProcessQuery("");
     setProcessPage(1);
+    setCaptureProcessId(null);
   }, [activeUdid]);
 
   useEffect(() => {
@@ -193,9 +195,30 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const processPageCount = Math.max(1, Math.ceil(visibleProcessInventory.length / PROCESS_PAGE_SIZE));
   const capture = view?.network_capture;
   const captureIsRunning = capture ? networkCaptureRunning(capture) : false;
+  useEffect(() => {
+    if (captureProcessId == null || !processInventory || captureIsRunning) return;
+    if (!processInventory.processes.some((process) => process.pid === captureProcessId)) {
+      setCaptureProcessId(null);
+    }
+  }, [captureIsRunning, captureProcessId, processInventory]);
   const captureStatus = capture
     ? `${t(`performance.captureStates.${capture.state}`)}${capture.stop_reason ? ` · ${t(`performance.captureReasons.${capture.stop_reason}`)}` : ""}`
     : t("performance.captureStates.idle");
+  const captureProcessOptions = useMemo(() => [
+    { value: "all" as const, label: t("performance.captureAllProcesses") },
+    ...(processInventory?.processes ?? []).map((process) => ({
+      value: process.pid,
+      label: `${process.app_name ?? process.name} · PID ${process.pid}`,
+    })),
+  ], [processInventory?.processes, t]);
+  const capturedProcessEntry = capture?.process_id == null
+    ? undefined
+    : processInventory?.processes.find((process) => process.pid === capture.process_id);
+  const capturedProcess = capture?.process_id == null
+    ? t("performance.captureAllProcesses")
+    : capturedProcessEntry?.app_name
+      ?? capturedProcessEntry?.name
+      ?? t("performance.capturePid", { pid: capture.process_id });
   const bluetoothCapture = view?.bluetooth_capture;
   const bluetoothCaptureIsRunning = bluetoothCapture ? networkCaptureRunning(bluetoothCapture) : false;
   const bluetoothCaptureStatus = bluetoothCapture
@@ -233,7 +256,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       const response = await request("/api/performance/network-capture", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ destination, duration_seconds: captureDuration }),
+        body: JSON.stringify({ destination, duration_seconds: captureDuration, process_id: captureProcessId }),
       });
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("performance.captureStarted"));
@@ -472,6 +495,17 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
             <Typography.Text type="secondary">{t("performance.packetCaptureHint")}</Typography.Text>
           </div>
           <Space wrap className="performance-capture-controls">
+            <Select<number | "all">
+              className="performance-capture-process-select"
+              aria-label={t("performance.captureProcess")}
+              value={captureProcessId ?? "all"}
+              disabled={!activeUdid || captureIsRunning || captureBusy}
+              loading={processInventoryLoading}
+              showSearch
+              optionFilterProp="label"
+              options={captureProcessOptions}
+              onChange={(value) => setCaptureProcessId(value === "all" ? null : value)}
+            />
             <Select<number>
               aria-label={t("performance.captureDuration")}
               value={captureDuration}
@@ -495,7 +529,9 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         </div>
         <div className="performance-transport-grid performance-capture-grid">
           <div><span>{t("performance.captureStatus")}</span><strong>{captureStatus}</strong></div>
+          <div><span>{t("performance.captureProcess")}</span><strong title={capturedProcess}>{capturedProcess}</strong></div>
           <div><span>{t("performance.capturePackets")}</span><strong>{capture?.packet_count ?? 0}</strong></div>
+          <div><span>{t("performance.captureFilteredPackets")}</span><strong>{capture?.filtered_packet_count ?? 0}</strong></div>
           <div><span>{t("performance.captureSize")}</span><strong>{fileSize(capture?.bytes_written)}</strong></div>
           <div><span>{t("performance.captureElapsed")}</span><strong>{((capture?.elapsed_ms ?? 0) / 1000).toFixed(1)} s</strong></div>
         </div>

@@ -15,7 +15,7 @@ The project uses neither iPhone Mirroring nor scrcpy's Android transport. Its pr
 - One-shot Unicode text paste and optional bidirectional text/image clipboard synchronization through the CoreDevice Pasteboard Service
 - On-demand structured iPhone Unified Log console with level/context filtering, supervised SyslogRelay fallback, bounded buffering, copy and recovery status
 - Explicit per-app launch console for developer and third-party apps, with bounded session-only stdout/stderr capture
-- On-demand normalized iPhone CPU, top-process CPU, memory and relative energy rankings, a searchable DVT running-process inventory, Core Animation FPS, GPU-memory, and device network telemetry with supervised DVT service recovery, device-wide DVT network/thermal condition simulation, plus bounded network and Bluetooth HCI PCAP export
+- On-demand normalized iPhone CPU, top-process CPU, memory and relative energy rankings, a searchable DVT running-process inventory, Core Animation FPS, GPU-memory, and device network telemetry with supervised DVT service recovery, device-wide DVT network/thermal condition simulation, plus bounded all-device or per-process network PCAP and Bluetooth HCI PCAP export
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch, app lifecycle control, frame synchronization, device switching, DVT virtual location, bounded process/performance inspection, filtered device logs, and crash report diagnosis, with refreshed device details and event-driven metadata waits
 - Native Tauri 2 desktop controls, Simplified Chinese and English UI, and signed nightly updates
 - macOS, Windows, and Linux verification and packaging through GitHub Actions
