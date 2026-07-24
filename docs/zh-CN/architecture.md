@@ -104,6 +104,8 @@ IPA 安装、显式升级和应用卸载使用独立 Tokio 任务及新的 Insta
 
 每个活动设备会话都会运行受监督的 Lockdown 心跳：收到设备的 `Marco` 后回复 `Polo`， 限制设备提供的等待间隔，并在休眠、超时或传输失败后重连。心跳属于可选服务，不会阻止 视频、输入或设备管理启动；其生命周期通过共享服务健康注册表公开。
 
+原生截图回退链现在只会在 CoreDevice ScreenCaptureService 与 screenshotr 均失败后尝试一条短生命周期的 DVT Screenshot 连接，因此新增的 DDI 依赖路径不会延迟任一已有后端。DVT 连接与截图截止时间相互独立，返回字节继续经过相同的格式、尺寸和大小校验；DVT 失败后会直接丢弃连接，不会留在会话 worker 中。
+
 ## 视频管线
 
 CoreDevice displayservice 输出 RTP/HEVC。后端先组装完整 HEVC Access Unit，再进入 16 MiB 字节上限队列；溢出时丢弃依赖帧直至 IRAP，并通过 PLI/FIR 请求恢复。FFmpeg 默认输出 自描述的 RGB24 PAM 帧。实验性 YUV420P 设置（也可通过 `DEVICEHUB_VIDEO_PIXEL_FORMAT=yuv420p` 选择）输出 YUV4MPEG2，并将 planar YUV420P 直接交给 TurboJPEG，避免 RGB 转换并将解码帧带宽减半。 最新帧通过 `watch` 通道按事件通知 WebSocket，取消固定频率轮询；慢消费者只会看到最新帧， 不会积压陈旧画面。

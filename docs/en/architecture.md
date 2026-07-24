@@ -112,6 +112,8 @@ Offline Unified Log export is a separate explicit OsTraceRelay RSD worker and do
 
 A supervised Lockdown heartbeat runs for the lifetime of every active device session. It answers each device `Marco` request with `Polo`, bounds device-provided wait intervals, and reconnects after sleep, timeout, or transport failure. The heartbeat is optional and cannot prevent video, input, or management startup; its lifecycle is exposed through the shared service-health registry.
 
+The native screenshot fallback chain now tries a short-lived DVT Screenshot connection only after CoreDevice ScreenCaptureService and screenshotr both fail, so the additional DDI-dependent path cannot delay either established backend. DVT connection and capture deadlines are independent, its bytes pass through the same format, dimension, and size validation, and a failed DVT attempt is discarded rather than retained in the session worker.
+
 ## Video Pipeline
 
 CoreDevice displayservice produces RTP/HEVC. The backend assembles complete HEVC access units into a 16 MiB byte-bounded queue before FFmpeg; overflow discards dependent frames until an IRAP and requests PLI/FIR recovery. FFmpeg emits self-describing RGB24 PAM frames by default. The experimental YUV420P setting (also selectable with `DEVICEHUB_VIDEO_PIXEL_FORMAT=yuv420p`) emits YUV4MPEG2 and sends planar YUV420P directly to TurboJPEG, avoiding the RGB conversion and halving decoded frame bandwidth. A `watch` channel publishes only the latest frame and wakes WebSocket consumers without a fixed-rate polling loop; lagging consumers drop stale decoded frames by construction.

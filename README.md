@@ -9,6 +9,7 @@ The project uses neither iPhone Mirroring nor scrcpy's Android transport. Its pr
 ## Highlights
 
 - Live CoreDevice HEVC streaming at up to 60 FPS with portrait and landscape aspect ratios preserved
+- Lossless native screenshots through a bounded CoreDevice, screenshotr, and final DVT Screenshot fallback chain
 - Up to five concurrent Universal HID touch contacts, direct pointer gestures, keyboard passthrough, and configurable hardware-button shortcuts
 - Complete scrcpy-mask `0.0.1` controller profile import/export and a visual mapping editor with live or captured-screen backgrounds
 - Editable device identity, bounded model/architecture/color metadata, activation readiness and bounded battery health/temperature diagnostics, regular/system/App Clip browsing, running-state detection, launch, restart and stop controls, native app icons, device-aware IPA install/upgrade preflight, safe app removal, unified public AFC/App storage/crash-report browsing with privacy-bounded summaries, bounded file and directory management, hardware-button lock, confirmed device restart and shutdown, and provisioning profile inspection, validated installation and confirmed removal, plus cancellable CoreDevice sysdiagnose collection

@@ -1,15 +1,17 @@
-//! Bounded, on-demand native screenshots with CoreDevice and screenshotr backends.
+//! Bounded, on-demand native screenshots with CoreDevice, DVT, and screenshotr backends.
 
 use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 
 use idevice::core_device::{ImageFormat, ScreenCaptureServiceClient};
+use idevice::dvt::remote_server::RemoteServerClient;
+use idevice::dvt::screenshot::ScreenshotClient;
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::screenshotr::ScreenshotService;
 use idevice::tcp::handle::AdapterHandle;
-use idevice::{IdeviceService, RsdService};
+use idevice::{IdeviceService, ReadWrite, RsdService};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::protocol::ConnKind;
@@ -94,6 +96,31 @@ impl ScreenCaptureTransport {
                 ))
             }
         }
+    }
+
+    async fn capture_dvt(&mut self) -> Result<Vec<u8>, String> {
+        let mut remote = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            RemoteServerClient::<Box<dyn ReadWrite>>::connect_rsd(
+                &mut self.adapter,
+                &mut self.handshake,
+            ),
+        )
+        .await
+        .map_err(|_| "DVT screenshot connection timed out".to_string())?
+        .map_err(|error| format!("DVT screenshot service unavailable: {error:?}"))?;
+        let screenshot = tokio::time::timeout(REQUEST_TIMEOUT, async {
+            let mut client = ScreenshotClient::new(&mut remote)
+                .await
+                .map_err(|error| format!("DVT screenshot channel unavailable: {error:?}"))?;
+            client
+                .take_screenshot()
+                .await
+                .map_err(|error| format!("DVT screenshot request failed: {error:?}"))
+        })
+        .await
+        .map_err(|_| "dvt screenshot request timed out".to_string())??;
+        normalize_and_log("dvt", screenshot)
     }
 }
 
@@ -183,14 +210,21 @@ async fn capture(
         Ok(mut connected) => match capture_from(&mut connected).await {
             Ok(png) => {
                 *client = Some(connected);
-                Ok(png)
+                return Ok(png);
             }
             Err(error) => {
                 failures.push(error);
-                Err(unavailable(failures))
             }
         },
         Err(error) => {
+            failures.push(error);
+        }
+    }
+
+    match transport.capture_dvt().await {
+        Ok(png) => Ok(png),
+        Err(error) => {
+            tracing::debug!(%error, "DVT screenshot fallback unavailable");
             failures.push(error);
             Err(unavailable(failures))
         }
@@ -202,6 +236,10 @@ async fn capture_from(client: &mut NativeScreenCaptureClient) -> Result<Vec<u8>,
     let screenshot = tokio::time::timeout(REQUEST_TIMEOUT, client.take_screenshot())
         .await
         .map_err(|_| format!("{backend} screenshot request timed out"))??;
+    normalize_and_log(backend, screenshot)
+}
+
+fn normalize_and_log(backend: &'static str, screenshot: Vec<u8>) -> Result<Vec<u8>, String> {
     let png = normalize_screenshot(screenshot)?;
     let (width, height) = validate_png(&png)?;
     tracing::info!(
@@ -315,10 +353,14 @@ mod tests {
 
     #[test]
     fn preserves_backend_failures_in_unavailable_error() {
-        let error = unavailable(vec!["core failed".into(), "fallback failed".into()]);
+        let error = unavailable(vec![
+            "core failed".into(),
+            "fallback failed".into(),
+            "dvt failed".into(),
+        ]);
         assert_eq!(
             error,
-            "native screenshot service unavailable: core failed; fallback failed"
+            "native screenshot service unavailable: core failed; fallback failed; dvt failed"
         );
     }
 

@@ -67,7 +67,8 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Capability | Primary service |
 | --- | --- |
 | Device identity, name, regional settings, storage fallback | Lockdown |
-| Screen, audio, orientation, clipboard, HID | CoreDevice display, orientation, Pasteboard, and HID services |
+| Live screen, audio, orientation, clipboard, HID | CoreDevice display, orientation, Pasteboard, and HID services |
+| Native screenshot | CoreDevice ScreenCaptureService with screenshotr and final DVT Screenshot fallbacks |
 | App list, process state, launch, stop | CoreDevice AppService |
 | Explicit per-app console launch | CoreDevice AppService + OpenStdioSocket |
 | IPA installation and user-app fallback | Installation Proxy |

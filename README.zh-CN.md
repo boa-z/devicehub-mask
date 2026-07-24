@@ -9,6 +9,7 @@ DeviceHub Mask 是一个基于 Tauri 2 的 iOS 游戏桌面控制应用，支持
 ## 主要能力
 
 - CoreDevice HEVC 实时画面，最高 60 FPS，并保持横竖屏比例
+- 通过有界的 CoreDevice、screenshotr 和最终 DVT Screenshot 递进回退链获取原生无损截图
 - 最多五个 Universal HID 并发触点、鼠标直接触控、键盘透传和可配置硬件按键快捷键
 - 完整导入和导出 scrcpy-mask `0.0.1` 控制器配置，支持实时画面或截图背景的可视化编辑器
 - 可编辑设备名称、有界的型号/架构/颜色信息、激活就绪状态及有界的电池健康/温度诊断、带真实图标和运行状态的普通/系统/轻 App 浏览、启动、重启与停止、 IPA 安装、安全卸载、App Documents 文件管理、受限的标准 AFC 文件与目录管理、隐私有界的崩溃报告摘要、硬件键锁屏、确认式重启与关机、描述文件检查、校验安装和确认移除，以及可取消的 CoreDevice sysdiagnose 采集
