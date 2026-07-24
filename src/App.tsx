@@ -1218,7 +1218,6 @@ export default function App() {
     </div>
   );
   const hardwareControls = renderHardwareControls(true);
-  const secondaryHardwareControls = renderHardwareControls(false);
   const recordingSupported = typeof MediaRecorder !== "undefined"
     && typeof HTMLCanvasElement !== "undefined"
     && typeof HTMLCanvasElement.prototype.captureStream === "function";
@@ -1424,9 +1423,11 @@ export default function App() {
                       controlOverlayVisible={controlOverlayVisible}
                       rotationControlsLocked={deviceViewPreferences.rotationControlsLocked}
                       overflowOpen={fullscreenOverflowOpen}
+                      hardwareDock={deviceViewPreferences.fullscreenHardwareToolbarDock}
+                      functionDock={deviceViewPreferences.fullscreenFunctionToolbarDock}
+                      hardwareControls={hardwareControls}
                       profileSelector={controlProfileSelector}
                       displayControls={deviceDisplayControls}
-                      secondaryHardwareControls={secondaryHardwareControls}
                       systemFullscreenControl={<Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button aria-label={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")} icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>}
                       onReconnect={() => void reconnectDevice()}
                       onControlModeChange={(mode) => {
@@ -1435,13 +1436,13 @@ export default function App() {
                         if (mode === "keyboard") setEditing(false);
                       }}
                       onControlOverlayChange={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
-                      onHome={() => command({ type: "button", name: "home" })}
                       onRotateLeft={() => command({ type: "rotate", direction: "left" })}
                       onRotateRight={() => command({ type: "rotate", direction: "right" })}
                       onOverflowOpenChange={(open) => {
                         setFullscreenOverflowOpen(open);
                         setFullscreenToolbarVisible(true);
                       }}
+                      onDocksChange={(fullscreenHardwareToolbarDock, fullscreenFunctionToolbarDock) => patchDeviceViewPreferences({ fullscreenHardwareToolbarDock, fullscreenFunctionToolbarDock })}
                       onExit={toggleDeviceFullscreen}
                       onPointerEnter={() => setFullscreenToolbarHovered(true)}
                       onPointerLeave={() => setFullscreenToolbarHovered(false)}
@@ -1531,7 +1532,16 @@ export default function App() {
                       >
                       <canvas ref={bindCanvas} />
                       {page === "device" && performanceHud.enabled && (
-                        <PerformanceHud items={performanceHud.items} view={performanceView} streamMetrics={streamMetrics} renderFps={renderFps} avoidFullscreenToolbar={deviceFullscreen && fullscreenToolbarVisible} />
+                        <PerformanceHud
+                          items={performanceHud.items}
+                          view={performanceView}
+                          streamMetrics={streamMetrics}
+                          renderFps={renderFps}
+                          avoidFullscreenToolbar={deviceFullscreen && fullscreenToolbarVisible && (
+                            deviceViewPreferences.fullscreenHardwareToolbarDock.startsWith("top-")
+                            || deviceViewPreferences.fullscreenFunctionToolbarDock.startsWith("top-")
+                          )}
+                        />
                       )}
                       {page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot && (
                         <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />

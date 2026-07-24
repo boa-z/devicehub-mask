@@ -258,6 +258,8 @@ export const enUS = {
     exitSystemFullscreen: "Exit system fullscreen",
     deviceFullscreenControls: "Focused device controls",
     moreControls: "More device controls",
+    moveHardwareToolbar: "Move hardware controls",
+    moveFunctionToolbar: "Move function controls",
     bandwidth: "Bandwidth {{value}} Mbps",
     metrics: "Source {{source}} · Decode {{decoded}} · Send {{sent}} · Display {{render}} FPS · JPEG {{jpeg}} ms",
     mappingMode: "Mapping",

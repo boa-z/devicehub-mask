@@ -1,3 +1,5 @@
+import { isFullscreenToolbarDock, type FullscreenToolbarDock } from "./fullscreenToolbarLayout";
+
 export const deviceViewScales = ["fit", "0.25", "0.5", "0.75", "1", "1.25", "1.5", "2"] as const;
 
 export type DeviceViewScale = (typeof deviceViewScales)[number];
@@ -9,6 +11,8 @@ export type DeviceViewPreferences = {
   fullscreenToolbarAutoHide: boolean;
   deviceInspectorVisible: boolean;
   mappingInspectorVisible: boolean;
+  fullscreenHardwareToolbarDock: FullscreenToolbarDock;
+  fullscreenFunctionToolbarDock: FullscreenToolbarDock;
 };
 
 export const defaultDeviceViewPreferences: DeviceViewPreferences = {
@@ -18,6 +22,8 @@ export const defaultDeviceViewPreferences: DeviceViewPreferences = {
   fullscreenToolbarAutoHide: true,
   deviceInspectorVisible: true,
   mappingInspectorVisible: true,
+  fullscreenHardwareToolbarDock: "top-center",
+  fullscreenFunctionToolbarDock: "bottom-center",
 };
 
 const storageKey = "devicehub-mask.device-view";
@@ -29,6 +35,17 @@ export function parseDeviceViewPreferences(value: string | null): DeviceViewPref
     const parsed: unknown = JSON.parse(value);
     if (parsed === null || typeof parsed !== "object") throw new Error("invalid preference");
     const candidate = parsed as Record<string, unknown>;
+    const fullscreenHardwareToolbarDock = isFullscreenToolbarDock(candidate.fullscreenHardwareToolbarDock)
+      ? candidate.fullscreenHardwareToolbarDock
+      : defaultDeviceViewPreferences.fullscreenHardwareToolbarDock;
+    const requestedFunctionDock = isFullscreenToolbarDock(candidate.fullscreenFunctionToolbarDock)
+      ? candidate.fullscreenFunctionToolbarDock
+      : defaultDeviceViewPreferences.fullscreenFunctionToolbarDock;
+    const fullscreenFunctionToolbarDock = requestedFunctionDock === fullscreenHardwareToolbarDock
+      ? defaultDeviceViewPreferences.fullscreenFunctionToolbarDock === fullscreenHardwareToolbarDock
+        ? "top-center"
+        : defaultDeviceViewPreferences.fullscreenFunctionToolbarDock
+      : requestedFunctionDock;
     return {
       scale: typeof candidate.scale === "string" && scaleSet.has(candidate.scale)
         ? candidate.scale as DeviceViewScale
@@ -48,6 +65,8 @@ export function parseDeviceViewPreferences(value: string | null): DeviceViewPref
       mappingInspectorVisible: typeof candidate.mappingInspectorVisible === "boolean"
         ? candidate.mappingInspectorVisible
         : defaultDeviceViewPreferences.mappingInspectorVisible,
+      fullscreenHardwareToolbarDock,
+      fullscreenFunctionToolbarDock,
     };
   } catch {
     return { ...defaultDeviceViewPreferences };

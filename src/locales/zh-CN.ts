@@ -246,6 +246,8 @@ export const zhCN = {
     exitSystemFullscreen: "退出系统全屏",
     deviceFullscreenControls: "设备画面全屏控制",
     moreControls: "更多设备控制",
+    moveHardwareToolbar: "移动硬件按钮工具条",
+    moveFunctionToolbar: "移动功能工具条",
     bandwidth: "带宽 {{value}} Mbps",
     metrics: "源 {{source}} · 解码 {{decoded}} · 发送 {{sent}} · 显示 {{render}} FPS · JPEG {{jpeg}} ms",
     mappingMode: "映射",

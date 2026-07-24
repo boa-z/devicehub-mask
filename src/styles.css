@@ -34,8 +34,22 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .workspace.inspector-hidden { grid-template-columns: minmax(0, 1fr); }
 .stage-column { position: relative; min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
 .stage-toolbar { min-height: 46px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #131718; }
-.device-fullscreen-toolbar { position: absolute; top: 8px; left: 50%; z-index: 20; max-width: calc(100% - 16px); min-height: 44px; padding: 6px 8px; border: 1px solid #343c3d; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 4px; background: rgba(15,18,19,.96); box-shadow: 0 6px 20px rgba(0,0,0,.45); transform: translateX(-50%); transition: opacity .16s ease, transform .16s ease; }
-.device-fullscreen-toolbar.is-hidden { opacity: 0; pointer-events: none; transform: translate(-50%, -12px); }
+.device-fullscreen-toolbars { position: absolute; inset: 0; z-index: 20; overflow: hidden; pointer-events: none; }
+.device-fullscreen-toolbar { position: absolute; z-index: 21; max-width: calc(100% - 16px); min-height: 44px; padding: 6px 8px; border: 1px solid #343c3d; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 4px; background: rgba(15,18,19,.96); box-shadow: 0 6px 20px rgba(0,0,0,.45); transform: var(--dock-transform, none); transition: opacity .16s ease, transform .16s ease, box-shadow .16s ease; pointer-events: auto; touch-action: none; }
+.device-fullscreen-hardware-toolbar { z-index: 22; }
+.device-fullscreen-hardware-toolbar .hardware-controls { margin-left: 0; }
+.device-fullscreen-toolbar.is-hidden { opacity: 0; pointer-events: none; transform: var(--dock-transform, none) translateY(-8px); }
+.device-fullscreen-toolbar.is-dragging { z-index: 24; transform: none; transition: none; box-shadow: 0 10px 28px rgba(0,0,0,.58); }
+.device-fullscreen-drag-handle { cursor: grab; color: #899493; }
+.device-fullscreen-toolbar.is-dragging .device-fullscreen-drag-handle { cursor: grabbing; color: #edf2f0; }
+.device-fullscreen-toolbar.dock-top-left { top: 8px; left: 8px; }
+.device-fullscreen-toolbar.dock-top-center { top: 8px; left: 50%; --dock-transform: translateX(-50%); }
+.device-fullscreen-toolbar.dock-top-right { top: 8px; right: 8px; }
+.device-fullscreen-toolbar.dock-left-center { top: 50%; left: 8px; --dock-transform: translateY(-50%); }
+.device-fullscreen-toolbar.dock-right-center { top: 50%; right: 8px; --dock-transform: translateY(-50%); }
+.device-fullscreen-toolbar.dock-bottom-left { bottom: 8px; left: 8px; }
+.device-fullscreen-toolbar.dock-bottom-center { bottom: 8px; left: 50%; --dock-transform: translateX(-50%); }
+.device-fullscreen-toolbar.dock-bottom-right { right: 8px; bottom: 8px; }
 .device-fullscreen-overflow { width: min(390px, calc(100vw - 32px)); display: grid; gap: 10px; }
 .device-fullscreen-overflow-row { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .device-fullscreen-overflow-row > .control-profile-select { width: 100%; }

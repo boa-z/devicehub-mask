@@ -15,6 +15,8 @@ describe("device view preferences", () => {
       fullscreenToolbarAutoHide: false,
       deviceInspectorVisible: false,
       mappingInspectorVisible: false,
+      fullscreenHardwareToolbarDock: "bottom-right",
+      fullscreenFunctionToolbarDock: "left-center",
     }))).toEqual({
       scale: "1.5",
       controlOverlayVisible: false,
@@ -22,6 +24,8 @@ describe("device view preferences", () => {
       fullscreenToolbarAutoHide: false,
       deviceInspectorVisible: false,
       mappingInspectorVisible: false,
+      fullscreenHardwareToolbarDock: "bottom-right",
+      fullscreenFunctionToolbarDock: "left-center",
     });
     expect(parseDeviceViewPreferences('{"scale":"3"}')).toEqual(defaultDeviceViewPreferences);
   });
@@ -39,6 +43,32 @@ describe("device view preferences", () => {
       fullscreenToolbarAutoHide: false,
       deviceInspectorVisible: true,
       mappingInspectorVisible: true,
+      fullscreenHardwareToolbarDock: "top-center",
+      fullscreenFunctionToolbarDock: "bottom-center",
+    });
+  });
+
+  it("repairs invalid toolbar docks independently", () => {
+    expect(parseDeviceViewPreferences(JSON.stringify({
+      fullscreenHardwareToolbarDock: "invalid",
+      fullscreenFunctionToolbarDock: "right-center",
+    }))).toMatchObject({
+      fullscreenHardwareToolbarDock: "top-center",
+      fullscreenFunctionToolbarDock: "right-center",
+    });
+    expect(parseDeviceViewPreferences(JSON.stringify({
+      fullscreenHardwareToolbarDock: "top-left",
+      fullscreenFunctionToolbarDock: "top-left",
+    }))).toMatchObject({
+      fullscreenHardwareToolbarDock: "top-left",
+      fullscreenFunctionToolbarDock: "bottom-center",
+    });
+    expect(parseDeviceViewPreferences(JSON.stringify({
+      fullscreenHardwareToolbarDock: "bottom-center",
+      fullscreenFunctionToolbarDock: "bottom-center",
+    }))).toMatchObject({
+      fullscreenHardwareToolbarDock: "bottom-center",
+      fullscreenFunctionToolbarDock: "top-center",
     });
   });
 
