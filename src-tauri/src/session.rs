@@ -2304,6 +2304,18 @@ impl DeviceManagement {
                 });
                 None
             }
+            InputCmd::ReadCrashReport {
+                device_path,
+                max_bytes,
+                reply,
+            } => {
+                let provider = self.provider.clone();
+                tokio::spawn(async move {
+                    let result = crate::crash_reports::read(provider, device_path, max_bytes).await;
+                    let _ = reply.send(result);
+                });
+                None
+            }
             InputCmd::ExportCrashReport {
                 device_path,
                 destination,
@@ -3172,6 +3184,7 @@ async fn dispatch(
         | InputCmd::LaunchApp { .. }
         | InputCmd::StopApp { .. }
         | InputCmd::ListCrashReports(_)
+        | InputCmd::ReadCrashReport { .. }
         | InputCmd::ExportCrashReport { .. }
         | InputCmd::InstallApp { .. }
         | InputCmd::UninstallApp { .. }

@@ -8,12 +8,13 @@ use idevice::crashreportcopymobile::{CrashReportCopyMobileClient, flush_reports}
 use idevice::provider::IdeviceProvider;
 use tokio::io::AsyncWriteExt;
 
-use crate::protocol::{DeviceCrashReport, DeviceCrashReportList};
+use crate::protocol::{DeviceCrashReport, DeviceCrashReportContent, DeviceCrashReportList};
 
 const MAX_REPORTS: usize = 2_000;
 const MAX_ENTRIES: usize = 5_000;
 const MAX_DEPTH: usize = 8;
 const MAX_EXPORT_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_READ_BYTES: usize = 1024 * 1024;
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn list(provider: Arc<dyn IdeviceProvider>) -> Result<DeviceCrashReportList, String> {
@@ -142,6 +143,70 @@ pub async fn export(
     Ok(data.len() as u64)
 }
 
+pub async fn read(
+    provider: Arc<dyn IdeviceProvider>,
+    device_path: String,
+    max_bytes: usize,
+) -> Result<DeviceCrashReportContent, String> {
+    validate_device_path(&device_path)?;
+    if !(1..=MAX_READ_BYTES).contains(&max_bytes) {
+        return Err(format!(
+            "crash report read limit must be between 1 and {} bytes",
+            MAX_READ_BYTES
+        ));
+    }
+    let mut client = tokio::time::timeout(
+        SERVICE_TIMEOUT,
+        CrashReportCopyMobileClient::connect(provider.as_ref()),
+    )
+    .await
+    .map_err(|_| "crash report service connection timed out".to_string())?
+    .map_err(|error| format!("unable to connect to crash report service: {error:?}"))?;
+    let info = client
+        .afc_client
+        .get_file_info(&device_path)
+        .await
+        .map_err(|error| format!("unable to inspect crash report: {error:?}"))?;
+    if info.st_ifmt != "S_IFREG" {
+        return Err("selected crash report is not a regular file".to_string());
+    }
+    let expected = info.size.min(max_bytes);
+    let mut report = client
+        .afc_client
+        .open(device_path.clone(), AfcFopenMode::RdOnly)
+        .await
+        .map_err(|error| format!("unable to open crash report: {error:?}"))?;
+    let data = report
+        .read_n(expected)
+        .await
+        .map_err(|error| format!("unable to read crash report: {error:?}"))?;
+    report
+        .close()
+        .await
+        .map_err(|error| format!("unable to close crash report: {error:?}"))?;
+    if data.len() != expected {
+        return Err("crash report changed while it was being read".to_string());
+    }
+    Ok(report_content(device_path, info.size, data))
+}
+
+fn report_content(
+    device_path: String,
+    size_bytes: usize,
+    data: Vec<u8>,
+) -> DeviceCrashReportContent {
+    let lossy_utf8 = std::str::from_utf8(&data).is_err();
+    let content = String::from_utf8_lossy(&data).into_owned();
+    DeviceCrashReportContent {
+        device_path,
+        size_bytes: size_bytes as u64,
+        bytes_read: data.len(),
+        truncated: size_bytes > data.len(),
+        lossy_utf8,
+        content,
+    }
+}
+
 fn child_path(directory: &str, name: &str) -> String {
     if directory == "/" {
         format!("/{name}")
@@ -150,7 +215,7 @@ fn child_path(directory: &str, name: &str) -> String {
     }
 }
 
-fn validate_device_path(path: &str) -> Result<(), String> {
+pub(crate) fn validate_device_path(path: &str) -> Result<(), String> {
     if path.len() > 1_024
         || !path.starts_with('/')
         || path.ends_with('/')
@@ -211,6 +276,16 @@ mod tests {
         assert_eq!(child_path("/Retired", "Report.ips"), "/Retired/Report.ips");
     }
 
+    #[test]
+    fn bounded_report_content_marks_truncation_and_invalid_utf8() {
+        let report = report_content("/Report.ips".into(), 64, vec![b'a', 0xff, b'b']);
+        assert_eq!(report.size_bytes, 64);
+        assert_eq!(report.bytes_read, 3);
+        assert!(report.truncated);
+        assert!(report.lossy_utf8);
+        assert_eq!(report.content, "a\u{fffd}b");
+    }
+
     #[tokio::test]
     #[ignore = "requires a connected physical device with crash reports"]
     async fn lists_and_exports_a_report_from_hardware() {
@@ -232,6 +307,11 @@ mod tests {
             .filter(|report| report.size_bytes <= MAX_EXPORT_BYTES as u64)
             .min_by_key(|report| report.size_bytes)
             .expect("device returned no exportable crash report");
+        let content = read(provider.clone(), report.path.clone(), 4 * 1024)
+            .await
+            .unwrap();
+        assert!(content.bytes_read <= 4 * 1024);
+        assert_eq!(content.device_path, report.path);
         let destination = std::env::temp_dir().join(format!(
             "devicehub-mask-crash-report-{}.tmp",
             uuid::Uuid::new_v4()

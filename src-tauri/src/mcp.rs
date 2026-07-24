@@ -43,6 +43,8 @@ const DEVICE_WAIT: Duration = Duration::from_secs(20);
 const LOCATION_WAIT: Duration = Duration::from_secs(10);
 const CLIPBOARD_WAIT: Duration = Duration::from_secs(10);
 const APP_WAIT: Duration = Duration::from_secs(15);
+const CRASH_REPORT_WAIT: Duration = Duration::from_secs(20);
+const DEFAULT_CRASH_REPORT_BYTES: usize = 256 * 1024;
 const OBSERVABILITY_WAIT_MAX: Duration = Duration::from_secs(10);
 const PERFORMANCE_WAIT_DEFAULT: Duration = Duration::from_millis(2500);
 const DEVICE_LOG_WAIT_DEFAULT: Duration = Duration::from_millis(1000);
@@ -194,6 +196,22 @@ struct StopAppParams {
     bundle_id: String,
     /// Wait for the screen after the app stops to become stable. Defaults to true.
     wait_for_settle: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CrashReportListParams {
+    /// Optional case-insensitive report name or path filter.
+    query: Option<String>,
+    /// Maximum returned reports. Defaults to 50 and is clamped to 1..200.
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CrashReportReadParams {
+    /// Absolute device path returned by list_crash_reports.
+    device_path: String,
+    /// Maximum bytes to return. Defaults to 262144 and cannot exceed 1048576.
+    max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1062,6 +1080,77 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "List recent device crash reports through the active session. Results are newest first and contain metadata only; use read_crash_report with an exact returned device_path to inspect one bounded report."
+    )]
+    async fn list_crash_reports(
+        &self,
+        Parameters(params): Parameters<CrashReportListParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::ListCrashReports(reply))?;
+        let mut list = tokio::time::timeout(CRASH_REPORT_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("crash report list request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        let query = params.query.unwrap_or_default().trim().to_ascii_lowercase();
+        if !query.is_empty() {
+            list.reports.retain(|report| {
+                report.name.to_ascii_lowercase().contains(&query)
+                    || report.path.to_ascii_lowercase().contains(&query)
+            });
+        }
+        let total_matches = list.reports.len();
+        list.reports
+            .truncate(params.limit.unwrap_or(50).clamp(1, 200));
+        let returned = list.reports.len();
+        ok_text(
+            json!({
+                "reports": list.reports,
+                "returned": returned,
+                "total_matches": total_matches,
+                "source_truncated": list.truncated,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Read a size-bounded device crash report for diagnosis. device_path must be an exact absolute path returned by list_crash_reports. The default limit is 256 KiB and the hard limit is 1 MiB."
+    )]
+    async fn read_crash_report(
+        &self,
+        Parameters(params): Parameters<CrashReportReadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::crash_reports::validate_device_path(&params.device_path)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let max_bytes = params.max_bytes.unwrap_or(DEFAULT_CRASH_REPORT_BYTES);
+        if !(1..=crate::crash_reports::MAX_READ_BYTES).contains(&max_bytes) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "max_bytes must be between 1 and {}",
+                    crate::crash_reports::MAX_READ_BYTES
+                ),
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::ReadCrashReport {
+            device_path: params.device_path,
+            max_bytes,
+            reply,
+        })?;
+        let report = tokio::time::timeout(CRASH_REPORT_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("crash report read request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&report).map_err(|error| {
+            McpError::internal_error(format!("crash report serialization failed: {error}"), None)
+        })?)
+    }
+
+    #[tool(
         description = "List attached iOS devices with UDID, name, connection type and active state."
     )]
     async fn list_devices(&self) -> Result<CallToolResult, McpError> {
@@ -1335,7 +1424,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use performance_snapshot and recent_device_logs to diagnose device-side behavior without opening another device connection.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -1435,6 +1524,8 @@ mod tests {
             "list_apps",
             "launch_app",
             "stop_app",
+            "list_crash_reports",
+            "read_crash_report",
             "list_devices",
             "connect_device",
             "reconnect_device",
@@ -1521,6 +1612,114 @@ mod tests {
                 .is_some_and(|text| text.text.contains(r#""available":false"#))
         }));
         assert!(!observability.performance_demand.enabled());
+    }
+
+    #[tokio::test]
+    async fn crash_report_tools_use_bounded_active_session_commands() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+
+        let list_hub = hub.clone();
+        let list_task = tokio::spawn(async move {
+            list_hub
+                .list_crash_reports(Parameters(CrashReportListParams {
+                    query: Some("game".into()),
+                    limit: Some(10),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::ListCrashReports(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected crash report list command");
+        };
+        reply
+            .send(Ok(crate::protocol::DeviceCrashReportList {
+                reports: vec![
+                    crate::protocol::DeviceCrashReport {
+                        path: "/Game-2026-07-24.ips".into(),
+                        name: "Game-2026-07-24.ips".into(),
+                        size_bytes: 4096,
+                        modified: "2026-07-24T10:00:00Z".into(),
+                    },
+                    crate::protocol::DeviceCrashReport {
+                        path: "/Other-2026-07-24.ips".into(),
+                        name: "Other-2026-07-24.ips".into(),
+                        size_bytes: 2048,
+                        modified: "2026-07-24T09:00:00Z".into(),
+                    },
+                ],
+                truncated: false,
+            }))
+            .unwrap();
+        let list_result = list_task.await.unwrap();
+        let list_text = list_result
+            .content
+            .iter()
+            .find_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .unwrap();
+        assert!(list_text.contains("Game-2026-07-24.ips"));
+        assert!(!list_text.contains("Other-2026-07-24.ips"));
+
+        let read_hub = hub.clone();
+        let read_task = tokio::spawn(async move {
+            read_hub
+                .read_crash_report(Parameters(CrashReportReadParams {
+                    device_path: "/Game-2026-07-24.ips".into(),
+                    max_bytes: Some(4096),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::ReadCrashReport {
+            device_path,
+            max_bytes,
+            reply,
+        } = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected crash report read command");
+        };
+        assert_eq!(device_path, "/Game-2026-07-24.ips");
+        assert_eq!(max_bytes, 4096);
+        reply
+            .send(Ok(crate::protocol::DeviceCrashReportContent {
+                device_path,
+                size_bytes: 4096,
+                bytes_read: 24,
+                truncated: true,
+                lossy_utf8: false,
+                content: "Exception Type: SIGABRT".into(),
+            }))
+            .unwrap();
+        let read_result = read_task.await.unwrap();
+        assert!(read_result.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains("Exception Type: SIGABRT"))
+        }));
+
+        assert!(
+            hub.read_crash_report(Parameters(CrashReportReadParams {
+                device_path: "/../private/file".into(),
+                max_bytes: None,
+            }))
+            .await
+            .is_err()
+        );
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[test]
@@ -1701,6 +1900,18 @@ mod tests {
                 .tools
                 .iter()
                 .any(|tool| tool.name == "recent_device_logs")
+        );
+        assert!(
+            tools
+                .tools
+                .iter()
+                .any(|tool| tool.name == "list_crash_reports")
+        );
+        assert!(
+            tools
+                .tools
+                .iter()
+                .any(|tool| tool.name == "read_crash_report")
         );
         let performance = client
             .call_tool(

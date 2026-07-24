@@ -324,8 +324,14 @@ pub enum InputCmd {
         bundle_id: String,
         reply: oneshot::Sender<Result<bool, String>>,
     },
-    /// List crash reports without exposing their contents through the API.
+    /// List bounded crash report metadata from the active device session.
     ListCrashReports(oneshot::Sender<Result<DeviceCrashReportList, String>>),
+    /// Read a validated, size-bounded crash report for agent diagnostics.
+    ReadCrashReport {
+        device_path: String,
+        max_bytes: usize,
+        reply: oneshot::Sender<Result<DeviceCrashReportContent, String>>,
+    },
     /// Export one validated crash report to a user-selected host path.
     ExportCrashReport {
         device_path: String,
@@ -562,6 +568,16 @@ pub struct DeviceCrashReport {
 pub struct DeviceCrashReportList {
     pub reports: Vec<DeviceCrashReport>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceCrashReportContent {
+    pub device_path: String,
+    pub size_bytes: u64,
+    pub bytes_read: usize,
+    pub truncated: bool,
+    pub lossy_utf8: bool,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

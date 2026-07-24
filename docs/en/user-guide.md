@@ -209,8 +209,9 @@ The Crashes tab refreshes and recursively lists reports exposed by
 CrashReportCopyMobile. Search operates on report names and device paths. Export
 uses the native save dialog and streams the selected regular file to the chosen
 host path. Browsing is read-only: the app does not delete reports from the
-device, does not send report contents to the WebView, and rejects traversal,
-non-file entries, or reports larger than 128 MiB.
+device or send report contents to the WebView. Desktop export rejects traversal,
+non-file entries, or reports larger than 128 MiB. MCP can explicitly read at
+most 1 MiB from a validated report path for agent diagnostics.
 
 ## Device Logs
 
@@ -247,7 +248,7 @@ While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP
 endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
 swipes, simultaneous multi-touch, text and key input, hardware buttons, app
 discovery, launch/restart and stop, rotation, device selection and reconnection,
-virtual location, frame synchronization, and session status.
+virtual location, frame synchronization, crash diagnosis, and session status.
 
 `performance_snapshot` temporarily enables the existing DVT performance
 services and returns CPU, top-process, energy, graphics, GPU-memory, and network
@@ -257,6 +258,13 @@ enables the device log service and returns at most 500 entries. Use its `after`
 sequence cursor for incremental reads, and optionally filter by `level` or a
 case-insensitive `query`. Temporary MCP demand does not disable sampling or log
 streaming that is already enabled in the desktop UI.
+
+After an app unexpectedly exits, call `list_crash_reports` to obtain newest-first
+metadata, optionally filtered by report name or device path. Pass an exact
+returned `device_path` to `read_crash_report`; it returns 256 KiB by default and
+never more than 1 MiB, with `truncated` and `lossy_utf8` flags. The tool is
+read-only and rejects relative paths, traversal, directories, and oversized
+requests.
 
 Use `type_text` for printable ASCII HID keystrokes. Use `paste_text` for CJK or
 other Unicode text; it waits for the device pasteboard write and Cmd+V before
@@ -286,6 +294,7 @@ right-side action button in the same 250ms HID gesture:
 ```
 
 The endpoint has no authentication. Device screenshots, performance process
-names, and device logs can contain sensitive information. Keep it on loopback
-unless the host is on a trusted isolated network. Developers can change the
-bind address with `DEVICEHUB_MCP_ADDR`; see [Development](development.md).
+names, device logs, and crash reports can contain sensitive information. Keep
+it on loopback unless the host is on a trusted isolated network. Developers can
+change the bind address with `DEVICEHUB_MCP_ADDR`; see
+[Development](development.md).
