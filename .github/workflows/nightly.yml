@@ -85,16 +85,16 @@ jobs:
         run: node --check scripts/build-desktop.mjs && node --check scripts/prepare-netmuxd.mjs && node --check scripts/prepare-ffmpeg.mjs
 
       - name: Build desktop application
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main'
         run: ${{ matrix.tauri }} build --debug --no-bundle
 
       - name: Verify Windows GUI subsystem
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name == 'push' && github.ref != 'refs/heads/main'
         shell: pwsh
         run: ./scripts/verify-windows-package.ps1 -TargetDirectory src-tauri/target/debug -ApplicationOnly
 
   build-macos:
     name: Package macOS universal
-    needs: verify
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: macos-14
     timeout-minutes: 90
@@ -125,6 +125,14 @@ jobs:
           key: release-macos-universal
           workspaces: src-tauri -> target
 
+      - name: Restore universal FFmpeg cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            src-tauri/resources/ffmpeg
+            src-tauri/resources/ffmpeg-LICENSE.txt
+          key: ffmpeg-macos-universal-${{ hashFiles('scripts/prepare-ffmpeg.mjs') }}
+
       - name: Install dependencies
         run: |
           npm ci
@@ -148,6 +156,7 @@ jobs:
       - name: Build Tauri application
         id: build
         shell: bash
+        timeout-minutes: 25
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
           BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
@@ -225,7 +234,6 @@ jobs:
 
   build-windows:
     name: Package Windows x64
-    needs: verify
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: windows-latest
     timeout-minutes: 90
@@ -277,6 +285,7 @@ jobs:
       - name: Build Windows installers
         id: build
         shell: pwsh
+        timeout-minutes: 20
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -289,7 +298,11 @@ jobs:
           $config | Set-Content -Encoding utf8 tauri.ci.windows.json
           & node scripts/build-desktop.mjs --verbose --bundles nsis,msi --ignore-version-mismatches --config tauri.ci.windows.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & scripts/verify-windows-package.ps1 -TargetDirectory src-tauri/target/release
+
+      - name: Verify Windows installers
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./scripts/verify-windows-package.ps1 -TargetDirectory src-tauri/target/release
 
       - name: Collect Windows artifacts
         shell: pwsh
@@ -329,7 +342,6 @@ jobs:
 
   build-linux:
     name: Package Linux x64
-    needs: verify
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -385,6 +397,7 @@ jobs:
       - name: Build Linux packages
         id: build
         shell: bash
+        timeout-minutes: 20
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -446,7 +459,7 @@ jobs:
 
   publish-nightly:
     name: Publish rolling nightly
-    needs: [build-macos, build-windows, build-linux]
+    needs: [verify, build-macos, build-windows, build-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
