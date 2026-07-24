@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMappingRuntimeFrame, buildTouchFrame, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual } from "./control";
+import { buildMappingRuntimeFrame, buildTouchFrame, isUiControl, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual } from "./control";
 import { createMapping, type PadCastSpellMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
 
 describe("mapping controller runtime", () => {
@@ -67,5 +67,22 @@ describe("mapping controller runtime", () => {
     expect(remainingTapDuration(100, 105)).toBe(45);
     expect(remainingTapDuration(100, 150)).toBe(0);
     expect(remainingTapDuration(100, 180)).toBe(0);
+  });
+
+  it("recognizes nested UI controls before capturing keyboard mappings", () => {
+    let selector = "";
+    const nestedControl = {
+      closest(value: string) {
+        selector = value;
+        return {};
+      },
+    } as unknown as EventTarget;
+    const deviceSurface = { closest: () => null } as unknown as EventTarget;
+
+    expect(isUiControl(nestedControl)).toBe(true);
+    expect(selector).toContain("input");
+    expect(selector).toContain("[contenteditable='true']");
+    expect(isUiControl(deviceSurface)).toBe(false);
+    expect(isUiControl(null)).toBe(false);
   });
 });

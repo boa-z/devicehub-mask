@@ -51,7 +51,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { parsePngDimensions } from "./deviceScreenshot";
-import { buildMappingRuntimeFrame, buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
+import { buildMappingRuntimeFrame, buildTouchFrame, isBoundKey, isUiControl, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
@@ -146,11 +146,6 @@ function recordingFilename(deviceName: string, extension: string) {
 }
 
 type ControlMode = "mapping" | "keyboard";
-
-function isUiControl(target: EventTarget | null) {
-  return target instanceof HTMLElement
-    && target.closest("input, textarea, select, button, [contenteditable='true'], .ant-segmented") !== null;
-}
 
 function createLocalizedDefaultProfile(t: (key: string, options?: Record<string, unknown>) => string): Profile {
   const labels = ["mapping.defaults.move", "mapping.defaults.skill1", "mapping.defaults.skill2", "mapping.defaults.skill3"];
@@ -1033,7 +1028,7 @@ export default function App() {
         command({ type: "keyboard_down", usage });
         return;
       }
-      if (mappingEditing || event.repeat) return;
+      if (mappingEditing || event.repeat || isUiControl(event.target)) return;
       const hardware = hardwareButtons.find((button) => controlProfile.hardwareBindings[button.name] === event.code);
       if (hardware) {
         event.preventDefault();
