@@ -872,6 +872,10 @@ pub async fn manage(
             in_rx,
         );
         tokio::pin!(session);
+        let mut active_rescan = tokio::time::interval(IDLE_RESCAN);
+        active_rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Consume the immediate first tick; the initial list was just populated.
+        active_rescan.tick().await;
 
         // Run until the session ends on its own or the UI redirects us.
         let outcome = loop {
@@ -894,6 +898,10 @@ pub async fn manage(
                     }
                     Some(ControlCmd::Quit) | None => break Next::Quit,
                 },
+                _ = active_rescan.tick() => {
+                    let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, wifi.as_mut()).await;
+                    device_list.set(devices);
+                }
             }
         };
 
