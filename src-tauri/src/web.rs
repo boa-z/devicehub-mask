@@ -205,6 +205,8 @@ pub fn router(state: AppState, token: String) -> Router {
                 .put(set_device_location)
                 .delete(clear_device_location),
         )
+        .route("/api/device/files", get(device_files))
+        .route("/api/device/files/export", put(export_device_file))
         .route("/api/device/apps", get(device_apps))
         .route("/api/device/apps/{bundle_id}/icon", get(device_app_icon))
         .route(
@@ -700,6 +702,7 @@ const PROVISIONING_REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
 const SCREENSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
 const CRASH_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
+const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);
 
 #[derive(Deserialize)]
 struct SetLocationRequest {
@@ -1436,6 +1439,98 @@ async fn await_app_document_response<T>(
                 || error.contains("root cannot be modified")
                 || error.contains("must be a regular file")
                 || error.contains("only regular application documents")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, error)
+        })
+}
+
+#[derive(Deserialize)]
+struct DeviceFileQuery {
+    #[serde(default = "app_document_root")]
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ExportDeviceFileRequest {
+    path: String,
+    destination: PathBuf,
+}
+
+async fn device_files(
+    State(state): State<AppState>,
+    Query(query): Query<DeviceFileQuery>,
+) -> Result<Json<crate::device_files::DeviceFileList>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::List {
+            path: query.path,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_device_file_response(response, "device file listing").await?,
+    ))
+}
+
+async fn export_device_file(
+    State(state): State<AppState>,
+    Json(request): Json<ExportDeviceFileRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Export {
+            path: request.path,
+            destination: request.destination,
+            reply,
+        },
+    )?;
+    let bytes_written = await_device_file_response(response, "device file export").await?;
+    Ok(Json(json!({ "bytes_written": bytes_written })))
+}
+
+fn dispatch_device_file_command(
+    state: &AppState,
+    command: crate::device_files::DeviceFileCommand,
+) -> Result<(), (StatusCode, String)> {
+    if state.input.try_send(InputCmd::DeviceFiles(command)) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ))
+    }
+}
+
+async fn await_device_file_response<T>(
+    response: oneshot::Receiver<Result<T, String>>,
+    operation: &str,
+) -> Result<T, (StatusCode, String)> {
+    tokio::time::timeout(DEVICE_FILE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| {
+            let status = if error.starts_with("invalid ")
+                || error.contains("cannot be exported")
+                || error.contains("only regular device files")
+                || error.contains("destination")
             {
                 StatusCode::BAD_REQUEST
             } else {
@@ -3687,6 +3782,14 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            device_files(
+                State(state.clone()),
+                Query(DeviceFileQuery { path: "/".into() }),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             device_apps(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -3988,6 +4091,57 @@ mod tests {
             _ => panic!("unexpected command"),
         }
         assert_eq!(export.await.unwrap().unwrap().0["bytes_written"], 84);
+    }
+
+    #[tokio::test]
+    async fn device_file_endpoints_dispatch_read_only_commands() {
+        use crate::device_files::{DeviceFileCommand, DeviceFileList};
+
+        let (state, mut input_rx) = test_state();
+        let list = tokio::spawn(device_files(
+            State(state.clone()),
+            Query(DeviceFileQuery {
+                path: "/DCIM".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::List { path, reply }) => {
+                assert_eq!(path, "/DCIM");
+                reply
+                    .send(Ok(DeviceFileList {
+                        path,
+                        entries: Vec::new(),
+                        truncated: false,
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(list.await.unwrap().unwrap().0.path, "/DCIM");
+
+        let export = tokio::spawn(export_device_file(
+            State(state),
+            Json(ExportDeviceFileRequest {
+                path: "/DCIM/100APPLE/IMG_0001.HEIC".into(),
+                destination: std::env::temp_dir().join("photo.heic"),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Export {
+                path,
+                destination,
+                reply,
+            }) => {
+                assert_eq!(path, "/DCIM/100APPLE/IMG_0001.HEIC");
+                assert_eq!(destination, std::env::temp_dir().join("photo.heic"));
+                reply.send(Ok(42)).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(
+            export.await.unwrap().unwrap().0,
+            json!({ "bytes_written": 42 })
+        );
     }
 
     #[tokio::test]

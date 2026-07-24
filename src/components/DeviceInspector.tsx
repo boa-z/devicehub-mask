@@ -26,6 +26,7 @@ import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Switch, 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
+import { DeviceFilesModal } from "./DeviceFilesModal";
 import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
@@ -145,6 +146,7 @@ export function DeviceInspector({
   const [developerModeBusy, setDeveloperModeBusy] = useState(false);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
+  const [deviceFilesOpen, setDeviceFilesOpen] = useState(false);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
   const homeScreenRequest = useRef(0);
@@ -244,6 +246,7 @@ export function DeviceInspector({
     setDeveloperModeBusy(false);
     setBackupStatus(null);
     setBackupAction(null);
+    setDeviceFilesOpen(false);
     setError(null);
   }, [activeUdid]);
 
@@ -877,6 +880,15 @@ export function DeviceInspector({
                 </div>
               )}
             </div>}
+            <section className="device-files-section">
+              <div>
+                <Typography.Text strong>{t("deviceInspector.deviceFilesTitle")}</Typography.Text>
+                <Typography.Text type="secondary">{t("deviceInspector.deviceFilesHint")}</Typography.Text>
+              </div>
+              <Button icon={<FolderOpenOutlined />} onClick={() => setDeviceFilesOpen(true)}>
+                {t("deviceInspector.browseDeviceFiles")}
+              </Button>
+            </section>
             <section className="device-backup-section">
               <div className="device-backup-heading">
                 <div>
@@ -1308,6 +1320,7 @@ export function DeviceInspector({
         }}
       />
     </Modal>
+    <DeviceFilesModal open={deviceFilesOpen} request={request} onClose={() => setDeviceFilesOpen(false)} />
     <AppDocumentsModal app={documentsApp} request={request} onClose={() => setDocumentsApp(null)} />
     </>
   );

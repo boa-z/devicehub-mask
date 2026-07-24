@@ -103,6 +103,10 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-backup-progress > .ant-typography { margin: 0; font-size: 11px; }
 .device-backup-metrics { display: flex; justify-content: space-between; gap: 8px; color: #899493; font-size: 10px; font-variant-numeric: tabular-nums; }
 .device-backup-actions { display: flex; justify-content: flex-end; }
+.device-files-section { padding: 14px 4px; border-top: 1px solid #303638; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.device-files-section > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.device-files-section .ant-typography { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
+.device-files-section > .ant-btn { flex: none; }
 .device-home-screen-status { min-height: 30px; display: flex; align-items: center; gap: 8px; }
 .device-home-screen-alert { margin-block: 6px; }
 .device-home-screen-alert .ant-alert-message,
@@ -130,6 +134,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-app-actions { width: 80px; display: grid; grid-template-columns: repeat(3, 24px); justify-content: end; gap: 4px; }
 .app-documents-modal .ant-modal-body { min-height: min(520px, 70vh); display: flex; flex-direction: column; gap: 10px; }
 .app-documents-toolbar { display: grid; grid-template-columns: 32px minmax(0, 1fr) repeat(3, 32px); align-items: center; gap: 6px; }
+.app-documents-toolbar.device-files-toolbar { grid-template-columns: 32px minmax(0, 1fr) 32px; }
 .app-documents-toolbar > .ant-btn { width: 32px; padding-inline: 0; }
 .app-documents-toolbar .ant-breadcrumb { min-width: 0; overflow: hidden; }
 .app-documents-toolbar .ant-breadcrumb ol { flex-wrap: nowrap; }

@@ -11,6 +11,7 @@ mod developer_mode;
 mod device_backup;
 mod device_conditions;
 mod device_events;
+mod device_files;
 mod device_logs;
 mod diagnostics;
 mod heartbeat;

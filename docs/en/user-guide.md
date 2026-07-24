@@ -91,6 +91,15 @@ received so the same directory can be used for a later incremental run. Backup
 contents can include private application and account data and must be protected
 accordingly. This version intentionally does not expose restore or erase.
 
+**Device public files** in the Info tab opens the standard AFC media container
+exposed by the connected device. Its contents depend on iOS and may include
+directories such as `DCIM`. This workspace is deliberately read-only: it can
+browse directories and export regular files through the native save dialog,
+but it cannot upload, rename, delete, or create device content. Symbolic links
+and other special entries cannot be opened or exported. Export writes through
+a temporary sibling file and replaces the selected host destination only after
+the complete device file has been received.
+
 ### Performance
 
 The Performance workspace combines device-side DVT telemetry with the desktop
@@ -229,6 +238,11 @@ folders, upload a new local file, download a regular file, create folders,
 rename items, and delete files or empty folders. Uploads never overwrite an
 existing name; rename the existing item or the local file first. House Arrest
 confines every operation to that application's vended Documents root.
+
+App Documents and Device public files are separate boundaries. App Documents
+uses House Arrest for one file-sharing application's sandbox and supports
+explicit mutations. Device public files uses the device-wide standard AFC media
+container and exposes only browsing and regular-file export.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or

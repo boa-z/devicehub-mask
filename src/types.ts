@@ -106,6 +106,19 @@ export type DeviceBackupStatus = {
   destination_name: string | null;
   error: string | null;
 };
+export type DeviceFileKind = "file" | "directory" | "other";
+export type DeviceFileEntry = {
+  name: string;
+  path: string;
+  kind: DeviceFileKind;
+  size_bytes: number;
+  modified: string;
+};
+export type DeviceFileList = {
+  path: string;
+  entries: DeviceFileEntry[];
+  truncated: boolean;
+};
 export type DeviceConditionProfile = {
   identifier: string;
   description: string;

@@ -545,7 +545,7 @@ fn afc_path(path: &str) -> String {
     }
 }
 
-fn temporary_sibling(destination: &Path, operation: &str) -> Result<PathBuf, String> {
+pub(crate) fn temporary_sibling(destination: &Path, operation: &str) -> Result<PathBuf, String> {
     let parent = destination
         .parent()
         .ok_or_else(|| "destination has no parent directory".to_string())?;
@@ -556,7 +556,7 @@ fn temporary_sibling(destination: &Path, operation: &str) -> Result<PathBuf, Str
     )))
 }
 
-async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<(), String> {
     let backup = temporary_sibling(destination, "backup")?;
     let had_destination = match tokio::fs::metadata(destination).await {
         Ok(metadata) if metadata.is_file() => {
@@ -580,9 +580,7 @@ async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<(), 
             if had_destination {
                 let _ = tokio::fs::rename(&backup, destination).await;
             }
-            Err(format!(
-                "unable to finish application document export: {error}"
-            ))
+            Err(format!("unable to finish export file: {error}"))
         }
     }
 }

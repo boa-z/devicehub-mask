@@ -212,6 +212,17 @@ rollback-capable local replacement, while uploads write a uniquely named remote
 temporary file and rename it only after the stream closes. Uploads do not
 silently replace an existing item, and deletes are non-recursive.
 
+Public device files use a separate supervised standard-AFC worker. USB first
+opens `com.apple.afc` through the paired lockdown provider and can fall back to
+the cloned RSD tunnel; Wi-Fi uses `com.apple.afc.shim.remote` through RSD. AFC2
+is never requested. The worker reuses one client until an operation fails, but
+the private API exposes only bounded directory listing and regular-file export.
+Paths reject traversal, backslashes, NULs, and unsafe components; symbolic links
+and special entries are not traversed. Exports use a 64 KiB buffered stream,
+verify the byte count against the initial AFC metadata, and atomically replace
+the native-dialog destination through a temporary sibling. No upload, rename,
+delete, directory creation, recursive export, or MCP tool crosses this boundary.
+
 Clipboard synchronization connects CoreDevice Pasteboard Service only when its
 persisted opt-in setting is enabled for a newly connected session. Device changes
 are push-driven when available, while host changes use a bounded-rate poll with

@@ -21,7 +21,8 @@ exposed as a browser application.
   mapping editor with live or captured-screen backgrounds
 - Editable device identity, metadata and activation readiness, application browsing, running-state detection, launch,
   restart and stop controls, native app icons, IPA installation, safe app
-  removal, sandboxed App Documents browsing and transfer, confirmed device
+  removal, sandboxed App Documents transfer, read-only public AFC file browsing
+  and export, confirmed device
   lock, restart and shutdown, and
   provisioning profile inspection, validated installation and confirmed removal,
   plus bounded crash-report browsing and export

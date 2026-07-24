@@ -1562,6 +1562,18 @@ async fn run(
         app_documents_receiver,
         supervisor.shutdown_receiver(),
     ));
+    let (device_files_sender, device_files_receiver) = tokio::sync::mpsc::channel(8);
+    supervisor.spawn(crate::device_files::serve(
+        crate::device_files::DeviceFileTransport::new(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+        ),
+        device_files_receiver,
+        supervisor.reporter("device.files"),
+        supervisor.shutdown_receiver(),
+    ));
     let (screen_capture_sender, screen_capture_receiver) = tokio::sync::mpsc::channel(1);
     supervisor.spawn(crate::screen_capture::serve(
         adapter.clone(),
@@ -1629,6 +1641,7 @@ async fn run(
         wda: wda_sender,
         wda_runner: wda_runner_sender,
         documents: app_documents_sender,
+        device_files: device_files_sender,
         screen_capture: screen_capture_sender,
         network_capture: network_capture_sender,
         bluetooth_capture: bluetooth_capture_sender,
@@ -2019,6 +2032,7 @@ struct DeviceManagementServices {
     wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
     wda_runner: tokio::sync::mpsc::Sender<crate::wda_runner::WdaRunnerCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
+    device_files: tokio::sync::mpsc::Sender<crate::device_files::DeviceFileCommand>,
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
     bluetooth_capture: tokio::sync::mpsc::Sender<crate::bluetooth_capture::BluetoothCaptureCommand>,
@@ -2129,6 +2143,19 @@ fn reject_app_document_command(command: crate::app_documents::AppDocumentCommand
         AppDocumentCommand::CreateDirectory { reply, .. }
         | AppDocumentCommand::Rename { reply, .. }
         | AppDocumentCommand::Delete { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+    }
+}
+
+fn reject_device_file_command(command: crate::device_files::DeviceFileCommand, reason: &str) {
+    use crate::device_files::DeviceFileCommand;
+
+    match command {
+        DeviceFileCommand::List { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        DeviceFileCommand::Export { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
     }
@@ -2530,6 +2557,20 @@ impl DeviceManagement {
                         }
                     };
                     reject_app_document_command(command, reason);
+                }
+                None
+            }
+            InputCmd::DeviceFiles(command) => {
+                if let Err(error) = self.services.device_files.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("device file service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("device file service is unavailable", command)
+                        }
+                    };
+                    reject_device_file_command(command, reason);
                 }
                 None
             }
@@ -3467,6 +3508,7 @@ async fn dispatch(
         | InputCmd::DeviceBackup(_)
         | InputCmd::DeviceCondition(_)
         | InputCmd::AppDocuments(_)
+        | InputCmd::DeviceFiles(_)
         | InputCmd::LockDevice(_)
         | InputCmd::RestartDevice(_)
         | InputCmd::ShutdownDevice(_)
