@@ -10,10 +10,11 @@ import {
   SyncOutlined,
 } from "@ant-design/icons";
 import { Button, Popover, Segmented, Tooltip } from "antd";
-import { useRef, useState, type CSSProperties, type FocusEvent, type PointerEvent, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type FocusEvent, type PointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   clampToolbarPosition,
+  reconcileFullscreenToolbarDocks,
   resolveFullscreenToolbarDrop,
   type FullscreenToolbarDock,
   type ToolbarPoint,
@@ -93,8 +94,45 @@ export function DeviceFullscreenToolbar({
   const hardwareRef = useRef<HTMLDivElement>(null);
   const functionRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const onDocksChangeRef = useRef(onDocksChange);
+  onDocksChangeRef.current = onDocksChange;
   const [drag, setDrag] = useState<DragState | null>(null);
   const overlayLabel = t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay");
+
+  useLayoutEffect(() => {
+    const layer = layerRef.current;
+    const hardware = hardwareRef.current;
+    const functions = functionRef.current;
+    if (!layer || !hardware || !functions || typeof ResizeObserver === "undefined") return;
+
+    let frame = 0;
+    const reconcile = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const layerBounds = layer.getBoundingClientRect();
+        const hardwareBounds = hardware.getBoundingClientRect();
+        const functionBounds = functions.getBoundingClientRect();
+        const next = reconcileFullscreenToolbarDocks(
+          { hardware: hardwareDock, function: functionDock },
+          { width: layerBounds.width, height: layerBounds.height },
+          { width: hardwareBounds.width, height: hardwareBounds.height },
+          { width: functionBounds.width, height: functionBounds.height },
+        );
+        if (next.hardware !== hardwareDock || next.function !== functionDock) {
+          onDocksChangeRef.current(next.hardware, next.function);
+        }
+      });
+    };
+    const observer = new ResizeObserver(reconcile);
+    observer.observe(layer);
+    observer.observe(hardware);
+    observer.observe(functions);
+    reconcile();
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
+  }, [functionDock, hardwareDock]);
 
   const toolbarRef = (kind: ToolbarKind) => kind === "hardware" ? hardwareRef : functionRef;
   const startDrag = (kind: ToolbarKind, event: PointerEvent<HTMLElement>) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampToolbarPosition, fullscreenToolbarDockPosition, isFullscreenToolbarDock, nearestFullscreenToolbarDock, resolveFullscreenToolbarDrop } from "./fullscreenToolbarLayout";
+import { clampToolbarPosition, fullscreenToolbarDockPosition, isFullscreenToolbarDock, nearestFullscreenToolbarDock, reconcileFullscreenToolbarDocks, resolveFullscreenToolbarDrop } from "./fullscreenToolbarLayout";
 
 describe("fullscreen toolbar layout", () => {
   const container = { width: 1000, height: 700 };
@@ -63,5 +63,21 @@ describe("fullscreen toolbar layout", () => {
       hardwareSize,
       functionSize,
     )).toEqual({ hardware: "top-center", function: "left-center" });
+  });
+
+  it("moves only function controls when a resized stage creates an overlap", () => {
+    expect(reconcileFullscreenToolbarDocks(
+      { hardware: "top-center", function: "top-left" },
+      { width: 600, height: 400 },
+      { width: 280, height: 44 },
+      { width: 360, height: 44 },
+    )).toEqual({ hardware: "top-center", function: "left-center" });
+
+    expect(reconcileFullscreenToolbarDocks(
+      { hardware: "top-center", function: "bottom-center" },
+      container,
+      toolbar,
+      toolbar,
+    )).toEqual({ hardware: "top-center", function: "bottom-center" });
   });
 });

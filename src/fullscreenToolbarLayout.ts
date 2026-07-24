@@ -121,21 +121,35 @@ export function resolveFullscreenToolbarDrop(
   }
 
   const hardware = nearestFullscreenToolbarDock(point, container, hardwareSize);
-  const hardwareRect = toolbarRect(hardware, container, hardwareSize);
+  return reconcileFullscreenToolbarDocks(
+    { hardware, function: docks.function },
+    container,
+    hardwareSize,
+    functionSize,
+  );
+}
+
+export function reconcileFullscreenToolbarDocks(
+  docks: FullscreenToolbarDocks,
+  container: ToolbarSize,
+  hardwareSize: ToolbarSize,
+  functionSize: ToolbarSize,
+): FullscreenToolbarDocks {
+  const hardwareRect = toolbarRect(docks.hardware, container, hardwareSize);
   const functionRect = toolbarRect(docks.function, container, functionSize);
-  if (toolbarOverlapArea(hardwareRect, functionRect) === 0) return { hardware, function: docks.function };
+  if (toolbarOverlapArea(hardwareRect, functionRect) === 0) return docks;
   const functionPosition = fullscreenToolbarDockPosition(docks.function, container, functionSize);
   const functionCenter = {
     x: functionPosition.x + functionSize.width / 2,
     y: functionPosition.y + functionSize.height / 2,
   };
   return {
-    hardware,
+    hardware: docks.hardware,
     function: nearestFullscreenToolbarDock(
       functionCenter,
       container,
       functionSize,
-      new Set([hardware]),
+      new Set([docks.hardware]),
       [hardwareRect],
     ),
   };
