@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { parseBrowserVideoPacket } from "./browserVideo";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { BrowserVideoDecoder, parseBrowserVideoPacket, type BrowserVideoPacket } from "./browserVideo";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("browser video packet", () => {
   it("parses the versioned big-endian header", () => {
@@ -21,5 +23,68 @@ describe("browser video packet", () => {
 
   it("leaves legacy JPEG messages untouched", () => {
     expect(parseBrowserVideoPacket(new Uint8Array([0xff, 0xd8, 0xff]).buffer)).toBeNull();
+  });
+});
+
+describe("browser video decoder recovery", () => {
+  it("reconfigures a reset decoder when dimensions have not changed", async () => {
+    class FakeVideoDecoder {
+      static instances: FakeVideoDecoder[] = [];
+      static async isConfigSupported(config: VideoDecoderConfig) {
+        return { supported: true, config };
+      }
+
+      state: CodecState = "unconfigured";
+      decodeQueueSize = 0;
+      configureCalls = 0;
+      decodeCalls = 0;
+
+      constructor(public init: VideoDecoderInit) {
+        FakeVideoDecoder.instances.push(this);
+      }
+
+      configure() {
+        this.configureCalls += 1;
+        this.state = "configured";
+      }
+
+      decode() {
+        this.decodeCalls += 1;
+      }
+
+      reset() {
+        this.state = "unconfigured";
+      }
+
+      close() {
+        this.state = "closed";
+      }
+    }
+
+    vi.stubGlobal("VideoDecoder", FakeVideoDecoder);
+    vi.stubGlobal("EncodedVideoChunk", class {});
+    vi.stubGlobal("window", { VideoDecoder: FakeVideoDecoder, setTimeout, clearTimeout });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const requestKeyframe = vi.fn();
+    const decoder = new BrowserVideoDecoder({ output: vi.fn(), requestKeyframe, fatal: vi.fn() });
+    const packet: BrowserVideoPacket = {
+      key: true,
+      timestamp: 1,
+      sequence: 1n,
+      width: 1290,
+      height: 2796,
+      data: new Uint8Array([0, 0, 0, 1, 0x26]),
+    };
+
+    decoder.enqueue(packet);
+    await vi.waitFor(() => expect(FakeVideoDecoder.instances[0]?.decodeCalls).toBe(1));
+    FakeVideoDecoder.instances[0].init.error(new DOMException("decode failed"));
+    decoder.enqueue({ ...packet, timestamp: 2, sequence: 2n });
+    await vi.waitFor(() => expect(FakeVideoDecoder.instances).toHaveLength(2));
+
+    expect(FakeVideoDecoder.instances[1].configureCalls).toBe(1);
+    expect(FakeVideoDecoder.instances[1].decodeCalls).toBe(1);
+    expect(requestKeyframe).toHaveBeenCalled();
+    decoder.close();
   });
 });

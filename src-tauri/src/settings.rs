@@ -10,8 +10,8 @@ const DEFAULT_AUDIO_VOLUME: f32 = 0.8;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VideoDecoderBackend {
-    #[default]
     Native,
+    #[default]
     Browser,
 }
 
@@ -444,6 +444,7 @@ mod tests {
     fn old_settings_default_optional_streams_to_disabled() {
         let saved: PersistedSettings =
             serde_json::from_str(r#"{"video_pixel_format":"rgb24"}"#).unwrap();
+        assert_eq!(saved.video_decoder_backend, VideoDecoderBackend::Browser);
         assert!(!saved.audio_enabled);
         assert!(!saved.audio_muted);
         assert_eq!(saved.audio_volume, DEFAULT_AUDIO_VOLUME);

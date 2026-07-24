@@ -69,10 +69,10 @@ DEVICEHUB_LOG=devicehub_mask=info,devicehub_mask::session=trace npm run tauri:de
 平台应用配置目录，并在下次连接设备时生效。显式设置
 `DEVICEHUB_VIDEO_PIXEL_FORMAT` 后，本次运行中的界面选项将变为只读。
 
-同一区域还提供实验性的“浏览器 / WebCodecs”解码器。该路径把完整 Annex-B HEVC
+同一区域默认启用实验性的“浏览器 / WebCodecs”解码器。该路径把完整 Annex-B HEVC
 Access Unit 直接发送到 WebView，从实时视频链路中移除 FFmpeg、原始帧传输和 JPEG 编码。
-“原生 / FFmpeg”仍为默认值。WebCodecs 能力检测或运行时失败会显示在设置页，并自动重连
-当前设备；本次运行后续使用原生解码器。
+WebCodecs 能力检测、输出超时或运行时失败会显示在设置页，并自动重连当前设备；本次运行
+后续使用原生解码器。
 
 ## 验证
 

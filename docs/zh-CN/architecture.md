@@ -161,10 +161,11 @@ CoreDevice displayservice 输出 RTP/HEVC。后端先组装完整 HEVC Access Un
 最新帧通过 `watch` 通道按事件通知 WebSocket，取消固定频率轮询；慢消费者只会看到最新帧，
 不会积压陈旧画面。
 
-实验性的“浏览器 / WebCodecs”后端在同一个有界 Access Unit 队列后分流。Rust 通过已鉴权
-WebSocket 发布带版本头的 Annex-B HEVC Access Unit，WebView 使用 `VideoDecoder` 解码，
-再把 `VideoFrame` 绘制到现有 Canvas。广播落后、解码队列积压或配置变化时会丢弃依赖帧，
-并通过 PLI/FIR 请求新的 IRAP。能力检测或运行时连续失败会自动重连并回退原生后端。MCP
+默认启用的实验性“浏览器 / WebCodecs”后端在同一个有界 Access Unit 队列后分流。Rust 通过
+已鉴权 WebSocket 发布带版本头的 Annex-B HEVC Access Unit，WebView 使用 `VideoDecoder` 解码，
+再把 `VideoFrame` 绘制到现有 Canvas。广播落后、解码队列积压、解码输出超时或配置变化时会
+丢弃依赖帧，并通过 PLI/FIR 请求新的 IRAP。能力检测、输出超时或运行时连续失败会自动重连并
+回退原生后端。MCP
 截图继续使用按需 CoreDevice ScreenCaptureService，帧同步同时观察原生与浏览器帧版本。
 
 Axum 使用线程本地复用的 TurboJPEG compressor 编码最新帧。每个 WebView 最多允许两帧

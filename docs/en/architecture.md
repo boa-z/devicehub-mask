@@ -225,13 +225,13 @@ halving decoded frame bandwidth. A `watch` channel publishes only the latest
 frame and wakes WebSocket consumers without a fixed-rate polling loop; lagging
 consumers drop stale decoded frames by construction.
 
-The experimental Browser / WebCodecs backend branches after the same bounded
-access-unit queue. Rust publishes versioned Annex-B HEVC access units over the
+The default, experimental Browser / WebCodecs backend branches after the same
+bounded access-unit queue. Rust publishes versioned Annex-B HEVC access units over the
 authenticated WebSocket and the WebView decodes them with `VideoDecoder` before
 drawing `VideoFrame` objects to the existing canvas. Broadcast lag, decoder
-backlog, and configuration changes discard dependent frames and request a new
-IRAP through PLI/FIR. Repeated capability or runtime failures reconnect the
-session with the native backend. MCP screenshots remain available through the
+backlog, missing decoder output, and configuration changes discard dependent
+frames and request a new IRAP through PLI/FIR. Repeated capability, timeout, or
+runtime failures reconnect the session with the native backend. MCP screenshots remain available through the
 on-demand CoreDevice ScreenCaptureService and frame synchronization observes
 both native and browser frame versions.
 
