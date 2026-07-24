@@ -96,7 +96,7 @@
 - 设备与会话：`status`、`device_details`、`list_devices`、`connect_device`、 `reconnect_device`、`lock_device`、`wait_for_device_event`、 `list_companion_devices`、`home_screen_layout`。
 - App 与诊断：`list_apps`、`launch_app`、`stop_app`、`list_processes`、`list_crash_reports`、带归一化摘要的 `read_crash_report`、`performance_snapshot`、`recent_device_logs`。
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。
-- WDA：`wda_runner_status`、`wda_start`、`wda_stop`、`wda_status`、 `wda_ui_tree`、`wda_find_elements`、`wda_click`。
+- WDA：`wda_runner_status`、`wda_start`、`wda_stop`、`wda_status`、 `wda_device_state`、`wda_ui_tree`、`wda_find_elements`、 `wda_inspect_element`、`wda_wait_for_element`、`wda_click`、 `wda_type_text`、`wda_double_tap`、`wda_touch_and_hold`、`wda_scroll`。
 
 MCP 当前开放单向锁屏，但不开放设备重启或关机。重启与关机已经在桌面“设备信息”页实现，并要求交互式确认。MCP 也不开放 IPA 安装、升级或卸载、AMFI 签名者信任、AFC 修改、备份、sysdiagnose、统一日志归档导出、描述文件修改、抓包或开发者磁盘镜像修改。
 

@@ -153,9 +153,9 @@ App 意外退出后，可调用 `list_crash_reports` 获取按时间倒序的元
 
 镜像已挂载时，可通过“设备信息”中的同一控制区显式卸载。卸载可能立即终止正在运行的 XCTest 与 WebDriverAgent 会话，因此应先停止由应用管理的自动化。挂载、卸载和取消请求会 串行执行；切换设备会取消当前镜像操作。
 
-`wda_ui_tree` 返回长度受限的辅助功能 XML 树，`wda_find_elements` 返回带画面矩形的 零基匹配结果，`wda_click` 则在一次请求中查找并点击指定结果。支持的策略为 `accessibility id`、`name`、`class name`、`xpath`、`-ios predicate string` 和 `-ios class chain`。应优先使用辅助功能 ID 或名称；复杂页面上的宽泛 XPath 查询可能较慢。
+`wda_device_state` 返回 WDA 报告的设备锁定状态、规范化方向、逻辑窗口尺寸，以及当前 WDA build 支持时的 viewport 矩形。WDA 元素矩形使用这些逻辑单位，而不是截图像素；转换坐标空间前不能直接传给坐标 HID 工具。该工具只读，绝不会尝试解锁设备。`wda_ui_tree` 返回长度受限的辅助功能 XML 树，`wda_find_elements` 返回带画面矩形的 零基匹配结果。`wda_inspect_element` 会重新解析一个匹配项并返回其矩形、可见/可用/选中状态，以及受限的 `type`、`name`、`label` 和 `value` 标量；元素当前状态会影响操作时，应先执行检查。`wda_wait_for_element` 每 250 毫秒检查一次指定索引的匹配项是否变为 `present`、`absent`、`displayed`、`hidden`、`enabled`、`disabled`、`selected` 或 `unselected`，默认等待 5 秒、最长 10 秒；超时为零时只检查一次。元素缺失可满足 `absent` 和 `hidden`，但不会被视为 `disabled` 或 `unselected`。Agent 应使用这个服务端等待，而不是反复调用查找或检查。`wda_click`、`wda_double_tap` 和 `wda_touch_and_hold` 则在一次请求中查找并操作指定结果。`wda_type_text` 可向当前聚焦元素输入最多 1,024 个 Unicode 字符和 4,096 UTF-8 bytes，日志不会记录文本正文。`wda_touch_and_hold` 接受 100 至 10,000 毫秒，`wda_scroll` 只接受 `up`、`down`、`left` 或 `right`。支持的选择器策略为 `accessibility id`、`name`、`class name`、`xpath`、`-ios predicate string` 和 `-ios class chain`。应优先使用辅助功能 ID 或名称；复杂页面上的宽泛 XPath 查询可能较慢。
 
-首次语义请求按需建立 WDA 会话； 设备断开或请求失败时会丢弃该会话，而不会重启主画面控制会话。UI 树可能包含密码、消息及 其他可见文本，应按敏感 MCP 输出处理。未提供有效辅助功能元数据的 App 仍需使用截图坐标 控制。
+首次语义请求按需建立 WDA 会话； 设备断开或请求失败时会丢弃该会话，而不会重启主画面控制会话。语义动作共用 MCP 手势锁，不会与 HID 输入交错。表单和辅助功能驱动流程适合使用 WDA；游戏仍应使用延迟更低的坐标 HID。UI 树可能包含密码、消息及其他可见文本，应按敏感 MCP 输出处理。未提供有效辅助功能元数据的 App 仍需使用截图坐标控制。
 
 `type_text` 用于可打印 ASCII HID 逐键输入；CJK 或其他 Unicode 文本应使用 `paste_text`，它会等待设备剪贴板写入和 Cmd+V 完成后再返回成功。
 

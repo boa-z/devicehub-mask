@@ -299,6 +299,44 @@ struct WdaClickParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaWaitForElementParams {
+    /// WDA strategy: accessibility id, name, class name, xpath, -ios predicate string, or -ios class chain.
+    using: String,
+    /// Selector expression interpreted by WebDriverAgent.
+    value: String,
+    /// Zero-based match index. Defaults to 0 and cannot exceed 19.
+    index: Option<usize>,
+    /// Desired state: present, absent, displayed, hidden, enabled, disabled, selected, or unselected. Defaults to present.
+    state: Option<String>,
+    /// Maximum wait in milliseconds. Defaults to 5000; 0 checks once and the maximum is 10000.
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaTypeTextParams {
+    /// Unicode text for the currently focused element. Limited to 1024 characters and 4096 UTF-8 bytes.
+    text: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaTouchAndHoldParams {
+    /// WDA strategy: accessibility id, name, class name, xpath, -ios predicate string, or -ios class chain.
+    using: String,
+    /// Selector expression interpreted by WebDriverAgent.
+    value: String,
+    /// Zero-based match index. Defaults to 0 and cannot exceed 19.
+    index: Option<usize>,
+    /// Hold duration in milliseconds, from 100 through 10000.
+    duration_ms: u64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaScrollParams {
+    /// Scroll direction: up, down, left, or right.
+    direction: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WdaStartParams {
     /// Installed developer application bundle ID ending in .xctrunner, discovered with list_apps.
     runner_bundle_id: String,
@@ -1306,6 +1344,30 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Return the current WebDriverAgent logical window, optional viewport, normalized orientation, and lock state. These logical coordinates explain WDA element rectangles and are distinct from screenshot pixels. This never unlocks the device."
+    )]
+    async fn wda_device_state(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::DeviceState {
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let state = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA device state request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&state).map_err(|error| {
+            McpError::internal_error(
+                format!("WDA device state serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
         description = "Read a size-bounded XML accessibility tree from an already-running WebDriverAgent. The tree may contain sensitive on-screen text."
     )]
     async fn wda_ui_tree(
@@ -1387,6 +1449,98 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Inspect one accessibility element through an already-running WebDriverAgent. Returns bounded type, name, label, value, rectangle, and displayed/enabled/selected state without exposing WDA identifiers. index is zero-based."
+    )]
+    async fn wda_inspect_element(
+        &self,
+        Parameters(params): Parameters<WdaClickParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_selector(&params.using, &params.value)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let index = params.index.unwrap_or(0);
+        if index >= crate::wda_automation::MAX_ELEMENTS {
+            return Err(McpError::invalid_params(
+                format!(
+                    "index must be between 0 and {}",
+                    crate::wda_automation::MAX_ELEMENTS - 1
+                ),
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::Inspect {
+                using: params.using,
+                value: params.value,
+                index,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let details = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA element inspection timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&details).map_err(|error| {
+            McpError::internal_error(
+                format!("WDA element details serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Wait up to 10 seconds for one zero-based accessibility match to become present, absent, displayed, hidden, enabled, disabled, selected, or unselected through an already-running WebDriverAgent. Returns the final bounded match summary without polling from the agent."
+    )]
+    async fn wda_wait_for_element(
+        &self,
+        Parameters(params): Parameters<WdaWaitForElementParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_selector(&params.using, &params.value)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let index = params.index.unwrap_or(0);
+        if index >= crate::wda_automation::MAX_ELEMENTS {
+            return Err(McpError::invalid_params(
+                format!(
+                    "index must be between 0 and {}",
+                    crate::wda_automation::MAX_ELEMENTS - 1
+                ),
+                None,
+            ));
+        }
+        let expected_state =
+            crate::wda_automation::parse_wait_state(params.state.as_deref().unwrap_or("present"))
+                .map_err(|error| McpError::invalid_params(error, None))?;
+        let timeout_ms = params.timeout_ms.unwrap_or(5_000);
+        crate::wda_automation::validate_wait_timeout(timeout_ms)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::WaitForElement {
+                using: params.using,
+                value: params.value,
+                index,
+                expected_state,
+                timeout_ms,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let result = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA element wait timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&result).map_err(|error| {
+            McpError::internal_error(
+                format!("WDA element wait serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
         description = "Find and click one accessibility element through an already-running WebDriverAgent. index is the zero-based order returned by wda_find_elements."
     )]
     async fn wda_click(
@@ -1422,6 +1576,144 @@ impl DeviceHub {
             .map_err(|_| McpError::internal_error("device session ended", None))?
             .map_err(|error| McpError::internal_error(error, None))?;
         ok_text(json!({ "clicked": true, "element": element }).to_string())
+    }
+
+    #[tool(
+        description = "Type bounded Unicode text into the currently focused element through an already-running WebDriverAgent. Text content is never written to logs."
+    )]
+    async fn wda_type_text(
+        &self,
+        Parameters(params): Parameters<WdaTypeTextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_text(&params.text)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let (reply, response) = oneshot::channel();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::TypeText {
+                text: params.text,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let characters = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA text input timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(json!({ "typed": true, "characters": characters }).to_string())
+    }
+
+    #[tool(
+        description = "Find and double-tap one accessibility element through an already-running WebDriverAgent. index is the zero-based order returned by wda_find_elements."
+    )]
+    async fn wda_double_tap(
+        &self,
+        Parameters(params): Parameters<WdaClickParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_selector(&params.using, &params.value)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let index = params.index.unwrap_or(0);
+        if index >= crate::wda_automation::MAX_ELEMENTS {
+            return Err(McpError::invalid_params(
+                format!(
+                    "index must be between 0 and {}",
+                    crate::wda_automation::MAX_ELEMENTS - 1
+                ),
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::DoubleTap {
+                using: params.using,
+                value: params.value,
+                index,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let element = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA element double tap timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(json!({ "double_tapped": true, "element": element }).to_string())
+    }
+
+    #[tool(
+        description = "Find and hold one accessibility element for 100 to 10000 milliseconds through an already-running WebDriverAgent. index is zero-based."
+    )]
+    async fn wda_touch_and_hold(
+        &self,
+        Parameters(params): Parameters<WdaTouchAndHoldParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_selector(&params.using, &params.value)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        crate::wda_automation::validate_hold_duration(params.duration_ms)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let index = params.index.unwrap_or(0);
+        if index >= crate::wda_automation::MAX_ELEMENTS {
+            return Err(McpError::invalid_params(
+                format!(
+                    "index must be between 0 and {}",
+                    crate::wda_automation::MAX_ELEMENTS - 1
+                ),
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::TouchAndHold {
+                using: params.using,
+                value: params.value,
+                index,
+                duration_ms: params.duration_ms,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let element = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA element hold timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(
+            json!({
+                "held": true,
+                "duration_ms": params.duration_ms,
+                "element": element,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Scroll the current view up, down, left, or right through an already-running WebDriverAgent."
+    )]
+    async fn wda_scroll(
+        &self,
+        Parameters(params): Parameters<WdaScrollParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_scroll_direction(&params.direction)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let (reply, response) = oneshot::channel();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::Scroll {
+                direction: params.direction.clone(),
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA scroll timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(json!({ "scrolled": true, "direction": params.direction }).to_string())
     }
 
     #[tool(
@@ -2048,7 +2340,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes, performance_snapshot, and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_device_state, wda_ui_tree, wda_find_elements, wda_inspect_element, wda_wait_for_element, wda_click, wda_type_text, wda_double_tap, wda_touch_and_hold, and wda_scroll. WDA element rectangles use the logical coordinate space reported by wda_device_state, not screenshot pixels. Inspect a match before acting when visibility, enabled, or selected state matters, and use wda_wait_for_element instead of repeatedly polling for presence, visibility, enabled, or selected state. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes, performance_snapshot, and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -2201,9 +2493,16 @@ mod tests {
             "wda_start",
             "wda_stop",
             "wda_status",
+            "wda_device_state",
             "wda_ui_tree",
             "wda_find_elements",
+            "wda_inspect_element",
+            "wda_wait_for_element",
             "wda_click",
+            "wda_type_text",
+            "wda_double_tap",
+            "wda_touch_and_hold",
+            "wda_scroll",
             "launch_app",
             "stop_app",
             "list_crash_reports",
@@ -2575,6 +2874,48 @@ mod tests {
                 .is_some_and(|text| text.text.contains(r#""reachable":true"#))
         }));
 
+        let device_state_hub = hub.clone();
+        let device_state_task =
+            tokio::spawn(async move { device_state_hub.wda_device_state().await.unwrap() });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::DeviceState {
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA device state command");
+        };
+        reply
+            .send(Ok(crate::wda_automation::WdaDeviceState {
+                locked: false,
+                orientation: crate::wda_automation::WdaOrientation::Portrait,
+                window: crate::wda_automation::WdaSize {
+                    width: 430.0,
+                    height: 932.0,
+                },
+                viewport: Some(crate::wda_automation::WdaRect {
+                    x: 0.0,
+                    y: 59.0,
+                    width: 430.0,
+                    height: 839.0,
+                }),
+            }))
+            .unwrap();
+        assert!(
+            device_state_task
+                .await
+                .unwrap()
+                .content
+                .iter()
+                .any(|content| {
+                    content.as_text().is_some_and(|text| {
+                        text.text.contains(r#""locked":false"#)
+                            && text.text.contains(r#""orientation":"portrait""#)
+                            && text.text.contains(r#""width":430.0"#)
+                            && !text.text.contains("session_id")
+                    })
+                })
+        );
+
         let source_hub = hub.clone();
         let source_task = tokio::spawn(async move {
             source_hub
@@ -2638,6 +2979,114 @@ mod tests {
                 .is_some_and(|text| text.text.contains(r#""returned":0"#))
         }));
 
+        let inspect_hub = hub.clone();
+        let inspect_task = tokio::spawn(async move {
+            inspect_hub
+                .wda_inspect_element(Parameters(WdaClickParams {
+                    using: "name".into(),
+                    value: "Continue".into(),
+                    index: Some(1),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Inspect {
+            using,
+            value,
+            index,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA inspect command");
+        };
+        assert_eq!(
+            (using.as_str(), value.as_str(), index),
+            ("name", "Continue", 1)
+        );
+        reply
+            .send(Ok(crate::wda_automation::WdaElementDetails {
+                element: crate::wda_automation::WdaElement { index, rect: None },
+                element_type: Some(crate::wda_automation::WdaBoundedText {
+                    text: "Button".into(),
+                    total_characters: 6,
+                    truncated: false,
+                }),
+                name: None,
+                label: None,
+                value: None,
+                displayed: true,
+                enabled: true,
+                selected: false,
+            }))
+            .unwrap();
+        assert!(inspect_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""element_type":{"text":"Button""#)
+                    && text.text.contains(r#""displayed":true"#)
+                    && !text.text.contains("element_id")
+            })
+        }));
+
+        let wait_hub = hub.clone();
+        let wait_task = tokio::spawn(async move {
+            wait_hub
+                .wda_wait_for_element(Parameters(WdaWaitForElementParams {
+                    using: "accessibility id".into(),
+                    value: "Loading".into(),
+                    index: None,
+                    state: Some("absent".into()),
+                    timeout_ms: Some(2_500),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::WaitForElement {
+            using,
+            value,
+            index,
+            expected_state,
+            timeout_ms,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA element wait command");
+        };
+        assert_eq!(
+            (
+                using.as_str(),
+                value.as_str(),
+                index,
+                expected_state,
+                timeout_ms
+            ),
+            (
+                "accessibility id",
+                "Loading",
+                0,
+                crate::wda_automation::WdaElementWaitState::Absent,
+                2_500
+            )
+        );
+        reply
+            .send(Ok(crate::wda_automation::WdaElementWaitResult {
+                condition_met: true,
+                expected_state,
+                expected_present: Some(false),
+                index,
+                returned_matches: 0,
+                element: None,
+            }))
+            .unwrap();
+        assert!(wait_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""condition_met":true"#)
+                    && text.text.contains(r#""expected_state":"absent""#)
+                    && text.text.contains(r#""expected_present":false"#)
+            })
+        }));
+
         let click_hub = hub.clone();
         let click_task = tokio::spawn(async move {
             click_hub
@@ -2672,11 +3121,185 @@ mod tests {
                 .is_some_and(|text| text.text.contains(r#""clicked":true"#))
         }));
 
+        let text_hub = hub.clone();
+        let text_task = tokio::spawn(async move {
+            text_hub
+                .wda_type_text(Parameters(WdaTypeTextParams {
+                    text: "你好, DeviceHub".into(),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::TypeText {
+            text,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA text command");
+        };
+        assert_eq!(text, "你好, DeviceHub");
+        reply.send(Ok(13)).unwrap();
+        assert!(text_task.await.unwrap().content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""characters":13"#))
+        }));
+
+        let double_tap_hub = hub.clone();
+        let double_tap_task = tokio::spawn(async move {
+            double_tap_hub
+                .wda_double_tap(Parameters(WdaClickParams {
+                    using: "accessibility id".into(),
+                    value: "Zoom".into(),
+                    index: None,
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::DoubleTap {
+            using,
+            value,
+            index,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA double-tap command");
+        };
+        assert_eq!(
+            (using.as_str(), value.as_str(), index),
+            ("accessibility id", "Zoom", 0)
+        );
+        reply
+            .send(Ok(crate::wda_automation::WdaElement { index, rect: None }))
+            .unwrap();
+        assert!(
+            double_tap_task
+                .await
+                .unwrap()
+                .content
+                .iter()
+                .any(|content| {
+                    content
+                        .as_text()
+                        .is_some_and(|text| text.text.contains(r#""double_tapped":true"#))
+                })
+        );
+
+        let hold_hub = hub.clone();
+        let hold_task = tokio::spawn(async move {
+            hold_hub
+                .wda_touch_and_hold(Parameters(WdaTouchAndHoldParams {
+                    using: "name".into(),
+                    value: "Context menu".into(),
+                    index: Some(2),
+                    duration_ms: 750,
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::TouchAndHold {
+            using,
+            value,
+            index,
+            duration_ms,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA hold command");
+        };
+        assert_eq!(
+            (using.as_str(), value.as_str(), index, duration_ms),
+            ("name", "Context menu", 2, 750)
+        );
+        reply
+            .send(Ok(crate::wda_automation::WdaElement { index, rect: None }))
+            .unwrap();
+        assert!(hold_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""held":true"#) && text.text.contains(r#""duration_ms":750"#)
+            })
+        }));
+
+        let scroll_hub = hub.clone();
+        let scroll_task = tokio::spawn(async move {
+            scroll_hub
+                .wda_scroll(Parameters(WdaScrollParams {
+                    direction: "down".into(),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Scroll {
+            direction,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA scroll command");
+        };
+        assert_eq!(direction, "down");
+        reply.send(Ok(())).unwrap();
+        assert!(scroll_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""scrolled":true"#)
+                    && text.text.contains(r#""direction":"down""#)
+            })
+        }));
+
         assert!(
             hub.wda_find_elements(Parameters(WdaFindParams {
                 using: "css selector".into(),
                 value: "button".into(),
                 limit: None,
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.wda_type_text(Parameters(WdaTypeTextParams {
+                text: "bad\0text".into(),
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.wda_touch_and_hold(Parameters(WdaTouchAndHoldParams {
+                using: "name".into(),
+                value: "Menu".into(),
+                index: None,
+                duration_ms: 99,
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.wda_scroll(Parameters(WdaScrollParams {
+                direction: "forward".into(),
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.wda_wait_for_element(Parameters(WdaWaitForElementParams {
+                using: "name".into(),
+                value: "Done".into(),
+                index: None,
+                state: Some("visible".into()),
+                timeout_ms: None,
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.wda_wait_for_element(Parameters(WdaWaitForElementParams {
+                using: "name".into(),
+                value: "Done".into(),
+                index: None,
+                state: None,
+                timeout_ms: Some(crate::wda_automation::MAX_WAIT_TIMEOUT_MS + 1),
             }))
             .await
             .is_err()

@@ -2513,10 +2513,31 @@ fn reject_wda_command(command: crate::wda_automation::WdaAutomationCommand, reas
         WdaAutomationCommand::Source { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
+        WdaAutomationCommand::DeviceState { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
         WdaAutomationCommand::Find { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
+        WdaAutomationCommand::Inspect { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::WaitForElement { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
         WdaAutomationCommand::Click { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::TypeText { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::DoubleTap { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::TouchAndHold { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::Scroll { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
     }
