@@ -79,7 +79,8 @@
 | 虚拟定位 | DVT Location Simulation |
 | 网络/蓝牙抓包 | pcapd 和 BTPacketLogger |
 | Watch 元数据 | CompanionProxy |
-| 主屏幕布局与 App 图标 | SpringBoardServices |
+| App 图标 | CoreDevice AppService，回退 SpringBoardServices |
+| 主屏幕布局 | SpringBoardServices |
 | 崩溃报告 | CrashReportCopyMobile |
 | 语义自动化 | WebDriverAgent 和 XCTest runner 服务 |
 

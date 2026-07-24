@@ -79,7 +79,8 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Virtual location | DVT Location Simulation |
 | Network/Bluetooth capture | pcapd and BTPacketLogger |
 | Watch metadata | CompanionProxy |
-| Home-screen layout and app icons | SpringBoardServices |
+| App icons | CoreDevice AppService with SpringBoardServices fallback |
+| Home-screen layout | SpringBoardServices |
 | Crash reports | CrashReportCopyMobile |
 | Semantic automation | WebDriverAgent and XCTest runner services |
 
