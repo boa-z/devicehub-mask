@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
@@ -2600,6 +2601,9 @@ enum ClientMessage {
     Rotate {
         direction: RotateRequest,
     },
+    VideoDemand {
+        active: bool,
+    },
     FramePresented,
     BrowserVideoKeyframe,
     BrowserDecoderError {
@@ -2639,7 +2643,13 @@ async fn websocket(socket: WebSocket, state: AppState) {
     );
     tracing::debug!(max_in_flight_frames, "configured video frame pipeline");
     let frame_pacer = Arc::new(FramePacer::new(max_in_flight_frames));
+    // A newly connected WebView must opt into video. Control/status messages stay
+    // available on pages that do not render the device stream.
+    let video_active = Arc::new(AtomicBool::new(false));
+    let browser_resync = Arc::new(AtomicBool::new(true));
     let send_pacer = frame_pacer.clone();
+    let send_video_active = video_active.clone();
+    let send_browser_resync = browser_resync.clone();
     let send_task = tokio::spawn(async move {
         let mut last_status = String::new();
         let mut frame_rx = send_state.frames.subscribe();
@@ -2682,6 +2692,9 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     let Some(frame) = frame_rx.borrow_and_update().clone() else {
                         continue;
                     };
+                    if !send_video_active.load(Ordering::Acquire) {
+                        continue;
+                    }
                     if !send_pacer.try_acquire() {
                         skipped_for_backpressure += 1;
                         continue;
@@ -2709,6 +2722,15 @@ async fn websocket(socket: WebSocket, state: AppState) {
                 browser_frame = browser_frame_rx.recv() => {
                     match browser_frame {
                         Ok(frame) => {
+                            if !send_video_active.load(Ordering::Acquire) {
+                                continue;
+                            }
+                            if send_browser_resync.load(Ordering::Acquire) {
+                                if !frame.key {
+                                    continue;
+                                }
+                                send_browser_resync.store(false, Ordering::Relaxed);
+                            }
                             let packet = crate::browser_video::encode_packet(&frame);
                             sent_frames += 1;
                             sent_bytes += packet.len() as u64;
@@ -2720,6 +2742,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                             tracing::warn!(skipped, "browser video client lagged; requesting keyframe");
+                            send_browser_resync.store(true, Ordering::Relaxed);
                             send_state.browser_frames.request_keyframe();
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -2838,7 +2861,13 @@ async fn websocket(socket: WebSocket, state: AppState) {
     while let Some(Ok(message)) = receiver.next().await {
         match message {
             Message::Text(text) => {
-                if handle_client_message(&state, &text, &mut pressed_keyboard) {
+                if handle_client_message(
+                    &state,
+                    &text,
+                    &mut pressed_keyboard,
+                    &video_active,
+                    &browser_resync,
+                ) {
                     frame_pacer.release();
                 }
             }
@@ -2994,12 +3023,27 @@ fn handle_client_message(
     state: &AppState,
     text: &str,
     pressed_keyboard: &mut HashSet<u64>,
+    video_active: &AtomicBool,
+    browser_resync: &AtomicBool,
 ) -> bool {
     let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
         return false;
     };
     match message {
         ClientMessage::FramePresented => return true,
+        ClientMessage::VideoDemand { active } => {
+            let was_active = video_active.load(Ordering::Relaxed);
+            if active != was_active {
+                if active {
+                    browser_resync.store(true, Ordering::Release);
+                    video_active.store(true, Ordering::Release);
+                    state.browser_frames.request_keyframe();
+                } else {
+                    video_active.store(false, Ordering::Release);
+                }
+            }
+            tracing::debug!(active, "updated WebView video demand");
+        }
         ClientMessage::BrowserVideoKeyframe => {
             state.browser_frames.request_keyframe();
         }
@@ -3188,6 +3232,20 @@ mod tests {
     fn test_state() -> (AppState, UnboundedReceiver<InputCmd>) {
         let (state, input_rx, _control_rx) = test_state_with_control();
         (state, input_rx)
+    }
+
+    fn handle_test_client_message(
+        state: &AppState,
+        text: &str,
+        pressed_keyboard: &mut HashSet<u64>,
+    ) -> bool {
+        handle_client_message(
+            state,
+            text,
+            pressed_keyboard,
+            &AtomicBool::new(true),
+            &AtomicBool::new(false),
+        )
     }
 
     fn test_state_with_control() -> (
@@ -3865,11 +3923,41 @@ mod tests {
     #[test]
     fn frame_presented_message_releases_video_credit() {
         let (state, _input_rx) = test_state();
-        assert!(handle_client_message(
+        assert!(handle_test_client_message(
             &state,
             r#"{"type":"frame_presented"}"#,
             &mut HashSet::new(),
         ));
+    }
+
+    #[tokio::test]
+    async fn video_demand_resumes_with_a_keyframe_request() {
+        let (state, _input_rx) = test_state();
+        let active = AtomicBool::new(true);
+        let resync = AtomicBool::new(false);
+        let keyframes = state.browser_frames.clone();
+        let mut pressed = HashSet::new();
+
+        assert!(!handle_client_message(
+            &state,
+            r#"{"type":"video_demand","active":false}"#,
+            &mut pressed,
+            &active,
+            &resync,
+        ));
+        assert!(!active.load(Ordering::Relaxed));
+        assert!(!handle_client_message(
+            &state,
+            r#"{"type":"video_demand","active":true}"#,
+            &mut pressed,
+            &active,
+            &resync,
+        ));
+        assert!(active.load(Ordering::Relaxed));
+        assert!(resync.load(Ordering::Relaxed));
+        tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
+            .await
+            .expect("video demand resume should request a keyframe");
     }
 
     #[test]
@@ -3971,17 +4059,17 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let mut pressed = HashSet::new();
 
-        handle_client_message(
+        handle_test_client_message(
             &state,
             r#"{"type":"keyboard_down","usage":4}"#,
             &mut pressed,
         );
-        handle_client_message(
+        handle_test_client_message(
             &state,
             r#"{"type":"keyboard_down","usage":4}"#,
             &mut pressed,
         );
-        handle_client_message(
+        handle_test_client_message(
             &state,
             r#"{"type":"keyboard_down","usage":65535}"#,
             &mut pressed,
@@ -3991,7 +4079,7 @@ mod tests {
         assert!(input_rx.try_recv().is_err());
         assert_eq!(pressed, HashSet::from([4]));
 
-        handle_client_message(&state, r#"{"type":"keyboard_up","usage":4}"#, &mut pressed);
+        handle_test_client_message(&state, r#"{"type":"keyboard_up","usage":4}"#, &mut pressed);
         assert!(matches!(input_rx.try_recv(), Ok(InputCmd::KeyboardUp(4))));
         assert!(pressed.is_empty());
     }
@@ -4001,15 +4089,15 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let mut pressed = HashSet::new();
 
-        handle_client_message(
+        handle_test_client_message(
             &state,
             r#"{"type":"text","text":"Hello, iPhone!"}"#,
             &mut pressed,
         );
-        handle_client_message(&state, r#"{"type":"text","text":""}"#, &mut pressed);
+        handle_test_client_message(&state, r#"{"type":"text","text":""}"#, &mut pressed);
         let oversized =
             serde_json::to_string(&json!({ "type": "text", "text": "x".repeat(129) })).unwrap();
-        handle_client_message(&state, &oversized, &mut pressed);
+        handle_test_client_message(&state, &oversized, &mut pressed);
 
         assert!(matches!(
             input_rx.try_recv(),

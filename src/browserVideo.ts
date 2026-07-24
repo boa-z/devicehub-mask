@@ -170,7 +170,10 @@ export class BrowserVideoDecoder {
 
   private async decode(packet: BrowserVideoPacket) {
     if (this.closed) return;
-    const codec = hevcCodecFromAnnexB(packet.data) ?? this.codec;
+    const configurationChanged = packet.width !== this.width || packet.height !== this.height;
+    const codec = (!this.codec || packet.key || configurationChanged
+      ? hevcCodecFromAnnexB(packet.data)
+      : null) ?? this.codec;
     if (!codec) {
       this.callbacks.requestKeyframe();
       return;

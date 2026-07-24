@@ -274,8 +274,15 @@ RFC 6381 HEVC profile、tier、level、compatibility flags 和 constraints，再
 丢弃依赖帧，并通过 PLI/FIR 请求新的 IRAP。能力检测、输出超时或运行时连续失败会自动重连并
 回退原生后端。初始化时会探测带真实尺寸与 codec 的准确配置；如果 WebKit 报告支持但
 `configure()` 拒绝，应用会依次尝试更简化的 `hev1` 和 `hvc1` 配置，全部失败后才触发原生
-回退。MCP
-截图继续使用按需 CoreDevice ScreenCaptureService，帧同步同时观察原生与浏览器帧版本。
+回退。WebCodecs 的 `EncodedVideoChunk.timestamp` 来自 90 kHz RTP 时钟而非固定 60 FPS
+计数，因此会保留设备的实际帧间隔、可变帧率以及更高刷新率。SPS/codec 扫描仅发生在首次、
+关键帧或尺寸变化时，普通依赖帧不再重复遍历整个压缩 Access Unit。
+
+WebSocket 客户端会显式声明实时画面需求。仅设备控制页和使用实时背景的按键映射页接收视频；
+切换到设置、AFC、日志等页面、使用静态映射截图或窗口不可见时，后端仍维持 RTP/RTCP 会话，
+但停止向该 WebView 复制和发送画面。恢复显示时主动请求 IRAP，避免用缺少参考帧的 P-frame
+恢复。此门控只作用于 UI 显示，MCP 截图继续使用按需 CoreDevice ScreenCaptureService，帧同步
+同时观察原生与浏览器帧版本。
 
 Axum 使用线程本地复用的 TurboJPEG compressor 编码最新帧。每个 WebView 最多允许两帧
 在途，使后端 JPEG 编码与 WebView JPEG 解码可以重叠，同时不会形成无限队列。前端会对

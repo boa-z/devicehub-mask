@@ -219,6 +219,7 @@ export default function App() {
   const [displayScaleOpen, setDisplayScaleOpen] = useState(false);
   const [mappingBackgroundMode, setMappingBackgroundMode] = useState<MappingBackgroundMode>("live");
   const [mappingGuidesVisible, setMappingGuidesVisible] = useState(false);
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== "hidden");
   const [capturedScreenshot, setCapturedScreenshot] = useState<CapturedScreenshot | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
@@ -248,6 +249,7 @@ export default function App() {
   const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
   const capturedScreenshotRef = useRef<CapturedScreenshot | null>(null);
   const hasFrameRef = useRef(false);
+  const videoDemandRef = useRef(false);
 
   orientationRef.current = status.orientation;
   useEffect(() => {
@@ -354,9 +356,25 @@ export default function App() {
     };
   }, [appWindow]);
   const mappingEditing = page === "mappings" && controlMode === "mapping" && editing;
+  const videoDemand = documentVisible
+    && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
+  videoDemandRef.current = videoDemand;
   const mappingFrameSize = mappingBackgroundMode === "screenshot" && capturedScreenshot
     ? { width: capturedScreenshot.width, height: capturedScreenshot.height }
     : frameSize;
+
+  useEffect(() => {
+    const handleVisibilityChange = () => setDocumentVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "video_demand", active: videoDemand }));
+    }
+  }, [videoDemand]);
 
   const request = useCallback((path: string, init: RequestInit = {}) => {
     if (!backend) return Promise.reject(new Error(translateRef.current("errors.backendNotReady")));
@@ -734,6 +752,7 @@ export default function App() {
         socketRef.current = socket;
         lastVideoActivityAtRef.current = performance.now();
         setConnected(true);
+        socket.send(JSON.stringify({ type: "video_demand", active: videoDemandRef.current }));
         metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
       };
       socket.onerror = () => logFrontend("warn", "websocket", "transport_error", "WebSocket transport error");

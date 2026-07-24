@@ -166,6 +166,7 @@ impl RunningStats {
 struct HevcAccessUnit {
     bytes: Vec<u8>,
     is_irap: bool,
+    rtp_timestamp: u32,
 }
 
 #[derive(Debug)]
@@ -177,10 +178,14 @@ struct QueuedHevcAccessUnit {
 #[derive(Debug, Default)]
 struct AccessUnitAssembler {
     pending: Vec<u8>,
+    pending_timestamp: Option<u32>,
 }
 
 impl AccessUnitAssembler {
-    fn push(&mut self, bytes: &[u8]) -> Vec<HevcAccessUnit> {
+    fn push(&mut self, bytes: &[u8], rtp_timestamp: u32) -> Vec<HevcAccessUnit> {
+        if self.pending.is_empty() {
+            self.pending_timestamp = Some(rtp_timestamp);
+        }
         self.pending.extend_from_slice(bytes);
         let mut completed = Vec::new();
         loop {
@@ -198,8 +203,10 @@ impl AccessUnitAssembler {
                 completed.push(HevcAccessUnit {
                     is_irap: annexb_contains_irap(&access_unit),
                     bytes: access_unit,
+                    rtp_timestamp: self.pending_timestamp.unwrap_or(rtp_timestamp),
                 });
             }
+            self.pending_timestamp = Some(rtp_timestamp);
         }
         completed
     }
@@ -212,11 +219,32 @@ impl AccessUnitAssembler {
         Some(HevcAccessUnit {
             is_irap: annexb_contains_irap(&bytes),
             bytes,
+            rtp_timestamp: self.pending_timestamp.take()?,
         })
     }
 
     fn clear(&mut self) {
         self.pending.clear();
+        self.pending_timestamp = None;
+    }
+}
+
+#[derive(Debug, Default)]
+struct RtpVideoClock {
+    last_timestamp: Option<u32>,
+    elapsed_ticks: u64,
+}
+
+impl RtpVideoClock {
+    fn timestamp_us(&mut self, timestamp: u32) -> u64 {
+        if let Some(previous) = self.last_timestamp {
+            let delta = timestamp.wrapping_sub(previous);
+            if delta < (1 << 31) {
+                self.elapsed_ticks = self.elapsed_ticks.saturating_add(u64::from(delta));
+            }
+        }
+        self.last_timestamp = Some(timestamp);
+        self.elapsed_ticks.saturating_mul(1_000_000) / 90_000
     }
 }
 
@@ -3935,7 +3963,7 @@ async fn video_task(
                     if let Some(f) = &mut dump {
                         f.write_all(&out).await.ok();
                     }
-                    let mut access_units = assembler.push(&out);
+                    let mut access_units = assembler.push(&out, pkt.timestamp);
                     if complete_access_unit && let Some(access_unit) = assembler.finish() {
                         access_units.push(access_unit);
                     }
@@ -4038,9 +4066,11 @@ async fn browser_video_writer(
     corruption: Arc<Notify>,
 ) {
     let mut dimensions = None;
-    let mut timestamp_us = 0_u64;
+    let mut clock = RtpVideoClock::default();
     while let Some(access_unit) = hevc_queue.pop().await {
-        if let Some(parsed) = crate::browser_video::hevc_dimensions(&access_unit.bytes) {
+        if (dimensions.is_none() || access_unit.is_irap)
+            && let Some(parsed) = crate::browser_video::hevc_dimensions(&access_unit.bytes)
+        {
             dimensions = Some(parsed);
         }
         let Some((width, height)) = dimensions else {
@@ -4053,13 +4083,12 @@ async fn browser_video_writer(
         counters.note_decoded_frame();
         frame_beat.notify_one();
         frames.publish(
-            timestamp_us,
+            clock.timestamp_us(access_unit.rtp_timestamp),
             access_unit.is_irap,
             width,
             height,
             access_unit.bytes,
         );
-        timestamp_us = timestamp_us.saturating_add(16_667);
     }
 }
 
@@ -5259,6 +5288,7 @@ mod tests {
         HevcAccessUnit {
             bytes: vec![0x5a; size],
             is_irap,
+            rtp_timestamp: 0,
         }
     }
 
@@ -5283,19 +5313,21 @@ mod tests {
 
         let mut first_chunk = first.to_vec();
         first_chunk.extend_from_slice(&HEVC_AUD[..3]);
-        assert!(assembler.push(&first_chunk).is_empty());
+        assert!(assembler.push(&first_chunk, 90_000).is_empty());
 
         let mut second_chunk = HEVC_AUD[3..].to_vec();
         second_chunk.extend_from_slice(&second);
-        let completed = assembler.push(&second_chunk);
+        let completed = assembler.push(&second_chunk, 91_500);
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].bytes, first);
         assert!(!completed[0].is_irap);
+        assert_eq!(completed[0].rtp_timestamp, 90_000);
 
-        let completed = assembler.push(HEVC_AUD);
+        let completed = assembler.push(HEVC_AUD, 93_000);
         assert_eq!(completed.len(), 1);
         assert!(completed[0].bytes.starts_with(HEVC_AUD));
         assert!(completed[0].is_irap);
+        assert_eq!(completed[0].rtp_timestamp, 91_500);
     }
 
     #[test]
@@ -5303,11 +5335,21 @@ mod tests {
         let irap = [0, 0, 0, 1, 0x26, 0x01, 0xbb];
         let mut assembler = AccessUnitAssembler::default();
 
-        assert!(assembler.push(&irap).is_empty());
+        assert!(assembler.push(&irap, 123_456).is_empty());
         let completed = assembler.finish().unwrap();
         assert_eq!(completed.bytes, irap);
         assert!(completed.is_irap);
+        assert_eq!(completed.rtp_timestamp, 123_456);
         assert!(assembler.finish().is_none());
+    }
+
+    #[test]
+    fn browser_video_clock_preserves_source_cadence_and_wraps() {
+        let mut clock = RtpVideoClock::default();
+        assert_eq!(clock.timestamp_us(u32::MAX - 749), 0);
+        assert_eq!(clock.timestamp_us(u32::MAX), 8_322);
+        assert_eq!(clock.timestamp_us(749), 16_655);
+        assert_eq!(clock.timestamp_us(1_499), 24_988);
     }
 
     #[test]

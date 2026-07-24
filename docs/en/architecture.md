@@ -395,9 +395,20 @@ frames and request a new IRAP through PLI/FIR. Repeated capability, timeout, or
 runtime failures reconnect the session with the native backend. Decoder setup
 probes the exact dimensions and codec, retries progressively simpler `hev1` and
 `hvc1` configurations when WebKit reports support but rejects `configure()`, and
-only then invokes the native fallback. MCP screenshots remain available through the
-on-demand CoreDevice ScreenCaptureService and frame synchronization observes
-both native and browser frame versions.
+only then invokes the native fallback. WebCodecs `EncodedVideoChunk` timestamps
+come from the 90 kHz RTP clock instead of a fixed 60 FPS counter, preserving the
+device's actual cadence, variable frame rate, and higher refresh rates. SPS and
+codec scanning runs only for initial configuration, keyframes, and dimension
+changes rather than traversing every compressed delta access unit.
+
+Each WebSocket client explicitly reports whether it needs live video. Only the
+device page and the live key-mapping background receive frames. Settings, AFC,
+logs, a static mapping screenshot, and a hidden window keep the RTP/RTCP session
+alive but stop copying and sending video to that WebView. Resuming display asks
+for an IRAP before rendering again so decoding does not restart from a dependent
+P-frame. This gate affects UI display only: MCP screenshots remain available
+through the on-demand CoreDevice ScreenCaptureService and frame synchronization
+observes both native and browser frame versions.
 
 Axum JPEG-encodes the latest frame with a thread-local reusable TurboJPEG
 compressor. At most two frames are allowed in flight per WebView, so backend JPEG
