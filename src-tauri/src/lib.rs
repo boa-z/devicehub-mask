@@ -21,6 +21,7 @@ mod session;
 mod settings;
 mod supervisor;
 mod web;
+mod wifi_devices;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -152,6 +153,7 @@ impl BackendHandle {
 fn spawn_backend(
     initial_udid: Option<String>,
     profile_dir: PathBuf,
+    pairing_dir: PathBuf,
     settings: Arc<settings::AppSettings>,
     audio: audio_output::AudioOutput,
 ) -> Result<BackendHandle, String> {
@@ -210,6 +212,7 @@ fn spawn_backend(
 
                 let manager = session::manage(
                     initial_udid,
+                    pairing_dir,
                     settings,
                     video_counters.clone(),
                     || {},
@@ -353,11 +356,18 @@ pub fn run() {
             .map_err(std::io::Error::other)?;
             app.manage(audio_output.clone());
             app.manage(settings.clone());
+            let app_data_dir = app.path().app_data_dir()?;
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
-                .unwrap_or(app.path().app_data_dir()?.join("profiles"));
-            let backend = spawn_backend(initial_udid, profile_dir, settings, audio_output)
-                .map_err(std::io::Error::other)?;
+                .unwrap_or_else(|| app_data_dir.join("profiles"));
+            let backend = spawn_backend(
+                initial_udid,
+                profile_dir,
+                app_data_dir.join("pairings"),
+                settings,
+                audio_output,
+            )
+            .map_err(std::io::Error::other)?;
             app.manage(backend);
             Ok(())
         })

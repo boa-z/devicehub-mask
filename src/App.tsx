@@ -61,6 +61,7 @@ import { readAudioOutputStatus, readVideoSettings, setAudioEnabled, setAudioPlay
 const emptyStatus: DeviceStatus = {
   status: "",
   active_udid: null,
+  active_device_id: null,
   error: null,
   orientation: "portrait",
   devices: [],
@@ -185,7 +186,7 @@ export default function App() {
   const [deviceFullscreen, setDeviceFullscreen] = useState(false);
   const [deviceViewPreferences, setDeviceViewPreferences] = useState<DeviceViewPreferences>(readDeviceViewPreferences);
   const [fullscreenToolbarVisible, setFullscreenToolbarVisible] = useState(true);
-  const [selectedUdid, setSelectedUdid] = useState<string | null>(null);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [inspectorVisible, setInspectorVisible] = useState(true);
   const [connected, setConnected] = useState(false);
   const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(emptyMetrics);
@@ -243,8 +244,8 @@ export default function App() {
 
   orientationRef.current = status.orientation;
   useEffect(() => {
-    if (status.active_udid) setSelectedUdid(status.active_udid);
-  }, [status.active_udid]);
+    if (status.active_device_id) setSelectedDeviceId(status.active_device_id);
+  }, [status.active_device_id]);
 
   const updateAudioPlayback = useCallback(async (next: DeviceAudioPreferences) => {
     const previous = audioPlayback;
@@ -1281,21 +1282,21 @@ export default function App() {
     setDeviceFullscreen((active) => !active);
     setPage("device");
   };
-  const connectDevice = async (udid: string) => {
-    setSelectedUdid(udid);
+  const connectDevice = async (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
     releaseAllControls();
     try {
-      const response = await request(`/api/devices/${encodeURIComponent(udid)}/connect`, { method: "PUT" });
+      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "PUT" });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     } catch (error) {
       void message.error(t("errors.reconnectDevice", { error: String(error) }));
     }
   };
   const reconnectDevice = async () => {
-    if (!selectedUdid) return false;
+    if (!selectedDeviceId) return false;
     releaseAllControls();
     try {
-      const response = await request(`/api/devices/${encodeURIComponent(selectedUdid)}/reconnect`, { method: "PUT" });
+      const response = await request(`/api/devices/${encodeURIComponent(selectedDeviceId)}/reconnect`, { method: "PUT" });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return true;
     } catch (error) {
@@ -1416,7 +1417,7 @@ export default function App() {
     }
   };
   const controlOverlayVisible = deviceViewPreferences.controlOverlayVisible;
-  const selectedDevice = selectedUdid ?? undefined;
+  const selectedDevice = selectedDeviceId ?? undefined;
   const displayedMappings = page === "mappings" ? profile.mappings : controlProfile.mappings;
   const displayedFrameSize = page === "mappings" ? mappingFrameSize : frameSize;
   const aspectRatio = useMemo(() => `${displayedFrameSize.width} / ${displayedFrameSize.height}`, [displayedFrameSize]);
@@ -1598,11 +1599,11 @@ export default function App() {
             className="device-select"
             value={selectedDevice}
             placeholder={t("device.select")}
-            options={status.devices.map((device) => ({ value: device.udid, label: `${device.name} · ${device.connection}` }))}
-            onChange={(udid) => void connectDevice(udid)}
+            options={status.devices.map((device) => ({ value: device.id, label: `${device.name} · ${device.connection}` }))}
+            onChange={(deviceId) => void connectDevice(deviceId)}
           />
           <Tooltip title={t("device.refresh")}><Button aria-label={t("device.refresh")} disabled={!backend} icon={<ReloadOutlined />} onClick={() => void request("/api/devices/refresh", { method: "PUT" })} /></Tooltip>
-          <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedUdid} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
+          <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedDeviceId} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
           {page === "mappings" && <Tooltip title={t("device.saveMappings")}><Button icon={<SaveOutlined />} onClick={() => void save()} /></Tooltip>}
           <Tooltip title={t(alwaysOnTop ? "device.unpin" : "device.pin")}><Button type={alwaysOnTop ? "primary" : "default"} icon={alwaysOnTop ? <PushpinFilled /> : <PushpinOutlined />} onClick={() => void toggleAlwaysOnTop()} /></Tooltip>
           {page === "mappings" && <Tooltip title={t(inspectorVisible ? "device.hideInspector" : "device.showInspector")}><Button icon={inspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => setInspectorVisible((visible) => !visible)} /></Tooltip>}
@@ -1668,7 +1669,7 @@ export default function App() {
                 <section className="stage-column">
                   {deviceFullscreen ? (
                     <div className={`device-fullscreen-toolbar${fullscreenToolbarVisible ? "" : " is-hidden"}`} role="toolbar" aria-label={t("device.deviceFullscreenControls")}>
-                      <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedUdid} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
+                      <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedDeviceId} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
                       {controlProfileSelector}
                       <Segmented<ControlMode>
                         value={controlMode}
@@ -1782,7 +1783,7 @@ export default function App() {
                         <div className="device-stage-state" onPointerDown={(event) => event.stopPropagation()}>
                           <AimOutlined />
                           <span>{t(`device.stageState.${stageIssue}`)}</span>
-                          {stageIssue !== "waiting" && selectedUdid && (
+                          {stageIssue !== "waiting" && selectedDeviceId && (
                             <Button size="small" icon={<SyncOutlined />} onClick={() => void reconnectDevice()}>{t("device.reconnect")}</Button>
                           )}
                         </div>

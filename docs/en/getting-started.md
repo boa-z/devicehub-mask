@@ -89,8 +89,16 @@ Developer Disk Image, and checks for `com.apple.coredevice.displayservice` over
 USB. It does not need elevation or a persistent helper process. Preparation may
 need to be repeated after rebooting or upgrading iOS.
 
-DeviceHub Mask deliberately prefers USB if usbmuxd reports USB and network
-records for the same UDID. iTunes Wi-Fi sync is not required.
+DeviceHub Mask lists USB and Wi-Fi as separate transports and defaults to USB
+for legacy device selections. To authorize Wi-Fi discovery, connect the device
+by USB once while it is unlocked and trusted. The app stores a private copy of
+the pairing record in its application data directory (`0700` directory and
+`0600` files on Unix), then authenticates `_apple-mobdev2._tcp` Bonjour records
+before showing them. After **iPhone · Wi-Fi** appears, the cable can be removed.
+
+On older Apple stacks, enabling **Show this iPhone when on Wi-Fi** in Finder may
+still be necessary. Unauthenticated nearby Bonjour devices are never exposed as
+connectable devices; the status bar instead asks for the one-time USB setup.
 
 ## First Run
 

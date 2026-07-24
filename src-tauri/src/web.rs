@@ -59,6 +59,7 @@ pub struct AppState {
 
 #[derive(Serialize)]
 struct DeviceView {
+    id: String,
     udid: String,
     name: String,
     connection: &'static str,
@@ -68,6 +69,7 @@ struct DeviceView {
 struct StatusView {
     status: String,
     active_udid: Option<String>,
+    active_device_id: Option<String>,
     error: Option<String>,
     orientation: &'static str,
     devices: Vec<DeviceView>,
@@ -478,6 +480,7 @@ fn status_snapshot(state: &AppState) -> StatusView {
     StatusView {
         status: state.status.get(),
         active_udid: state.active.get(),
+        active_device_id: state.active.selection_id(),
         error: state.error.get(),
         orientation: orientation_name(state.orientation.get()),
         devices: state
@@ -485,6 +488,7 @@ fn status_snapshot(state: &AppState) -> StatusView {
             .get()
             .into_iter()
             .map(|device| DeviceView {
+                id: device.id,
                 udid: device.udid,
                 name: device.name,
                 connection: device.connection.label(),

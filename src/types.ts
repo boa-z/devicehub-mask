@@ -1,6 +1,6 @@
 export type Orientation = "portrait" | "portrait_upside_down" | "landscape_left" | "landscape_right";
 
-export type Device = { udid: string; name: string; connection: string };
+export type Device = { id: string; udid: string; name: string; connection: string };
 export type LocationStatus = {
   available: boolean;
   active: boolean;
@@ -8,7 +8,7 @@ export type LocationStatus = {
   longitude: number | null;
   error: string | null;
 };
-export type DeviceStatus = { status: string; active_udid: string | null; error: string | null; orientation: Orientation; devices: Device[]; location: LocationStatus };
+export type DeviceStatus = { status: string; active_udid: string | null; active_device_id: string | null; error: string | null; orientation: Orientation; devices: Device[]; location: LocationStatus };
 export type StreamMetrics = {
   source_fps: number;
   decoded_fps: number;

@@ -427,7 +427,7 @@ pub fn unrotate_norm(dx: f32, dy: f32, turns: u8) -> (f32, f32) {
 // --- Device selection ---
 
 /// How a device is attached.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConnKind {
     Usb,
     Network,
@@ -443,11 +443,25 @@ impl ConnKind {
             ConnKind::Other => "?",
         }
     }
+
+    pub fn selector_suffix(self) -> &'static str {
+        match self {
+            ConnKind::Usb => "usb",
+            ConnKind::Network => "wifi",
+            ConnKind::Other => "other",
+        }
+    }
+}
+
+pub fn device_selector(udid: &str, connection: ConnKind) -> String {
+    format!("{udid}::{}", connection.selector_suffix())
 }
 
 /// One device usbmuxd currently knows about, for the picker dropdown.
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
+    /// Stable picker value. Unlike the UDID, this distinguishes USB and Wi-Fi.
+    pub id: String,
     pub udid: String,
     /// The device's `DeviceName` (best-effort; falls back to the UDID).
     pub name: String,
@@ -689,17 +703,42 @@ impl DeviceListSlot {
     }
 }
 
-/// The UDID of the device the session is currently connected to. `None` while idle.
+#[derive(Clone)]
+struct ActiveDevice {
+    udid: String,
+    selection_id: String,
+}
+
+/// Identity of the device the session is currently connected to. `None` while idle.
 #[derive(Clone, Default)]
-pub struct ActiveSlot(Arc<Mutex<Option<String>>>);
+pub struct ActiveSlot(Arc<Mutex<Option<ActiveDevice>>>);
 
 impl ActiveSlot {
     pub fn set(&self, udid: Option<String>) {
-        *self.0.lock().unwrap() = udid;
+        *self.0.lock().unwrap() = udid.map(|udid| ActiveDevice {
+            selection_id: udid.clone(),
+            udid,
+        });
+    }
+
+    pub fn set_selected(&self, udid: String, selection_id: String) {
+        *self.0.lock().unwrap() = Some(ActiveDevice { udid, selection_id });
     }
 
     pub fn get(&self) -> Option<String> {
-        self.0.lock().unwrap().clone()
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|active| active.udid.clone())
+    }
+
+    pub fn selection_id(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|active| active.selection_id.clone())
     }
 }
 
