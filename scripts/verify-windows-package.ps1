@@ -48,8 +48,20 @@ $msiRoot = Join-Path $extractRoot "msi"
 $nsisRoot = Join-Path $extractRoot "nsis"
 New-Item $msiRoot, $nsisRoot -ItemType Directory -Force | Out-Null
 
-& msiexec.exe /a $msi.FullName /qn "TARGETDIR=$msiRoot"
-if ($LASTEXITCODE -ne 0) { throw "Unable to extract MSI (exit $LASTEXITCODE)" }
+$msiLog = Join-Path $extractRoot "msi-extract.log"
+$msiArguments = @(
+  "/a"
+  "`"$($msi.FullName)`""
+  "/qn"
+  "`"TARGETDIR=$msiRoot`""
+  "/l*v"
+  "`"$msiLog`""
+)
+$msiProcess = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArguments -Wait -PassThru
+if ($msiProcess.ExitCode -ne 0) {
+  if (Test-Path $msiLog -PathType Leaf) { Get-Content $msiLog -Tail 80 }
+  throw "Unable to extract MSI (exit $($msiProcess.ExitCode))"
+}
 Assert-PackagedRuntime $msiRoot "MSI"
 
 & 7z.exe x "-o$nsisRoot" $nsis.FullName -y | Out-Null
