@@ -13,6 +13,7 @@ export type FullscreenToolbarDock = (typeof fullscreenToolbarDocks)[number];
 
 export type ToolbarSize = { width: number; height: number };
 export type ToolbarPoint = { x: number; y: number };
+type ToolbarRect = ToolbarPoint & ToolbarSize;
 export type FullscreenToolbarKind = "hardware" | "function";
 export type FullscreenToolbarDocks = { hardware: FullscreenToolbarDock; function: FullscreenToolbarDock };
 
@@ -50,20 +51,39 @@ export function nearestFullscreenToolbarDock(
   container: ToolbarSize,
   toolbar: ToolbarSize,
   excluded: ReadonlySet<FullscreenToolbarDock> = new Set(),
+  occupied: readonly ToolbarRect[] = [],
 ): FullscreenToolbarDock {
   let nearest: FullscreenToolbarDock = "top-center";
+  let nearestOverlap = Number.POSITIVE_INFINITY;
   let nearestDistance = Number.POSITIVE_INFINITY;
   for (const dock of fullscreenToolbarDocks) {
     if (excluded.has(dock)) continue;
     const position = fullscreenToolbarDockPosition(dock, container, toolbar);
     const center = { x: position.x + toolbar.width / 2, y: position.y + toolbar.height / 2 };
+    const rect = { ...position, ...toolbar };
+    const overlap = occupied.reduce((total, other) => total + toolbarOverlapArea(rect, other), 0);
     const distance = (point.x - center.x) ** 2 + (point.y - center.y) ** 2;
-    if (distance < nearestDistance) {
+    if (overlap < nearestOverlap || (overlap === nearestOverlap && distance < nearestDistance)) {
       nearest = dock;
+      nearestOverlap = overlap;
       nearestDistance = distance;
     }
   }
   return nearest;
+}
+
+function toolbarRect(
+  dock: FullscreenToolbarDock,
+  container: ToolbarSize,
+  toolbar: ToolbarSize,
+): ToolbarRect {
+  return { ...fullscreenToolbarDockPosition(dock, container, toolbar), ...toolbar };
+}
+
+function toolbarOverlapArea(first: ToolbarRect, second: ToolbarRect): number {
+  const width = Math.max(0, Math.min(first.x + first.width, second.x + second.width) - Math.max(first.x, second.x));
+  const height = Math.max(0, Math.min(first.y + first.height, second.y + second.height) - Math.max(first.y, second.y));
+  return width * height;
 }
 
 export function clampToolbarPosition(
@@ -87,14 +107,23 @@ export function resolveFullscreenToolbarDrop(
   functionSize: ToolbarSize,
 ): FullscreenToolbarDocks {
   if (kind === "function") {
+    const hardwareRect = toolbarRect(docks.hardware, container, hardwareSize);
     return {
       hardware: docks.hardware,
-      function: nearestFullscreenToolbarDock(point, container, functionSize, new Set([docks.hardware])),
+      function: nearestFullscreenToolbarDock(
+        point,
+        container,
+        functionSize,
+        new Set([docks.hardware]),
+        [hardwareRect],
+      ),
     };
   }
 
   const hardware = nearestFullscreenToolbarDock(point, container, hardwareSize);
-  if (hardware !== docks.function) return { hardware, function: docks.function };
+  const hardwareRect = toolbarRect(hardware, container, hardwareSize);
+  const functionRect = toolbarRect(docks.function, container, functionSize);
+  if (toolbarOverlapArea(hardwareRect, functionRect) === 0) return { hardware, function: docks.function };
   const functionPosition = fullscreenToolbarDockPosition(docks.function, container, functionSize);
   const functionCenter = {
     x: functionPosition.x + functionSize.width / 2,
@@ -102,6 +131,12 @@ export function resolveFullscreenToolbarDrop(
   };
   return {
     hardware,
-    function: nearestFullscreenToolbarDock(functionCenter, container, functionSize, new Set([hardware])),
+    function: nearestFullscreenToolbarDock(
+      functionCenter,
+      container,
+      functionSize,
+      new Set([hardware]),
+      [hardwareRect],
+    ),
   };
 }

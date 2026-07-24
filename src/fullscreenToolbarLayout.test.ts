@@ -40,4 +40,28 @@ describe("fullscreen toolbar layout", () => {
       toolbar,
     ).function).not.toBe("top-center");
   });
+
+  it("keeps function controls away from hardware controls in adjacent overlapping slots", () => {
+    const narrowContainer = { width: 600, height: 400 };
+    const hardwareSize = { width: 280, height: 44 };
+    const functionSize = { width: 360, height: 44 };
+
+    expect(resolveFullscreenToolbarDrop(
+      "function",
+      { x: 188, y: 30 },
+      { hardware: "top-center", function: "bottom-center" },
+      narrowContainer,
+      hardwareSize,
+      functionSize,
+    )).toEqual({ hardware: "top-center", function: "left-center" });
+
+    expect(resolveFullscreenToolbarDrop(
+      "hardware",
+      { x: 300, y: 30 },
+      { hardware: "bottom-center", function: "top-left" },
+      narrowContainer,
+      hardwareSize,
+      functionSize,
+    )).toEqual({ hardware: "top-center", function: "left-center" });
+  });
 });
