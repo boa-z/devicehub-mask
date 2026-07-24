@@ -277,7 +277,7 @@ pub fn router(state: AppState, token: String) -> Router {
         )
         .route(
             "/api/device/apps/{bundle_id}/storage/activity",
-            get(app_document_activity),
+            get(app_document_activity).delete(cancel_app_document_activity),
         )
         .route("/api/device/apps/operation", get(app_operation))
         .route("/api/device/apps/install", put(install_app))
@@ -1445,6 +1445,21 @@ async fn app_document_activity(
     Ok(Json(state.app_document_activity.get(&bundle_id)))
 }
 
+async fn cancel_app_document_activity(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    if state.app_document_activity.cancel(&bundle_id) {
+        Ok(StatusCode::ACCEPTED)
+    } else {
+        Err((
+            StatusCode::CONFLICT,
+            "no application storage transfer is running for this app".into(),
+        ))
+    }
+}
+
 async fn export_app_document(
     State(state): State<AppState>,
     Path(bundle_id): Path<String>,
@@ -1596,7 +1611,8 @@ async fn await_app_document_response<T>(
             )
         })?
         .map_err(|error| {
-            let status = if error.contains("already exists")
+            let status = if crate::app_documents::is_transfer_cancelled(&error)
+                || error.contains("already exists")
                 || error.contains("changed during recursive deletion")
             {
                 StatusCode::CONFLICT
@@ -4314,9 +4330,44 @@ mod tests {
     #[tokio::test]
     async fn app_storage_endpoints_dispatch_scoped_commands() {
         use crate::app_documents::{
-            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList,
-            AppDocumentTransfer, AppStorageScope,
+            AppDocumentActivityKind, AppDocumentCommand, AppDocumentEntry, AppDocumentKind,
+            AppDocumentList, AppDocumentTransfer, AppStorageScope,
         };
+
+        let (cancel_state, _) = test_state();
+        assert_eq!(
+            cancel_app_document_activity(
+                State(cancel_state.clone()),
+                Path("com.example.game".into()),
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::CONFLICT
+        );
+        cancel_state.app_document_activity.start(
+            "com.example.game",
+            AppStorageScope::Documents,
+            AppDocumentActivityKind::Export,
+            "/Documents".into(),
+            None,
+        );
+        assert_eq!(
+            cancel_app_document_activity(
+                State(cancel_state.clone()),
+                Path("com.example.other".into()),
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            cancel_app_document_activity(State(cancel_state), Path("com.example.game".into()),)
+                .await
+                .unwrap(),
+            StatusCode::ACCEPTED
+        );
 
         let (state, mut input_rx) = test_state();
         let activity = app_document_activity(State(state.clone()), Path("com.example.game".into()))
@@ -4655,6 +4706,7 @@ mod tests {
             "an application document with this name already exists",
             "directory export destination already exists",
             "application entry changed during recursive deletion",
+            crate::app_documents::TRANSFER_CANCELLED,
         ] {
             let (reply, response) = oneshot::channel::<Result<(), String>>();
             reply.send(Err(error.into())).unwrap();

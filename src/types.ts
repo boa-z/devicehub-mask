@@ -266,7 +266,7 @@ export type AppDocumentActivity = {
   bundle_id: string | null;
   scope: "documents" | "container" | null;
   kind: "export" | "import" | null;
-  state: "idle" | "running" | "succeeded" | "failed";
+  state: "idle" | "running" | "succeeded" | "cancelled" | "failed";
   path: string | null;
   bytes_transferred: number;
   bytes_total: number | null;

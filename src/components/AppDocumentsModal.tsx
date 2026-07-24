@@ -10,11 +10,12 @@ import {
   FolderOutlined,
   HomeOutlined,
   ReloadOutlined,
+  StopOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin, Tooltip, Typography, message } from "antd";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../deviceInspector";
 import type { AppDocumentActivity, AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
@@ -51,6 +52,10 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [activity, setActivity] = useState<AppDocumentActivity | null>(null);
+  const [cancelPending, setCancelPending] = useState(false);
+  const [cancelRequested, setCancelRequested] = useState(false);
+  const cancelRequestedRef = useRef(false);
+  const activeBundleIdRef = useRef(app?.bundle_id);
 
   const load = useCallback(async () => {
     if (!app
@@ -70,10 +75,14 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
   }, [app, path, request, scope]);
 
   useEffect(() => {
+    activeBundleIdRef.current = app?.bundle_id;
     setPath("/");
     setScope(app?.documents_available === false ? "container" : "documents");
     setListing(null);
     setError(null);
+    setCancelPending(false);
+    setCancelRequested(false);
+    cancelRequestedRef.current = false;
   }, [app?.bundle_id, app?.documents_available]);
 
   const transferBusy = busy === "upload" || busy?.startsWith("export:") === true;
@@ -135,10 +144,19 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
       if (refresh) await load();
       return true;
     } catch (mutationError) {
-      void message.error(t("deviceInspector.documentOperationFailed", { error: String(mutationError) }));
+      if (operation === "upload" && (cancelRequestedRef.current || String(mutationError).includes("application storage transfer cancelled"))) {
+        void message.info(t("deviceInspector.documentTransferCancelled"));
+      } else {
+        void message.error(t("deviceInspector.documentOperationFailed", { error: String(mutationError) }));
+      }
       return false;
     } finally {
       setBusy(null);
+      if (operation === "upload") {
+        setCancelPending(false);
+        setCancelRequested(false);
+        cancelRequestedRef.current = false;
+      }
     }
   };
 
@@ -146,6 +164,9 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
     if (!app) return;
     const source = await open({ multiple: false, directory });
     if (!source || Array.isArray(source)) return;
+    setCancelPending(false);
+    setCancelRequested(false);
+    cancelRequestedRef.current = false;
     await mutate(
       "upload",
       () => request(endpoint(app.bundle_id, "/import"), {
@@ -161,6 +182,9 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
     if (!app || entry.kind === "other") return;
     const destination = await save({ defaultPath: entry.name });
     if (!destination) return;
+    setCancelPending(false);
+    setCancelRequested(false);
+    cancelRequestedRef.current = false;
     setBusy(`export:${entry.path}`);
     try {
       const response = await request(endpoint(app.bundle_id, "/export"), {
@@ -175,9 +199,35 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
         count: result.files_written,
       }));
     } catch (exportError) {
-      void message.error(t("deviceInspector.documentOperationFailed", { error: String(exportError) }));
+      if (cancelRequestedRef.current || String(exportError).includes("application storage transfer cancelled")) {
+        void message.info(t("deviceInspector.documentTransferCancelled"));
+      } else {
+        void message.error(t("deviceInspector.documentOperationFailed", { error: String(exportError) }));
+      }
     } finally {
       setBusy(null);
+      setCancelPending(false);
+      setCancelRequested(false);
+      cancelRequestedRef.current = false;
+    }
+  };
+
+  const cancelTransfer = async () => {
+    const bundleId = app?.bundle_id;
+    if (!bundleId || !transferBusy || cancelPending || cancelRequested) return;
+    setCancelPending(true);
+    try {
+      const response = await request(endpoint(bundleId, "/activity"), { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      if (activeBundleIdRef.current !== bundleId) return;
+      cancelRequestedRef.current = true;
+      setCancelRequested(true);
+    } catch (cancelError) {
+      if (activeBundleIdRef.current === bundleId) {
+        void message.error(t("deviceInspector.documentCancelFailed", { error: String(cancelError) }));
+      }
+    } finally {
+      if (activeBundleIdRef.current === bundleId) setCancelPending(false);
     }
   };
 
@@ -307,22 +357,39 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
         </Tooltip>
       </div>
       {transferBusy && (
-        <div className="app-document-transfer" role="status">
+        <div className="app-document-transfer">
           <div className="app-document-transfer-heading">
             <Typography.Text>
-              {t(busy === "upload"
-                ? "deviceInspector.documentTransferUploading"
-                : "deviceInspector.documentTransferDownloading")}
+              {t(cancelRequested
+                ? "deviceInspector.documentTransferCancelling"
+                : busy === "upload"
+                  ? "deviceInspector.documentTransferUploading"
+                  : "deviceInspector.documentTransferDownloading")}
             </Typography.Text>
-            {activity?.state === "running" ? (
-              <Typography.Text type="secondary">
-                {t("deviceInspector.documentTransferProgress", {
-                  size: formatFileSize(activity.bytes_transferred),
-                  files: activity.files_transferred,
-                  directories: activity.directories_transferred,
-                })}
-              </Typography.Text>
-            ) : <Spin size="small" />}
+            <div className="app-document-transfer-actions">
+              {activity?.state === "running" || activity?.state === "cancelled" ? (
+                <Typography.Text type="secondary">
+                  {t("deviceInspector.documentTransferProgress", {
+                    size: formatFileSize(activity.bytes_transferred),
+                    files: activity.files_transferred,
+                    directories: activity.directories_transferred,
+                  })}
+                </Typography.Text>
+              ) : <Spin size="small" />}
+              <Tooltip title={t(cancelRequested
+                ? "deviceInspector.documentTransferCancelling"
+                : "deviceInspector.cancelDocumentTransfer")}>
+                <Button
+                  size="small"
+                  danger
+                  icon={<StopOutlined />}
+                  aria-label={t("deviceInspector.cancelDocumentTransfer")}
+                  loading={cancelPending}
+                  disabled={cancelRequested}
+                  onClick={() => void cancelTransfer()}
+                />
+              </Tooltip>
+            </div>
           </div>
           {activity?.state === "running" && activity.bytes_total !== null && (
             <Progress

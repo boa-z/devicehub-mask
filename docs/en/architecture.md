@@ -247,6 +247,10 @@ most every 100 ms. Single-file transfers expose their known byte total; director
 transfers remain indeterminate and report completed bytes, files, and directories
 without an additional remote preflight traversal. The frontend polls this
 read-only snapshot only while its upload or download request is active.
+Cancellation reaches the active transfer through an app- and session-scoped
+atomic token instead of waiting in the worker queue. Copy loops check it between
+64 KiB blocks and directory entries, close open AFC descriptors, and attempt to
+remove the staged host or device path before reporting `cancelled`.
 
 Public device files use a separate supervised standard-AFC worker. USB first
 opens `com.apple.afc` through the paired lockdown provider and can fall back to

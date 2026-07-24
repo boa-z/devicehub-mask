@@ -246,6 +246,8 @@ neither file sharing nor a developer container do not show the storage button.
 While uploading or downloading, the workspace shows transferred bytes and item
 counts. A single file also shows an exact percentage; folders use an ongoing
 counter because their total is not scanned twice before transfer.
+Use the stop button in the transfer bar to cancel an active upload or download.
+The workspace remains busy until its temporary host or app-container data is removed.
 
 App storage and Device public files are separate boundaries. App storage uses
 House Arrest for one selected application's vended Documents or container root.
