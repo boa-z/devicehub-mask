@@ -6,6 +6,8 @@
 
 ### Device
 
+The Info tab shows normalized language, locale, time zone, and 12/24-hour clock settings so localization and time-sensitive tests can confirm the active device context. Each value is length- and character-validated; the raw Lockdown dictionary is discarded.
+
 The Device page contains device selection, the aspect-ratio-preserving live view, control mode, rotation, direct touch, hardware buttons, and the device inspector. The inspector exposes Lockdown metadata, installed apps, IPA installation, upgrade and removal, and provisioning profiles.
 
 An attached USB device without a host pairing record remains visible in the picker with **Trust required**. Selecting it does not start a failing CoreDevice session. Click **Trust device**, keep the iPhone or iPad unlocked, and approve **Trust This Computer** on the device. DeviceHub Mask waits for that explicit confirmation, validates the generated record with a secure Lockdown session, saves it through the same usbmuxd or bundled netmuxd backend that discovered the device, then refreshes and connects it. A rejection, locked device, disconnect, or 90-second timeout is reported without automatically repeating the prompt. This host trust record is distinct from the iOS 17+ RemotePairing credentials used later for Wi-Fi CoreDevice transport.
@@ -124,6 +126,8 @@ Both the React UI and Ant Design use the native system font stack. Existing prof
 Automatic nightly checks can be disabled in Settings. The manual check remains available. An accepted update is downloaded, signature-verified, installed, and followed by an application restart. See [Distribution](distribution.md) for signing and release details.
 
 ## MCP Automation
+
+`device_details` returns the same normalized regional settings shown by the Info tab alongside the existing device, storage, activation, developer, and battery context.
 
 While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps, swipes, simultaneous multi-touch, text and key input, hardware buttons, app discovery, launch/restart and stop, rotation, device selection and reconnection, one-way device locking, virtual location, device conditions, frame synchronization, crash diagnosis, and session status. `lock_device` uses Diagnostics Relay sleep, so it does not wake an already locked device like a hardware-button toggle can.
 

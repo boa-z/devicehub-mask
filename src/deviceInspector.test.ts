@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
+import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -89,6 +89,31 @@ const crashReports: DeviceCrashReport[] = [
 ];
 
 describe("device inspector", () => {
+  it("formats partial regional settings without duplicate values", () => {
+    expect(formatDeviceRegionalSettings({
+      language: "en_US",
+      locale: "en_US",
+      time_zone: "America/Los_Angeles",
+      uses_24_hour_clock: false,
+    }, "12-hour clock", "24-hour clock")).toEqual({
+      languageAndLocale: "en_US",
+      timeZoneAndClock: "America/Los_Angeles · 12-hour clock",
+    });
+    expect(formatDeviceRegionalSettings({
+      language: null,
+      locale: "zh_TW",
+      time_zone: null,
+      uses_24_hour_clock: true,
+    }, "12-hour clock", "24-hour clock")).toEqual({
+      languageAndLocale: "zh_TW",
+      timeZoneAndClock: "24-hour clock",
+    });
+    expect(formatDeviceRegionalSettings(null, "12-hour clock", "24-hour clock")).toEqual({
+      languageAndLocale: "-",
+      timeZoneAndClock: "-",
+    });
+  });
+
   it("builds independent CoreDevice app scope queries", () => {
     expect(deviceAppScopeQuery(false, false)).toBe("");
     expect(deviceAppScopeQuery(true, false)).toBe("?include_system=true");

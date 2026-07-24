@@ -22,7 +22,7 @@
 
 ### 设备信息
 
-- 刷新 Lockdown 身份、iOS/build 版本、硬件型号、存储、激活状态、电池健康与充电信息。
+- 刷新 Lockdown 身份、iOS/build 版本、硬件型号、规范化语言/地区格式/时区设置、存储、激活状态、电池健康与充电信息。
 - 通过已配对 Lockdown session 修改设备名称，并读回验证结果。
 - 可经二次确认显式撤销 USB Lockdown 信任并删除电脑配对记录，同时报告部分成功状态。
 - 显示开发者模式与开发者磁盘镜像状态；可显示开发者模式设置入口，并显式挂载、取消或卸载 匹配的本地镜像文件集。
@@ -65,7 +65,7 @@
 
 | 能力 | 主要服务 |
 | --- | --- |
-| 设备身份、名称、存储回退 | Lockdown |
+| 设备身份、名称、区域设置、存储回退 | Lockdown |
 | 画面、音频、方向、剪贴板、HID | CoreDevice display、orientation、Pasteboard 和 HID 服务 |
 | App 列表、进程状态、启动、停止 | CoreDevice AppService |
 | 显式带控制台启动 App | CoreDevice AppService + OpenStdioSocket |

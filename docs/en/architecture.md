@@ -38,6 +38,8 @@ The MCP service is a separate Streamable HTTP endpoint on `127.0.0.1:8009/mcp` b
 
 ## Session Ownership
 
+Device Info reuses its refreshed Lockdown snapshot for normalized regional context. Language, locale, time zone, and 12/24-hour preference strings are trimmed, length- and character-validated, grouped into one nullable object, and discarded when no valid field exists. Raw Lockdown dictionaries never cross the private API or MCP boundary.
+
 The CoreDevice session runs on a dedicated Tokio runtime because several `idevice` service objects cannot move safely across a normal `tokio::spawn` boundary. The session owns display, HID, AppService, and device-state resources. Ending or replacing it cancels dependent work.
 
 Explicit per-app console capture is isolated in a session-owned supervised worker. It opens fresh AppService and OpenStdioSocket RSD channels, validates the requested installed Bundle ID, binds the returned stdio UUID to an explicit terminating launch, and reads on the CoreDevice `LocalSet`. A sequence-numbered buffer retains at most 1,000 normalized UTF-8 lines and 1 MiB with an 8 KiB per-line limit. Incremental private-API reads detect an expired cursor and return a reset snapshot. Closing the UI clears the buffer; session teardown aborts the stream and clears it unconditionally. Console bytes are never logged, persisted, or registered as an MCP capability.

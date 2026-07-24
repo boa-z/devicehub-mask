@@ -218,7 +218,14 @@ export type DeviceDetails = {
   activation_state: DeviceActivationState | null;
   developer_mode_enabled: boolean | null;
   developer_image_mounted: boolean | null;
+  regional_settings: DeviceRegionalSettings | null;
   battery: DeviceBattery | null;
+};
+export type DeviceRegionalSettings = {
+  language: string | null;
+  locale: string | null;
+  time_zone: string | null;
+  uses_24_hour_clock: boolean | null;
 };
 export type CompanionDevice = {
   identifier: string;

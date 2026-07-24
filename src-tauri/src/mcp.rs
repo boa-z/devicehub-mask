@@ -1568,7 +1568,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Return refreshed Lockdown device metadata, storage, battery, activation, Developer Mode, and Developer Disk Image state. Stable hardware identifiers are omitted unless include_identifiers is true."
+        description = "Return refreshed Lockdown device metadata, normalized language, locale, time zone and clock format, storage, battery, activation, Developer Mode, and Developer Disk Image state. Stable hardware identifiers are omitted unless include_identifiers is true."
     )]
     async fn device_details(
         &self,
@@ -1600,6 +1600,7 @@ impl DeviceHub {
                 "activation_state": details.activation_state,
                 "developer_mode_enabled": details.developer_mode_enabled,
                 "developer_image_mounted": details.developer_image_mounted,
+                "regional_settings": details.regional_settings,
                 "battery": details.battery,
                 "identifiers": identifiers,
             })
@@ -2138,6 +2139,12 @@ mod tests {
             activation_state: Some(crate::protocol::DeviceActivationState::Activated),
             developer_mode_enabled: Some(true),
             developer_image_mounted: Some(true),
+            regional_settings: Some(crate::protocol::DeviceRegionalSettings {
+                language: Some("zh-Hant".into()),
+                locale: Some("zh_TW".into()),
+                time_zone: Some("Asia/Taipei".into()),
+                uses_24_hour_clock: Some(true),
+            }),
             battery: None,
         }
     }
@@ -2307,6 +2314,7 @@ mod tests {
                 .unwrap();
             assert!(text.contains("Test iPhone"));
             assert!(text.contains("\"developer_image_mounted\":true"));
+            assert!(text.contains("\"time_zone\":\"Asia/Taipei\""));
             assert_eq!(text.contains("private-serial"), include_identifiers);
             assert_eq!(text.contains("private-udid"), include_identifiers);
         }

@@ -1,4 +1,4 @@
-import type { DeviceApp, DeviceCrashReport, DeviceEvent, ProvisioningProfile } from "./types";
+import type { DeviceApp, DeviceCrashReport, DeviceEvent, DeviceRegionalSettings, ProvisioningProfile } from "./types";
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
@@ -65,6 +65,22 @@ export function formatStorageUsage(capacity: number | null, available: number | 
     || capacity <= 0 || available < 0 || available > capacity) return "-";
   const used = capacity - available;
   return `${formatCapacity(used)} / ${formatCapacity(capacity)} (${Math.round(used * 100 / capacity)}%)`;
+}
+
+export function formatDeviceRegionalSettings(
+  settings: DeviceRegionalSettings | null,
+  clock12Hour: string,
+  clock24Hour: string,
+): { languageAndLocale: string; timeZoneAndClock: string } {
+  if (!settings) return { languageAndLocale: "-", timeZoneAndClock: "-" };
+  const languageAndLocale = [...new Set([settings.language, settings.locale].filter((value): value is string => Boolean(value)))].join(" · ") || "-";
+  const clock = settings.uses_24_hour_clock == null
+    ? null
+    : settings.uses_24_hour_clock ? clock24Hour : clock12Hour;
+  return {
+    languageAndLocale,
+    timeZoneAndClock: [settings.time_zone, clock].filter((value): value is string => Boolean(value)).join(" · ") || "-",
+  };
 }
 
 export function filterDeviceApps(apps: DeviceApp[], query: string): DeviceApp[] {

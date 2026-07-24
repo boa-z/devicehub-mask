@@ -57,10 +57,11 @@ use crate::ipa::{
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardContentKind, ClipboardEvent,
     ClipboardSlot, ConnKind, ControlCmd, DeviceActivationState, DeviceApp, DeviceBattery,
-    DeviceDetails, DeviceInfo, DeviceListSlot, DevicePairingState, DeviceStorage, ErrorSlot,
-    ForgetDeviceOutcome, ForgetDeviceResult, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods,
-    LocationStatus, LocationStatusSlot, Orientation, OrientationSlot, PairDeviceOutcome,
-    PairDeviceResult, RotateDir, StatusSlot, VideoCounters, clipboard_preview, device_selector,
+    DeviceDetails, DeviceInfo, DeviceListSlot, DevicePairingState, DeviceRegionalSettings,
+    DeviceStorage, ErrorSlot, ForgetDeviceOutcome, ForgetDeviceResult, FrameFormat, FrameSlot,
+    InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
+    PairDeviceOutcome, PairDeviceResult, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
+    device_selector,
 };
 use crate::wifi_devices::{WifiDiscovery, WifiEndpoint};
 use crate::{location, location::LocationCommand};
@@ -4994,8 +4995,43 @@ async fn read_device_details(
         activation_state: None,
         developer_mode_enabled: None,
         developer_image_mounted: None,
+        regional_settings: device_regional_settings(values),
         battery: None,
     })
+}
+
+fn device_regional_settings(values: &plist::Dictionary) -> Option<DeviceRegionalSettings> {
+    let token = |key: &str, max_chars: usize, allowed: fn(char) -> bool| {
+        values
+            .get(key)
+            .and_then(plist::Value::as_string)
+            .map(str::trim)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.chars().count() <= max_chars
+                    && value.chars().all(allowed)
+            })
+            .map(ToOwned::to_owned)
+    };
+    let regional = DeviceRegionalSettings {
+        language: token("Language", 35, |character| {
+            character.is_ascii_alphanumeric() || character == '-'
+        }),
+        locale: token("Locale", 64, |character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+        }),
+        time_zone: token("TimeZone", 64, |character| {
+            character.is_ascii_alphanumeric() || matches!(character, '/' | '_' | '-' | '+' | '.')
+        }),
+        uses_24_hour_clock: values
+            .get("Uses24HourClock")
+            .and_then(plist::Value::as_boolean),
+    };
+    (regional.language.is_some()
+        || regional.locale.is_some()
+        || regional.time_zone.is_some()
+        || regional.uses_24_hour_clock.is_some())
+    .then_some(regional)
 }
 
 async fn rename_device(
@@ -6296,6 +6332,7 @@ mod tests {
             activation_state: None,
             developer_mode_enabled: None,
             developer_image_mounted: None,
+            regional_settings: None,
             battery: None,
         };
 
@@ -6328,6 +6365,51 @@ mod tests {
             normalize_activation_state("future-state\nprivate-data"),
             DeviceActivationState::Unknown
         );
+    }
+
+    #[test]
+    fn normalizes_bounded_lockdown_regional_settings() {
+        let values = plist::Dictionary::from_iter([
+            (
+                String::from("Language"),
+                plist::Value::String(" zh-Hant ".into()),
+            ),
+            (String::from("Locale"), plist::Value::String("zh_TW".into())),
+            (
+                String::from("TimeZone"),
+                plist::Value::String("Asia/Taipei".into()),
+            ),
+            (String::from("Uses24HourClock"), plist::Value::Boolean(true)),
+        ]);
+        let regional = device_regional_settings(&values).unwrap();
+        assert_eq!(regional.language.as_deref(), Some("zh-Hant"));
+        assert_eq!(regional.locale.as_deref(), Some("zh_TW"));
+        assert_eq!(regional.time_zone.as_deref(), Some("Asia/Taipei"));
+        assert_eq!(regional.uses_24_hour_clock, Some(true));
+    }
+
+    #[test]
+    fn rejects_unbounded_or_nonstandard_regional_values() {
+        let values = plist::Dictionary::from_iter([
+            (
+                String::from("Language"),
+                plist::Value::String("x".repeat(36)),
+            ),
+            (
+                String::from("Locale"),
+                plist::Value::String("en_US\nprivate".into()),
+            ),
+            (
+                String::from("TimeZone"),
+                plist::Value::String("Asia/Taipei;secret".into()),
+            ),
+            (
+                String::from("Uses24HourClock"),
+                plist::Value::String("true".into()),
+            ),
+        ]);
+        assert!(device_regional_settings(&values).is_none());
+        assert!(device_regional_settings(&plist::Dictionary::new()).is_none());
     }
 
     #[test]

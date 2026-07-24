@@ -22,7 +22,7 @@ System fullscreen and device fullscreen are different. System fullscreen changes
 
 ### Info
 
-- Refreshes Lockdown identity, iOS/build versions, hardware model, storage, activation state, battery health and charging data.
+- Refreshes Lockdown identity, iOS/build versions, hardware model, normalized language/locale/time-zone settings, storage, activation state, battery health and charging data.
 - Renames the device through a paired Lockdown session and verifies the value.
 - Explicitly revokes USB Lockdown trust and removes the host pairing record, with confirmation and partial-success reporting.
 - Shows Developer Mode and Developer Disk Image state; it can reveal the Developer Mode setting and explicitly mount, cancel, or unmount a compatible local image set.
@@ -65,7 +65,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 
 | Capability | Primary service |
 | --- | --- |
-| Device identity, name, storage fallback | Lockdown |
+| Device identity, name, regional settings, storage fallback | Lockdown |
 | Screen, audio, orientation, clipboard, HID | CoreDevice display, orientation, Pasteboard, and HID services |
 | App list, process state, launch, stop | CoreDevice AppService |
 | Explicit per-app console launch | CoreDevice AppService + OpenStdioSocket |

@@ -38,6 +38,8 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 ## 会话所有权
 
+设备信息会复用刷新后的 Lockdown 快照生成规范化区域上下文。语言、地区格式、时区和 12/24 小时制字符串会经过 trim、长度和字符校验，再组合为一个可空对象；没有任何有效字段时会整体丢弃。原始 Lockdown 字典不会越过私有 API 或 MCP 边界。
+
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
 显式的单 App 控制台采集由会话拥有的独立监督任务承载。它建立新的 AppService 与 OpenStdioSocket RSD channel，验证请求的 Bundle ID 确实已安装，把 stdio UUID 绑定到显式的终止后启动操作，并在 CoreDevice `LocalSet` 中读取。带序号缓冲最多保留 1,000 行、总计 1 MiB 的规范化 UTF-8 文本，单行限制 8 KiB；私有 API 增量读取会检测已过期游标并返回重置快照。关闭界面会清空缓冲，会话结束也会无条件中止流并清空。控制台字节不会写入日志、持久化或注册为 MCP 能力。

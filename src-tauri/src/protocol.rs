@@ -593,7 +593,16 @@ pub struct DeviceDetails {
     pub activation_state: Option<DeviceActivationState>,
     pub developer_mode_enabled: Option<bool>,
     pub developer_image_mounted: Option<bool>,
+    pub regional_settings: Option<DeviceRegionalSettings>,
     pub battery: Option<DeviceBattery>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceRegionalSettings {
+    pub language: Option<String>,
+    pub locale: Option<String>,
+    pub time_zone: Option<String>,
+    pub uses_24_hour_clock: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

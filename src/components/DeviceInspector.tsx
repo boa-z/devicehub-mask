@@ -32,7 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
-import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
@@ -1130,6 +1130,11 @@ export function DeviceInspector({
   };
 
   const appMutationRunning = appOperation?.state === "running";
+  const { languageAndLocale, timeZoneAndClock } = formatDeviceRegionalSettings(
+    details?.regional_settings ?? null,
+    t("deviceInspector.clock12Hour"),
+    t("deviceInspector.clock24Hour"),
+  );
 
   const infoRows = details ? [
     [t("deviceInspector.os"), `iOS ${details.product_version}${details.build_version ? ` (${details.build_version})` : ""}`],
@@ -1139,6 +1144,8 @@ export function DeviceInspector({
     [t("deviceInspector.dataStorageAvailable"), formatCapacity(details.storage?.data_available_bytes ?? null)],
     [t("deviceInspector.productType"), details.product_type],
     [t("deviceInspector.hardwareModel"), details.hardware_model ?? "-"],
+    [t("deviceInspector.languageAndLocale"), languageAndLocale],
+    [t("deviceInspector.timeZoneAndClock"), timeZoneAndClock],
     [t("deviceInspector.serialNumber"), details.serial_number ?? "-"],
     [t("deviceInspector.ecid"), details.ecid?.toString() ?? "-"],
     [t("deviceInspector.activationState"), details.activation_state == null
