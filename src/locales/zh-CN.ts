@@ -727,7 +727,6 @@ export const zhCN = {
     title: "应用设置",
     appearance: "外观与语言",
     language: "语言",
-    languageSystemHint: "选择结果保存在此 Mac 上。",
     window: "窗口",
     alwaysOnTop: "窗口置顶",
     systemFullscreen: "系统全屏",

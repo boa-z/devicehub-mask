@@ -745,7 +745,6 @@ export const enUS = {
     title: "Application settings",
     appearance: "Appearance and language",
     language: "Language",
-    languageSystemHint: "The selection is saved on this Mac.",
     window: "Window",
     alwaysOnTop: "Keep window on top",
     systemFullscreen: "System fullscreen",

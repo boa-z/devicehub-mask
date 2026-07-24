@@ -173,7 +173,6 @@ export function SettingsPage({
             onChange={(value) => void i18n.changeLanguage(value)}
           />
         </label>
-        <Typography.Text type="secondary">{t("settings.languageSystemHint")}</Typography.Text>
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.window")}</Typography.Title>
