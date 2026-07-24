@@ -30,24 +30,16 @@ import {
   ThunderboltOutlined,
   VideoCameraOutlined,
 } from "@ant-design/icons";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button, Dropdown, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
-import { AfcPage } from "./components/AfcPage";
-import { DeviceInspector } from "./components/DeviceInspector";
-import { DeviceLogsPage } from "./components/DeviceLogsPage";
-import { LocationPage } from "./components/LocationPage";
 import { KeyboardIcon } from "./components/KeyboardIcon";
-import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
-import { MappingInspector } from "./components/MappingInspector";
+import type { MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingOverlay } from "./components/MappingOverlay";
 import { PerformanceHud } from "./components/PerformanceHud";
-import { PerformancePage } from "./components/PerformancePage";
-import { ProfileManager } from "./components/ProfileManager";
-import { SettingsPage } from "./components/SettingsPage";
+import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { parsePngDimensions } from "./deviceScreenshot";
@@ -56,9 +48,21 @@ import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPrefere
 import { logFrontend } from "./diagnostics";
 import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
-import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type PerformanceView, type Position, type Profile, type ScrcpyMappingType } from "./types";
-import { useDeviceVideoStream, type BackendConnection } from "./useDeviceVideoStream";
+import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Position, type Profile, type ScrcpyMappingType } from "./types";
+import { useDeviceVideoStream } from "./useDeviceVideoStream";
+import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
+import { usePrivateBackend } from "./usePrivateBackend";
 import { readAudioOutputStatus, readVideoSettings, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./videoSettings";
+
+const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
+const DeviceInspector = lazy(() => import("./components/DeviceInspector").then((module) => ({ default: module.DeviceInspector })));
+const DeviceLogsPage = lazy(() => import("./components/DeviceLogsPage").then((module) => ({ default: module.DeviceLogsPage })));
+const LocationPage = lazy(() => import("./components/LocationPage").then((module) => ({ default: module.LocationPage })));
+const MappingBackgroundToolbar = lazy(() => import("./components/MappingBackgroundToolbar").then((module) => ({ default: module.MappingBackgroundToolbar })));
+const MappingInspector = lazy(() => import("./components/MappingInspector").then((module) => ({ default: module.MappingInspector })));
+const PerformancePage = lazy(() => import("./components/PerformancePage").then((module) => ({ default: module.PerformancePage })));
+const ProfileManager = lazy(() => import("./components/ProfileManager").then((module) => ({ default: module.ProfileManager })));
+const SettingsPage = lazy(() => import("./components/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
 const emptyStatus: DeviceStatus = {
   status: "",
@@ -122,9 +126,12 @@ export default function App() {
   const translateRef = useRef(t);
   translateRef.current = t;
   const appWindow = useMemo(() => getCurrentWindow(), []);
-  const [backend, setBackend] = useState<BackendConnection | null>(null);
   const [page, setPage] = useState<AppPage>("device");
+  const [afcVisited, setAfcVisited] = useState(false);
   const [status, setStatus] = useState<DeviceStatus>(() => ({ ...emptyStatus, status: t("status.starting") }));
+  const { backend, request } = usePrivateBackend((error) => {
+    setStatus({ ...emptyStatus, status: t("status.backendUnavailable"), error: String(error) });
+  }, t("errors.backendNotReady"));
   const [profile, setProfile] = useState<Profile>(() => createLocalizedDefaultProfile(t));
   const initialProfileRef = useRef(profile);
   const [controlProfile, setControlProfile] = useState<Profile>(profile);
@@ -143,8 +150,6 @@ export default function App() {
   const [fullscreenToolbarVisible, setFullscreenToolbarVisible] = useState(true);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [inspectorVisible, setInspectorVisible] = useState(true);
-  const [performanceView, setPerformanceView] = useState<PerformanceView | null>(null);
-  const [performanceError, setPerformanceError] = useState<string | null>(null);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [audioPlayback, setAudioPlaybackPreferences] = useState<DeviceAudioPreferences>(defaultDeviceAudioPreferences);
   const [deviceAudioEnabled, setDeviceAudioEnabled] = useState<boolean | null>(null);
@@ -188,6 +193,10 @@ export default function App() {
   useEffect(() => {
     if (status.active_device_id) setSelectedDeviceId(status.active_device_id);
   }, [status.active_device_id]);
+
+  useEffect(() => {
+    if (page === "afc") setAfcVisited(true);
+  }, [page]);
 
   const updateAudioPlayback = useCallback(async (next: DeviceAudioPreferences) => {
     const previous = audioPlayback;
@@ -328,13 +337,6 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, []);
 
-  const request = useCallback((path: string, init: RequestInit = {}) => {
-    if (!backend) return Promise.reject(new Error(translateRef.current("errors.backendNotReady")));
-    const headers = new Headers(init.headers);
-    headers.set("authorization", `Bearer ${backend.token}`);
-    return fetch(`${backend.origin}${path}`, { ...init, headers });
-  }, [backend]);
-
   const updateDeviceViewPreferences = useCallback((next: DeviceViewPreferences) => {
     setDeviceViewPreferences(next);
     saveDeviceViewPreferences(next);
@@ -357,70 +359,15 @@ export default function App() {
     && performanceHud.items.some((item) => devicePerformanceHudItems.has(item));
   const performanceSamplingRequired = Boolean(status.active_udid)
     && (page === "performance" || (page === "device" && hudNeedsDeviceSampling));
-
-  useEffect(() => {
-    if (!backend) return;
-    const method = performanceSamplingRequired ? "PUT" : "DELETE";
-    void request("/api/performance/sampling", { method }).then((response) => {
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    }).catch((error) => {
-      logFrontend("warn", "performance", "set_sampling", error);
-      if (performanceSamplingRequired) setPerformanceError(String(error));
-    });
-  }, [backend, performanceSamplingRequired, request]);
-
-  useEffect(() => {
-    if (!performanceSamplingRequired) {
-      setPerformanceView(null);
-      setPerformanceError(null);
-      return;
-    }
-    setPerformanceView(null);
-    setPerformanceError(null);
-    let disposed = false;
-    let loading = false;
-    let failureLogged = false;
-    const refresh = async () => {
-      if (loading) return;
-      loading = true;
-      try {
-        const response = await request("/api/performance");
-        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        const next = await response.json() as PerformanceView;
-        if (!disposed) {
-          setPerformanceView(next);
-          setPerformanceError(null);
-          failureLogged = false;
-        }
-      } catch (error) {
-        if (!disposed) {
-          setPerformanceError(String(error));
-          if (!failureLogged) {
-            failureLogged = true;
-            logFrontend("warn", "performance", "read_telemetry", error);
-          }
-        }
-      } finally {
-        loading = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 1_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [performanceSamplingRequired, request, status.active_udid]);
+  const { view: performanceView, error: performanceError } = usePerformanceTelemetry({
+    activeUdid: status.active_udid,
+    backendReady: backend !== null,
+    enabled: performanceSamplingRequired,
+    request,
+  });
 
   const deviceLogStreamingRequired = Boolean(status.active_udid) && page === "logs";
-
-  useEffect(() => {
-    if (!backend) return;
-    const method = deviceLogStreamingRequired ? "PUT" : "DELETE";
-    void request("/api/device/logs/streaming", { method }).then((response) => {
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    }).catch((error) => logFrontend("warn", "device_logs", "set_streaming", error));
-  }, [backend, deviceLogStreamingRequired, request]);
+  useDeviceLogDemand({ backendReady: backend !== null, enabled: deviceLogStreamingRequired, request });
 
   const sendFrame = useCallback((nextHeld = heldRef.current, released: TouchContact[] = []) => {
     const mappedFrame = buildMappingRuntimeFrame(
@@ -497,15 +444,6 @@ export default function App() {
   }, [controlMode, controlProfile.mappings, frameSize, mappingEditing, sendFrame]);
 
   useEffect(() => {
-    invoke<BackendConnection>("backend_connection")
-      .then((connection) => {
-        logFrontend("info", "backend", "connection_ready", "Private backend connection acquired");
-        setBackend(connection);
-      })
-      .catch((error) => {
-        logFrontend("error", "backend", "connection_failed", error);
-        setStatus({ ...emptyStatus, status: translateRef.current("status.backendUnavailable"), error: String(error) });
-      });
     Promise.all([appWindow.isAlwaysOnTop(), appWindow.isFullscreen()])
       .then(([top, full]) => { setAlwaysOnTop(top); setSystemFullscreen(full); })
       .catch(() => undefined);
@@ -1416,7 +1354,8 @@ export default function App() {
       <div className="desktop-body">
         {!deviceFullscreen && <AppNavigation page={page} onChange={(next) => { releaseAllControls(); setPage(next); }} />}
         <div className="page-content">
-          <AfcPage active={page === "afc"} activeUdid={status.active_udid} request={request} />
+          <Suspense fallback={<WorkspaceLoading />}>
+          {(afcVisited || page === "afc") && <AfcPage active={page === "afc"} activeUdid={status.active_udid} request={request} />}
           {page === "afc" ? null : page === "settings" ? (
             <SettingsPage
               alwaysOnTop={alwaysOnTop}
@@ -1618,20 +1557,23 @@ export default function App() {
                   />
                 )}
                 {page === "device" && !deviceFullscreen && (
-                  <DeviceInspector
-                    activeUdid={status.active_udid}
-                    request={request}
-                    activeProfile={activeProfile}
-                    appProfileBindings={appProfileBindings}
-                    bindingConflicts={appBindingConflicts}
-                    deviceEvent={deviceEvent}
-                    onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
-                    onAppProfileBindingChange={changeAppProfileBinding}
-                  />
+                  <Suspense fallback={<WorkspaceLoading inspector />}>
+                    <DeviceInspector
+                      activeUdid={status.active_udid}
+                      request={request}
+                      activeProfile={activeProfile}
+                      appProfileBindings={appProfileBindings}
+                      bindingConflicts={appBindingConflicts}
+                      deviceEvent={deviceEvent}
+                      onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
+                      onAppProfileBindingChange={changeAppProfileBinding}
+                    />
+                  </Suspense>
                 )}
               </main>
             </>
           )}
+          </Suspense>
         </div>
       </div>
     </div>

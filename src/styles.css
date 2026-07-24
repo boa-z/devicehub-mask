@@ -15,6 +15,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .app-navigation .ant-menu-item { width: 48px; height: 44px; margin: 6px 12px; padding-inline: 16px !important; }
 .app-navigation .ant-menu-inline-collapsed .ant-menu-title-content { display: none; }
 .page-content { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.workspace-loading { min-width: 0; min-height: 180px; height: 100%; flex: 1; display: grid; place-items: center; }
+.workspace-loading-inspector { min-width: 360px; border-left: 1px solid #303638; background: #171b1c; }
 .profile-manager { min-height: 48px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; gap: 8px; background: #131718; }
 .profile-manager > .ant-select { width: min(260px, 30vw); }
 .profile-manager > .ant-space { margin-left: auto; }
@@ -446,6 +448,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .location-fields, .location-presets { grid-template-columns: minmax(0, 1fr); }
   .inspector { border-left: 0; border-top: 1px solid #303638; min-height: 340px; }
   .device-inspector { border-left: 0; border-top: 1px solid #303638; min-height: 420px; }
+  .workspace-loading-inspector { min-width: 0; min-height: 340px; border-left: 0; border-top: 1px solid #303638; }
   .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 68px 104px; }
   .afc-crash-row { grid-template-columns: 24px minmax(0, 1fr) 68px 32px; }
   .app-document-date { display: none; }

@@ -3,8 +3,7 @@ import { BrowserVideoDecoder, parseBrowserVideoPacket } from "./browserVideo";
 import { logFrontend } from "./diagnostics";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "./types";
-
-export type BackendConnection = { origin: string; token: string };
+import type { BackendConnection } from "./usePrivateBackend";
 
 const emptyMetrics: StreamMetrics = {
   source_fps: 0,

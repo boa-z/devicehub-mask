@@ -20,11 +20,13 @@ idevice：CoreDevice、Lockdown、Installation Proxy、Misagent、Universal HID
 
 仓库采用标准 Tauri 2 结构。Vite 从 `src/` 构建 React 界面，Rust 桌面代码和 Tauri 配置位于 `src-tauri/`。生产前端资源由 Tauri 嵌入，应用生命周期也由 Tauri 管理。
 
-Rust 传输适配器不应分别实现设备控制规则。第一条迁移到 `application` 应用服务层的纵向 链路包含活动会话命令、截图超时、最新原生帧、浏览器画面尺寸和联合帧版本。HTTP 截图与 MCP 截图、输入和帧等待把各自的请求/响应格式映射到同一个 `DeviceControlService`；等待新 画面由原生 `watch` 或浏览器帧广播直接唤醒，不在适配器中轮询。后续设备能力应沿用 “传输适配器 -> 应用服务 -> 会话能力”的依赖方向。
+Rust 传输适配器不应分别实现设备控制规则。第一条迁移到 `application` 应用服务层的纵向链路包含活动会话命令、截图超时、最新原生帧、浏览器画面尺寸和联合帧版本。HTTP 截图与 MCP 截图、输入和帧等待把各自的请求/响应格式映射到同一个 `DeviceControlService`；等待新画面由原生 `watch` 或浏览器帧广播直接唤醒，不在适配器中轮询。后续设备能力应沿用“传输适配器 -> 应用服务 -> 会话能力”的依赖方向。
 
-前端的 `useDeviceVideoStream` controller 独占视频 WebSocket、WebCodecs/JPEG 解码、Canvas 呈现、重连、画面需求、停滞检测和前端性能指标。`App` 只组合页面工作流，通过稳定的命令 接口发送输入，并在断线回调中清理按键映射状态。截图与录制可以读取 controller 暴露的 Canvas ref，但不会参与解码器生命周期管理。
+前端的 `useDeviceVideoStream` controller 独占视频 WebSocket、WebCodecs/JPEG 解码、Canvas 呈现、重连、画面需求、停滞检测和前端性能指标。`App` 只组合页面工作流，通过稳定的命令接口发送输入，并在断线回调中清理按键映射状态。截图与录制可以读取 controller 暴露的 Canvas ref，但不会参与解码器生命周期管理。
 
-按键映射导入会先经过前端来源适配器注册表，再进入现有配置持久化路径。每个适配器统一 声明 ID、接受的文件类型、大小限制、解析器，以及到共用导入结果的转换。界面会明确选择 适配器，因此后续新增来源无需继续在配置管理器中堆叠格式猜测。原生格式和 scrcpy-mask 使用 JSON，PlayCover `2.0.0` plist 则由按需加载的结构化 XML 解析器处理。PlayCover 导入会 仅允许标准 Apple plist DTD 声明并拒绝实体，同时限制文件大小、嵌套深度、节点数和模型数， 再将支持的键盘控件转换为共用的标准化映射模型。
+前端运行时服务沿用相同的所有权规则。`usePrivateBackend` 独占 Tauri 启动握手和 bearer 鉴权请求构造，`usePerformanceTelemetry` 与 `useDeviceLogDemand` 分别独占受监督服务的需求启停、轮询与清理。非主工作区和大型检查器通过独立 React suspense 边界加载，使设备画面无需等待 AFC、诊断、设置或映射编辑代码完成解析。AFC 只在首次访问时加载，此后保持挂载，因为活动传输与取消操作属于该工作区生命周期。
+
+按键映射导入会先经过前端来源适配器注册表，再进入现有配置持久化路径。每个适配器统一声明 ID、接受的文件类型、大小限制、解析器，以及到共用导入结果的转换。界面会明确选择适配器，因此后续新增来源无需继续在配置管理器中堆叠格式猜测。原生格式和 scrcpy-mask 使用 JSON，PlayCover `2.0.0` plist 则由按需加载的结构化 XML 解析器处理。PlayCover 导入会仅允许标准 Apple plist DTD 声明并拒绝实体，同时限制文件大小、嵌套深度、节点数和模型数，再将支持的键盘控件转换为共用的标准化映射模型。
 
 ## 桌面端与私有传输
 
