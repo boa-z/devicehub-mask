@@ -21,6 +21,11 @@ idevice：CoreDevice、Lockdown、Installation Proxy、Misagent、Universal HID
 仓库采用标准 Tauri 2 结构。Vite 从 `src/` 构建 React 界面，Rust 桌面代码和 Tauri
 配置位于 `src-tauri/`。生产前端资源由 Tauri 嵌入，应用生命周期也由 Tauri 管理。
 
+按键映射导入会先在前端标准化，再进入现有配置持久化路径。原生格式和 scrcpy-mask 使用
+JSON，PlayCover `2.0.0` plist 则由按需加载的结构化 XML 解析器处理。PlayCover 导入会
+仅允许标准 Apple plist DTD 声明并拒绝实体，同时限制文件大小、嵌套深度、节点数和模型数，
+再将支持的键盘控件转换为共用的标准化映射模型。
+
 ## 桌面端与私有传输
 
 Axum 是内部传输层，而不是独立部署的网页服务器。默认监听随机回环端口，没有浏览器

@@ -22,6 +22,13 @@ The repository follows the standard Tauri 2 layout. Vite builds the React UI
 from `src/`; Rust desktop code and Tauri configuration live in `src-tauri/`.
 Tauri embeds production frontend assets and owns the application lifecycle.
 
+Key mapping imports are normalized in the frontend before entering the existing
+profile persistence path. JSON handles native and scrcpy-mask formats, while a
+lazy-loaded structured XML parser handles PlayCover `2.0.0` plists. PlayCover
+imports allow only the standard Apple plist DTD declaration, reject entities,
+and enforce file-size, nesting, node-count, and model-count limits before
+converting supported keyboard controls to the shared normalized mapping model.
+
 ## Desktop and Private Transport
 
 Axum is an internal transport, not a separately deployed web server. It binds a

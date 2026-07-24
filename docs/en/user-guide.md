@@ -196,7 +196,7 @@ Up to five typed contacts can be sent in one Universal HID report. Duplicate
 identities and out-of-range coordinates are rejected by the Rust backend before
 device dispatch.
 
-## Profiles and scrcpy-mask Compatibility
+## Profiles and Key Mapping Compatibility
 
 Profiles are validated JSON files in the Tauri application data directory. You
 can select, activate, create, duplicate, rename, delete, import, and export them.
@@ -212,6 +212,13 @@ DeviceHub Mask imports and exports scrcpy-mask `0.0.1` JSON. All thirteen
 controller types are preserved, including nested sequence positions, bindings,
 release modes, timing, and script fields. Import compatibility does not imply
 Android transport support.
+
+The same import button accepts PlayCover `2.0.0` `.playmap` files. Keyboard
+buttons, draggable buttons, and keyboard-controlled joysticks are converted,
+and the PlayCover bundle identifier becomes the profile's app association.
+PlayCover mouse areas and negative mouse/controller key codes are skipped and
+reported because DeviceHub Mask does not expose equivalent input sources. The
+runtime still limits each HID report to five simultaneous contacts.
 
 Hardware shortcuts are stored with the profile. Click a shortcut field and
 press a key to bind it; use Backspace or Delete to clear it. One key cannot be

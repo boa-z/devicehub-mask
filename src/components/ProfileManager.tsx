@@ -12,6 +12,7 @@ import {
 import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, message } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
+import { importPlayCoverConfig, MAX_PLAYMAP_BYTES, parsePlayCoverPlist } from "../playCoverCompat";
 import { exportScrcpyMaskConfig, importScrcpyMaskConfig } from "../scrcpyCompat";
 import { defaultHardwareBindings, type Profile } from "../types";
 
@@ -35,7 +36,7 @@ type Props = {
 };
 
 function profileName(value: string) {
-  const name = value.trim().replace(/\.json$/i, "");
+  const name = value.trim().replace(/\.(?:playmap|json)$/i, "");
   return /^[A-Za-z0-9_-]{1,80}$/.test(name) ? name : undefined;
 }
 
@@ -113,9 +114,14 @@ export function ProfileManager({
     event.target.value = "";
     if (!file) return;
     try {
-      const value = JSON.parse(await file.text()) as unknown;
+      const isPlayCover = /\.playmap$/i.test(file.name);
+      if (isPlayCover && file.size > MAX_PLAYMAP_BYTES) throw new Error(t("profile.invalidPlayCover"));
+      const text = await file.text();
+      const value = isPlayCover
+        ? await parsePlayCoverPlist(text, t("profile.invalidPlayCover"))
+        : JSON.parse(text) as unknown;
       const importedName = file.name
-        .replace(/(?:\.scrcpy-mask)?\.json$/i, "")
+        .replace(/(?:\.scrcpy-mask)?\.(?:json|playmap)$/i, "")
         .replace(/[^A-Za-z0-9_-]+/g, "-")
         .slice(0, 80);
       const baseName = profileName(importedName) ?? `import-${Date.now()}`;
@@ -124,6 +130,16 @@ export function ProfileManager({
       while (profiles.includes(name)) {
         name = `${baseName}-import-${suffix}`;
         suffix += 1;
+      }
+      if (isPlayCover) {
+        const result = importPlayCoverConfig(value, name, frameSize, {
+          invalidConfigMessage: t("profile.invalidPlayCover"),
+          buttonLabel: t("profile.playCoverButton"),
+          draggableLabel: t("profile.playCoverDrag"),
+          joystickLabel: t("profile.playCoverJoystick"),
+        });
+        await onImport(result.profile, result.imported, result.skipped);
+        return;
       }
       const native = value as Partial<Profile>;
       if (native.version === 1 && Array.isArray(native.mappings)) {
@@ -172,7 +188,7 @@ export function ProfileManager({
             }}
           />
         </Tooltip>
-        <Tooltip title={t("profile.importJson")}><Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()} /></Tooltip>
+        <Tooltip title={t("profile.importConfig")}><Button icon={<UploadOutlined />} onClick={() => fileRef.current?.click()} /></Tooltip>
         <Dropdown
           menu={{
             items: [
@@ -191,7 +207,7 @@ export function ProfileManager({
           <Tooltip title={t("profile.exportJson")}><Button icon={<DownloadOutlined />} /></Tooltip>
         </Dropdown>
       </Space>
-      <input ref={fileRef} className="file-input" type="file" accept="application/json,.json" onChange={(event) => void importFile(event)} />
+      <input ref={fileRef} className="file-input" type="file" accept="application/json,.json,application/xml,text/xml,.playmap" onChange={(event) => void importFile(event)} />
       <Modal
         open={dialog !== null}
         title={dialog === "create" ? t("profile.createTitle") : dialog === "duplicate" ? t("profile.duplicateTitle") : t("profile.renameTitle")}
