@@ -23,6 +23,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .file-input { display: none; }
 .workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
 .workspace.device-workspace { grid-template-columns: minmax(0, 1fr) 360px; }
+.workspace.mapping-workspace { grid-template-columns: minmax(0, 1fr) minmax(360px, 400px); }
 .workspace.inspector-hidden { grid-template-columns: minmax(0, 1fr); }
 .stage-column { position: relative; min-width: 0; min-height: 0; height: 100%; display: flex; flex-direction: column; }
 .stage-toolbar { min-height: 46px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #131718; }
@@ -57,6 +58,12 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-stage-state svg { color: #667170; font-size: 30px; }
 .device-stage-state .ant-btn { pointer-events: auto; }
 .mapping-overlay { position: absolute; inset: 0; pointer-events: none; }
+.mapping-guides { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.mapping-guides ellipse, .mapping-guides polyline { fill: rgba(85,197,232,.08); stroke: rgba(85,197,232,.62); stroke-width: 1.2; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+.mapping-guides polyline { fill: none; stroke: rgba(240,199,94,.72); stroke-width: 1.6; stroke-dasharray: none; }
+.mapping-guides > g.selected ellipse, .mapping-guides > g.selected polyline { stroke: #f0c75e; }
+.mapping-guide-point circle { fill: #171b1c; stroke: #f0c75e; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.mapping-guide-point text { fill: #edf2f0; font-size: 3px; font-weight: 700; text-anchor: middle; paint-order: stroke; stroke: #171b1c; stroke-width: .8px; vector-effect: non-scaling-stroke; }
 .mapping-node { position: absolute; width: 48px; min-width: 32px; max-width: 96px; transform: translate(-50%, -50%); border-radius: 50%; border: 2px solid rgba(237,242,240,.72); background: rgba(18,24,24,.55); color: white; padding: 0; display: grid; place-content: center; pointer-events: none; cursor: grab; user-select: none; touch-action: none; }
 .mapping-overlay.is-editing .mapping-node { pointer-events: auto; }
 .mapping-node span { max-width: 44px; padding: 2px; overflow: hidden; font-size: 9px; font-weight: 700; line-height: 1.05; text-align: center; text-overflow: ellipsis; }
@@ -201,22 +208,43 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-crash-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .device-crash-meta > .ant-typography { margin: 0; }
 .device-crash-meta .ant-tag { margin: 0 4px 0 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
-.inspector-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mapping-inspector { min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.inspector-title { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.inspector-title > div { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .inspector-title h5 { margin: 0; }
-.mapping-list { margin-top: 14px; display: grid; gap: 2px; }
-.mapping-list button { width: 100%; min-height: 40px; border: 0; border-radius: 4px; padding: 6px 8px; background: transparent; color: inherit; display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 8px; text-align: left; cursor: pointer; }
+.inspector-title .ant-tag { margin: 0; }
+.mapping-panel-scroll { min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 3px; }
+.mapping-list { max-height: min(250px, 35vh); overflow-y: auto; display: grid; gap: 2px; border-block: 1px solid #303638; }
+.mapping-list button { width: 100%; min-height: 48px; border: 0; border-radius: 3px; padding: 6px 8px; background: transparent; color: inherit; display: grid; grid-template-columns: 10px minmax(0,1fr) auto; align-items: center; gap: 8px; text-align: left; cursor: pointer; }
 .mapping-list button:hover { background: #222829; }
 .mapping-list button.selected { background: #293332; }
+.mapping-list-copy, .mapping-list-meta { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mapping-list-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapping-list-meta { align-items: flex-end; }
+.mapping-list-meta .ant-tag { max-width: 112px; margin: 0; overflow: hidden; font-size: 10px; line-height: 16px; text-overflow: ellipsis; }
 .mapping-list small { color: #7f8a89; font-size: 10px; }
 .mapping-dot { width: 8px; height: 8px; border-radius: 50%; background: #d8dde0; }
 .mapping-dot.dpad { background: #55c5e8; }
 .hardware-controls { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .hardware-controls .ant-btn { width: 30px; height: 30px; padding: 0; }
-.hardware-binding-list { display: grid; gap: 8px; }
-.hardware-binding-list label { display: grid; grid-template-columns: minmax(72px, .7fr) minmax(120px, 1fr); align-items: center; gap: 8px; color: #9ba5a4; font-size: 12px; }
-.fields { display: grid; gap: 14px; }
-.fields label { color: #9ba5a4; font-size: 12px; display: grid; gap: 6px; }
-.fields .ant-input-number { width: 100%; }
+.hardware-binding-list { display: flex; gap: 8px; }
+.hardware-binding-list label { display: grid; grid-template-columns: minmax(88px, .7fr) minmax(120px, 1fr); align-items: center; gap: 8px; color: #9ba5a4; font-size: 12px; }
+.mapping-fields { display: flex; flex-direction: column; gap: 10px; }
+.mapping-selection-header { position: sticky; top: 0; z-index: 2; min-height: 36px; padding: 4px 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; background: #171b1c; }
+.mapping-selection-header > .ant-typography { min-width: 0; margin: 0; }
+.mapping-field-section { padding-top: 10px; border-top: 1px solid #303638; display: flex; flex-direction: column; gap: 8px; }
+.mapping-field-section > .ant-typography { margin: 0; color: #c6cfcd; font-size: 11px; text-transform: uppercase; }
+.mapping-field-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px 8px; }
+.mapping-field-grid label { min-width: 0; color: #9ba5a4; font-size: 11px; display: grid; gap: 5px; }
+.mapping-field-grid .ant-input-number, .mapping-field-grid .ant-select { width: 100%; }
+.mapping-wide-field { grid-column: 1 / -1; }
+.mapping-direction-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.mapping-sequence-list { display: flex; flex-direction: column; gap: 7px; }
+.mapping-sequence-row { padding: 7px; border: 1px solid #303638; background: #131718; display: grid; align-items: center; gap: 6px; }
+.mapping-sequence-row.is-swipe { grid-template-columns: 24px minmax(0,1fr) 28px; }
+.mapping-sequence-row.is-multiple { grid-template-columns: 24px minmax(0,1fr) 68px 68px 28px; }
+.mapping-sequence-row > .ant-tag { margin: 0; text-align: center; }
+.mapping-sequence-row > .ant-input-number { width: 100%; }
 .settings-page { height: 100%; overflow-y: auto; padding: 24px 28px; }
 .settings-page > header { border-bottom: 1px solid #303638; margin-bottom: 8px; }
 .settings-page > header h3 { margin: 0 0 14px; }

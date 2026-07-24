@@ -32,7 +32,7 @@ import {
 } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Button, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Dropdown, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
@@ -54,10 +54,11 @@ import { parsePngDimensions } from "./deviceScreenshot";
 import { buildMappingRuntimeFrame, buildTouchFrame, isBoundKey, isUiControl, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
+import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import { BrowserVideoDecoder, parseBrowserVideoPacket } from "./browserVideo";
-import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
+import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Position, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 import { readAudioOutputStatus, readVideoSettings, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./videoSettings";
 
 const emptyStatus: DeviceStatus = {
@@ -217,9 +218,11 @@ export default function App() {
   const [screenshotBusy, setScreenshotBusy] = useState(false);
   const [displayScaleOpen, setDisplayScaleOpen] = useState(false);
   const [mappingBackgroundMode, setMappingBackgroundMode] = useState<MappingBackgroundMode>("live");
+  const [mappingGuidesVisible, setMappingGuidesVisible] = useState(false);
   const [capturedScreenshot, setCapturedScreenshot] = useState<CapturedScreenshot | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
+  const mappingInsertPositionRef = useRef<Position>({ x: 0.5, y: 0.5 });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const renderedFramesRef = useRef(0);
@@ -1241,11 +1244,18 @@ export default function App() {
     return { ...current, hardwareBindings: { ...current.hardwareBindings, [name]: key } };
   });
   const moveMapping = (id: string, x: number, y: number) => setProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? ("position" in mapping ? { ...mapping, position: { x, y } } : { ...mapping, x, y }) as Mapping : mapping) }));
-  const addMapping = (type: ScrcpyMappingType) => {
-    const next = createMapping(type, { x: 0.5, y: 0.5 }, mappingFrameSize);
+  const addMapping = (type: ScrcpyMappingType, position: Position = { x: 0.5, y: 0.5 }) => {
+    const next = createEditorMapping(type, position, mappingFrameSize, profile.mappings);
     const id = next.id;
     setProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
     setSelectedId(id);
+  };
+  const duplicateMapping = (id: string) => {
+    const source = profile.mappings.find((mapping) => mapping.id === id);
+    if (!source) return;
+    const next = duplicateEditorMapping(source, profile.mappings);
+    setProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
+    setSelectedId(next.id);
   };
   const deleteMapping = (id: string) => {
     setProfile((current) => ({ ...current, mappings: current.mappings.filter((mapping) => mapping.id !== id) }));
@@ -1472,6 +1482,15 @@ export default function App() {
     }
   };
   const handleDeviceContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (page === "mappings" && mappingEditing) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      mappingInsertPositionRef.current = {
+        x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+      };
+      event.preventDefault();
+      return;
+    }
     if (mappingEditing) return;
     event.preventDefault();
     if (page === "device" && connected && status.active_udid) {
@@ -1728,7 +1747,7 @@ export default function App() {
                   onImport={importProfile}
                 />
               )}
-              <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" ? "device-workspace" : page === "mappings" && inspectorVisible ? "" : "inspector-hidden"}`}>
+              <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" ? "device-workspace" : page === "mappings" && inspectorVisible ? "mapping-workspace" : "inspector-hidden"}`}>
                 <section className="stage-column">
                   {deviceFullscreen ? (
                     <div className={`device-fullscreen-toolbar${fullscreenToolbarVisible ? "" : " is-hidden"}`} role="toolbar" aria-label={t("device.deviceFullscreenControls")}>
@@ -1812,23 +1831,33 @@ export default function App() {
                       viewportSize={viewportSize}
                       screenshotAvailable={capturedScreenshot !== null}
                       canCapture={hasFrame}
+                      showGuides={mappingGuidesVisible}
                       onModeChange={setMappingBackgroundMode}
                       onCapture={() => void captureMappingScreenshot(true)}
                       onSave={() => void saveMappingScreenshot()}
+                      onShowGuidesChange={setMappingGuidesVisible}
                     />
                   )}
                   <div className={`stage-wrap${viewportScrollable ? " is-scrollable" : ""}`} ref={stageRef}>
-                    <div
-                      className={`device-viewport ${mappingEditing ? "is-editing" : "is-controlling"}`}
-                      style={{ aspectRatio, width: viewportSize.width, height: viewportSize.height }}
-                      tabIndex={0}
-                      onPointerDown={handlePointerDown}
-                      onPointerMove={handlePointerMove}
-                      onPointerUp={handlePointerUp}
-                      onPointerCancel={handlePointerUp}
-                      onLostPointerCapture={handlePointerUp}
-                      onContextMenu={handleDeviceContextMenu}
+                    <Dropdown
+                      disabled={page !== "mappings" || !mappingEditing}
+                      trigger={["contextMenu"]}
+                      menu={{
+                        items: scrcpyMappingTypes.map((type) => ({ key: type, label: t(`mapping.types.${type}`) })),
+                        onClick: ({ key }) => addMapping(key as ScrcpyMappingType, mappingInsertPositionRef.current),
+                      }}
                     >
+                      <div
+                        className={`device-viewport ${mappingEditing ? "is-editing" : "is-controlling"}`}
+                        style={{ aspectRatio, width: viewportSize.width, height: viewportSize.height }}
+                        tabIndex={0}
+                        onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onPointerCancel={handlePointerUp}
+                        onLostPointerCapture={handlePointerUp}
+                        onContextMenu={handleDeviceContextMenu}
+                      >
                       <canvas ref={bindCanvas} />
                       {page === "device" && performanceHud.enabled && (
                         <PerformanceHud items={performanceHud.items} view={performanceView} streamMetrics={streamMetrics} renderFps={renderFps} />
@@ -1837,7 +1866,7 @@ export default function App() {
                         <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />
                       )}
                       {(page === "mappings" || controlOverlayVisible) && (
-                        <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} activeMappingIds={activeMappingIds} onSelect={setSelectedId} onMove={moveMapping} />
+                        <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} showGuides={mappingGuidesVisible} frameSize={displayedFrameSize} activeMappingIds={activeMappingIds} onSelect={setSelectedId} onMove={moveMapping} />
                       )}
                       {directTouches.map((contact) => (
                         <span key={contact.identity} className="direct-touch" style={{ left: `${contact.x * 100}%`, top: `${contact.y * 100}%` }} />
@@ -1851,7 +1880,8 @@ export default function App() {
                           )}
                         </div>
                       )}
-                    </div>
+                      </div>
+                    </Dropdown>
                   </div>
                 </section>
                 {page === "mappings" && inspectorVisible && (
@@ -1861,6 +1891,7 @@ export default function App() {
                     onSelect={setSelectedId}
                     onChange={updateMapping}
                     onAdd={addMapping}
+                    onDuplicate={duplicateMapping}
                     onDelete={deleteMapping}
                     hardwareBindings={profile.hardwareBindings}
                     onHardwareBindingChange={updateHardwareBinding}

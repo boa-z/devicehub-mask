@@ -1,6 +1,7 @@
 import {
   CameraOutlined,
   DownloadOutlined,
+  EyeOutlined,
   PictureOutlined,
   VideoCameraOutlined,
 } from "@ant-design/icons";
@@ -17,9 +18,11 @@ type Props = {
   viewportSize: Size;
   screenshotAvailable: boolean;
   canCapture: boolean;
+  showGuides: boolean;
   onModeChange: (mode: MappingBackgroundMode) => void;
   onCapture: () => void;
   onSave: () => void;
+  onShowGuidesChange: (show: boolean) => void;
 };
 
 export function MappingBackgroundToolbar({
@@ -28,9 +31,11 @@ export function MappingBackgroundToolbar({
   viewportSize,
   screenshotAvailable,
   canCapture,
+  showGuides,
   onModeChange,
   onCapture,
   onSave,
+  onShowGuidesChange,
 }: Props) {
   const { t } = useTranslation();
   const sourceWidth = Math.round(sourceSize.width);
@@ -50,6 +55,9 @@ export function MappingBackgroundToolbar({
         <Tag>{t("mapping.scale", { value: scale.toFixed(0) })}</Tag>
       </div>
       <Space size={6} className="mapping-background-controls">
+        <Tooltip title={t("mapping.showGuides")}>
+          <Button type={showGuides ? "primary" : "default"} aria-label={t("mapping.showGuides")} aria-pressed={showGuides} icon={<EyeOutlined />} onClick={() => onShowGuidesChange(!showGuides)} />
+        </Tooltip>
         <Typography.Text type="secondary">{t("mapping.background")}</Typography.Text>
         <Segmented<MappingBackgroundMode>
           value={mode}

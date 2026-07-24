@@ -62,8 +62,14 @@ display resolutions. The background can use the live stream or a correctly
 oriented frozen screenshot; captured frames can be saved as PNG and remain
 available for offline editing after disconnecting.
 
-Drag controls on the canvas, edit their properties in the inspector, then save
-the profile. The runtime supports at most five unique simultaneous contact
+Drag controls on the canvas or right-click an exact position to add any
+scrcpy-mask controller type. The inspector separates controllers from hardware
+shortcuts, supports search and duplication, and edits normalized positions,
+key chords, timing, cast centers, and Swipe/MultipleTap sequence points. The
+guide toggle shows all available paths and control ranges; the selected
+controller's guide remains visible while editing. New and duplicated controls
+prefer the least-used Universal HID contact identity. Save the profile after
+editing. The runtime supports at most five unique simultaneous contact
 identities even when a profile stores more mappings.
 
 ### Application Settings
