@@ -160,9 +160,12 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         groupIdentifier: group.identifier,
         profileIdentifier: profile.identifier,
       }),
-      label: profile.description && profile.description !== profile.identifier
-        ? `${profile.description} (${profile.identifier})`
-        : profile.identifier,
+      label: (
+        <div className="performance-condition-option" title={profile.description || profile.identifier}>
+          <strong>{profile.identifier}</strong>
+          {profile.description && profile.description !== profile.identifier && <span>{profile.description}</span>}
+        </div>
+      ),
       title: profile.identifier,
     })),
   }));
@@ -300,7 +303,8 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       {!activeUdid && <Alert type="info" showIcon message={t("performance.connectDevice")} />}
       {error && <Alert type="warning" showIcon message={t("performance.loadFailed")} description={error} />}
 
-      <section className="performance-section">
+      <div className="performance-dashboard">
+      <section className="performance-section performance-section-device">
         <Typography.Title level={5}>{t("performance.deviceMetrics")}</Typography.Title>
         <div className="performance-metric-grid">
           <div className="performance-metric">
@@ -316,7 +320,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         </div>
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-network">
         <Typography.Title level={5}>{t("performance.deviceNetwork")}</Typography.Title>
         <div className="performance-transport-grid">
           <div><span>{t("performance.networkReceive")}</span><strong>{byteRate(sample?.network_rx_bytes_per_second)}</strong></div>
@@ -325,40 +329,43 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         </div>
       </section>
 
-      <section className="performance-section">
-        <div className="performance-process-header">
+      <section className="performance-section performance-section-wide">
+        <div className="performance-condition-header">
           <div>
             <Typography.Title level={5}>{t("performance.deviceConditions")}</Typography.Title>
             <Typography.Text type="secondary">{t("performance.deviceConditionsHint")}</Typography.Text>
           </div>
-          <Space wrap className="performance-capture-controls performance-condition-controls">
-            <Select
-              aria-label={t("performance.conditionProfile")}
-              value={conditionSelection}
-              placeholder={t("performance.selectCondition")}
-              options={conditionOptions}
-              disabled={!activeUdid || !condition?.available || conditionBusy || conditionOptions.length === 0}
-              onChange={setConditionSelection}
-            />
-            <Button
-              danger
-              type="primary"
-              icon={<ExperimentOutlined />}
-              disabled={!condition?.available || !conditionSelection || conditionSelection === activeConditionValue}
-              loading={conditionBusy}
-              onClick={applyCondition}
-            >
-              {t("performance.applyCondition")}
-            </Button>
-            <Button
-              icon={<StopOutlined />}
-              disabled={!condition?.available || !condition.active}
-              loading={conditionBusy}
-              onClick={() => void clearCondition()}
-            >
-              {t("performance.clearCondition")}
-            </Button>
-          </Space>
+        </div>
+        <div className="performance-condition-controls">
+          <Select
+            aria-label={t("performance.conditionProfile")}
+            value={conditionSelection}
+            placeholder={t("performance.selectCondition")}
+            options={conditionOptions}
+            optionLabelProp="title"
+            popupClassName="performance-condition-popup"
+            virtual={false}
+            disabled={!activeUdid || !condition?.available || conditionBusy || conditionOptions.length === 0}
+            onChange={setConditionSelection}
+          />
+          <Button
+            danger
+            type="primary"
+            icon={<ExperimentOutlined />}
+            disabled={!condition?.available || !conditionSelection || conditionSelection === activeConditionValue}
+            loading={conditionBusy}
+            onClick={applyCondition}
+          >
+            {t("performance.applyCondition")}
+          </Button>
+          <Button
+            icon={<StopOutlined />}
+            disabled={!condition?.available || !condition.active}
+            loading={conditionBusy}
+            onClick={() => void clearCondition()}
+          >
+            {t("performance.clearCondition")}
+          </Button>
         </div>
         {condition?.active && <Alert
           type="warning"
@@ -381,7 +388,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         {condition?.error && condition.cleanup_pending && <Typography.Text type="danger">{condition.error}</Typography.Text>}
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-wide">
         <div className="performance-process-header">
           <div>
             <Typography.Title level={5}>{t("performance.appActivity")}</Typography.Title>
@@ -410,7 +417,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         </div>
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-capture">
         <div className="performance-process-header">
           <div>
             <Typography.Title level={5}>{t("performance.packetCapture")}</Typography.Title>
@@ -447,7 +454,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         {capture?.error && <Alert type="warning" showIcon message={t("performance.captureFailed")} description={capture.error} />}
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-capture">
         <div className="performance-process-header">
           <div>
             <Typography.Title level={5}>{t("performance.bluetoothCapture")}</Typography.Title>
@@ -484,7 +491,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         {bluetoothCapture?.error && <Alert type="warning" showIcon message={t("performance.bluetoothCaptureFailed")} description={bluetoothCapture.error} />}
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-process">
         <div className="performance-process-header">
           <div>
             <Typography.Title level={5}>{t("performance.topProcesses")}</Typography.Title>
@@ -526,7 +533,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         </div>
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-process">
         <div className="performance-process-header">
           <div>
             <Typography.Title level={5}>{t("performance.processEnergy")}</Typography.Title>
@@ -559,7 +566,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         </div>
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-support">
         <Typography.Title level={5}>{t("performance.transportMetrics")}</Typography.Title>
         <div className="performance-transport-grid">
           <div><span>{t("performance.sourceFps")}</span><strong>{number(streamMetrics.source_fps)}</strong></div>
@@ -571,13 +578,14 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
         </div>
       </section>
 
-      <section className="performance-section">
+      <section className="performance-section performance-section-support">
         <div className="performance-section-title"><Typography.Title level={5}>{t("performance.serviceHealth")}</Typography.Title><span>{t("performance.restarts")}</span></div>
         <div className="performance-service-list">
           {(view?.services ?? []).map((service) => <ServiceRow key={service.name} service={service} />)}
           {activeUdid && view?.services.length === 0 && <Typography.Text type="secondary">{t("performance.waitingServices")}</Typography.Text>}
         </div>
       </section>
+      </div>
     </main>
   );
 }
