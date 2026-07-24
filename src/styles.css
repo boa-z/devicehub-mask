@@ -340,4 +340,4 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 104px; }
   .app-document-size { display: none; }
 }
-.navigation-keyboard-icon { display: inline-grid; width: 1em; place-items: center; font-size: 16px; line-height: 1; }
+.keyboard-icon { display: inline-grid; width: 1em; place-items: center; font-size: 16px; line-height: 1; }

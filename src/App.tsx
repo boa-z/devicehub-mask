@@ -12,7 +12,6 @@ import {
   FullscreenExitOutlined,
   FullscreenOutlined,
   HomeOutlined,
-  KeyOutlined,
   LockOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -40,6 +39,7 @@ import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceInspector } from "./components/DeviceInspector";
 import { DeviceLogsPage } from "./components/DeviceLogsPage";
 import { LocationPage } from "./components/LocationPage";
+import { KeyboardIcon } from "./components/KeyboardIcon";
 import { MappingBackgroundToolbar, type MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingInspector } from "./components/MappingInspector";
 import { MappingOverlay } from "./components/MappingOverlay";
@@ -1740,7 +1740,7 @@ export default function App() {
                         value={controlMode}
                         options={[
                           { label: <Tooltip title={t("device.mappingMode")}><AimOutlined /></Tooltip>, value: "mapping" },
-                          { label: <Tooltip title={t("device.keyboardMode")}><KeyOutlined /></Tooltip>, value: "keyboard" },
+                          { label: <Tooltip title={t("device.keyboardMode")}><KeyboardIcon /></Tooltip>, value: "keyboard" },
                         ]}
                         onChange={(mode) => {
                           releaseAllControls();
@@ -1783,7 +1783,7 @@ export default function App() {
                         value={controlMode}
                         options={[
                           { label: t("device.mappingMode"), value: "mapping", icon: <AimOutlined /> },
-                          { label: t("device.keyboardMode"), value: "keyboard", icon: <KeyOutlined /> },
+                          { label: t("device.keyboardMode"), value: "keyboard", icon: <KeyboardIcon /> },
                         ]}
                         onChange={(mode) => {
                           releaseAllControls();
