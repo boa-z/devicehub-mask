@@ -35,6 +35,7 @@ pub struct Frame {
 
 #[derive(Debug, Default)]
 struct VideoCountersInner {
+    transport_events: AtomicU64,
     source_frames: AtomicU64,
     decoded_frames: AtomicU64,
     duplicate_frames: AtomicU64,
@@ -45,12 +46,17 @@ pub struct VideoCounters(Arc<VideoCountersInner>);
 
 #[derive(Debug, Clone, Copy)]
 pub struct VideoCounterSnapshot {
+    pub transport_events: u64,
     pub source_frames: u64,
     pub decoded_frames: u64,
     pub duplicate_frames: u64,
 }
 
 impl VideoCounters {
+    pub fn note_transport_activity(&self) {
+        self.0.transport_events.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn note_source_frame(&self) {
         self.0.source_frames.fetch_add(1, Ordering::Relaxed);
     }
@@ -65,6 +71,7 @@ impl VideoCounters {
 
     pub fn snapshot(&self) -> VideoCounterSnapshot {
         VideoCounterSnapshot {
+            transport_events: self.0.transport_events.load(Ordering::Relaxed),
             source_frames: self.0.source_frames.load(Ordering::Relaxed),
             decoded_frames: self.0.decoded_frames.load(Ordering::Relaxed),
             duplicate_frames: self.0.duplicate_frames.load(Ordering::Relaxed),

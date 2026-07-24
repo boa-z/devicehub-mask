@@ -90,6 +90,7 @@ struct StatusView {
 
 #[derive(Serialize)]
 struct StreamMetricsView {
+    transport_active: bool,
     source_fps: f64,
     decoded_fps: f64,
     published_fps: f64,
@@ -3299,11 +3300,13 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     let browser_version = send_state.browser_frames.version();
                     let source_frames = counters.source_frames.wrapping_sub(metrics_counters.source_frames);
                     let decoded_frames = counters.decoded_frames.wrapping_sub(metrics_counters.decoded_frames);
+                    let transport_active = counters.transport_events != metrics_counters.transport_events;
                     let published_frames = version
                         .wrapping_sub(metrics_frame_version)
                         .saturating_add(browser_version.wrapping_sub(metrics_browser_frame_version));
                     let pacer = send_pacer.take_metrics();
                     let metrics = StreamMetricsView {
+                        transport_active,
                         source_fps: source_frames as f64 / elapsed,
                         decoded_fps: decoded_frames as f64 / elapsed,
                         published_fps: published_frames as f64 / elapsed,
@@ -3325,6 +3328,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
                             target: "devicehub_mask::perf",
                             decoded_fps = metrics.decoded_fps,
                             source_fps = metrics.source_fps,
+                            transport_active = metrics.transport_active,
                             published_fps = metrics.published_fps,
                             sent_fps = metrics.sent_fps,
                             backend_dropped_fps = metrics.backend_dropped_fps,

@@ -20,6 +20,7 @@ export type LocationStatus = {
 };
 export type DeviceStatus = { status: string; active_udid: string | null; active_device_id: string | null; error: string | null; orientation: Orientation; devices: Device[]; location: LocationStatus };
 export type StreamMetrics = {
+  transport_active: boolean;
   source_fps: number;
   decoded_fps: number;
   published_fps: number;

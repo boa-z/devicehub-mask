@@ -407,7 +407,7 @@ export const zhCN = {
       waiting: "等待 iOS 设备画面",
       reconnecting: "设备控制连接已中断",
       starting: "正在等待首个视频帧",
-      stalled: "视频画面已停止更新",
+      stalled: "视频源仍在传输，但解码已停止",
     },
   },
   location: {

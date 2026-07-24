@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BrowserVideoDecoder, browserVideoSequenceDiscontinuous, parseBrowserVideoPacket } from "./browserVideo";
 import { logFrontend } from "./diagnostics";
-import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
+import { hasDecodedVideoActivity, hasSourceVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "./types";
 import type { BackendConnection } from "./usePrivateBackend";
 
 const emptyMetrics: StreamMetrics = {
+  transport_active: false,
   source_fps: 0,
   decoded_fps: 0,
   published_fps: 0,
@@ -108,7 +109,8 @@ export function useDeviceVideoStream({
   const canvasReadyRef = useRef(false);
   const hasFrameRef = useRef(false);
   const renderedFramesRef = useRef(0);
-  const lastVideoActivityAtRef = useRef(0);
+  const lastSourceActivityAtRef = useRef(0);
+  const lastDecodedActivityAtRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
   const orientationRef = useRef(orientation);
   const videoDemandRef = useRef(videoDemand);
@@ -154,7 +156,11 @@ export function useDeviceVideoStream({
       return;
     }
     const update = () => {
-      setStreamStalled(isVideoStreamStalled(performance.now(), lastVideoActivityAtRef.current));
+      setStreamStalled(isVideoStreamStalled(
+        performance.now(),
+        lastSourceActivityAtRef.current,
+        lastDecodedActivityAtRef.current,
+      ));
     };
     update();
     const timer = window.setInterval(update, 1_000);
@@ -202,7 +208,7 @@ export function useDeviceVideoStream({
         frontendMetrics.canvasDrawMs += performance.now() - drawStarted;
         frontendMetrics.presentedFrames += 1;
         renderedFramesRef.current += 1;
-        lastVideoActivityAtRef.current = performance.now();
+        lastDecodedActivityAtRef.current = performance.now();
         setStreamStalled(false);
         if (!canvasReadyRef.current) {
           canvasReadyRef.current = true;
@@ -256,7 +262,9 @@ export function useDeviceVideoStream({
       socket.onopen = () => {
         logFrontend("info", "websocket", "opened", "Video and control socket connected");
         socketRef.current = socket;
-        lastVideoActivityAtRef.current = performance.now();
+        const now = performance.now();
+        lastSourceActivityAtRef.current = now;
+        lastDecodedActivityAtRef.current = now;
         setConnected(true);
         socket.send(JSON.stringify({ type: "video_demand", active: videoDemandRef.current }));
         metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
@@ -276,7 +284,8 @@ export function useDeviceVideoStream({
         callbacksRef.current.onDisconnect();
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
-        lastVideoActivityAtRef.current = 0;
+        lastSourceActivityAtRef.current = 0;
+        lastDecodedActivityAtRef.current = 0;
         canvasReadyRef.current = false;
         setCanvasReady(false);
         setStreamStalled(false);
@@ -324,8 +333,13 @@ export function useDeviceVideoStream({
             if (browserTransportActive && metrics.decoded_fps > 0 && metrics.sent_fps === 0 && socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ type: "browser_video_keyframe" }));
             }
-            if (hasDecodedVideoActivity(metrics)) {
-              lastVideoActivityAtRef.current = performance.now();
+            if (hasSourceVideoActivity(metrics)) {
+              lastSourceActivityAtRef.current = performance.now();
+            }
+            // In browser mode the backend decoded counter means an HEVC access
+            // unit was forwarded, not that WebCodecs produced a VideoFrame.
+            if (!browserTransportActive && hasDecodedVideoActivity(metrics)) {
+              lastDecodedActivityAtRef.current = performance.now();
               setStreamStalled(false);
             }
           }
@@ -333,8 +347,7 @@ export function useDeviceVideoStream({
         }
         const buffer = event.data as ArrayBuffer;
         frontendMetrics.receivedFrames += 1;
-        lastVideoActivityAtRef.current = performance.now();
-        setStreamStalled(false);
+        lastSourceActivityAtRef.current = performance.now();
         let browserPacket: ReturnType<typeof parseBrowserVideoPacket>;
         try {
           browserPacket = parseBrowserVideoPacket(buffer);

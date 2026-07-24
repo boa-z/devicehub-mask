@@ -60,8 +60,8 @@ use crate::protocol::{
     DeviceDetails, DeviceInfo, DeviceListSlot, DevicePairingState, DeviceRegionalSettings,
     DeviceStorage, ErrorSlot, ForgetDeviceOutcome, ForgetDeviceResult, FrameFormat, FrameSlot,
     InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
-    PairDeviceOutcome, PairDeviceResult, RotateDir, StatusSlot, VideoCounters, clipboard_preview,
-    device_selector,
+    PairDeviceOutcome, PairDeviceResult, RotateDir, StatusSlot, VideoCounterSnapshot,
+    VideoCounters, clipboard_preview, device_selector,
 };
 use crate::wifi_devices::{WifiDiscovery, WifiEndpoint};
 use crate::{location, location::LocationCommand};
@@ -97,10 +97,11 @@ const KEY_V: u64 = 0x19;
 /// After requesting a keyframe, ignore further triggers for this long so a burst
 /// of decode errors yields a single request, not a storm.
 const KEYFRAME_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(1500);
-/// If no decoded frame arrives for this long, treat the stream as silently stalled
-/// (no packets, so no frames and no decode errors - e.g. macOS App Nap on a
-/// backgrounded window) and request a fresh keyframe.
-const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// Sample transport/source/decode progress without treating a legitimately static
+/// screen as a decoder failure. A fully silent transport is retried only after
+/// several consecutive samples so normal RTCP sender-report spacing is covered.
+const VIDEO_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+const VIDEO_TRANSPORT_SILENT_WINDOWS: u8 = 3;
 /// How long the locked stream must go silent before we migrate to a different
 /// SSRC: long enough to ignore stray packets from a competing/leaked sender,
 /// short enough to pick up a real stream restart promptly.
@@ -2231,10 +2232,6 @@ async fn run(
     // loop reacts by requesting a fresh keyframe (PLI + FIR) on the same stream.
     let corruption = Arc::new(Notify::new());
 
-    // Pulsed by the decode loop on every decoded frame; the stall watchdog watches
-    // it to detect a silently wedged stream (no frames, no decode errors).
-    let frame_beat = Arc::new(Notify::new());
-
     let rtcp = Arc::new(Mutex::new(RtcpShared::default()));
 
     // `udp.recv()` holds a non-Send MutexGuard across an await, so these loops
@@ -2255,7 +2252,6 @@ async fn run(
     let (clipboard_commands, clipboard_command_rx) = tokio::sync::mpsc::channel(4);
     let clipboard_bridge = ClipboardBridge(clipboard_commands);
     let decode_corruption = corruption.clone();
-    let decode_frame_beat = frame_beat.clone();
     let decode_queue = hevc_queue.clone();
     let decode_counters = video.counters.clone();
     let browser_keyframes = video.browser_frames.clone();
@@ -2275,7 +2271,6 @@ async fn run(
                         frame_format,
                         video.frames,
                         decode_counters,
-                        decode_frame_beat,
                         repaint,
                     ) => {
                         tracing::warn!("decode task ended early");
@@ -2290,7 +2285,6 @@ async fn run(
                     decode_queue,
                     video.browser_frames,
                     decode_counters,
-                    decode_frame_beat,
                     decode_corruption,
                 )
                 .await;
@@ -2320,9 +2314,9 @@ async fn run(
                 tracing::warn!(%error, "video decoder pipeline ended");
             }
         }
-        _ = stall_watchdog(frame_beat, &corruption) => {}
+        _ = stall_watchdog(video.counters.clone(), &corruption) => {}
         _ = forward_browser_keyframes(browser_keyframes, corruption.clone()) => {}
-        _ = rtcp_recv_task(rtcp_udp.clone(), rtcp.clone()) => {}
+        _ = rtcp_recv_task(rtcp_udp.clone(), rtcp.clone(), video.counters.clone()) => {}
         _ = rtcp_send_task(
             video_udp, rtcp_udp, rtcp, our_ssrc, cname, &corruption,
         ) => {}
@@ -4704,6 +4698,7 @@ async fn video_task(
         match udp.recv().await {
             Ok(dg) => {
                 let now = Instant::now();
+                video_counters.note_transport_activity();
                 // rtcp-mux: RTCP shares this port; never goes through the depacketizer.
                 if is_rtcp(&dg.data) {
                     rtcp.lock()
@@ -4926,7 +4921,6 @@ async fn browser_video_writer(
     hevc_queue: Arc<HevcQueue>,
     frames: crate::browser_video::BrowserVideoSlot,
     counters: VideoCounters,
-    frame_beat: Arc<Notify>,
     corruption: Arc<Notify>,
 ) {
     let mut dimensions = None;
@@ -4945,7 +4939,6 @@ async fn browser_video_writer(
             continue;
         };
         counters.note_decoded_frame();
-        frame_beat.notify_one();
         frames.publish(
             clock.timestamp_us(access_unit.rtp_timestamp),
             access_unit.is_irap,
@@ -4968,7 +4961,11 @@ async fn forward_browser_keyframes(
 
 /// Receive inbound RTCP on the dedicated RTCP socket (non-mux case). Records
 /// Sender Reports in the shared state. Idles forever if no separate socket bound.
-async fn rtcp_recv_task(udp: Option<Arc<UdpSocketHandle>>, rtcp: Arc<Mutex<RtcpShared>>) {
+async fn rtcp_recv_task(
+    udp: Option<Arc<UdpSocketHandle>>,
+    rtcp: Arc<Mutex<RtcpShared>>,
+    counters: VideoCounters,
+) {
     let Some(udp) = udp else {
         std::future::pending::<()>().await;
         return;
@@ -4977,6 +4974,7 @@ async fn rtcp_recv_task(udp: Option<Arc<UdpSocketHandle>>, rtcp: Arc<Mutex<RtcpS
         match udp.recv().await {
             Ok(dg) => {
                 if is_rtcp(&dg.data) {
+                    counters.note_transport_activity();
                     rtcp.lock().unwrap().note_inbound(
                         &dg.data,
                         dg.source_port,
@@ -6049,19 +6047,63 @@ async fn watch_decode_errors(stderr: ChildStderr, corruption: Arc<Notify>) {
     }
 }
 
-/// Route a silently stalled stream into keyframe recovery: a fully silent stream
-/// (no RTP - the App-Nap case) yields no frames and no decode errors, so nothing
-/// else trips recovery. If no frame arrives within [`STALL_TIMEOUT`], pulse
-/// `corruption`.
-async fn stall_watchdog(frame_beat: Arc<Notify>, corruption: &Notify) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VideoWatchdogObservation {
+    Decoded,
+    SourceWithoutDecode,
+    TransportOnly,
+    Silent,
+}
+
+fn video_watchdog_observation(
+    previous: VideoCounterSnapshot,
+    current: VideoCounterSnapshot,
+) -> VideoWatchdogObservation {
+    if current.decoded_frames != previous.decoded_frames {
+        VideoWatchdogObservation::Decoded
+    } else if current.source_frames != previous.source_frames {
+        VideoWatchdogObservation::SourceWithoutDecode
+    } else if current.transport_events != previous.transport_events {
+        VideoWatchdogObservation::TransportOnly
+    } else {
+        VideoWatchdogObservation::Silent
+    }
+}
+
+/// Recover only from evidence of a decoder stall or a genuinely silent transport.
+/// RTCP-only activity is healthy for a static screen and must not trigger PLI.
+async fn stall_watchdog(counters: VideoCounters, corruption: &Notify) {
+    let mut previous = counters.snapshot();
+    let mut silent_windows = 0_u8;
     loop {
-        if tokio::time::timeout(STALL_TIMEOUT, frame_beat.notified())
-            .await
-            .is_err()
-        {
-            tracing::debug!("no video frames for {STALL_TIMEOUT:?}; requesting keyframe");
-            corruption.notify_one();
+        tokio::time::sleep(VIDEO_WATCHDOG_INTERVAL).await;
+        let current = counters.snapshot();
+        match video_watchdog_observation(previous, current) {
+            VideoWatchdogObservation::Decoded | VideoWatchdogObservation::TransportOnly => {
+                silent_windows = 0;
+            }
+            VideoWatchdogObservation::SourceWithoutDecode => {
+                silent_windows = 0;
+                tracing::warn!(
+                    interval_ms = VIDEO_WATCHDOG_INTERVAL.as_millis() as u64,
+                    "video source advanced without decoded output; requesting keyframe"
+                );
+                corruption.notify_one();
+            }
+            VideoWatchdogObservation::Silent => {
+                silent_windows = silent_windows.saturating_add(1);
+                if silent_windows >= VIDEO_TRANSPORT_SILENT_WINDOWS {
+                    tracing::warn!(
+                        silent_ms =
+                            VIDEO_WATCHDOG_INTERVAL.as_millis() as u64 * u64::from(silent_windows),
+                        "video RTP/RTCP transport is silent; requesting keyframe"
+                    );
+                    corruption.notify_one();
+                    silent_windows = 0;
+                }
+            }
         }
+        previous = current;
     }
 }
 
@@ -6204,6 +6246,40 @@ fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
 mod tests {
     use super::*;
     use idevice::usbmuxd::UsbmuxdConnection;
+
+    fn video_snapshot(
+        transport_events: u64,
+        source_frames: u64,
+        decoded_frames: u64,
+    ) -> VideoCounterSnapshot {
+        VideoCounterSnapshot {
+            transport_events,
+            source_frames,
+            decoded_frames,
+            duplicate_frames: 0,
+        }
+    }
+
+    #[test]
+    fn video_watchdog_distinguishes_static_transport_from_decoder_stalls() {
+        let previous = video_snapshot(10, 5, 5);
+        assert_eq!(
+            video_watchdog_observation(previous, video_snapshot(11, 5, 5)),
+            VideoWatchdogObservation::TransportOnly
+        );
+        assert_eq!(
+            video_watchdog_observation(previous, video_snapshot(12, 6, 5)),
+            VideoWatchdogObservation::SourceWithoutDecode
+        );
+        assert_eq!(
+            video_watchdog_observation(previous, video_snapshot(12, 6, 6)),
+            VideoWatchdogObservation::Decoded
+        );
+        assert_eq!(
+            video_watchdog_observation(previous, previous),
+            VideoWatchdogObservation::Silent
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires a connected physical device"]

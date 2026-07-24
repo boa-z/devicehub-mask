@@ -412,7 +412,7 @@ export const enUS = {
       waiting: "Waiting for an iOS device stream",
       reconnecting: "Control connection interrupted",
       starting: "Waiting for the first video frame",
-      stalled: "The video stream has stopped updating",
+      stalled: "Source video is active, but decoding has stopped",
     },
   },
   location: {

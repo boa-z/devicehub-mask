@@ -10,7 +10,6 @@ use std::sync::OnceLock;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::Notify;
 
 use crate::audio_output::AudioOutput;
 use crate::protocol::{
@@ -324,15 +323,12 @@ fn ffmpeg_executable() -> &'static str {
 }
 
 /// Read PAM frames from ffmpeg's stdout, publishing each (already RGBA) into
-/// `slot` and waking the UI via `repaint`. Each frame pulses `beat`, the liveness
-/// heartbeat watched by the session's stall watchdog. Returns when the stream
-/// ends.
+/// `slot` and waking the UI via `repaint`. Returns when the stream ends.
 pub async fn read_frames(
     stdout: ChildStdout,
     frame_format: FrameFormat,
     slot: FrameSlot,
     counters: VideoCounters,
-    beat: Arc<Notify>,
     repaint: impl Fn(),
 ) {
     let mut reader = BufReader::new(stdout);
@@ -354,10 +350,6 @@ pub async fn read_frames(
                     tracing::info!(?frame_format, "decoded frame size: {}x{}", dims.0, dims.1);
                     last_dims = Some(dims);
                 }
-
-                // Pulse even for duplicate frames: a frozen-but-streaming
-                // screen is still a healthy stream.
-                beat.notify_one();
 
                 if last
                     .as_ref()
