@@ -35,6 +35,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppState {
+    pub device_control: crate::application::DeviceControlService,
     pub frames: FrameSlot,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
@@ -1131,28 +1132,22 @@ async fn await_developer_image_command(
 async fn device_screenshot(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::TakeScreenshot(reply)) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let png = tokio::time::timeout(SCREENSHOT_REQUEST_TIMEOUT, response)
+    let png = state
+        .device_control
+        .capture_screenshot(SCREENSHOT_REQUEST_TIMEOUT)
         .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "device screenshot request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+        .map_err(|error| match error {
+            crate::application::DeviceControlError::Unavailable
+            | crate::application::DeviceControlError::SessionEnded => {
+                (StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+            crate::application::DeviceControlError::Timeout(_) => {
+                (StatusCode::GATEWAY_TIMEOUT, error.to_string())
+            }
+            crate::application::DeviceControlError::Operation(_) => {
+                (StatusCode::BAD_GATEWAY, error.to_string())
+            }
+        })?;
     Ok((
         [(CONTENT_TYPE, "image/png"), (CACHE_CONTROL, "no-store")],
         png,
@@ -3257,10 +3252,17 @@ mod tests {
         let (input_tx, input_rx) = unbounded_channel();
         input.set(Some(input_tx));
         let (control, control_rx) = unbounded_channel();
+        let frames = FrameSlot::default();
+        let browser_frames = crate::browser_video::BrowserVideoSlot::default();
         (
             AppState {
-                frames: FrameSlot::default(),
-                browser_frames: crate::browser_video::BrowserVideoSlot::default(),
+                device_control: crate::application::DeviceControlService::new(
+                    frames.clone(),
+                    browser_frames.clone(),
+                    input.clone(),
+                ),
+                frames,
+                browser_frames,
                 clipboard: ClipboardSlot::default(),
                 device_events: crate::device_events::DeviceEventSlot::default(),
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),

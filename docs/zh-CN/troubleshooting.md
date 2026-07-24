@@ -4,8 +4,7 @@
 
 ## Debug 可执行文件打开后白屏
 
-`tauri dev` 编译的 WebView 会从 `127.0.0.1:5173` 加载 Vite。Vite 停止后单独运行
-这个开发可执行文件会显示白屏。
+`tauri dev` 编译的 WebView 会从 `127.0.0.1:5173` 加载 Vite。Vite 停止后单独运行 这个开发可执行文件会显示白屏。
 
 需要热重载时运行：
 
@@ -24,35 +23,25 @@ npm run tauri:build:debug
 
 ## 私有后端无法启动
 
-默认随机回环端口可以避免普通端口冲突。停止可能仍占用 CoreDevice 会话的旧
-`devicehub-mask`、`devicehub_rs` 和 FFmpeg 进程。`DEVICEHUB_ADDR` 应保持监听回环
-地址。API 没有网页根路径，并始终要求启动令牌。
+默认随机回环端口可以避免普通端口冲突。停止可能仍占用 CoreDevice 会话的旧 `devicehub-mask`、`devicehub_rs` 和 FFmpeg 进程。`DEVICEHUB_ADDR` 应保持监听回环 地址。API 没有网页根路径，并始终要求启动令牌。
 
 ## 收集运行日志
 
-进入“设置 > 诊断”，点击“打开日志目录”。日志采用 JSON Lines 格式，按日轮转并保留最近
-7 个文件。只在复现问题时开启详细 Debug，进行性能测试前应关闭。分享同一次运行的日志
-片段时请附上设置页中的运行 ID。诊断桥接不会写入令牌、剪贴板内容、视频帧或原始 HID
-report。
+进入“设置 > 诊断”，点击“打开日志目录”。日志采用 JSON Lines 格式，按日轮转并保留最近 7 个文件。只在复现问题时开启详细 Debug，进行性能测试前应关闭。分享同一次运行的日志 片段时请附上设置页中的运行 ID。诊断桥接不会写入令牌、剪贴板内容、视频帧或原始 HID report。
 
-如果 UI 无法打开，可以从终端使用 `DEVICEHUB_LOG=devicehub_mask=debug` 启动。长时间采集
-不要使用不受限的全局 `trace` 过滤器。
+如果 UI 无法打开，可以从终端使用 `DEVICEHUB_LOG=devicehub_mask=debug` 启动。长时间采集 不要使用不受限的全局 `trace` 过滤器。
 
 ## 找不到 FFmpeg 或没有画面
 
-- 安装包已内置经过校验的 FFmpeg，并优先于 `PATH` 使用。macOS 开发构建可运行
-  `brew install ffmpeg`；由于应用不会继承终端 `PATH`，还会直接检查
-  `/opt/homebrew/bin/ffmpeg`、`/usr/local/bin/ffmpeg` 和 `/opt/local/bin/ffmpeg`。
+- 安装包已内置经过校验的 FFmpeg，并优先于 `PATH` 使用。macOS 开发构建可运行 `brew install ffmpeg`；由于应用不会继承终端 `PATH`，还会直接检查 `/opt/homebrew/bin/ffmpeg`、`/usr/local/bin/ffmpeg` 和 `/opt/local/bin/ffmpeg`。
 - 调试解码器时可把 `DEVICEHUB_FFMPEG` 设置为绝对可执行路径，显式覆盖内置或系统版本。
 - Windows：运行 `winget install --id Gyan.FFmpeg --exact`，然后打开新终端。
 - 自定义路径：为应用进程设置 `DEVICEHUB_FFMPEG` 为可执行文件绝对路径。
-- 解锁并重新连接设备，关闭其他画面会话，在状态标识和 Rust 日志中检查 RSD 或
-  displayservice 错误。
+- 解锁并重新连接设备，关闭其他画面会话，在状态标识和 Rust 日志中检查 RSD 或 displayservice 错误。
 
 ## 设备没有开放 displayservice
 
-如果 RSD 没有报告 `com.apple.coredevice.displayservice`，说明连接和 RSD 握手已经
-成功，但设备没有开放屏幕串流服务。这不代表 USB 不受支持。
+如果 RSD 没有报告 `com.apple.coredevice.displayservice`，说明连接和 RSD 握手已经 成功，但设备没有开放屏幕串流服务。这不代表 USB 不受支持。
 
 Windows 上保持手机连接和解锁，然后运行：
 
@@ -60,53 +49,34 @@ Windows 上保持手机连接和解锁，然后运行：
 .\scripts\prepare-windows-device.ps1
 ```
 
-脚本检查开发者模式、挂载 Personalized Developer Disk Image、重新执行 USB RSD
-握手并验证服务名。准备成功后重新连接。持续失败可能需要在 Xcode Device Hub 中完成
-一次有线配对，也可能是当前 iOS beta 不兼容。
+脚本检查开发者模式、挂载 Personalized Developer Disk Image、重新执行 USB RSD 握手并验证服务名。准备成功后重新连接。持续失败可能需要在 Xcode Device Hub 中完成 一次有线配对，也可能是当前 iOS beta 不兼容。
 
-使用 `RUST_LOG=devicehub_mask::session=debug` 输出完整 RSD 服务列表。
-`192.168.9.147:62078` 这样的地址是 Lockdown 端点，不是 CoreDeviceProxy 返回的 RSD
-端点，手动提供它不会让缺失的服务出现。
+使用 `RUST_LOG=devicehub_mask::session=debug` 输出完整 RSD 服务列表。 `192.168.9.147:62078` 这样的地址是 Lockdown 端点，不是 CoreDeviceProxy 返回的 RSD 端点，手动提供它不会让缺失的服务出现。
 
 ## CoreDevice 错误 9021
 
-设备拒绝了远程控制能力。支持情况取决于硬件与 iOS 组合，不代表所有低于 iOS 27 的
-设备都不受支持；但对于明确拒绝的设备，需要升级到 iOS 27 或使用受支持的新硬件。
+设备拒绝了远程控制能力。支持情况取决于硬件与 iOS 组合，不代表所有低于 iOS 27 的 设备都不受支持；但对于明确拒绝的设备，需要升级到 iOS 27 或使用受支持的新硬件。
 
-切换 USB/Wi-Fi、修改 FFmpeg、应用签名或重复重试都无法绕过设备端检查。DeviceHub
-Mask 会显示本地化错误说明，不输出归档 binary plist。目前没有仅画面回退，因为初始
-audio media session 同时建立视频和 Universal HID 控制授权。
+切换 USB/Wi-Fi、修改 FFmpeg、应用签名或重复重试都无法绕过设备端检查。DeviceHub Mask 会显示本地化错误说明，不输出归档 binary plist。目前没有仅画面回退，因为初始 audio media session 同时建立视频和 Universal HID 控制授权。
 
 ## 触控位置错误或横屏拉伸
 
-不要强制 Canvas 填充任意宽高。DeviceHub Mask 使用同一个比例 contain-fit 旋转后的
-画面，并只在实际显示矩形内归一化触控。报告回归时请提供源分辨率、显示分辨率、方向和
-截图。
+不要强制 Canvas 填充任意宽高。DeviceHub Mask 使用同一个比例 contain-fit 旋转后的 画面，并只在实际显示矩形内归一化触控。报告回归时请提供源分辨率、显示分辨率、方向和 截图。
 
 ## Windows CPU 占用较高
 
-跨平台对比时可在“设置 > 视频”尝试实验性的“浏览器 / WebCodecs”解码器。平台 WebView
-支持 HEVC 时，该路径会移除实时链路中的 FFmpeg 和 JPEG。Windows 若立即显示能力回退，
-请安装 HEVC Video Extensions。“原生 / FFmpeg”仍是兼容性默认值，浏览器解码运行失败后
-也会自动重连并使用它。
+跨平台对比时可在“设置 > 视频”尝试实验性的“浏览器 / WebCodecs”解码器。平台 WebView 支持 HEVC 时，该路径会移除实时链路中的 FFmpeg 和 JPEG。Windows 若立即显示能力回退， 请安装 HEVC Video Extensions。“原生 / FFmpeg”仍是兼容性默认值，浏览器解码运行失败后 也会自动重连并使用它。
 
-如果 WebCodecs 报告 `OperationError: Unsupported configuration`，应用会从数据流 SPS 读取
-HEVC profile 与 level，并重试保守的 `hev1`、`hvc1` 配置。准确配置全部失败后，本次运行会
-重连到“原生 / FFmpeg”；这通常表示平台 WebView 或系统 HEVC 组件无法解码当前设备的分辨率
-或 profile。
+如果 WebCodecs 报告 `OperationError: Unsupported configuration`，应用会从数据流 SPS 读取 HEVC profile 与 level，并重试保守的 `hev1`、`hvc1` 配置。准确配置全部失败后，本次运行会 重连到“原生 / FFmpeg”；这通常表示平台 WebView 或系统 HEVC 组件无法解码当前设备的分辨率 或 profile。
 
 观察界面的解码 / 发送 / 显示 FPS 和 JPEG 延迟：
 
 - 源 FPS 来自完整 RTP 帧 marker；解码与发布 FPS 会区分 FFmpeg 输出和重复帧抑制。
-- 发送与显示 FPS 应接近发布 FPS。最多两帧 JPEG 在途，使后端编码可与 WebView 解码重叠，
-  但不会形成无限队列。
-- Debug 性能日志还会报告 RTP 时间戳步长、源到达抖动、HEVC 排队时间、JPEG 编码、帧年龄、
-  WebSocket 写入、呈现确认、前端 JPEG 解码、Canvas 绘制和各阶段丢帧。
+- 发送与显示 FPS 应接近发布 FPS。最多两帧 JPEG 在途，使后端编码可与 WebView 解码重叠， 但不会形成无限队列。
+- Debug 性能日志还会报告 RTP 时间戳步长、源到达抖动、HEVC 排队时间、JPEG 编码、帧年龄、 WebSocket 写入、呈现确认、前端 JPEG 解码、Canvas 绘制和各阶段丢帧。
 - Windows 默认使用 1920 像素长边和 RGB24 传输。
 
-这些指标和 Debug 日志字段在各平台保持一致。比较 macOS、Windows 与 Linux 时，应使用
-Release 构建，并保持设备/画面内容、像素格式、解码尺寸及
-`DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` 相同；不要拿一台主机的静态画面与另一台的动态画面比较。
+这些指标和 Debug 日志字段在各平台保持一致。比较 macOS、Windows 与 Linux 时，应使用 Release 构建，并保持设备/画面内容、像素格式、解码尺寸及 `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` 相同；不要拿一台主机的静态画面与另一台的动态画面比较。
 
 可以降低解码限制，同时保持画面比例：
 
@@ -115,15 +85,11 @@ $env:DEVICEHUB_VIDEO_MAX_DIMENSION = "1280"
 npm run tauri:dev
 ```
 
-仅在诊断原始分辨率时设置为 `0`。记录 CPU、全部 FPS 指标、JPEG 延迟、设备分辨率、
-GPU，以及测试的是安装版还是 debug 版。Debug 构建不能代表 release 性能。
+仅在诊断原始分辨率时设置为 `0`。记录 CPU、全部 FPS 指标、JPEG 延迟、设备分辨率、 GPU，以及测试的是安装版还是 debug 版。Debug 构建不能代表 release 性能。
 
 ## 蓝牙抓包没有数据包
 
-开始 HCI 抓包前，需要在 iPhone 上安装 Apple Bluetooth Logging 配置描述文件。未安装时
-`BTPacketLogger` 可能接受连接但保持静默，此时生成只有 24 字节全局文件头的有效 PCAP
-属于预期行为。抓包期间保持目标蓝牙手柄或音频设备活跃；如果服务本身无法启动，请在
-“服务健康”中检查 `bluetooth.capture`。
+开始 HCI 抓包前，需要在 iPhone 上安装 Apple Bluetooth Logging 配置描述文件。未安装时 `BTPacketLogger` 可能接受连接但保持静默，此时生成只有 24 字节全局文件头的有效 PCAP 属于预期行为。抓包期间保持目标蓝牙手柄或音频设备活跃；如果服务本身无法启动，请在 “服务健康”中检查 `bluetooth.capture`。
 
 ## 检查更新失败
 

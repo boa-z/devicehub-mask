@@ -18,480 +18,124 @@ Rust / Axum service
 idevice: CoreDevice, Lockdown, Installation Proxy, Misagent, Universal HID
 ```
 
-The repository follows the standard Tauri 2 layout. Vite builds the React UI
-from `src/`; Rust desktop code and Tauri configuration live in `src-tauri/`.
-Tauri embeds production frontend assets and owns the application lifecycle.
+The repository follows the standard Tauri 2 layout. Vite builds the React UI from `src/`; Rust desktop code and Tauri configuration live in `src-tauri/`. Tauri embeds production frontend assets and owns the application lifecycle.
 
-Key mapping imports pass through a frontend source-adapter registry before
-entering the existing profile persistence path. Each adapter declares its ID,
-accepted file types, size limit, parser, and conversion to the shared import
-result. The UI selects the adapter explicitly, so adding another source does
-not add format guessing to the profile manager. JSON handles native and
-scrcpy-mask formats, while a lazy-loaded structured XML parser handles
-PlayCover `2.0.0` plists. PlayCover
-imports allow only the standard Apple plist DTD declaration, reject entities,
-and enforce file-size, nesting, node-count, and model-count limits before
-converting supported keyboard controls to the shared normalized mapping model.
+Rust transport adapters should not implement device-control policy independently. The first vertical slice moved to the `application` service layer covers active-session command dispatch, screenshot timeouts, the latest native frame, browser dimensions, and the combined frame version. The HTTP screenshot route and MCP screenshot, input, and frame-wait tools map their formats onto the same `DeviceControlService`; native `watch` notifications or browser-frame broadcasts wake frame waits without adapter-level polling. New capabilities should preserve the dependency direction: transport adapter -> application service -> session capability.
+
+The frontend `useDeviceVideoStream` controller exclusively owns the video WebSocket, WebCodecs/JPEG decoding, canvas presentation, reconnects, video demand, stall detection, and frontend metrics. `App` composes page workflows, sends input through a stable command interface, and clears key-mapping state through a disconnect callback. Screenshot and recording workflows can read the controller's canvas refs without participating in decoder lifecycle management.
+
+Key mapping imports pass through a frontend source-adapter registry before entering the existing profile persistence path. Each adapter declares its ID, accepted file types, size limit, parser, and conversion to the shared import result. The UI selects the adapter explicitly, so adding another source does not add format guessing to the profile manager. JSON handles native and scrcpy-mask formats, while a lazy-loaded structured XML parser handles PlayCover `2.0.0` plists. PlayCover imports allow only the standard Apple plist DTD declaration, reject entities, and enforce file-size, nesting, node-count, and model-count limits before converting supported keyboard controls to the shared normalized mapping model.
 
 ## Desktop and Private Transport
 
-Axum is an internal transport, not a separately deployed web server. It binds a
-random loopback port by default, has no browser entry point, does not serve the
-frontend, and requires a per-launch bearer token obtained through Tauri IPC.
-Device-management routes return `503` when no session is active.
-Lock, restart, and shutdown commands share a single-flight Diagnostics Relay
-lease. Lock maps to the one-way sleep request and preserves the parent control
-session; restart and shutdown allow the device disconnect to end the session.
+Axum is an internal transport, not a separately deployed web server. It binds a random loopback port by default, has no browser entry point, does not serve the frontend, and requires a per-launch bearer token obtained through Tauri IPC. Device-management routes return `503` when no session is active. Lock, restart, and shutdown commands share a single-flight Diagnostics Relay lease. Lock maps to the one-way sleep request and preserves the parent control session; restart and shutdown allow the device disconnect to end the session.
 
-The WebSocket carries JPEG frames and typed control messages. The frontend
-sends normalized contacts rather than raw HID reports. Rust validates contact
-identities, the five-contact limit, coordinate ranges, and orientation before
-dispatch.
+The WebSocket carries JPEG frames and typed control messages. The frontend sends normalized contacts rather than raw HID reports. Rust validates contact identities, the five-contact limit, coordinate ranges, and orientation before dispatch.
 
-The MCP service is a separate Streamable HTTP endpoint on
-`127.0.0.1:8009/mcp` by default. It shares the manager's latest-frame slot,
-input sink, device state, control channel, performance snapshot, and bounded
-device-log buffer, so automation and the WebView use one CoreDevice session. It
-also retains only the latest normalized device metadata event for the current
-session to close the race between reading an event cursor and subscribing for
-the next event. Session changes clear the retained event without reusing its
-monotonic sequence number.
-Performance and log calls acquire temporary demand leases that compose with the
-WebView's explicit demand instead of changing its state. Coordinate tools
-include the screenshot dimensions and are transformed through the same
-orientation model as direct touch. Game gestures serialize one-to-five-contact
-HID frames through the shared input
-queue. Screenshot and action results expose frame versions so an agent can skip
-the visual-stability delay and explicitly wait for the next decoded frame. MCP
-crash-report tools dispatch through the active session provider and cap report
-content at 1 MiB; device paths pass the same traversal checks as desktop export.
-Device-detail calls use the existing session command queue and omit stable
-hardware identifiers unless the caller explicitly requests them.
-has no authentication; binding it beyond loopback is an explicit deployment
-decision and emits a warning.
+The MCP service is a separate Streamable HTTP endpoint on `127.0.0.1:8009/mcp` by default. It shares the manager's latest-frame slot, input sink, device state, control channel, performance snapshot, and bounded device-log buffer, so automation and the WebView use one CoreDevice session. It also retains only the latest normalized device metadata event for the current session to close the race between reading an event cursor and subscribing for the next event. Session changes clear the retained event without reusing its monotonic sequence number. Performance and log calls acquire temporary demand leases that compose with the WebView's explicit demand instead of changing its state. Coordinate tools include the screenshot dimensions and are transformed through the same orientation model as direct touch. Game gestures serialize one-to-five-contact HID frames through the shared input queue. Screenshot and action results expose frame versions so an agent can skip the visual-stability delay and explicitly wait for the next decoded frame. MCP crash-report tools dispatch through the active session provider and cap report content at 1 MiB; device paths pass the same traversal checks as desktop export. Device-detail calls use the existing session command queue and omit stable hardware identifiers unless the caller explicitly requests them. MCP has no authentication; binding it beyond loopback is an explicit deployment decision and emits a warning.
 
 ## Session Ownership
 
-The CoreDevice session runs on a dedicated Tokio runtime because several
-`idevice` service objects cannot move safely across a normal `tokio::spawn`
-boundary. The session owns display, HID, AppService, and device-state resources.
-Ending or replacing it cancels dependent work.
+The CoreDevice session runs on a dedicated Tokio runtime because several `idevice` service objects cannot move safely across a normal `tokio::spawn` boundary. The session owns display, HID, AppService, and device-state resources. Ending or replacing it cancels dependent work.
 
-Optional device services run under a shared supervisor inside a Tokio
-`LocalSet`. This keeps non-`Send` DVT channel objects on the CoreDevice owner
-thread while the HTTP, WebSocket, and MCP transports continue using the
-multi-thread runtime. Each service publishes a common health record with phase,
-attempt count, restart count, last error, and update time. Location, sysmontap,
-condition-inducer, graphics, network-monitor, and energy-monitor channels
-reconnect independently with bounded exponential backoff; one broken channel
-cannot terminate video or HID.
+Optional device services run under a shared supervisor inside a Tokio `LocalSet`. This keeps non-`Send` DVT channel objects on the CoreDevice owner thread while the HTTP, WebSocket, and MCP transports continue using the multi-thread runtime. Each service publishes a common health record with phase, attempt count, restart count, last error, and update time. Location, sysmontap, condition-inducer, graphics, network-monitor, and energy-monitor channels reconnect independently with bounded exponential backoff; one broken channel cannot terminate video or HID.
 
-The supervised Notification Proxy reduces vendor notification names to a fixed
-event enum. App, disk, name, and activation changes refresh only the affected
-frontend data. SpringBoard lock-state changes release all active input and are
-forwarded without inventing a locked/unlocked value because the notification
-contains no state payload. MCP consumers use the monotonic event sequence to
-wait without a read/subscribe race.
+The supervised Notification Proxy reduces vendor notification names to a fixed event enum. App, disk, name, and activation changes refresh only the affected frontend data. SpringBoard lock-state changes release all active input and are forwarded without inventing a locked/unlocked value because the notification contains no state payload. MCP consumers use the monotonic event sequence to wait without a read/subscribe race.
 
-Device-detail refresh reads activation state through MobileActivationd in
-parallel with Lockdown metadata, DiagnosticsRelay battery data, and
-AMFI Developer Mode status with a MobileImageMounter fallback. The backend
-reduces vendor strings to a fixed public enum and does not request activation
-records, certificates, or activation-info payloads.
+Device-detail refresh reads activation state through MobileActivationd in parallel with Lockdown metadata, DiagnosticsRelay battery data, and AMFI Developer Mode status with a MobileImageMounter fallback. The backend reduces vendor strings to a fixed public enum and does not request activation records, certificates, or activation-info payloads.
 
-Developer Mode preparation is a separate authenticated command. It opens a
-fresh paired AMFI service, rechecks the device state, and sends only AMFI action
-0 when disabled so the option appears in Settings. It never sends the rebooting
-enable action or the device-confirmation action. Both the device call and API
-reply have bounded deadlines.
+Developer Mode preparation is a separate authenticated command. It opens a fresh paired AMFI service, rechecks the device state, and sends only AMFI action 0 when disabled so the option appears in Settings. It never sends the rebooting enable action or the device-confirmation action. Both the device call and API reply have bounded deadlines.
 
-Device rename accepts only a bounded, non-empty, control-free Unicode name. The
-session repeats validation, opens paired Lockdown, writes `DeviceName`, and reads
-the value back before returning success. Diagnostics record only the character
-count, not the requested name. Lockdown's name-change notification refreshes the
-device picker and active Info tab. After `StartSession` succeeds, the backend
-makes a bounded `StopSession` attempt on both rename success and failure. A
-cleanup error is logged without misreporting a name already accepted by the
-device as a failed rename.
+Device rename accepts only a bounded, non-empty, control-free Unicode name. The session repeats validation, opens paired Lockdown, writes `DeviceName`, and reads the value back before returning success. Diagnostics record only the character count, not the requested name. Lockdown's name-change notification refreshes the device picker and active Info tab. After `StartSession` succeeds, the backend makes a bounded `StopSession` attempt on both rename success and failure. A cleanup error is logged without misreporting a name already accepted by the device as a failed rename.
 
-Device condition simulation owns an isolated DVT Condition Inducer channel and a
-bounded command queue. The backend bounds and sanitizes the device-provided
-catalog, and accepts only group/profile pairs from that catalog. Every channel
-connection first disables any residual condition to establish a known baseline.
-Apply failures are treated as potentially active because the device may have
-committed before the reply failed. Session shutdown performs a bounded cleanup;
-if it cannot confirm success, the shared state retains `cleanup_pending` until a
-later connection clears the condition. No simulated condition is automatically
-restored after reconnecting.
+Device condition simulation owns an isolated DVT Condition Inducer channel and a bounded command queue. The backend bounds and sanitizes the device-provided catalog, and accepts only group/profile pairs from that catalog. Every channel connection first disables any residual condition to establish a known baseline. Apply failures are treated as potentially active because the device may have committed before the reply failed. Session shutdown performs a bounded cleanup; if it cannot confirm success, the shared state retains `cleanup_pending` until a later connection clears the condition. No simulated condition is automatically restored after reconnecting.
 
-Performance monitoring reuses cloned handles to the active software tunnel and
-creates isolated DVT connections. Sysmontap, graphics, network, and energy sampling
-are demand-driven by the Performance workspace or selected HUD metrics, and stop
-when neither needs them. NetworkMonitor uses its own RemoteServer connection;
-one-second receive/send rates are derived from per-connection counter deltas.
-Connections expire after one minute without updates and the tracker has a fixed
-entry limit. The latest normalized snapshot is exposed through the authenticated
-private API; short-term chart history remains frontend-local and is discarded on
-device changes.
-Sysmontap process arrays are decoded against the attribute order negotiated for
-that session rather than fixed field indices. Per-process CPU is divided by the
-reported logical CPU count; the snapshot retains the union of the ten highest
-CPU and ten largest physical-footprint processes, bounded to twenty rows.
-EnergyMonitor follows at most the first sixteen processes from that bounded list
-on another RemoteServer connection. It updates the device subscription when the
-PID set changes, cancels sampling on demand loss, and exposes Apple's relative
-total, CPU, GPU, networking, display, location, and app-state energy scores.
-App activity uses a separate DVT Notifications connection that exists only while
-the Performance workspace requests sampling. Notification types, app or process
-names, and state values are whitespace-normalized and length-bounded before they
-reach the private API. The session retains at most 100 events with monotonic
-sequence numbers, clears them when the device session resets, and never exposes
-the original archived notification payload.
+Performance monitoring reuses cloned handles to the active software tunnel and creates isolated DVT connections. Sysmontap, graphics, network, and energy sampling are demand-driven by the Performance workspace or selected HUD metrics, and stop when neither needs them. NetworkMonitor uses its own RemoteServer connection; one-second receive/send rates are derived from per-connection counter deltas. Connections expire after one minute without updates and the tracker has a fixed entry limit. The latest normalized snapshot is exposed through the authenticated private API; short-term chart history remains frontend-local and is discarded on device changes. Sysmontap process arrays are decoded against the attribute order negotiated for that session rather than fixed field indices. Per-process CPU is divided by the reported logical CPU count; the snapshot retains the union of the ten highest CPU and ten largest physical-footprint processes, bounded to twenty rows. EnergyMonitor follows at most the first sixteen processes from that bounded list on another RemoteServer connection. It updates the device subscription when the PID set changes, cancels sampling on demand loss, and exposes Apple's relative total, CPU, GPU, networking, display, location, and app-state energy scores. App activity uses a separate DVT Notifications connection that exists only while the Performance workspace requests sampling. Notification types, app or process names, and state values are whitespace-normalized and length-bounded before they reach the private API. The session retains at most 100 events with monotonic sequence numbers, clears them when the device session resets, and never exposes the original archived notification payload.
 
-Lockdown metadata is read at connection and refreshed for Device Info requests,
-so push notifications for storage or device-name changes surface current values.
-App listing and lifecycle control
-prefer a long-lived CoreDevice AppService client in the same session, avoiding
-a new RSD tunnel per operation. Process URLs are matched only when their direct
-parent is the selected app bundle; stop resolves fresh device state and sends a
-fixed SIGTERM without accepting a client PID or signal. Listing falls back to
-Installation Proxy when AppService is absent, with running state left unknown.
-The default scope requests removable user apps only. An explicit system-app
-scope additionally enables CoreDevice default apps; hidden and internal apps
-remain excluded. Installation Proxy `Any` only augments those known CoreDevice
-entries with metadata and is never used to construct a system catalog. If
-CoreDevice listing fails, the system scope reports that limitation instead of
-returning an unreliable catalog. The uninstall path still re-queries a single
-`User` app and never trusts list metadata as authorization.
-The same bounded Installation Proxy metadata query augments either list path
-with `StaticDiskUsage` and `DynamicDiskUsage`; values are validated before they
-cross the private API, and the total is computed with checked arithmetic. Missing
-or malformed fields remain unknown rather than being reported as zero.
-App icons are fetched through a separate request-driven SpringBoardServices RSD
-channel, so icon reads never occupy the HID dispatch loop. The worker validates
-PNG headers and dimensions, limits each response to 4 MiB, and uses a 256-entry,
-32 MiB FIFO cache. The frontend requests only rows near the visible viewport.
-Home-screen locations use another request-driven SpringBoardServices channel so
-layout reads cannot delay icon fetches or HID. The parser accepts at most 32
-lists, 256 items per list, four folder levels, and 1,024 unique bundle IDs. It
-returns only app names, bundle IDs, and 1-based ordinal Dock/page/folder routes;
-an independent three-second channel optionally reads numeric icon metrics bounded
-to layout dimensions, grid counts, Dock capacity, and page limits. Widgets,
-smart-stack configuration, Web Clip URLs, and raw plist never cross the private
-API or MCP boundary. A failed layout request discards the main client before
-retry, while a failed metrics request leaves the layout result intact.
-Native screenshots use a separate bounded CoreDevice ScreenCaptureService
-channel. The worker accepts one queued request, validates the PNG and dimensions,
-and caps the response at 32 MiB; capture never occupies the HID dispatch loop.
+Lockdown metadata is read at connection and refreshed for Device Info requests, so push notifications for storage or device-name changes surface current values. App listing and lifecycle control prefer a long-lived CoreDevice AppService client in the same session, avoiding a new RSD tunnel per operation. Process URLs are matched only when their direct parent is the selected app bundle; stop resolves fresh device state and sends a fixed SIGTERM without accepting a client PID or signal. Listing falls back to Installation Proxy when AppService is absent, with running state left unknown. The default scope requests removable user apps only. An explicit system-app scope additionally enables CoreDevice default apps; hidden and internal apps remain excluded. Installation Proxy `Any` only augments those known CoreDevice entries with metadata and is never used to construct a system catalog. If CoreDevice listing fails, the system scope reports that limitation instead of returning an unreliable catalog. The uninstall path still re-queries a single `User` app and never trusts list metadata as authorization. The same bounded Installation Proxy metadata query augments either list path with `StaticDiskUsage` and `DynamicDiskUsage`; values are validated before they cross the private API, and the total is computed with checked arithmetic. Missing or malformed fields remain unknown rather than being reported as zero. App icons are fetched through a separate request-driven SpringBoardServices RSD channel, so icon reads never occupy the HID dispatch loop. The worker validates PNG headers and dimensions, limits each response to 4 MiB, and uses a 256-entry, 32 MiB FIFO cache. The frontend requests only rows near the visible viewport. Home-screen locations use another request-driven SpringBoardServices channel so layout reads cannot delay icon fetches or HID. The parser accepts at most 32 lists, 256 items per list, four folder levels, and 1,024 unique bundle IDs. It returns only app names, bundle IDs, and 1-based ordinal Dock/page/folder routes; an independent three-second channel optionally reads numeric icon metrics bounded to layout dimensions, grid counts, Dock capacity, and page limits. Widgets, smart-stack configuration, Web Clip URLs, and raw plist never cross the private API or MCP boundary. A failed layout request discards the main client before retry, while a failed metrics request leaves the layout result intact. Native screenshots use a separate bounded CoreDevice ScreenCaptureService channel. The worker accepts one queued request, validates the PNG and dimensions, and caps the response at 32 MiB; capture never occupies the HID dispatch loop.
 
-Paired Apple Watch discovery uses a separate request-driven CompanionProxy RSD
-channel over the active iPhone transport. The worker lazily connects, accepts at
-most two queued commands, returns at most sixteen sanitized registry entries,
-and discards its client after a failed request so the next query reconnects.
-Only selected display metadata is read; Watch service startup, control, and port
-forwarding are outside this boundary. Empty registries are valid, individual
-metadata values may be absent, and companion identifiers remain sensitive.
+Paired Apple Watch discovery uses a separate request-driven CompanionProxy RSD channel over the active iPhone transport. The worker lazily connects, accepts at most two queued commands, returns at most sixteen sanitized registry entries, and discards its client after a failed request so the next query reconnects. Only selected display metadata is read; Watch service startup, control, and port forwarding are outside this boundary. Empty registries are valid, individual metadata values may be absent, and companion identifiers remain sensitive.
 
-WebDriverAgent automation is an on-demand optional service over the active
-`IdeviceProvider`. It never probes in the background and does not install, sign,
-or silently launch WDA. An explicit runner start first queries MobileImageMounter
-for the version-appropriate `Developer` image before XCTest starts; iOS 17 and
-later use the `Personalized` image type. A definite not-mounted response stops
-startup with an actionable error, while an unavailable preflight preserves the
-existing XCTest attempt for compatibility. The refreshed device-details response
-exposes the same result as a nullable readiness field without returning image
-signatures or personalization identifiers. MCP commands enter a four-item queue,
-carry a 12-second deadline, and allow only six selector strategies, 1,024-byte
-selector expressions, twenty
-matches, and a 1 MiB UI-tree response. The worker owns one WDA session, deletes
-or discards it after transport failure, and reports `device.wda` health without
-tearing down display, HID, or management services. Only normalized status,
-bounded XML, match indexes, and finite rectangles cross the MCP boundary; WDA
-session and element identifiers remain private to the worker.
+WebDriverAgent automation is an on-demand optional service over the active `IdeviceProvider`. It never probes in the background and does not install, sign, or silently launch WDA. An explicit runner start first queries MobileImageMounter for the version-appropriate `Developer` image before XCTest starts; iOS 17 and later use the `Personalized` image type. A definite not-mounted response stops startup with an actionable error, while an unavailable preflight preserves the existing XCTest attempt for compatibility. The refreshed device-details response exposes the same result as a nullable readiness field without returning image signatures or personalization identifiers. MCP commands enter a four-item queue, carry a 12-second deadline, and allow only six selector strategies, 1,024-byte selector expressions, twenty matches, and a 1 MiB UI-tree response. The worker owns one WDA session, deletes or discards it after transport failure, and reports `device.wda` health without tearing down display, HID, or management services. Only normalized status, bounded XML, match indexes, and finite rectangles cross the MCP boundary; WDA session and element identifiers remain private to the worker.
 
-Manual Developer Disk Image mounting is a separate, explicit supervised task.
-It accepts only absolute regular local files, rejects symbolic links, bounds the
-DMG at 1.5 GB and each support file independently. Native-dialog paths cross only
-the private bearer-authenticated API, while file bytes stay outside the WebView.
-iOS 16 and earlier require a DMG and signature; iOS 17 and later require a DMG,
-trust cache, and nonempty `BuildManifest.plist`. Personalized
-mounting uses idevice's TSS flow and therefore sends device-specific signing
-identifiers to Apple's service only after the user confirms the operation. The
-task reports bounded phase/progress state, can be cancelled by the user or session
-shutdown, and never discovers or downloads images automatically. Explicit
-unmount uses `/Developer` before iOS 17 and `/System/Developer` on newer systems;
-it shares the same single-operation queue so mount, unmount, and cancellation
-cannot race.
+Manual Developer Disk Image mounting is a separate, explicit supervised task. It accepts only absolute regular local files, rejects symbolic links, bounds the DMG at 1.5 GB and each support file independently. Native-dialog paths cross only the private bearer-authenticated API, while file bytes stay outside the WebView. iOS 16 and earlier require a DMG and signature; iOS 17 and later require a DMG, trust cache, and nonempty `BuildManifest.plist`. Personalized mounting uses idevice's TSS flow and therefore sends device-specific signing identifiers to Apple's service only after the user confirms the operation. The task reports bounded phase/progress state, can be cancelled by the user or session shutdown, and never discovers or downloads images automatically. Explicit unmount uses `/Developer` before iOS 17 and `/System/Developer` on newer systems; it shares the same single-operation queue so mount, unmount, and cancellation cannot race.
 
-Local device backup is an explicit MobileBackup2 worker owned by the active
-session. USB first uses the lockdown service and can fall back to the cloned RSD
-tunnel; Wi-Fi uses the remote RSD shim. The worker writes only beneath the host
-directory selected by the native dialog and the validated device identifier.
-Every delegate filesystem operation verifies lexical confinement and rejects
-symbolic-link ancestors, including when an existing backup is reused for an
-incremental run. Progress callbacks publish bounded counters without exposing
-file paths. Cancellation drops the DeviceLink session immediately and retains
-already transferred data for a later incremental backup. Restore, erase, backup
-password changes, and automatic/background backup are outside this boundary.
+Local device backup is an explicit MobileBackup2 worker owned by the active session. USB first uses the lockdown service and can fall back to the cloned RSD tunnel; Wi-Fi uses the remote RSD shim. The worker writes only beneath the host directory selected by the native dialog and the validated device identifier. Every delegate filesystem operation verifies lexical confinement and rejects symbolic-link ancestors, including when an existing backup is reused for an incremental run. Progress callbacks publish bounded counters without exposing file paths. Cancellation drops the DeviceLink session immediately and retains already transferred data for a later incremental backup. Restore, erase, backup password changes, and automatic/background backup are outside this boundary.
 
-Sysdiagnose export is a separate explicit CoreDevice DiagnosticsService worker
-on the cloned RSD tunnel. The request returns after a same-directory temporary
-file is reserved, while device collection and streaming continue under the
-session supervisor. The worker runs for at most 45 minutes, accepts at most 8
-GiB, rejects oversized chunks
-or a stream that differs from the device-declared length, and publishes only
-bounded counters and the selected file name. Cancellation and session shutdown
-drop the service stream and remove the partial file. Completion flushes and
-synchronizes the archive before atomically replacing the selected destination;
-diagnostic contents never cross the private API or MCP boundary.
+Sysdiagnose export is a separate explicit CoreDevice DiagnosticsService worker on the cloned RSD tunnel. The request returns after a same-directory temporary file is reserved, while device collection and streaming continue under the session supervisor. The worker runs for at most 45 minutes, accepts at most 8 GiB, rejects oversized chunks or a stream that differs from the device-declared length, and publishes only bounded counters and the selected file name. Cancellation and session shutdown drop the service stream and remove the partial file. Completion flushes and synchronizes the archive before atomically replacing the selected destination; diagnostic contents never cross the private API or MCP boundary.
 
-Device packet capture is a separate, user-initiated pcapd worker. USB sessions
-first open the traditional lockdown pcapd service and retain the cloned RSD
-tunnel as a fallback; Wi-Fi sessions use the CoreDevice remote pcapd shim over
-RSD. It writes normalized Ethernet records directly to a same-directory
-temporary host file, caps packets at the negotiated 256 KiB snapshot size and
-the complete capture at 256 MiB, then atomically replaces the selected `.pcap`
-destination. Stop, timeout, stream failure, and session shutdown all finalize
-the writer. Only bounded counters and state reach the private API; packet bytes
-never enter WebView or MCP transports.
+Device packet capture is a separate, user-initiated pcapd worker. USB sessions first open the traditional lockdown pcapd service and retain the cloned RSD tunnel as a fallback; Wi-Fi sessions use the CoreDevice remote pcapd shim over RSD. It writes normalized Ethernet records directly to a same-directory temporary host file, caps packets at the negotiated 256 KiB snapshot size and the complete capture at 256 MiB, then atomically replaces the selected `.pcap` destination. Stop, timeout, stream failure, and session shutdown all finalize the writer. Only bounded counters and state reach the private API; packet bytes never enter WebView or MCP transports.
 
-Bluetooth HCI capture follows the same ownership model around idevice's
-`BTPacketLogger` stream. It writes big-endian PCAP records using DLT 201 and a
-four-byte direction pseudo-header, bounds captures to five minutes and 64 MiB,
-and atomically replaces the selected destination. A missing device-side
-Bluetooth Logging profile is represented by a valid capture with zero packets,
-not by inventing an availability result from a silent stream.
+Bluetooth HCI capture follows the same ownership model around idevice's `BTPacketLogger` stream. It writes big-endian PCAP records using DLT 201 and a four-byte direction pseudo-header, bounds captures to five minutes and 64 MiB, and atomically replaces the selected destination. A missing device-side Bluetooth Logging profile is represented by a valid capture with zero packets, not by inventing an availability result from a silent stream.
 
-Restart and shutdown are separate fixed private-API commands rather than a
-client-supplied DiagnosticsRelay operation. Each opens an independent relay
-connection in a bounded task, so waiting for the device acknowledgement does
-not stall HID dispatch. The frontend requires a device-named confirmation.
+Restart and shutdown are separate fixed private-API commands rather than a client-supplied DiagnosticsRelay operation. Each opens an independent relay connection in a bounded task, so waiting for the device acknowledgement does not stall HID dispatch. The frontend requires a device-named confirmation.
 
-App storage uses a dedicated supervised House Arrest worker. USB first attempts
-House Arrest through the paired Lockdown provider and falls back to a cloned RSD
-tunnel; Wi-Fi uses RSD only. Every command carries an explicit `documents` or
-`container` scope and opens a fresh AFC session using `VendDocuments` or
-`VendContainer`; omitted API scope defaults to Documents for compatibility.
-Logical paths are rooted at `/Documents` or `/` accordingly and reject traversal
-and separators in item names. Symbolic links are exposed only as non-actionable
-special entries. File and directory downloads use rollback-capable local staging,
-while uploads write a unique remote temporary path and rename it only after every
-stream closes. Recursive transfers are iterative, limited to 64 levels and
-100,000 entries, reject symbolic links and special entries, and verify every
-regular file's byte count. Uploads do not silently replace an existing item and
-root mutation is rejected. Recursive deletion requires an explicit API flag,
-preflights the same depth, entry-type, and symlink constraints, then revalidates
-each planned item immediately before deleting it in postorder.
+App storage uses a dedicated supervised House Arrest worker. USB first attempts House Arrest through the paired Lockdown provider and falls back to a cloned RSD tunnel; Wi-Fi uses RSD only. Every command carries an explicit `documents` or `container` scope and opens a fresh AFC session using `VendDocuments` or `VendContainer`; omitted API scope defaults to Documents for compatibility. Logical paths are rooted at `/Documents` or `/` accordingly and reject traversal and separators in item names. Symbolic links are exposed only as non-actionable special entries. File and directory downloads use rollback-capable local staging, while uploads write a unique remote temporary path and rename it only after every stream closes. Recursive transfers are iterative, limited to 64 levels and 100,000 entries, reject symbolic links and special entries, and verify every regular file's byte count. Uploads do not silently replace an existing item and root mutation is rejected. Recursive deletion requires an explicit API flag, preflights the same depth, entry-type, and symlink constraints, then revalidates each planned item immediately before deleting it in postorder.
 
-The worker publishes a session-scoped transfer activity snapshot for each app.
-Byte counters are updated while each 64 KiB block is copied and published at
-most every 100 ms. Single-file transfers expose their known byte total; directory
-transfers remain indeterminate and report completed bytes, files, and directories
-without an additional remote preflight traversal. The frontend polls this
-read-only snapshot only while its upload or download request is active.
-Cancellation reaches the active transfer through an app- and session-scoped
-atomic token instead of waiting in the worker queue. Copy loops check it between
-64 KiB blocks and directory entries, close open AFC descriptors, and attempt to
-remove the staged host or device path before reporting `cancelled`.
+The worker publishes a session-scoped transfer activity snapshot for each app. Byte counters are updated while each 64 KiB block is copied and published at most every 100 ms. Single-file transfers expose their known byte total; directory transfers remain indeterminate and report completed bytes, files, and directories without an additional remote preflight traversal. The frontend polls this read-only snapshot only while its upload or download request is active. Cancellation reaches the active transfer through an app- and session-scoped atomic token instead of waiting in the worker queue. Copy loops check it between 64 KiB blocks and directory entries, close open AFC descriptors, and attempt to remove the staged host or device path before reporting `cancelled`.
 
-Public device files use a separate supervised standard-AFC worker. USB first
-opens `com.apple.afc` through the paired lockdown provider and can fall back to
-the cloned RSD tunnel; Wi-Fi uses `com.apple.afc.shim.remote` through RSD. AFC2
-is never requested. The worker reuses one client until an operation fails, but
-the private API exposes only bounded operations rooted in that standard AFC
-container. Paths reject traversal, backslashes, NULs, and unsafe components;
-symbolic links and special entries are not traversed. File transfer uses 64 KiB
-buffering and verifies byte counts. Imports stage under a unique remote name and
-rename only after completion; exports stage beside the selected host target.
-Recursive transfers are iterative and limited to 64 levels and 100,000 entries.
-Writes reject name collisions, root mutation, and unsupported local entry types;
-recursive deletion requires an explicit frontend confirmation. No AFC2 path or
-MCP mutation crosses this boundary.
+Public device files use a separate supervised standard-AFC worker. USB first opens `com.apple.afc` through the paired lockdown provider and can fall back to the cloned RSD tunnel; Wi-Fi uses `com.apple.afc.shim.remote` through RSD. AFC2 is never requested. The worker reuses one client until an operation fails, but the private API exposes only bounded operations rooted in that standard AFC container. Paths reject traversal, backslashes, NULs, and unsafe components; symbolic links and special entries are not traversed. File transfer uses 64 KiB buffering and verifies byte counts. Imports stage under a unique remote name and rename only after completion; exports stage beside the selected host target. Recursive transfers are iterative and limited to 64 levels and 100,000 entries. Writes reject name collisions, root mutation, and unsupported local entry types; recursive deletion requires an explicit frontend confirmation. No AFC2 path or MCP mutation crosses this boundary.
 
-The AFC top-level workspace presents four scopes without merging their service
-or authorization boundaries. Public AFC uses the supervised standard-AFC
-worker. App Documents and App Container use the existing per-application House
-Arrest worker after filtering the current app catalog by the scope actually
-available. Crash Reports remains a read-only CrashReportCopyMobile list and
-export path. Scope and app selection are locked while a transfer is active so
-the owning pane, progress snapshot, and cancellation control cannot disappear.
-The public browser only loads a directory while selected and resets when the
-device changes. Direct path input mirrors the backend's UTF-8 byte and component
-limits before issuing a request; the backend remains authoritative.
+The AFC top-level workspace presents four scopes without merging their service or authorization boundaries. Public AFC uses the supervised standard-AFC worker. App Documents and App Container use the existing per-application House Arrest worker after filtering the current app catalog by the scope actually available. Crash Reports remains a read-only CrashReportCopyMobile list and export path. Scope and app selection are locked while a transfer is active so the owning pane, progress snapshot, and cancellation control cannot disappear. The public browser only loads a directory while selected and resets when the device changes. Direct path input mirrors the backend's UTF-8 byte and component limits before issuing a request; the backend remains authoritative.
 
-Public AFC imports and exports publish a separate session-scoped activity
-snapshot. The transfer reuses one 64 KiB buffer across all files and publishes
-byte and entry counters at most every 100 ms. Single files expose a known byte
-total; directories stay indeterminate to avoid a second device traversal. The
-AFC tab polls the snapshot only while its transfer request is active.
-Cancellation bypasses the serialized AFC command queue through a session-scoped
-atomic token. Copy loops check it between 64 KiB blocks and directory entries,
-then discard staged host or device paths before reporting `cancelled`; cancellation
-does not invalidate an otherwise healthy AFC client.
+Public AFC imports and exports publish a separate session-scoped activity snapshot. The transfer reuses one 64 KiB buffer across all files and publishes byte and entry counters at most every 100 ms. Single files expose a known byte total; directories stay indeterminate to avoid a second device traversal. The AFC tab polls the snapshot only while its transfer request is active. Cancellation bypasses the serialized AFC command queue through a session-scoped atomic token. Copy loops check it between 64 KiB blocks and directory entries, then discard staged host or device paths before reporting `cancelled`; cancellation does not invalidate an otherwise healthy AFC client.
 
-Clipboard synchronization connects CoreDevice Pasteboard Service only when its
-persisted opt-in setting is enabled for a newly connected session. Device changes
-are push-driven when available, while host changes use a bounded-rate poll with
-echo suppression. The disabled default performs no background clipboard access or
-transfer; an explicit one-shot paste still writes the requested text. Activity is
-published through an eight-entry broadcast channel to authenticated WebSocket
-clients, so UI feedback cannot backpressure the service.
-One-shot Unicode paste commands share that Pasteboard Service owner through a
-four-entry command queue and issue Cmd+V only after receiving the SET reply.
+Clipboard synchronization connects CoreDevice Pasteboard Service only when its persisted opt-in setting is enabled for a newly connected session. Device changes are push-driven when available, while host changes use a bounded-rate poll with echo suppression. The disabled default performs no background clipboard access or transfer; an explicit one-shot paste still writes the requested text. Activity is published through an eight-entry broadcast channel to authenticated WebSocket clients, so UI feedback cannot backpressure the service. One-shot Unicode paste commands share that Pasteboard Service owner through a four-entry command queue and issue Cmd+V only after receiving the SET reply.
 
-IPA installation and app removal use independent Tokio tasks and fresh
-Installation Proxy connections so uploads do not block video, HID, or app-list
-requests. The backend re-queries an uninstall target and permits only removable,
-non-first-party user apps. One shared operation state exposes stage and
-device-reported progress.
+IPA installation and app removal use independent Tokio tasks and fresh Installation Proxy connections so uploads do not block video, HID, or app-list requests. The backend re-queries an uninstall target and permits only removable, non-first-party user apps. One shared operation state exposes stage and device-reported progress.
 
-The current `idevice` package helper buffers a selected IPA before AFC upload
-and cannot report byte-level upload progress. The frontend therefore labels the
-upload stage as indeterminate instead of displaying invented percentages.
+The current `idevice` package helper buffers a selected IPA before AFC upload and cannot report byte-level upload progress. The frontend therefore labels the upload stage as indeterminate instead of displaying invented percentages.
 
-Crash-report listing and export open fresh CrashReportCopyMobile/AFC sessions in
-independent Tokio tasks, so recursive directory reads and file transfer cannot
-block HID dispatch. Listing is bounded by depth and entry counts. Export
-revalidates an absolute device path and regular-file metadata, caps allocation
-at 128 MiB, and returns only metadata to the WebView.
+Crash-report listing and export open fresh CrashReportCopyMobile/AFC sessions in independent Tokio tasks, so recursive directory reads and file transfer cannot block HID dispatch. Listing is bounded by depth and entry counts. Export revalidates an absolute device path and regular-file metadata, caps allocation at 128 MiB, and returns only metadata to the WebView.
 
-Device logs use a supervised OsTraceRelay connection only while the log
-workspace is open. The service exposes structured Unified Log level, process,
-PID, subsystem, category, and filename metadata. If connecting or starting the
-Unified Log activity fails, the same supervisor falls back to SyslogRelay; a
-stream failure triggers a supervised reconnect instead of changing sources
-inside a live connection. Messages are sanitized and capped at 16 KiB, metadata
-fields at 512 bytes, before entering a shared 2,000-entry in-memory ring buffer.
-The private API returns at most 500 entries per poll and reports cursor gaps.
-Device log content is never forwarded to the application tracing subsystem or
-persisted automatically.
+Device logs use a supervised OsTraceRelay connection only while the log workspace is open. The service exposes structured Unified Log level, process, PID, subsystem, category, and filename metadata. If connecting or starting the Unified Log activity fails, the same supervisor falls back to SyslogRelay; a stream failure triggers a supervised reconnect instead of changing sources inside a live connection. Messages are sanitized and capped at 16 KiB, metadata fields at 512 bytes, before entering a shared 2,000-entry in-memory ring buffer. The private API returns at most 500 entries per poll and reports cursor gaps. Device log content is never forwarded to the application tracing subsystem or persisted automatically.
 
-A supervised Lockdown heartbeat runs for the lifetime of every active device
-session. It answers each device `Marco` request with `Polo`, bounds device-provided
-wait intervals, and reconnects after sleep, timeout, or transport failure. The
-heartbeat is optional and cannot prevent video, input, or management startup;
-its lifecycle is exposed through the shared service-health registry.
+A supervised Lockdown heartbeat runs for the lifetime of every active device session. It answers each device `Marco` request with `Polo`, bounds device-provided wait intervals, and reconnects after sleep, timeout, or transport failure. The heartbeat is optional and cannot prevent video, input, or management startup; its lifecycle is exposed through the shared service-health registry.
 
 ## Video Pipeline
 
-CoreDevice displayservice produces RTP/HEVC. The backend assembles complete HEVC
-access units into a 16 MiB byte-bounded queue before FFmpeg; overflow discards
-dependent frames until an IRAP and requests PLI/FIR recovery. FFmpeg emits
-self-describing RGB24 PAM frames by default. The experimental YUV420P setting
-(also selectable with `DEVICEHUB_VIDEO_PIXEL_FORMAT=yuv420p`) emits YUV4MPEG2
-and sends planar YUV420P directly to TurboJPEG, avoiding the RGB conversion and
-halving decoded frame bandwidth. A `watch` channel publishes only the latest
-frame and wakes WebSocket consumers without a fixed-rate polling loop; lagging
-consumers drop stale decoded frames by construction.
+CoreDevice displayservice produces RTP/HEVC. The backend assembles complete HEVC access units into a 16 MiB byte-bounded queue before FFmpeg; overflow discards dependent frames until an IRAP and requests PLI/FIR recovery. FFmpeg emits self-describing RGB24 PAM frames by default. The experimental YUV420P setting (also selectable with `DEVICEHUB_VIDEO_PIXEL_FORMAT=yuv420p`) emits YUV4MPEG2 and sends planar YUV420P directly to TurboJPEG, avoiding the RGB conversion and halving decoded frame bandwidth. A `watch` channel publishes only the latest frame and wakes WebSocket consumers without a fixed-rate polling loop; lagging consumers drop stale decoded frames by construction.
 
-The default, experimental Browser / WebCodecs backend branches after the same
-bounded access-unit queue. Rust publishes versioned Annex-B HEVC access units over the
-authenticated WebSocket. The WebView derives the RFC 6381 HEVC profile, tier,
-level, compatibility flags, and constraints from each stream's SPS, then decodes
-with `VideoDecoder` before drawing `VideoFrame` objects to the existing canvas.
-Broadcast lag, decoder
-backlog, missing decoder output, and configuration changes discard dependent
-frames and request a new IRAP through PLI/FIR. Repeated capability, timeout, or
-runtime failures reconnect the session with the native backend. Decoder setup
-probes the exact dimensions and codec, retries progressively simpler `hev1` and
-`hvc1` configurations when WebKit reports support but rejects `configure()`, and
-only then invokes the native fallback. WebCodecs `EncodedVideoChunk` timestamps
-come from the 90 kHz RTP clock instead of a fixed 60 FPS counter, preserving the
-device's actual cadence, variable frame rate, and higher refresh rates. SPS and
-codec scanning runs only for initial configuration, keyframes, and dimension
-changes rather than traversing every compressed delta access unit.
+The default, experimental Browser / WebCodecs backend branches after the same bounded access-unit queue. Rust publishes versioned Annex-B HEVC access units over the authenticated WebSocket. The WebView derives the RFC 6381 HEVC profile, tier, level, compatibility flags, and constraints from each stream's SPS, then decodes with `VideoDecoder` before drawing `VideoFrame` objects to the existing canvas. Broadcast lag, decoder backlog, missing decoder output, and configuration changes discard dependent frames and request a new IRAP through PLI/FIR. Repeated capability, timeout, or runtime failures reconnect the session with the native backend. Decoder setup probes the exact dimensions and codec, retries progressively simpler `hev1` and `hvc1` configurations when WebKit reports support but rejects `configure()`, and only then invokes the native fallback. WebCodecs `EncodedVideoChunk` timestamps come from the 90 kHz RTP clock instead of a fixed 60 FPS counter, preserving the device's actual cadence, variable frame rate, and higher refresh rates. SPS and codec scanning runs only for initial configuration, keyframes, and dimension changes rather than traversing every compressed delta access unit.
 
-Each WebSocket client explicitly reports whether it needs live video. Only the
-device page and the live key-mapping background receive frames. Settings, AFC,
-logs, a static mapping screenshot, and a hidden window keep the RTP/RTCP session
-alive but stop copying and sending video to that WebView. Resuming display asks
-for an IRAP before rendering again so decoding does not restart from a dependent
-P-frame. This gate affects UI display only: MCP screenshots remain available
-through the on-demand CoreDevice ScreenCaptureService and frame synchronization
-observes both native and browser frame versions.
+Each WebSocket client explicitly reports whether it needs live video. Only the device page and the live key-mapping background receive frames. Settings, AFC, logs, a static mapping screenshot, and a hidden window keep the RTP/RTCP session alive but stop copying and sending video to that WebView. Resuming display asks for an IRAP before rendering again so decoding does not restart from a dependent P-frame. This gate affects UI display only: MCP screenshots remain available through the on-demand CoreDevice ScreenCaptureService and frame synchronization observes both native and browser frame versions.
 
-Axum JPEG-encodes the latest frame with a thread-local reusable TurboJPEG
-compressor. At most two frames are allowed in flight per WebView, so backend JPEG
-encoding can overlap WebView JPEG decoding without forming an unbounded queue.
-The frontend acknowledges decoded, presented, or deliberately replaced frames.
-A 500ms credit lease prevents a lost acknowledgement from permanently stalling
-video.
+Axum JPEG-encodes the latest frame with a thread-local reusable TurboJPEG compressor. At most two frames are allowed in flight per WebView, so backend JPEG encoding can overlap WebView JPEG decoding without forming an unbounded queue. The frontend acknowledges decoded, presented, or deliberately replaced frames. A 500ms credit lease prevents a lost acknowledgement from permanently stalling video.
 
-Windows limits the decoded long edge to 1920 pixels by default. FFmpeg preserves
-aspect ratio, never upscales, and emits even dimensions. Set
-`DEVICEHUB_VIDEO_MAX_DIMENSION=0` for native resolution or choose a lower value
-on slower systems.
+Windows limits the decoded long edge to 1920 pixels by default. FFmpeg preserves aspect ratio, never upscales, and emits even dimensions. Set `DEVICEHUB_VIDEO_MAX_DIMENSION=0` for native resolution or choose a lower value on slower systems.
 
-The browser backend does not apply the FFmpeg dimension limit. Support depends
-on the platform WebView exposing HEVC through WebCodecs; Windows commonly also
-requires the system HEVC Video Extensions. The app probes and configures the
-exact SPS-derived decoder configuration at runtime instead of assuming that
-WebCodecs implies HEVC.
+The browser backend does not apply the FFmpeg dimension limit. Support depends on the platform WebView exposing HEVC through WebCodecs; Windows commonly also requires the system HEVC Video Extensions. The app probes and configures the exact SPS-derived decoder configuration at runtime instead of assuming that WebCodecs implies HEVC.
 
-The canvas contain-fits the rotated source with one shared scale. Pointer
-coordinates are normalized in the exact displayed rectangle, which prevents
-landscape stretching and touch offset.
+The canvas contain-fits the rotated source with one shared scale. Pointer coordinates are normalized in the exact displayed rectangle, which prevents landscape stretching and touch offset.
 
 ## Audio Pipeline
 
-CoreDevice negotiates AAC-ELD at 48 kHz stereo with one 10 ms access unit per
-RTP packet. The device sends bare access units, so the backend adds RFC 3640 AU
-headers before forwarding RTP to FFmpeg. FFmpeg decodes to interleaved S16LE
-and publishes bounded 20 ms PCM chunks to a dedicated native output thread.
-Rodio converts the stream to the host's default output format. The queue is
-bounded and stale audio is cleared above 240 ms, so output backpressure cannot
-delay RTP, video, or input. PCM does not pass through the WebSocket or WebView.
+CoreDevice negotiates AAC-ELD at 48 kHz stereo with one 10 ms access unit per RTP packet. The device sends bare access units, so the backend adds RFC 3640 AU headers before forwarding RTP to FFmpeg. FFmpeg decodes to interleaved S16LE and publishes bounded 20 ms PCM chunks to a dedicated native output thread. Rodio converts the stream to the host's default output format. The queue is bounded and stale audio is cleared above 240 ms, so output backpressure cannot delay RTP, video, or input. PCM does not pass through the WebSocket or WebView.
 
-Audio is off by default. Mute and volume are persisted by the backend and apply
-directly to native output without depending on browser autoplay policy or page
-visibility. Output-device failures and runtime decoder exits use bounded retry;
-a decoder that cannot start drains the negotiated stream without terminating
-video or input.
+Audio is off by default. Mute and volume are persisted by the backend and apply directly to native output without depending on browser autoplay policy or page visibility. Output-device failures and runtime decoder exits use bounded retry; a decoder that cannot start drains the negotiated stream without terminating video or input.
 
 ## Input Pipeline
 
-Mapping, direct pointer, and keyboard state are combined in React. Identical
-touch frames are not resent. Rust converts validated typed contacts into one
-fixed five-slot Universal HID multitouch report. Keyboard and hardware commands
-preserve down/up state, and disconnect cleanup releases held usages.
+Mapping, direct pointer, and keyboard state are combined in React. Identical touch frames are not resent. Rust converts validated typed contacts into one fixed five-slot Universal HID multitouch report. Keyboard and hardware commands preserve down/up state, and disconnect cleanup releases held usages.
 
-Mapping mode and keyboard passthrough are mutually exclusive. This prevents a
-single physical key from producing both a mapped touch and a keyboard usage.
+Mapping mode and keyboard passthrough are mutually exclusive. This prevents a single physical key from producing both a mapped touch and a keyboard usage.
 
 ## Provisioning Data
 
-Profiles are managed by an independently supervised, bounded Misagent command
-service, so profile operations do not block the HID input loop. CMS SignedData
-is decoded before plist metadata enters the private API. Raw profile payloads
-and provisioned device identifiers never cross into the frontend. A malformed
-profile is isolated rather than failing the complete result.
+Profiles are managed by an independently supervised, bounded Misagent command service, so profile operations do not block the HID input loop. CMS SignedData is decoded before plist metadata enters the private API. Raw profile payloads and provisioned device identifiers never cross into the frontend. A malformed profile is isolated rather than failing the complete result.
 
-Install and removal commands carry request deadlines so a timed-out HTTP request
-cannot apply later from the queue. Installs validate the local file and profile
-metadata before device mutation; removals refresh the device catalog before and
-after mutation. Input, not-found, conflict, transport, and timeout failures retain
-typed semantics through the private API. Only transport and timeout failures
-cause the supervisor to rebuild the Misagent channel.
+Install and removal commands carry request deadlines so a timed-out HTTP request cannot apply later from the queue. Installs validate the local file and profile metadata before device mutation; removals refresh the device catalog before and after mutation. Input, not-found, conflict, transport, and timeout failures retain typed semantics through the private API. Only transport and timeout failures cause the supervisor to rebuild the Misagent channel.
 
-If displayservice is unavailable, the backend preserves a reduced management
-session when Lockdown remains usable. Screen control and AppService-only actions
-are explicitly unavailable rather than hiding the whole device.
+If displayservice is unavailable, the backend preserves a reduced management session when Lockdown remains usable. Screen control and AppService-only actions are explicitly unavailable rather than hiding the whole device.
 
 ## Dependency Pin
 
-The `idevice` dependency is temporarily pinned to reviewed revision `5e89583`
-from the project fork. It includes the iOS 27 CoreDevice fixes, the explicit
-AppService container-access option required by iOS 27, and typed DVT
-NetworkMonitor and EnergyMonitor clients used by the performance workspace.
-Replace this pin after equivalent fixes are merged and released upstream.
+The `idevice` dependency is temporarily pinned to reviewed revision `5e89583` from the project fork. It includes the iOS 27 CoreDevice fixes, the explicit AppService container-access option required by iOS 27, and typed DVT NetworkMonitor and EnergyMonitor clients used by the performance workspace. Replace this pin after equivalent fixes are merged and released upstream.
 
 ## Security Boundaries
 
 - The private API remains loopback-only and token-authenticated.
-- MCP is loopback-only by default, is unauthenticated, exposes potentially
-  sensitive screenshots, UI trees, process names, device logs, and crash
-  reports, and
-  warns on non-loopback binds.
+- MCP is loopback-only by default, is unauthenticated, exposes potentially sensitive screenshots, UI trees, process names, device logs, and crash reports, and warns on non-loopback binds.
 - Frontend app metadata is never accepted as uninstall authorization.
 - HID reports are built only after backend validation.
 - Updater artifacts require a Tauri signature before installation.

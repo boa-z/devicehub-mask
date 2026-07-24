@@ -56,9 +56,8 @@ import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPrefere
 import { logFrontend } from "./diagnostics";
 import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
-import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
-import { BrowserVideoDecoder, parseBrowserVideoPacket } from "./browserVideo";
-import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Position, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
+import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type PerformanceView, type Position, type Profile, type ScrcpyMappingType } from "./types";
+import { useDeviceVideoStream, type BackendConnection } from "./useDeviceVideoStream";
 import { readAudioOutputStatus, readVideoSettings, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./videoSettings";
 
 const emptyStatus: DeviceStatus = {
@@ -70,57 +69,8 @@ const emptyStatus: DeviceStatus = {
   devices: [],
   location: { available: false, active: false, latitude: null, longitude: null, error: null },
 };
-const emptyMetrics: StreamMetrics = {
-  source_fps: 0,
-  decoded_fps: 0,
-  published_fps: 0,
-  sent_fps: 0,
-  backend_dropped_fps: 0,
-  jpeg_encode_ms: 0,
-  frame_age_ms: 0,
-  websocket_send_ms: 0,
-  presentation_ack_ms: 0,
-  megabits_per_second: 0,
-};
-
-type BackendConnection = { origin: string; token: string };
 type ProfileList = { profiles: string[]; active: string; app_bindings: Record<string, string>; binding_conflicts: string[] };
 type CapturedScreenshot = { blob: Blob; url: string; width: number; height: number };
-
-function wsUrl(connection: BackendConnection) {
-  return `${connection.origin.replace(/^http/, "ws")}/api/ws`;
-}
-
-function drawFrame(
-  canvas: HTMLCanvasElement,
-  context: CanvasRenderingContext2D,
-  source: CanvasImageSource,
-  sourceWidth: number,
-  sourceHeight: number,
-  orientation: Orientation,
-) {
-  const landscape = orientation === "landscape_left" || orientation === "landscape_right";
-  const width = landscape ? sourceHeight : sourceWidth;
-  const height = landscape ? sourceWidth : sourceHeight;
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  context.save();
-  if (orientation === "landscape_right") {
-    context.translate(canvas.width, 0);
-    context.rotate(Math.PI / 2);
-  } else if (orientation === "landscape_left") {
-    context.translate(0, canvas.height);
-    context.rotate(-Math.PI / 2);
-  } else if (orientation === "portrait_upside_down") {
-    context.translate(canvas.width, canvas.height);
-    context.rotate(Math.PI);
-  }
-  context.drawImage(source, 0, 0);
-  context.restore();
-  return { width: canvas.width, height: canvas.height };
-}
 
 function containSize(containerWidth: number, containerHeight: number, contentWidth: number, contentHeight: number) {
   if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
@@ -193,9 +143,6 @@ export default function App() {
   const [fullscreenToolbarVisible, setFullscreenToolbarVisible] = useState(true);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [inspectorVisible, setInspectorVisible] = useState(true);
-  const [connected, setConnected] = useState(false);
-  const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(emptyMetrics);
-  const [renderFps, setRenderFps] = useState(0);
   const [performanceView, setPerformanceView] = useState<PerformanceView | null>(null);
   const [performanceError, setPerformanceError] = useState<string | null>(null);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
@@ -207,10 +154,6 @@ export default function App() {
   const [deviceEvent, setDeviceEvent] = useState<DeviceEvent | null>(null);
   const [activeMappingIds, setActiveMappingIds] = useState<Set<string>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
-  const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
-  const [hasFrame, setHasFrame] = useState(false);
-  const [canvasReady, setCanvasReady] = useState(false);
-  const [streamStalled, setStreamStalled] = useState(false);
   const [recording, setRecording] = useState(false);
   const [textInputOpen, setTextInputOpen] = useState(false);
   const [textInput, setTextInput] = useState("");
@@ -224,19 +167,12 @@ export default function App() {
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
   const mappingInsertPositionRef = useRef<Position>({ x: 0.5, y: 0.5 });
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
-  const renderedFramesRef = useRef(0);
-  const lastVideoActivityAtRef = useRef(0);
-  const socketRef = useRef<WebSocket | null>(null);
   const audioPlaybackGenerationRef = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
-  const canvasReadyRef = useRef(false);
   const fullscreenToolbarTimerRef = useRef<number | null>(null);
   const profileSwitchingRef = useRef(false);
-  const orientationRef = useRef<Orientation>("portrait");
   const heldRef = useRef(new Set<string>());
   const heldSinceRef = useRef(new Map<string, number>());
   const mappingOffsetsRef = useRef(new Map<string, { x: number; y: number }>());
@@ -248,10 +184,7 @@ export default function App() {
   const activeMappingIdsRef = useRef(new Set<string>());
   const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
   const capturedScreenshotRef = useRef<CapturedScreenshot | null>(null);
-  const hasFrameRef = useRef(false);
-  const videoDemandRef = useRef(false);
 
-  orientationRef.current = status.orientation;
   useEffect(() => {
     if (status.active_device_id) setSelectedDeviceId(status.active_device_id);
   }, [status.active_device_id]);
@@ -358,7 +291,33 @@ export default function App() {
   const mappingEditing = page === "mappings" && controlMode === "mapping" && editing;
   const videoDemand = documentVisible
     && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
-  videoDemandRef.current = videoDemand;
+  const handleVideoDisconnect = useCallback(() => {
+    lastSentTouchFrameRef.current = null;
+    activeMappingIdsRef.current = new Set();
+    setActiveMappingIds(new Set());
+  }, []);
+  const {
+    connected,
+    streamMetrics,
+    renderFps,
+    frameSize,
+    hasFrame,
+    canvasReady,
+    streamStalled,
+    canvasRef,
+    canvasReadyRef,
+    bindCanvas,
+    send: command,
+  } = useDeviceVideoStream({
+    backend,
+    orientation: status.orientation,
+    videoDemand,
+    monitorStall: Boolean(status.active_udid) && (page === "device" || page === "mappings"),
+    onStatus: setStatus,
+    onClipboard: setClipboardEvent,
+    onDeviceEvent: setDeviceEvent,
+    onDisconnect: handleVideoDisconnect,
+  });
   const mappingFrameSize = mappingBackgroundMode === "screenshot" && capturedScreenshot
     ? { width: capturedScreenshot.width, height: capturedScreenshot.height }
     : frameSize;
@@ -369,28 +328,12 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, []);
 
-  useEffect(() => {
-    const socket = socketRef.current;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "video_demand", active: videoDemand }));
-    }
-  }, [videoDemand]);
-
   const request = useCallback((path: string, init: RequestInit = {}) => {
     if (!backend) return Promise.reject(new Error(translateRef.current("errors.backendNotReady")));
     const headers = new Headers(init.headers);
     headers.set("authorization", `Bearer ${backend.token}`);
     return fetch(`${backend.origin}${path}`, { ...init, headers });
   }, [backend]);
-
-  const bindCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
-    canvasRef.current = canvas;
-    canvasContextRef.current = null;
-    if (canvas) {
-      canvasReadyRef.current = false;
-      setCanvasReady(false);
-    }
-  }, []);
 
   const updateDeviceViewPreferences = useCallback((next: DeviceViewPreferences) => {
     setDeviceViewPreferences(next);
@@ -479,12 +422,6 @@ export default function App() {
     }).catch((error) => logFrontend("warn", "device_logs", "set_streaming", error));
   }, [backend, deviceLogStreamingRequired, request]);
 
-  const command = useCallback((payload: unknown) => {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(payload));
-    }
-  }, []);
-
   const sendFrame = useCallback((nextHeld = heldRef.current, released: TouchContact[] = []) => {
     const mappedFrame = buildMappingRuntimeFrame(
       controlProfile.mappings,
@@ -505,11 +442,10 @@ export default function App() {
       activeMappingIdsRef.current = nextActiveMappingIds;
       setActiveMappingIds(nextActiveMappingIds);
     }
-    const socket = socketRef.current;
-    if (socket?.readyState !== WebSocket.OPEN || touchFramesEqual(lastSentTouchFrameRef.current, contacts)) return;
-    socket.send(JSON.stringify({ type: "multi_touch", contacts }));
+    if (!connected || touchFramesEqual(lastSentTouchFrameRef.current, contacts)) return;
+    command({ type: "multi_touch", contacts });
     lastSentTouchFrameRef.current = contacts;
-  }, [controlProfile.mappings, frameSize]);
+  }, [command, connected, controlProfile.mappings, frameSize]);
 
   const releaseAllControls = useCallback(() => {
     const released = [...directTouchesRef.current.values()].map((contact) => ({ ...contact, touching: false }));
@@ -575,31 +511,6 @@ export default function App() {
       .catch(() => undefined);
   }, [appWindow]);
 
-  useEffect(() => {
-    let measuredAt = performance.now();
-    const timer = window.setInterval(() => {
-      const now = performance.now();
-      const elapsed = Math.max((now - measuredAt) / 1000, Number.EPSILON);
-      setRenderFps(renderedFramesRef.current / elapsed);
-      renderedFramesRef.current = 0;
-      measuredAt = now;
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!connected || !status.active_udid || (page !== "device" && page !== "mappings")) {
-      setStreamStalled(false);
-      return;
-    }
-    const update = () => {
-      setStreamStalled(isVideoStreamStalled(performance.now(), lastVideoActivityAtRef.current));
-    };
-    update();
-    const timer = window.setInterval(update, 1_000);
-    return () => window.clearInterval(timer);
-  }, [connected, page, status.active_udid]);
-
   const showFullscreenToolbar = useCallback(() => {
     if (!deviceFullscreen || !deviceViewPreferences.fullscreenToolbarAutoHide) return;
     setFullscreenToolbarVisible(true);
@@ -645,216 +556,6 @@ export default function App() {
   }, [page]);
 
   useEffect(() => {
-    if (!backend) return;
-    let disposed = false;
-    let retry: number | undefined;
-    const open = () => {
-      const socket = new WebSocket(wsUrl(backend), ["devicehub-mask", backend.token]);
-      let socketClosed = false;
-      let pendingFrame: Blob | null = null;
-      let decoding = false;
-      let metricsTimer: number | undefined;
-      let frontendMetrics = {
-        startedAt: performance.now(),
-        receivedFrames: 0,
-        replacedFrames: 0,
-        presentedFrames: 0,
-        jpegDecodeMs: 0,
-        canvasDrawMs: 0,
-        decodeErrors: 0,
-      };
-      const presentFrame = (
-        source: CanvasImageSource,
-        sourceWidth: number,
-        sourceHeight: number,
-      ) => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const cachedContext = canvasContextRef.current;
-        const context = cachedContext?.canvas === canvas
-          ? cachedContext
-          : canvas.getContext("2d", { alpha: false });
-        if (!context) return;
-        canvasContextRef.current = context;
-        const drawStarted = performance.now();
-        const size = drawFrame(
-          canvas,
-          context,
-          source,
-          sourceWidth,
-          sourceHeight,
-          orientationRef.current,
-        );
-        frontendMetrics.canvasDrawMs += performance.now() - drawStarted;
-        frontendMetrics.presentedFrames += 1;
-        renderedFramesRef.current += 1;
-        lastVideoActivityAtRef.current = performance.now();
-        setStreamStalled(false);
-        if (!canvasReadyRef.current) {
-          canvasReadyRef.current = true;
-          setCanvasReady(true);
-        }
-        if (!hasFrameRef.current) {
-          hasFrameRef.current = true;
-          setHasFrame(true);
-        }
-        setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
-      };
-      const browserDecoder = new BrowserVideoDecoder({
-        output: (frame, decodeMs) => {
-          try {
-            frontendMetrics.jpegDecodeMs += decodeMs;
-            presentFrame(frame, frame.codedWidth, frame.codedHeight);
-          } finally {
-            frame.close();
-          }
-        },
-        requestKeyframe: () => {
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "browser_video_keyframe" }));
-          }
-        },
-        fatal: (error) => {
-          frontendMetrics.decodeErrors += 1;
-          logFrontend("warn", "video", "browser_decoder", error);
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "browser_decoder_error", message: String(error) }));
-          }
-        },
-      });
-      const flushFrontendMetrics = () => {
-        const now = performance.now();
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({
-            type: "frontend_metrics",
-            window_ms: now - frontendMetrics.startedAt,
-            received_frames: frontendMetrics.receivedFrames,
-            replaced_frames: frontendMetrics.replacedFrames,
-            presented_frames: frontendMetrics.presentedFrames,
-            jpeg_decode_ms: frontendMetrics.jpegDecodeMs,
-            canvas_draw_ms: frontendMetrics.canvasDrawMs,
-            decode_errors: frontendMetrics.decodeErrors,
-          }));
-        }
-        frontendMetrics = {
-          startedAt: now,
-          receivedFrames: 0,
-          replacedFrames: 0,
-          presentedFrames: 0,
-          jpegDecodeMs: 0,
-          canvasDrawMs: 0,
-          decodeErrors: 0,
-        };
-      };
-      socket.binaryType = "arraybuffer";
-      socket.onopen = () => {
-        logFrontend("info", "websocket", "opened", "Video and control socket connected");
-        socketRef.current = socket;
-        lastVideoActivityAtRef.current = performance.now();
-        setConnected(true);
-        socket.send(JSON.stringify({ type: "video_demand", active: videoDemandRef.current }));
-        metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
-      };
-      socket.onerror = () => logFrontend("warn", "websocket", "transport_error", "WebSocket transport error");
-      socket.onclose = (event) => {
-        logFrontend(
-          disposed ? "debug" : "warn",
-          "websocket",
-          "closed",
-          `code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`,
-        );
-        socketClosed = true;
-        if (metricsTimer !== undefined) window.clearInterval(metricsTimer);
-        pendingFrame = null;
-        browserDecoder.close();
-        lastSentTouchFrameRef.current = null;
-        activeMappingIdsRef.current = new Set();
-        setActiveMappingIds(new Set());
-        if (socketRef.current === socket) socketRef.current = null;
-        setConnected(false);
-        lastVideoActivityAtRef.current = 0;
-        canvasReadyRef.current = false;
-        setCanvasReady(false);
-        setStreamStalled(false);
-        setStreamMetrics(emptyMetrics);
-        if (!disposed) retry = window.setTimeout(open, 800);
-      };
-      const drainFrames = async () => {
-        if (decoding) return;
-        decoding = true;
-        try {
-          while (pendingFrame && !disposed && !socketClosed) {
-            const blob = pendingFrame;
-            pendingFrame = null;
-            let bitmap: ImageBitmap | null = null;
-            try {
-              const decodeStarted = performance.now();
-              bitmap = await createImageBitmap(blob);
-              frontendMetrics.jpegDecodeMs += performance.now() - decodeStarted;
-              if (disposed || socketClosed) continue;
-              presentFrame(bitmap, bitmap.width, bitmap.height);
-            } catch (error) {
-              frontendMetrics.decodeErrors += 1;
-              logFrontend("warn", "video", "decode_frame", error);
-            } finally {
-              bitmap?.close();
-              if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({ type: "frame_presented" }));
-              }
-            }
-          }
-        } finally {
-          decoding = false;
-          if (pendingFrame && !disposed && !socketClosed) void drainFrames();
-        }
-      };
-      socket.onmessage = (event) => {
-        if (typeof event.data === "string") {
-          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent | DeviceEvent };
-          if (data.type === "status") setStatus(data.payload as DeviceStatus);
-          if (data.type === "clipboard") setClipboardEvent(data.payload as ClipboardEvent);
-          if (data.type === "device_event") setDeviceEvent(data.payload as DeviceEvent);
-          if (data.type === "metrics") {
-            const metrics = data.payload as StreamMetrics;
-            setStreamMetrics(metrics);
-            if (hasDecodedVideoActivity(metrics)) {
-              lastVideoActivityAtRef.current = performance.now();
-              setStreamStalled(false);
-            }
-          }
-          return;
-        }
-        const buffer = event.data as ArrayBuffer;
-        frontendMetrics.receivedFrames += 1;
-        lastVideoActivityAtRef.current = performance.now();
-        setStreamStalled(false);
-        let browserPacket: ReturnType<typeof parseBrowserVideoPacket>;
-        try {
-          browserPacket = parseBrowserVideoPacket(buffer);
-        } catch (error) {
-          frontendMetrics.decodeErrors += 1;
-          logFrontend("warn", "video", "browser_packet", error);
-          return;
-        }
-        if (browserPacket) {
-          browserDecoder.enqueue(browserPacket);
-          return;
-        }
-        if (pendingFrame) {
-          frontendMetrics.replacedFrames += 1;
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "frame_presented" }));
-          }
-        }
-        pendingFrame = new Blob([buffer], { type: "image/jpeg" });
-        void drainFrames();
-      };
-    };
-    open();
-    return () => { disposed = true; if (retry) clearTimeout(retry); socketRef.current?.close(); };
-  }, [backend]);
-
-  useEffect(() => {
     if (deviceEvent?.kind === "device_name_changed") {
       void request("/api/devices/refresh", { method: "PUT" });
     }
@@ -889,7 +590,7 @@ export default function App() {
     if (previous) URL.revokeObjectURL(previous.url);
     void message.success(t("mapping.screenshotCaptured"));
     return next;
-  }, [hasFrame, t]);
+  }, [canvasRef, hasFrame, t]);
 
   const saveMappingScreenshot = useCallback(async () => {
     const screenshot = mappingBackgroundMode === "live"
@@ -951,7 +652,7 @@ export default function App() {
     } finally {
       setScreenshotBusy(false);
     }
-  }, [request, screenshotBusy, status.active_udid, status.devices, t]);
+  }, [canvasReadyRef, canvasRef, request, screenshotBusy, status.active_udid, status.devices, t]);
 
   const stopDeviceRecording = useCallback(() => {
     const recorder = recorderRef.current;
@@ -1020,7 +721,7 @@ export default function App() {
       logFrontend("warn", "video", "start_recording", error);
       void message.error(t("device.recordingFailed", { error: String(error) }));
     }
-  }, [status.active_udid, status.devices, t]);
+  }, [canvasReadyRef, canvasRef, status.active_udid, status.devices, t]);
 
   useEffect(() => {
     if (page !== "device" || !status.active_udid) stopDeviceRecording();

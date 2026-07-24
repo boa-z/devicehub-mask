@@ -18,15 +18,18 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
+use crate::application::DeviceControlService;
 use crate::device_events::DeviceEventSlot;
 use crate::device_logs::{DeviceLogDemand, DeviceLogEntry, DeviceLogLevel, DeviceLogSlot};
 use crate::hid::TouchContact;
 use crate::performance::{PerformanceDemand, PerformanceSlot};
 use crate::protocol::{
-    ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat, FrameSlot, InputCmd,
-    InputSink, LocationStatusSlot, Orientation, OrientationSlot, RotateDir, StatusSlot, norm,
-    unrotate_norm, validate_paste_text,
+    ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat, InputCmd,
+    LocationStatusSlot, Orientation, OrientationSlot, RotateDir, StatusSlot, norm, unrotate_norm,
+    validate_paste_text,
 };
+#[cfg(test)]
+use crate::protocol::{FrameSlot, InputSink};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
 const DEFAULT_MAX_DIM: u32 = 1024;
@@ -70,9 +73,7 @@ struct McpObservability {
 
 #[derive(Clone)]
 struct DeviceHub {
-    frames: FrameSlot,
-    browser_frames: crate::browser_video::BrowserVideoSlot,
-    input: InputSink,
+    device_control: DeviceControlService,
     orientation: OrientationSlot,
     devices: DeviceListSlot,
     active: ActiveSlot,
@@ -661,6 +662,7 @@ async fn await_device_condition(
 
 #[tool_router]
 impl DeviceHub {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn new(
         frames: FrameSlot,
@@ -675,10 +677,33 @@ impl DeviceHub {
         observability: McpObservability,
         control: UnboundedSender<ControlCmd>,
     ) -> Self {
+        Self::new_with_service(
+            DeviceControlService::new(frames, browser_frames, input),
+            orientation,
+            devices,
+            active,
+            error,
+            status,
+            location,
+            observability,
+            control,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_service(
+        device_control: DeviceControlService,
+        orientation: OrientationSlot,
+        devices: DeviceListSlot,
+        active: ActiveSlot,
+        error: ErrorSlot,
+        status: StatusSlot,
+        location: LocationStatusSlot,
+        observability: McpObservability,
+        control: UnboundedSender<ControlCmd>,
+    ) -> Self {
         Self {
-            frames,
-            browser_frames,
-            input,
+            device_control,
             orientation,
             devices,
             active,
@@ -698,18 +723,20 @@ impl DeviceHub {
         let (width, height) = size
             .or_else(|| *self.last_image.lock().unwrap())
             .or_else(|| {
-                self.frames
-                    .latest()
+                self.device_control
+                    .latest_frame()
                     .map(|(_, frame)| display_dims(&frame, turns))
             })
             .or_else(|| {
-                self.browser_frames.dimensions().map(|(width, height)| {
-                    if turns.is_multiple_of(2) {
-                        (width, height)
-                    } else {
-                        (height, width)
-                    }
-                })
+                self.device_control
+                    .browser_dimensions()
+                    .map(|(width, height)| {
+                        if turns.is_multiple_of(2) {
+                            (width, height)
+                        } else {
+                            (height, width)
+                        }
+                    })
             })?;
         let dx = ((x + 0.5) / width as f32).clamp(0.0, 1.0);
         let dy = ((y + 0.5) / height as f32).clamp(0.0, 1.0);
@@ -718,26 +745,21 @@ impl DeviceHub {
     }
 
     fn send(&self, command: InputCmd) -> Result<(), McpError> {
-        self.input
-            .try_send(command)
-            .then_some(())
-            .ok_or_else(|| McpError::internal_error("no active device session", None))
+        self.device_control
+            .send(command)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))
     }
 
     fn frame_version(&self) -> u64 {
-        self.frames
-            .version()
-            .saturating_add(self.browser_frames.version())
+        self.device_control.frame_version()
     }
 
     async fn native_screenshot(&self) -> Result<(u32, u32, Vec<u8>), McpError> {
-        let (reply, response) = oneshot::channel();
-        self.send(InputCmd::TakeScreenshot(reply))?;
-        let png = tokio::time::timeout(SCREENSHOT_WAIT, response)
+        let png = self
+            .device_control
+            .capture_screenshot(SCREENSHOT_WAIT)
             .await
-            .map_err(|_| McpError::internal_error("device screenshot timed out", None))?
-            .map_err(|_| McpError::internal_error("device session ended", None))?
-            .map_err(|error| McpError::internal_error(error, None))?;
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
         let image = image::load_from_memory(&png)
             .map_err(|error| {
                 McpError::internal_error(format!("device screenshot decode failed: {error}"), None)
@@ -749,20 +771,20 @@ impl DeviceHub {
 
     async fn settle(&self) {
         tokio::time::sleep(SETTLE_MIN).await;
-        if self.frames.latest().is_none() {
+        if self.device_control.latest_frame().is_none() {
             return;
         }
         let started = Instant::now();
         let mut previous = self
-            .frames
-            .latest()
+            .device_control
+            .latest_frame()
             .map(|(_, frame)| frame_signature(&frame));
         let mut stable = 0;
         while started.elapsed() < SETTLE_MAX {
             tokio::time::sleep(SETTLE_POLL).await;
             let current = self
-                .frames
-                .latest()
+                .device_control
+                .latest_frame()
                 .map(|(_, frame)| frame_signature(&frame));
             match (&previous, &current) {
                 (Some(left), Some(right)) if signature_diff(left, right) < SETTLE_DIFF => {
@@ -785,7 +807,7 @@ impl DeviceHub {
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> Result<CallToolResult, McpError> {
         let frame_version = self.frame_version();
-        let (width, height, rgb) = if let Some((_, frame)) = self.frames.latest() {
+        let (width, height, rgb) = if let Some((_, frame)) = self.device_control.latest_frame() {
             render_upright(&frame, self.orientation.get().quarter_turns_cw())
         } else {
             self.native_screenshot().await?
@@ -984,16 +1006,7 @@ impl DeviceHub {
     ) -> Result<CallToolResult, McpError> {
         let after = params.after_version.unwrap_or_else(|| self.frame_version());
         let timeout = Duration::from_millis(params.timeout_ms.unwrap_or(2000).clamp(1, 10_000));
-        let changed = tokio::time::timeout(timeout, async {
-            loop {
-                if self.frame_version() > after {
-                    break true;
-                }
-                tokio::time::sleep(Duration::from_millis(8)).await;
-            }
-        })
-        .await
-        .unwrap_or(false);
+        let changed = self.device_control.wait_for_frame(after, timeout).await;
         ok_text(
             json!({
                 "changed": changed,
@@ -1675,7 +1688,7 @@ impl DeviceHub {
     ) -> Result<CallToolResult, McpError> {
         if !reconnect
             && self.active.get().as_deref() == Some(udid.as_str())
-            && self.frames.latest().is_some()
+            && self.device_control.latest_frame().is_some()
         {
             return ok_text(format!("Already connected to {udid}; screen is streaming."));
         }
@@ -1943,8 +1956,8 @@ impl DeviceHub {
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         let screen_size = self
-            .frames
-            .latest()
+            .device_control
+            .latest_frame()
             .map(|(_, frame)| {
                 let (width, height) =
                     display_dims(&frame, self.orientation.get().quarter_turns_cw());
@@ -1952,14 +1965,16 @@ impl DeviceHub {
             })
             .or_else(|| {
                 let turns = self.orientation.get().quarter_turns_cw();
-                self.browser_frames.dimensions().map(|(width, height)| {
-                    let (width, height) = if turns.is_multiple_of(2) {
-                        (width, height)
-                    } else {
-                        (height, width)
-                    };
-                    json!([width, height])
-                })
+                self.device_control
+                    .browser_dimensions()
+                    .map(|(width, height)| {
+                        let (width, height) = if turns.is_multiple_of(2) {
+                            (width, height)
+                        } else {
+                            (height, width)
+                        };
+                        json!([width, height])
+                    })
             })
             .unwrap_or(json!(null));
         let orientation = match self.orientation.get() {
@@ -1973,7 +1988,7 @@ impl DeviceHub {
                 "active_udid": self.active.get(),
                 "status": self.status.get(),
                 "error": self.error.get(),
-                "streaming": self.frames.latest().is_some() || self.browser_frames.dimensions().is_some(),
+                "streaming": self.device_control.latest_frame().is_some() || self.device_control.browser_dimensions().is_some(),
                 "screen_size": screen_size,
                 "orientation": orientation,
                 "location": self.location.get(),
@@ -1994,9 +2009,7 @@ impl ServerHandler for DeviceHub {
 
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
-    frames: FrameSlot,
-    browser_frames: crate::browser_video::BrowserVideoSlot,
-    input: InputSink,
+    device_control: DeviceControlService,
     orientation: OrientationSlot,
     devices: DeviceListSlot,
     active: ActiveSlot,
@@ -2021,10 +2034,8 @@ pub async fn serve(
             "MCP has no authentication and is binding beyond loopback"
         );
     }
-    let hub = DeviceHub::new(
-        frames,
-        browser_frames,
-        input,
+    let hub = DeviceHub::new_with_service(
+        device_control,
         orientation,
         devices,
         active,

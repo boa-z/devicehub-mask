@@ -24,8 +24,7 @@
 | CI 安装包 | Universal DMG | x64 NSIS 和 MSI | x64 AppImage 和 DEB |
 | 应用内更新 | 签名 app 压缩包 | 签名 NSIS 安装包 | 签名 AppImage |
 
-CoreDevice 能力由 Apple 控制。USB 配对成功不代表当前硬件和 iOS 组合一定开放远程
-画面或 Universal HID 服务。
+CoreDevice 能力由 Apple 控制。USB 配对成功不代表当前硬件和 iOS 组合一定开放远程画面或 Universal HID 服务。
 
 ## 文档约定
 

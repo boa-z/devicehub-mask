@@ -1,5 +1,6 @@
 mod app_documents;
 mod app_icons;
+mod application;
 mod audio_output;
 mod bluetooth_capture;
 mod browser_video;
@@ -225,11 +226,14 @@ fn spawn_backend(
                 let device_logs = device_logs::DeviceLogSlot::default();
                 let device_log_demand = device_logs::DeviceLogDemand::default();
                 let services = supervisor::ServiceRegistry::default();
-
-                tokio::spawn(mcp::serve(
+                let device_control = application::DeviceControlService::new(
                     frames.clone(),
                     browser_frames.clone(),
                     input.clone(),
+                );
+
+                tokio::spawn(mcp::serve(
+                    device_control.clone(),
                     orientation.clone(),
                     devices.clone(),
                     active.clone(),
@@ -282,6 +286,7 @@ fn spawn_backend(
                 );
                 let app = web::router(
                     web::AppState {
+                        device_control,
                         frames,
                         browser_frames,
                         clipboard,

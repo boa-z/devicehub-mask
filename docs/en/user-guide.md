@@ -6,489 +6,136 @@
 
 ### Device
 
-The Device page contains device selection, the aspect-ratio-preserving live
-view, control mode, rotation, direct touch, hardware buttons, and the device
-inspector. The inspector exposes Lockdown metadata, installed apps, IPA
-installation and removal, and provisioning profiles.
+The Device page contains device selection, the aspect-ratio-preserving live view, control mode, rotation, direct touch, hardware buttons, and the device inspector. The inspector exposes Lockdown metadata, installed apps, IPA installation and removal, and provisioning profiles.
 
-The inspector's Info tab shows Lockdown-reported device and data-storage
-capacity, including used and available user-data space. The device name is
-editable: the backend opens a paired Lockdown session, writes the normalized
-name, and reads it back before reporting success. It refreshes
-privacy-safe battery diagnostics through Diagnostics Relay: charge level and
-state, cycle count, full-charge versus design capacity, voltage/current,
-remaining time, and power-adapter rating.
-Battery and adapter serial numbers are never returned by the private API.
-The tab also reads the device's activation state through MobileActivationd,
-using its Lockdown fallback when necessary. Only a normalized state reaches the
-UI; activation records and blobs are not requested. An unactivated device shows
-a warning because developer and management services may remain unavailable.
-It queries Developer Mode through AMFI with a MobileImageMounter fallback. When
-disabled, the Info warning can ask AMFI to reveal the option under **Settings >
-Privacy & Security > Developer Mode**. This preparation does not enable
-Developer Mode, restart the device, or accept the device-side confirmation;
-those steps remain explicit user actions because DVT diagnostics and performance
-services depend on the resulting trusted state.
+The inspector's Info tab shows Lockdown-reported device and data-storage capacity, including used and available user-data space. The device name is editable: the backend opens a paired Lockdown session, writes the normalized name, and reads it back before reporting success. It refreshes privacy-safe battery diagnostics through Diagnostics Relay: charge level and state, cycle count, full-charge versus design capacity, voltage/current, remaining time, and power-adapter rating. Battery and adapter serial numbers are never returned by the private API. The tab also reads the device's activation state through MobileActivationd, using its Lockdown fallback when necessary. Only a normalized state reaches the UI; activation records and blobs are not requested. An unactivated device shows a warning because developer and management services may remain unavailable. It queries Developer Mode through AMFI with a MobileImageMounter fallback. When disabled, the Info warning can ask AMFI to reveal the option under **Settings > Privacy & Security > Developer Mode**. This preparation does not enable Developer Mode, restart the device, or accept the device-side confirmation; those steps remain explicit user actions because DVT diagnostics and performance services depend on the resulting trusted state.
 
-When the active device is an iPhone, the Info tab also performs a read-only
-CompanionProxy query for paired Apple Watch devices. An empty list is valid, and
-the device name, product type, watchOS version, or build may be absent depending
-on the iPhone and watchOS versions. This view does not control the Watch, start
-Watch services, or forward Watch ports. Treat the companion identifier as
-sensitive device metadata when copying or sharing it.
+When the active device is an iPhone, the Info tab also performs a read-only CompanionProxy query for paired Apple Watch devices. An empty list is valid, and the device name, product type, watchOS version, or build may be absent depending on the iPhone and watchOS versions. This view does not control the Watch, start Watch services, or forward Watch ports. Treat the companion identifier as sensitive device metadata when copying or sharing it.
 
-The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri,
-and Action. Always-on-top, inspector visibility, and fullscreen controls are in
-the title toolbar. Hiding the inspector gives the device view more room without
-stretching it. Page and fullscreen transitions release all active input.
-Right-clicking the device picture in the Device workspace sends Home. The
-Mapping workspace does not bind right-click to Home.
-The screenshot button requests a lossless PNG directly from CoreDevice, so it
-still works before the video canvas has recovered. If native capture is
-temporarily unavailable, the current decoded canvas is saved instead.
-The recording button captures the rendered canvas through the system WebView's
-MediaRecorder and downloads MP4 or WebM according to platform support. Recording
-stops when leaving the Device workspace or changing devices. It records the
-picture only; audio played through the native host output is not included.
-The active saved control profile is shown in the stage toolbar and can be
-switched there without opening the mapping editor. It remains available in the
-focused device-view toolbar.
+The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri, and Action. Always-on-top, inspector visibility, and fullscreen controls are in the title toolbar. Hiding the inspector gives the device view more room without stretching it. Page and fullscreen transitions release all active input. Right-clicking the device picture in the Device workspace sends Home. The Mapping workspace does not bind right-click to Home. The screenshot button requests a lossless PNG directly from CoreDevice, so it still works before the video canvas has recovered. If native capture is temporarily unavailable, the current decoded canvas is saved instead. The recording button captures the rendered canvas through the system WebView's MediaRecorder and downloads MP4 or WebM according to platform support. Recording stops when leaving the Device workspace or changing devices. It records the picture only; audio played through the native host output is not included. The active saved control profile is shown in the stage toolbar and can be switched there without opening the mapping editor. It remains available in the focused device-view toolbar.
 
 ### Keyboard Mapping
 
-The mapping page contains the placement canvas, mapping inspector, hardware
-shortcut bindings, and profile manager. It reports source and contain-fitted
-display resolutions. The background can use the live stream or a correctly
-oriented frozen screenshot; captured frames can be saved as PNG and remain
-available for offline editing after disconnecting.
+The mapping page contains the placement canvas, mapping inspector, hardware shortcut bindings, and profile manager. It reports source and contain-fitted display resolutions. The background can use the live stream or a correctly oriented frozen screenshot; captured frames can be saved as PNG and remain available for offline editing after disconnecting.
 
-Drag controls on the canvas or right-click an exact position to add any
-scrcpy-mask controller type. The inspector separates controllers from hardware
-shortcuts, supports search and duplication, and edits normalized positions,
-key chords, timing, cast centers, and Swipe/MultipleTap sequence points. The
-guide toggle shows all available paths and control ranges; the selected
-controller's guide remains visible while editing. New and duplicated controls
-prefer the least-used Universal HID contact identity. Save the profile after
-editing. The runtime supports at most five unique simultaneous contact
-identities even when a profile stores more mappings.
+Drag controls on the canvas or right-click an exact position to add any scrcpy-mask controller type. The inspector separates controllers from hardware shortcuts, supports search and duplication, and edits normalized positions, key chords, timing, cast centers, and Swipe/MultipleTap sequence points. The guide toggle shows all available paths and control ranges; the selected controller's guide remains visible while editing. New and duplicated controls prefer the least-used Universal HID contact identity. Save the profile after editing. The runtime supports at most five unique simultaneous contact identities even when a profile stores more mappings.
 
 ### Application Settings
 
-Settings contains appearance, language, window behavior, device audio, clipboard synchronization, automatic
-update checking, a manual **Check now** command, the installed app version, and
-the GitHub repository link. Device audio is disabled by default; enabling it
-takes effect after reconnecting the device. Playback mute and volume apply
-immediately through the host's native default audio output, and mute is also
-available in the Device toolbar. Playback does not depend on WebView autoplay
-permission or page visibility. Clipboard synchronization is also disabled
-by default and takes effect after reconnecting. When enabled, text and images copied on either the host or
-device replace the clipboard on the other side. A transient message identifies the direction and content
-type; text previews are whitespace-collapsed and limited to 48 characters.
+Settings contains appearance, language, window behavior, device audio, clipboard synchronization, automatic update checking, a manual **Check now** command, the installed app version, and the GitHub repository link. Device audio is disabled by default; enabling it takes effect after reconnecting the device. Playback mute and volume apply immediately through the host's native default audio output, and mute is also available in the Device toolbar. Playback does not depend on WebView autoplay permission or page visibility. Clipboard synchronization is also disabled by default and takes effect after reconnecting. When enabled, text and images copied on either the host or device replace the clipboard on the other side. A transient message identifies the direction and content type; text previews are whitespace-collapsed and limited to 48 characters.
 
-The Device Info tab includes confirmed **Restart device** and **Shut down
-device** actions. Both end the current control session; restart reconnects only
-after iOS and the USB services are available again, while a shut-down device
-must be turned on manually. The device-view toolbar's Lock control simulates the
-hardware button and can wake an already locked device. Agents can instead use
-the one-way MCP `lock_device` tool when they must not wake it.
+The Device Info tab includes confirmed **Restart device** and **Shut down device** actions. Both end the current control session; restart reconnects only after iOS and the USB services are available again, while a shut-down device must be turned on manually. The device-view toolbar's Lock control simulates the hardware button and can wake an already locked device. Agents can instead use the one-way MCP `lock_device` tool when they must not wake it.
 
-Local Device Backup in the Info tab creates a standard, unencrypted
-MobileBackup2 backup in a host directory selected through the native dialog.
-Leave **Force full backup** off to reuse an existing backup and transfer only
-changes; enable it when a complete new pass is required. Keep the device
-unlocked and connected. Cancelling or losing the session keeps files already
-received so the same directory can be used for a later incremental run. Backup
-contents can include private application and account data and must be protected
-accordingly. This version intentionally does not expose restore or erase.
+Local Device Backup in the Info tab creates a standard, unencrypted MobileBackup2 backup in a host directory selected through the native dialog. Leave **Force full backup** off to reuse an existing backup and transfer only changes; enable it when a complete new pass is required. Keep the device unlocked and connected. Cancelling or losing the session keeps files already received so the same directory can be used for a later incremental run. Backup contents can include private application and account data and must be protected accordingly. This version intentionally does not expose restore or erase.
 
-**System diagnostics** in the same Info tab collects a full Apple sysdiagnose
-through CoreDevice DiagnosticsService. Choose a `.tar.gz` destination and
-confirm the privacy warning before starting. Device-side collection can take
-several minutes before download progress begins, and a typical archive occupies
-1–2 GB. Keep the device unlocked and connected. Cancelling, disconnecting, or a
-stream failure removes the partial host file; an existing destination is
-replaced only after the complete archive has been flushed and synchronized.
-Sysdiagnose can contain logs, app activity, network metadata, and other private
-device information, so share and retain it accordingly.
+**System diagnostics** in the same Info tab collects a full Apple sysdiagnose through CoreDevice DiagnosticsService. Choose a `.tar.gz` destination and confirm the privacy warning before starting. Device-side collection can take several minutes before download progress begins, and a typical archive occupies 1–2 GB. Keep the device unlocked and connected. Cancelling, disconnecting, or a stream failure removes the partial host file; an existing destination is replaced only after the complete archive has been flushed and synchronized. Sysdiagnose can contain logs, app activity, network metadata, and other private device information, so share and retain it accordingly.
 
-The top-level **AFC files** workspace has four explicit scopes. **Public AFC**
-opens the standard media container and may include directories such as `DCIM`.
-**App Documents** lists apps that expose file sharing; **App Container** lists
-developer apps whose full container can be vended through House Arrest. Use the
-searchable app selector to choose the target. **Crash Reports** is read-only and
-supports search, refresh, and export through CrashReportCopyMobile.
+The top-level **AFC files** workspace has four explicit scopes. **Public AFC** opens the standard media container and may include directories such as `DCIM`. **App Documents** lists apps that expose file sharing; **App Container** lists developer apps whose full container can be vended through House Arrest. Use the searchable app selector to choose the target. **Crash Reports** is read-only and supports search, refresh, and export through CrashReportCopyMobile.
 
-Public AFC and app storage can import and export files or complete folder trees,
-create folders, rename entries, and recursively delete a confirmed folder.
-Imports never overwrite an existing device name. Symbolic links and other
-special entries are not traversed. File export writes through a temporary
-sibling, while folder export builds a new temporary tree before publishing the
-selected host destination. Scope and app selection are locked during a transfer
-so its progress and cancellation controls remain available.
+Public AFC and app storage can import and export files or complete folder trees, create folders, rename entries, and recursively delete a confirmed folder. Imports never overwrite an existing device name. Symbolic links and other special entries are not traversed. File export writes through a temporary sibling, while folder export builds a new temporary tree before publishing the selected host destination. Scope and app selection are locked during a transfer so its progress and cancellation controls remain available.
 
 ### Performance
 
-The Performance workspace combines device-side DVT telemetry with the desktop
-video pipeline. Device metrics include system CPU, process count, Core
-Animation FPS, GPU memory, aggregate network receive/send rates, and connections
-observed during the last minute. The process-energy table breaks down the
-relative Apple Instruments energy score for up to sixteen current CPU and
-memory leaders into CPU, GPU, and network components. These scores are useful
-for comparison over the same session but are not watts. Pipeline metrics include
-source, decode and presentation rates, transport bandwidth, JPEG encoding time,
-and frame age.
-System CPU is the iPhone-wide percentage derived from DVT's aggregate
-`CPU_TotalLoad` divided by the device's reported logical CPU count; it is not
-desktop-host CPU usage or a per-process value.
-Top Processes shows the union of the ten busiest CPU processes and ten largest
-physical-memory processes. Switch between CPU and Memory sorting. Process CPU
-uses the same logical-core normalization as system CPU, so 100% represents the
-device's total processing capacity rather than one fully occupied core.
-App Activity shows the latest twenty application-state and memory notifications
-reported by Apple Instruments, newest first. The backend retains at most one
-hundred sanitized events for the current device session; reconnecting to a new
-session clears them. Event names and states are device-provided and can vary by
-iOS version.
+The Performance workspace combines device-side DVT telemetry with the desktop video pipeline. Device metrics include system CPU, process count, Core Animation FPS, GPU memory, aggregate network receive/send rates, and connections observed during the last minute. The process-energy table breaks down the relative Apple Instruments energy score for up to sixteen current CPU and memory leaders into CPU, GPU, and network components. These scores are useful for comparison over the same session but are not watts. Pipeline metrics include source, decode and presentation rates, transport bandwidth, JPEG encoding time, and frame age. System CPU is the iPhone-wide percentage derived from DVT's aggregate `CPU_TotalLoad` divided by the device's reported logical CPU count; it is not desktop-host CPU usage or a per-process value. Top Processes shows the union of the ten busiest CPU processes and ten largest physical-memory processes. Switch between CPU and Memory sorting. Process CPU uses the same logical-core normalization as system CPU, so 100% represents the device's total processing capacity rather than one fully occupied core. App Activity shows the latest twenty application-state and memory notifications reported by Apple Instruments, newest first. The backend retains at most one hundred sanitized events for the current device session; reconnecting to a new session clears them. Event names and states are device-provided and can vary by iOS version.
 
-Device Conditions lists only the DVT network and thermal profiles reported by
-the connected iPhone. Applying one requires confirmation because it affects the
-entire device, not only the foreground game, and may interrupt the current
-control connection. **Restore normal conditions** disables the active profile.
-DeviceHub Mask also attempts cleanup when the session ends and whenever the DVT
-channel reconnects. If **cleanup pending** is shown, keep the device connected:
-the app has not confirmed that normal conditions were restored. Available groups
-and profiles depend on the device and iOS version.
+Device Conditions lists only the DVT network and thermal profiles reported by the connected iPhone. Applying one requires confirmation because it affects the entire device, not only the foreground game, and may interrupt the current control connection. **Restore normal conditions** disables the active profile. DeviceHub Mask also attempts cleanup when the session ends and whenever the DVT channel reconnects. If **cleanup pending** is shown, keep the device connected: the app has not confirmed that normal conditions were restored. Available groups and profiles depend on the device and iOS version.
 
-Packet Capture starts an explicit, time-bounded `pcapd` session and writes a
-standard `.pcap` file directly to the path selected by the native save dialog.
-USB capture uses the lockdown service first, while Wi-Fi capture uses the
-CoreDevice remote service. The remote service may be prohibited by the device or
-iOS policy; reconnect over USB when that error is reported.
-It can be stopped early, closes automatically after at most five minutes, and
-stops before the file exceeds 256 MiB. Partial traffic is finalized into a valid
-PCAP when the device session ends or the capture stream fails. Packet contents
-never pass through the WebView or MCP server. Treat the saved file as sensitive:
-it can contain addresses, protocol metadata, and unencrypted application data.
+Packet Capture starts an explicit, time-bounded `pcapd` session and writes a standard `.pcap` file directly to the path selected by the native save dialog. USB capture uses the lockdown service first, while Wi-Fi capture uses the CoreDevice remote service. The remote service may be prohibited by the device or iOS policy; reconnect over USB when that error is reported. It can be stopped early, closes automatically after at most five minutes, and stops before the file exceeds 256 MiB. Partial traffic is finalized into a valid PCAP when the device session ends or the capture stream fails. Packet contents never pass through the WebView or MCP server. Treat the saved file as sensitive: it can contain addresses, protocol metadata, and unencrypted application data.
 
-Bluetooth HCI Capture records controller, headset, and other Bluetooth traffic
-through the device's `BTPacketLogger` service as a Wireshark-compatible
-`BLUETOOTH_HCI_H4_WITH_PHDR` PCAP. It has the same explicit-start and
-session-cleanup behavior, with a five-minute and 64 MiB limit. The iPhone must
-have Apple's Bluetooth Logging configuration profile installed; without that
-profile the service may produce a valid header-only capture. Bluetooth captures
-can expose device activity and should also be treated as sensitive. Raw packets
-are written directly to the selected host file and never sent to the WebView or
-MCP server.
+Bluetooth HCI Capture records controller, headset, and other Bluetooth traffic through the device's `BTPacketLogger` service as a Wireshark-compatible `BLUETOOTH_HCI_H4_WITH_PHDR` PCAP. It has the same explicit-start and session-cleanup behavior, with a five-minute and 64 MiB limit. The iPhone must have Apple's Bluetooth Logging configuration profile installed; without that profile the service may produce a valid header-only capture. Bluetooth captures can expose device activity and should also be treated as sensitive. Raw packets are written directly to the selected host file and never sent to the WebView or MCP server.
 
-Sampling starts only while the Performance workspace is open and stops when it
-is left, so monitoring does not add permanent device load. The service-health
-section reports whether device heartbeat, virtual location, device conditions,
-device notifications, system monitoring, graphics monitoring, network
-monitoring, energy monitoring, paired Apple Watch discovery, home-screen layout
-reads, app activity monitoring, packet capture, Bluetooth HCI capture, and
-system diagnostics are
-connecting, ready,
-recovering, unavailable, or stopped.
-The heartbeat responds to the device's Lockdown keep-alive requests throughout
-the active session; sleep, timeout, or transport failures are recovered under
-the same bounded supervisor. A service reconnect does not tear down video or
-input.
+Sampling starts only while the Performance workspace is open and stops when it is left, so monitoring does not add permanent device load. The service-health section reports whether device heartbeat, virtual location, device conditions, device notifications, system monitoring, graphics monitoring, network monitoring, energy monitoring, paired Apple Watch discovery, home-screen layout reads, app activity monitoring, packet capture, Bluetooth HCI capture, and system diagnostics are connecting, ready, recovering, unavailable, or stopped. The heartbeat responds to the device's Lockdown keep-alive requests throughout the active session; sleep, timeout, or transport failures are recovered under the same bounded supervisor. A service reconnect does not tear down video or input.
 
 ## Control Modes
 
-Use the **Mapping / Keyboard passthrough** segmented control above the device
-view.
+Use the **Mapping / Keyboard passthrough** segmented control above the device view.
 
-- **Mapping** routes physical keys to touch mappings and hardware-button
-  shortcuts.
-- **Keyboard passthrough** disables those mappings and forwards HID key-down and
-  key-up events to iOS. Modifiers, arrows, navigation keys, F1-F24, and the
-  numeric keypad are supported. Focus the device view before typing.
+- **Mapping** routes physical keys to touch mappings and hardware-button shortcuts.
+- **Keyboard passthrough** disables those mappings and forwards HID key-down and key-up events to iOS. Modifiers, arrows, navigation keys, F1-F24, and the numeric keypad are supported. Focus the device view before typing.
 
-`Ctrl+Shift+K` switches modes. Switching mode, changing page, losing window
-focus, entering fullscreen, or disconnecting releases every touch, hardware
-button, and keyboard usage to prevent stuck input.
+`Ctrl+Shift+K` switches modes. Switching mode, changing page, losing window focus, entering fullscreen, or disconnecting releases every touch, hardware button, and keyboard usage to prevent stuck input.
 
-Keyboard passthrough represents physical HID keys, not composed text. The text
-tool in the Device toolbar writes up to 1,024 Unicode characters to the device
-pasteboard and sends Cmd+V, so focus an editable field before using it. This
-one-shot action works even when continuous clipboard synchronization is disabled.
+Keyboard passthrough represents physical HID keys, not composed text. The text tool in the Device toolbar writes up to 1,024 Unicode characters to the device pasteboard and sends Cmd+V, so focus an editable field before using it. This one-shot action works even when continuous clipboard synchronization is disabled.
 
 ## Direct Touch and Orientation
 
-Pointer input is normalized inside the contain-fitted displayed frame. Black or
-unused stage areas are excluded. Rotation uses one shared width/height scale, so
-landscape and portrait touch coordinates stay aligned with the visible image.
+Pointer input is normalized inside the contain-fitted displayed frame. Black or unused stage areas are excluded. Rotation uses one shared width/height scale, so landscape and portrait touch coordinates stay aligned with the visible image.
 
-Up to five typed contacts can be sent in one Universal HID report. Duplicate
-identities and out-of-range coordinates are rejected by the Rust backend before
-device dispatch.
+Up to five typed contacts can be sent in one Universal HID report. Duplicate identities and out-of-range coordinates are rejected by the Rust backend before device dispatch.
 
 ## Profiles and Key Mapping Compatibility
 
-Profiles are validated JSON files in the Tauri application data directory. You
-can select, activate, create, duplicate, rename, delete, import, and export them.
-The active profile cannot be deleted.
+Profiles are validated JSON files in the Tauri application data directory. You can select, activate, create, duplicate, rename, delete, import, and export them. The active profile cannot be deleted.
 
-A profile can be associated with app bundle IDs. Launching an associated app
-from the DeviceHub Mask app list activates that saved control profile. The app
-list shows the current association and can associate an unassigned app with the
-active profile or remove that association. Conflicting or cross-profile
-associations must be resolved explicitly in the profile editor.
+A profile can be associated with app bundle IDs. Launching an associated app from the DeviceHub Mask app list activates that saved control profile. The app list shows the current association and can associate an unassigned app with the active profile or remove that association. Conflicting or cross-profile associations must be resolved explicitly in the profile editor.
 
-The import dialog requires an explicit source format: DeviceHub Mask,
-scrcpy-mask, or PlayCover. This prevents ambiguous JSON files from being
-interpreted by the wrong converter. DeviceHub Mask imports and exports
-scrcpy-mask `0.0.1` JSON. All thirteen
-controller types are preserved, including nested sequence positions, bindings,
-release modes, timing, and script fields. Import compatibility does not imply
-Android transport support.
+The import dialog requires an explicit source format: DeviceHub Mask, scrcpy-mask, or PlayCover. This prevents ambiguous JSON files from being interpreted by the wrong converter. DeviceHub Mask imports and exports scrcpy-mask `0.0.1` JSON. All thirteen controller types are preserved, including nested sequence positions, bindings, release modes, timing, and script fields. Import compatibility does not imply Android transport support.
 
-The PlayCover source accepts `2.0.0` `.playmap` files. Keyboard
-buttons, draggable buttons, and keyboard-controlled joysticks are converted,
-and the PlayCover bundle identifier becomes the profile's app association.
-PlayCover mouse areas and negative mouse/controller key codes are skipped and
-reported because DeviceHub Mask does not expose equivalent input sources. The
-runtime still limits each HID report to five simultaneous contacts.
+The PlayCover source accepts `2.0.0` `.playmap` files. Keyboard buttons, draggable buttons, and keyboard-controlled joysticks are converted, and the PlayCover bundle identifier becomes the profile's app association. PlayCover mouse areas and negative mouse/controller key codes are skipped and reported because DeviceHub Mask does not expose equivalent input sources. The runtime still limits each HID report to five simultaneous contacts.
 
-Hardware shortcuts are stored with the profile. Click a shortcut field and
-press a key to bind it; use Backspace or Delete to clear it. One key cannot be
-shared by a touch mapping and a hardware button or by two hardware buttons.
-Hold timing is preserved for controls such as Siri.
+Hardware shortcuts are stored with the profile. Click a shortcut field and press a key to bind it; use Backspace or Delete to clear it. One key cannot be shared by a touch mapping and a hardware button or by two hardware buttons. Hold timing is preserved for controls such as Siri.
 
 ## Applications and Provisioning Profiles
 
-The Apps tab lists applications through CoreDevice AppService and falls back to
-Lockdown Installation Proxy when necessary. When AppService process data is
-available, running apps are marked and can be stopped or restarted. It can also
-select an IPA with the native file dialog, report installation stages, and
-remove confirmed removable user apps.
-The system-app toolbar toggle expands the list to Apple default apps and marks
-them explicitly; it is off by default and does not request hidden or internal
-apps. System apps can be inspected or launched when the device permits it, but
-cannot be uninstalled from this UI. This scope requires CoreDevice AppService;
-the app reports an error rather than treating Installation Proxy's broader
-catalog as an equivalent fallback.
-When iOS reports Installation Proxy disk-usage metadata, each row shows the
-combined installed and data size. Hovering the value shows both components, and
-the sort menu can order known totals from largest to smallest; apps without a
-reported value remain at the end. These are device-reported usage values, not a
-recursive scan of the app container.
-App icons are read on demand from SpringBoardServices as their rows approach the
-visible area. If an icon is unavailable, the list keeps its letter fallback and
-all management actions remain usable.
-The same tab reads a bounded, normalized SpringBoard icon state and labels apps
-in the Dock, on a numbered home-screen page, or inside a named folder. Folder and
-page positions are 1-based ordinal positions, not screen coordinates. When the
-device provides icon metrics, the tab also shows the main grid, folder grid,
-layout size, and icon size. These values describe SpringBoard layout units and
-still are not exact `tap` coordinates. Widget configuration, Web Clip URLs, and
-private SpringBoard identifiers are omitted; failure of either optional query
-does not disable app management.
+The Apps tab lists applications through CoreDevice AppService and falls back to Lockdown Installation Proxy when necessary. When AppService process data is available, running apps are marked and can be stopped or restarted. It can also select an IPA with the native file dialog, report installation stages, and remove confirmed removable user apps. The system-app toolbar toggle expands the list to Apple default apps and marks them explicitly; it is off by default and does not request hidden or internal apps. System apps can be inspected or launched when the device permits it, but cannot be uninstalled from this UI. This scope requires CoreDevice AppService; the app reports an error rather than treating Installation Proxy's broader catalog as an equivalent fallback. When iOS reports Installation Proxy disk-usage metadata, each row shows the combined installed and data size. Hovering the value shows both components, and the sort menu can order known totals from largest to smallest; apps without a reported value remain at the end. These are device-reported usage values, not a recursive scan of the app container. App icons are read on demand from SpringBoardServices as their rows approach the visible area. If an icon is unavailable, the list keeps its letter fallback and all management actions remain usable. The same tab reads a bounded, normalized SpringBoard icon state and labels apps in the Dock, on a numbered home-screen page, or inside a named folder. Folder and page positions are 1-based ordinal positions, not screen coordinates. When the device provides icon metrics, the tab also shows the main grid, folder grid, layout size, and icon size. These values describe SpringBoard layout units and still are not exact `tap` coordinates. Widget configuration, Web Clip URLs, and private SpringBoard identifiers are omitted; failure of either optional query does not disable app management.
 
-The folder button on an application opens its **App storage** workspace. Apps
-that expose iOS File Sharing start in **Documents**; developer-signed apps can
-switch to **Container**. The segmented control switches between the vended
-Documents root and the full app data container when iOS permits either request.
-You can browse folders, upload or download files and complete folders, create
-folders, rename items, and delete files or directory trees after confirmation.
-Recursive operations reject symbolic links and special entries and are limited
-to 64 levels and 100,000 entries. Uploads never overwrite an existing name.
-Container changes can damage app data, so use that
-scope only when inspecting or debugging an app you can recover. Apps that expose
-neither file sharing nor a developer container do not show the storage button.
-While uploading or downloading, the workspace shows transferred bytes and item
-counts. A single file also shows an exact percentage; folders use an ongoing
-counter because their total is not scanned twice before transfer.
-Use the stop button in the transfer bar to cancel an active upload or download.
-The workspace remains busy until its temporary host or app-container data is removed.
+The folder button on an application opens its **App storage** workspace. Apps that expose iOS File Sharing start in **Documents**; developer-signed apps can switch to **Container**. The segmented control switches between the vended Documents root and the full app data container when iOS permits either request. You can browse folders, upload or download files and complete folders, create folders, rename items, and delete files or directory trees after confirmation. Recursive operations reject symbolic links and special entries and are limited to 64 levels and 100,000 entries. Uploads never overwrite an existing name. Container changes can damage app data, so use that scope only when inspecting or debugging an app you can recover. Apps that expose neither file sharing nor a developer container do not show the storage button. While uploading or downloading, the workspace shows transferred bytes and item counts. A single file also shows an exact percentage; folders use an ongoing counter because their total is not scanned twice before transfer. Use the stop button in the transfer bar to cancel an active upload or download. The workspace remains busy until its temporary host or app-container data is removed.
 
-App storage and Device public files are separate boundaries. App storage uses
-House Arrest for one selected application's vended Documents or container root.
-The dedicated **AFC** tab uses the device-wide standard AFC media container;
-available content and write permissions for both boundaries remain controlled
-by iOS. Its path bar accepts a direct absolute or root-relative path, and the
-sort menu keeps directories first while sorting each entry type by name, size,
-or modification time. Tab changes preserve the current AFC path and sort order;
-switching devices resets the workspace to the root.
-Imports and exports show live transferred bytes and item counts. A single file
-also shows an exact percentage; directory operations use an ongoing counter so
-the device tree is not scanned twice.
-Use the stop button in the transfer bar to cancel an active import or export.
-The workspace remains busy until its temporary host or device data is removed.
+App storage and Device public files are separate boundaries. App storage uses House Arrest for one selected application's vended Documents or container root. The dedicated **AFC** tab uses the device-wide standard AFC media container; available content and write permissions for both boundaries remain controlled by iOS. Its path bar accepts a direct absolute or root-relative path, and the sort menu keeps directories first while sorting each entry type by name, size, or modification time. Tab changes preserve the current AFC path and sort order; switching devices resets the workspace to the root. Imports and exports show live transferred bytes and item counts. A single file also shows an exact percentage; directory operations use an ongoing counter so the device tree is not scanned twice. Use the stop button in the transfer bar to cancel an active import or export. The workspace remains busy until its temporary host or device data is removed.
 
-Uninstall authorization is checked again on the backend against current device
-metadata. Switching devices or ending the session cancels an active install or
-remove operation. IPA upload progress is indeterminate until Installation Proxy
-begins reporting device-side installation percentages.
+Uninstall authorization is checked again on the backend against current device metadata. Switching devices or ending the session cancels an active install or remove operation. IPA upload progress is indeterminate until Installation Proxy begins reporting device-side installation percentages.
 
-Provisioning profiles are read through Misagent and decoded as CMS SignedData.
-The UI receives normalized metadata but not raw payloads or provisioned device
-identifiers. Malformed profiles appear as individual error rows. The install
-action accepts only absolute, non-empty `.mobileprovision` files up to 16 MiB;
-the backend validates the CMS payload, plist metadata, UUID, and expiration
-before sending anything to the device. The installed catalog is queried again
-after installation to confirm the UUID is present.
+Provisioning profiles are read through Misagent and decoded as CMS SignedData. The UI receives normalized metadata but not raw payloads or provisioned device identifiers. Malformed profiles appear as individual error rows. The install action accepts only absolute, non-empty `.mobileprovision` files up to 16 MiB; the backend validates the CMS payload, plist metadata, UUID, and expiration before sending anything to the device. The installed catalog is queried again after installation to confirm the UUID is present.
 
-Profile removal requires confirmation because applications signed only by that
-profile may stop launching. Before removal, the backend refreshes the device
-catalog and accepts only a valid UUID that is currently installed. It refreshes
-again afterward and reports a conflict if the profile remains present.
+Profile removal requires confirmation because applications signed only by that profile may stop launching. Before removal, the backend refreshes the device catalog and accepts only a valid UUID that is currently installed. It refreshes again afterward and reports a conflict if the profile remains present.
 
-The Crashes tab refreshes and recursively lists reports exposed by
-CrashReportCopyMobile. Search operates on report names and device paths. Export
-uses the native save dialog and streams the selected regular file to the chosen
-host path. Browsing is read-only: the app does not delete reports from the
-device or send report contents to the WebView. Desktop export rejects traversal,
-non-file entries, or reports larger than 128 MiB. MCP can explicitly read at
-most 1 MiB from a validated report path for agent diagnostics.
+The Crashes tab refreshes and recursively lists reports exposed by CrashReportCopyMobile. Search operates on report names and device paths. Export uses the native save dialog and streams the selected regular file to the chosen host path. Browsing is read-only: the app does not delete reports from the device or send report contents to the WebView. Desktop export rejects traversal, non-file entries, or reports larger than 128 MiB. MCP can explicitly read at most 1 MiB from a validated report path for agent diagnostics.
 
 ## Device Logs
 
-The Device Logs workspace prefers the active iPhone's structured Unified Log
-stream and falls back to SyslogRelay when that service is unavailable. Unified
-Log entries include level, process, PID, subsystem, category, and source file
-when the device supplies them. Search covers both the message and this context,
-and the level filter can isolate notice, info, debug, error, or fault entries.
-The workspace also supports pausing the display, automatic scrolling, copying
-the visible result, and clearing the bounded in-memory buffer. Collection starts
-only while this workspace is open and stops after leaving it. A warning appears
-if high log volume causes older entries to leave the buffer.
+The Device Logs workspace prefers the active iPhone's structured Unified Log stream and falls back to SyslogRelay when that service is unavailable. Unified Log entries include level, process, PID, subsystem, category, and source file when the device supplies them. Search covers both the message and this context, and the level filter can isolate notice, info, debug, error, or fault entries. The workspace also supports pausing the display, automatic scrolling, copying the visible result, and clearing the bounded in-memory buffer. Collection starts only while this workspace is open and stops after leaving it. A warning appears if high log volume causes older entries to leave the buffer.
 
 ## Language and Fonts
 
-The UI supports Simplified Chinese (`zh-CN`) and English (`en-US`). First launch
-uses Chinese for a `zh-*` system locale and English otherwise. Language changes
-apply immediately and persist in `devicehub-mask.locale`.
+The UI supports Simplified Chinese (`zh-CN`) and English (`en-US`). First launch uses Chinese for a `zh-*` system locale and English otherwise. Language changes apply immediately and persist in `devicehub-mask.locale`.
 
-Both the React UI and Ant Design use the native system font stack. Existing
-profile names and user-authored labels are never rewritten when language
-changes.
+Both the React UI and Ant Design use the native system font stack. Existing profile names and user-authored labels are never rewritten when language changes.
 
 ## Updates
 
-Automatic nightly checks can be disabled in Settings. The manual check remains
-available. An accepted update is downloaded, signature-verified, installed, and
-followed by an application restart. See [Distribution](distribution.md) for
-signing and release details.
+Automatic nightly checks can be disabled in Settings. The manual check remains available. An accepted update is downloaded, signature-verified, installed, and followed by an application restart. See [Distribution](distribution.md) for signing and release details.
 
 ## MCP Automation
 
-While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP
-endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
-swipes, simultaneous multi-touch, text and key input, hardware buttons, app
-discovery, launch/restart and stop, rotation, device selection and reconnection,
-one-way device locking, virtual location, device conditions, frame
-synchronization, crash diagnosis, and session status. `lock_device` uses
-Diagnostics Relay sleep, so it
-does not wake an already locked device like a hardware-button toggle can.
+While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps, swipes, simultaneous multi-touch, text and key input, hardware buttons, app discovery, launch/restart and stop, rotation, device selection and reconnection, one-way device locking, virtual location, device conditions, frame synchronization, crash diagnosis, and session status. `lock_device` uses Diagnostics Relay sleep, so it does not wake an already locked device like a hardware-button toggle can.
 
-`device_details` refreshes the active device's product and OS versions, hardware
-model, storage, activation, Developer Mode, and battery diagnostics. UDID,
-serial number, and ECID are omitted by default; set `include_identifiers` only
-when stable hardware identity is required. `list_apps` returns user-installed
-apps by default. Set `include_system=true` to request Apple default apps as well;
-this requires CoreDevice AppService and does not expose hidden or internal apps.
-`wait_for_device_event` waits without
-polling for normalized app installation/removal, activation, disk-usage,
-device-name, or lock-state changes. Pass the returned event `sequence` as
-`after_sequence` on the next call to close subscription races; raw notification
-names and payloads are never returned.
+`device_details` refreshes the active device's product and OS versions, hardware model, storage, activation, Developer Mode, and battery diagnostics. UDID, serial number, and ECID are omitted by default; set `include_identifiers` only when stable hardware identity is required. `list_apps` returns user-installed apps by default. Set `include_system=true` to request Apple default apps as well; this requires CoreDevice AppService and does not expose hidden or internal apps. `wait_for_device_event` waits without polling for normalized app installation/removal, activation, disk-usage, device-name, or lock-state changes. Pass the returned event `sequence` as `after_sequence` on the next call to close subscription races; raw notification names and payloads are never returned.
 
-Activation-state notifications also refresh the Info tab. A SpringBoard lock
-state notification releases every active desktop input and is exposed as
-`lock_state_changed`. Notification Proxy does not include the resulting lock
-value, so agents must inspect a new screenshot rather than interpreting the
-event itself as either locked or unlocked.
+Activation-state notifications also refresh the Info tab. A SpringBoard lock state notification releases every active desktop input and is exposed as `lock_state_changed`. Notification Proxy does not include the resulting lock value, so agents must inspect a new screenshot rather than interpreting the event itself as either locked or unlocked.
 
-`list_companion_devices` performs the same bounded, read-only CompanionProxy
-query as the Info tab and returns available metadata for Apple Watch devices
-paired with the active iPhone. An empty result is valid; the tool does not expose
-Watch control, service startup, or port forwarding. Companion identifiers should
-be handled as sensitive device metadata.
+`list_companion_devices` performs the same bounded, read-only CompanionProxy query as the Info tab and returns available metadata for Apple Watch devices paired with the active iPhone. An empty result is valid; the tool does not expose Watch control, service startup, or port forwarding. Companion identifiers should be handled as sensitive device metadata.
 
-`home_screen_layout` returns the same normalized Dock, page, and folder routes
-shown in the Apps tab. Its positions are ordinal context for finding an app, not
-pixel coordinates for `tap`; agents must use `screenshot` for visual targeting.
-When available, `metrics` adds device-reported screen-layout and icon dimensions,
-main/folder row and column counts, Dock capacity, and page limits. They describe
-SpringBoard layout units rather than the current screenshot coordinate space.
-The tool never returns raw icon-state plist, Widget configuration, Web Clip URLs,
-or private SpringBoard UUIDs.
+`home_screen_layout` returns the same normalized Dock, page, and folder routes shown in the Apps tab. Its positions are ordinal context for finding an app, not pixel coordinates for `tap`; agents must use `screenshot` for visual targeting. When available, `metrics` adds device-reported screen-layout and icon dimensions, main/folder row and column counts, Dock capacity, and page limits. They describe SpringBoard layout units rather than the current screenshot coordinate space. The tool never returns raw icon-state plist, Widget configuration, Web Clip URLs, or private SpringBoard UUIDs.
 
-`list_device_conditions` returns the same bounded DVT network and thermal
-catalog, active profile, and cleanup state shown in the Performance workspace.
-`apply_device_condition` accepts only a group/profile pair from that catalog and
-affects the entire device, so it can interrupt the MCP connection as well as the
-foreground game. Always call `clear_device_condition` after a test. If cleanup
-remains pending after a transport failure, keep the device connected so the
-supervisor can restore normal conditions when its DVT channel recovers.
+`list_device_conditions` returns the same bounded DVT network and thermal catalog, active profile, and cleanup state shown in the Performance workspace. `apply_device_condition` accepts only a group/profile pair from that catalog and affects the entire device, so it can interrupt the MCP connection as well as the foreground game. Always call `clear_device_condition` after a test. If cleanup remains pending after a transport failure, keep the device connected so the supervisor can restore normal conditions when its DVT channel recovers.
 
-`performance_snapshot` temporarily enables the existing DVT performance
-services and returns CPU, top-process, energy, graphics, GPU-memory, and network
-fields. It waits up to 2.5 seconds for a fresh sample by default; set `wait_ms`
-to `0` to read the current cached snapshot. `recent_device_logs` temporarily
-enables the device log service and returns at most 500 entries. Use its `after`
-sequence cursor for incremental reads, and optionally filter by `level` or a
-case-insensitive `query`. Temporary MCP demand does not disable sampling or log
-streaming that is already enabled in the desktop UI.
+`performance_snapshot` temporarily enables the existing DVT performance services and returns CPU, top-process, energy, graphics, GPU-memory, and network fields. It waits up to 2.5 seconds for a fresh sample by default; set `wait_ms` to `0` to read the current cached snapshot. `recent_device_logs` temporarily enables the device log service and returns at most 500 entries. Use its `after` sequence cursor for incremental reads, and optionally filter by `level` or a case-insensitive `query`. Temporary MCP demand does not disable sampling or log streaming that is already enabled in the desktop UI.
 
-After an app unexpectedly exits, call `list_crash_reports` to obtain newest-first
-metadata, optionally filtered by report name or device path. Pass an exact
-returned `device_path` to `read_crash_report`; it returns 256 KiB by default and
-never more than 1 MiB, with `truncated` and `lossy_utf8` flags. The tool is
-read-only and rejects relative paths, traversal, directories, and oversized
-requests.
+After an app unexpectedly exits, call `list_crash_reports` to obtain newest-first metadata, optionally filtered by report name or device path. Pass an exact returned `device_path` to `read_crash_report`; it returns 256 KiB by default and never more than 1 MiB, with `truncated` and `lossy_utf8` flags. The tool is read-only and rejects relative paths, traversal, directories, and oversized requests.
 
-When WebDriverAgent is already installed, signed, and running on the active
-device, `wda_status` can probe it on device port 8100. If an installed developer
-app has a bundle ID ending in `.xctrunner`, its Apps-row WDA button or the MCP
-`wda_start` tool can explicitly start it through XCTest. Startup is bounded to
-30 seconds. Developer Mode must be enabled and a compatible Developer Disk Image
-must already be mounted; the Info tab reports the current image state. When it is
-missing, **Mount image** opens a guided local-file selection. iOS 16 and earlier
-require `DeveloperDiskImage.dmg` and its `.signature`; iOS 17 and later require
-the DMG, `.trustcache`, and `BuildManifest.plist` from the same compatible image
-set. Use only trusted files matching the connected iOS build. Personalized mounts
-contact Apple's signing service after confirmation. DeviceHub Mask does not find
-or download images automatically, and cancelling an upload may require retrying
-the complete mount. `wda_runner_status` reports only a runner supervised by
-DeviceHub Mask, and `wda_stop` stops only that managed runner; an externally launched WDA
-is never terminated. Runner ownership is released automatically when the device
-session ends. DeviceHub Mask does not install, sign, or silently auto-start WDA.
+When WebDriverAgent is already installed, signed, and running on the active device, `wda_status` can probe it on device port 8100. If an installed developer app has a bundle ID ending in `.xctrunner`, its Apps-row WDA button or the MCP `wda_start` tool can explicitly start it through XCTest. Startup is bounded to 30 seconds. Developer Mode must be enabled and a compatible Developer Disk Image must already be mounted; the Info tab reports the current image state. When it is missing, **Mount image** opens a guided local-file selection. iOS 16 and earlier require `DeveloperDiskImage.dmg` and its `.signature`; iOS 17 and later require the DMG, `.trustcache`, and `BuildManifest.plist` from the same compatible image set. Use only trusted files matching the connected iOS build. Personalized mounts contact Apple's signing service after confirmation. DeviceHub Mask does not find or download images automatically, and cancelling an upload may require retrying the complete mount. `wda_runner_status` reports only a runner supervised by DeviceHub Mask, and `wda_stop` stops only that managed runner; an externally launched WDA is never terminated. Runner ownership is released automatically when the device session ends. DeviceHub Mask does not install, sign, or silently auto-start WDA.
 
-When an image is mounted, the same Info-tab control can explicitly unmount it.
-Unmounting can immediately stop active XCTest and WebDriverAgent sessions, so
-stop managed automation first. Mount, unmount, and cancel requests are serialized;
-switching devices cancels the active image operation.
+When an image is mounted, the same Info-tab control can explicitly unmount it. Unmounting can immediately stop active XCTest and WebDriverAgent sessions, so stop managed automation first. Mount, unmount, and cancel requests are serialized; switching devices cancels the active image operation.
 
-`wda_ui_tree` returns a
-bounded accessibility XML tree, `wda_find_elements` returns zero-based matches
-with screen rectangles, and `wda_click` finds and clicks one match atomically.
-The supported strategies are `accessibility id`, `name`, `class name`, `xpath`,
-`-ios predicate string`, and `-ios class chain`. Prefer accessibility IDs or
-names; broad XPath queries can be expensive on complex screens.
+`wda_ui_tree` returns a bounded accessibility XML tree, `wda_find_elements` returns zero-based matches with screen rectangles, and `wda_click` finds and clicks one match atomically. The supported strategies are `accessibility id`, `name`, `class name`, `xpath`, `-ios predicate string`, and `-ios class chain`. Prefer accessibility IDs or names; broad XPath queries can be expensive on complex screens.
 
-The first semantic request creates a WDA session on demand, and device disconnect or
-request failure discards it without restarting the main screen-control session.
-UI trees can contain passwords, messages, and other visible text, so treat them
-as sensitive MCP output. Apps that do not expose useful accessibility metadata
-still require screenshot-based coordinate control.
+The first semantic request creates a WDA session on demand, and device disconnect or request failure discards it without restarting the main screen-control session. UI trees can contain passwords, messages, and other visible text, so treat them as sensitive MCP output. Apps that do not expose useful accessibility metadata still require screenshot-based coordinate control.
 
-Use `type_text` for printable ASCII HID keystrokes. Use `paste_text` for CJK or
-other Unicode text; it waits for the device pasteboard write and Cmd+V before
-returning success.
+Use `type_text` for printable ASCII HID keystrokes. Use `paste_text` for CJK or other Unicode text; it waits for the device pasteboard write and Cmd+V before returning success.
 
-Take a screenshot before sending coordinate-based input. Pass the returned
-`image_width` and `image_height` to `tap`, `swipe`, or `multi_touch` so
-coordinates remain correct when screenshots are resized. For latency-sensitive
-gameplay, disable `wait_for_settle` on an action and pass its
-`frame_version_after` to `wait_for_frame` before taking the next screenshot.
-MCP reuses the desktop application's active device session; it does not open a
-second connection to the phone.
+Take a screenshot before sending coordinate-based input. Pass the returned `image_width` and `image_height` to `tap`, `swipe`, or `multi_touch` so coordinates remain correct when screenshots are resized. For latency-sensitive gameplay, disable `wait_for_settle` on an action and pass its `frame_version_after` to `wait_for_frame` before taking the next screenshot. MCP reuses the desktop application's active device session; it does not open a second connection to the phone.
 
-For example, `multi_touch` can move a left-side joystick while holding a
-right-side action button in the same 250ms HID gesture:
+For example, `multi_touch` can move a left-side joystick while holding a right-side action button in the same 250ms HID gesture:
 
 ```json
 {
@@ -502,8 +149,4 @@ right-side action button in the same 250ms HID gesture:
 }
 ```
 
-The endpoint has no authentication. Device screenshots, performance process
-names, device logs, and crash reports can contain sensitive information. Keep
-it on loopback unless the host is on a trusted isolated network. Developers can
-change the bind address with `DEVICEHUB_MCP_ADDR`; see
-[Development](development.md).
+The endpoint has no authentication. Device screenshots, performance process names, device logs, and crash reports can contain sensitive information. Keep it on loopback unless the host is on a trusted isolated network. Developers can change the bind address with `DEVICEHUB_MCP_ADDR`; see [Development](development.md).
