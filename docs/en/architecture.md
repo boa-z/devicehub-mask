@@ -170,13 +170,24 @@ startup with an actionable error, while an unavailable preflight preserves the
 existing XCTest attempt for compatibility. The refreshed device-details response
 exposes the same result as a nullable readiness field without returning image
 signatures or personalization identifiers. MCP commands enter a four-item queue,
-carry a 12-second deadline,
-and allow only six selector strategies, 1,024-byte selector expressions, twenty
+carry a 12-second deadline, and allow only six selector strategies, 1,024-byte
+selector expressions, twenty
 matches, and a 1 MiB UI-tree response. The worker owns one WDA session, deletes
 or discards it after transport failure, and reports `device.wda` health without
 tearing down display, HID, or management services. Only normalized status,
 bounded XML, match indexes, and finite rectangles cross the MCP boundary; WDA
 session and element identifiers remain private to the worker.
+
+Manual Developer Disk Image mounting is a separate, explicit supervised task.
+It accepts only absolute regular local files, rejects symbolic links, bounds the
+DMG at 1.5 GB and each support file independently. Native-dialog paths cross only
+the private bearer-authenticated API, while file bytes stay outside the WebView.
+iOS 16 and earlier require a DMG and signature; iOS 17 and later require a DMG,
+trust cache, and nonempty `BuildManifest.plist`. Personalized
+mounting uses idevice's TSS flow and therefore sends device-specific signing
+identifiers to Apple's service only after the user confirms the operation. The
+task reports bounded phase/progress state, can be cancelled by the user or session
+shutdown, and never discovers or downloads images automatically.
 
 Local device backup is an explicit MobileBackup2 worker owned by the active
 session. USB first uses the lockdown service and can fall back to the cloned RSD

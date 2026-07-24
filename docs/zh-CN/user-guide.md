@@ -257,7 +257,11 @@ App 意外退出后，可调用 `list_crash_reports` 获取按时间倒序的元
 8100。如果已安装开发者 App 的 Bundle ID 以 `.xctrunner` 结尾，可通过 App 列表行上的
 WDA 按钮或 MCP `wda_start` 显式使用 XCTest 启动，启动等待上限为 30 秒。
 设备必须已启用开发者模式并挂载匹配的开发者磁盘镜像，“设备信息”会显示当前镜像状态。
-可使用 Xcode 或其他可信开发工具挂载对应镜像；DeviceHub Mask 不会自动下载或挂载镜像。
+未挂载时可点击“挂载镜像”并按原生文件选择器依次选择本地文件。iOS 16 及以前需要
+`DeveloperDiskImage.dmg` 和对应 `.signature`；iOS 17 及以后需要来自同一兼容镜像集的
+DMG、`.trustcache` 与 `BuildManifest.plist`。只能使用与当前 iOS build 匹配的可信文件；
+个性化挂载会在确认后连接 Apple 签名服务。应用不会自动查找或下载镜像，取消上传后可能
+需要从头重试完整挂载。
 `wda_runner_status` 只报告由 DeviceHub Mask 监督的 Runner，`wda_stop` 也只停止该 Runner，
 不会终止外部启动的 WDA。设备会话结束时会自动清理 Runner。DeviceHub Mask 不负责安装、
 签名或静默自动启动 WDA。

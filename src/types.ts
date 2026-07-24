@@ -106,6 +106,14 @@ export type DeviceBackupStatus = {
   destination_name: string | null;
   error: string | null;
 };
+export type DeveloperImageMountState = "idle" | "validating" | "personalizing" | "uploading" | "mounting" | "mounted" | "cancelled" | "failed";
+export type DeveloperImageMountStatus = {
+  state: DeveloperImageMountState;
+  progress_percent: number | null;
+  product_version: string | null;
+  image_type: string | null;
+  error: string | null;
+};
 export type DeviceFileKind = "file" | "directory" | "other";
 export type DeviceFileEntry = {
   name: string;

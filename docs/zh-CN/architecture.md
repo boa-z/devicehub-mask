@@ -125,6 +125,14 @@ MCP 命令进入容量为 4 的队列并携带 12 秒截止时间；只允许六
 画面、HID 或设备管理服务。只有归一化状态、受限 XML、匹配序号和有限数值矩形会越过 MCP
 边界；WDA 会话与元素标识符始终留在工作线程内。
 
+手动挂载开发者磁盘镜像由另一项显式、受监督任务执行。它只接受绝对路径的本地普通文件，
+拒绝符号链接，将 DMG 限制为 1.5 GB，并分别限制每个辅助文件。原生文件选择器返回的路径
+只通过带 bearer 认证的私有 API，文件内容不会进入
+WebView。iOS 16 及以前需要 DMG 与 signature，iOS 17 及以后需要 DMG、trust cache 和包含
+非空 `BuildIdentities` 的 `BuildManifest.plist`。个性化挂载使用 idevice 的 TSS 流程，因此
+仅在用户确认后向 Apple 服务发送设备相关签名标识符。任务会报告受限的阶段与进度状态，
+可由用户取消，设备会话结束时也会中止；应用不会自动查找或下载镜像。
+
 本地设备备份由活动会话持有的显式 MobileBackup2 worker 执行。USB 优先使用 lockdown
 服务，并可回退到克隆 RSD tunnel；Wi-Fi 使用 remote RSD shim。worker 只会写入原生目录
 选择器指定的主机目录及经过校验的设备标识符子目录。每次 delegate 文件系统操作都会验证

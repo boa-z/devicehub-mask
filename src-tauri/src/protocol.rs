@@ -297,6 +297,8 @@ pub enum InputCmd {
     },
     /// Prepare the device-side Developer Mode workflow through AMFI.
     DeveloperMode(crate::developer_mode::DeveloperModeCommand),
+    /// Mount a user-selected Developer Disk Image for XCTest services.
+    DeveloperImageMount(crate::developer_image::DeveloperImageMountCommand),
     /// List user-facing applications through CoreDevice AppService.
     ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
     /// List Apple Watch devices paired with the active iPhone through CompanionProxy.

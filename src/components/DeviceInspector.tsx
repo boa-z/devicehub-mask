@@ -29,7 +29,7 @@ import { AppDocumentsModal } from "./AppDocumentsModal";
 import { DeviceFilesModal } from "./DeviceFilesModal";
 import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
+import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -144,11 +144,14 @@ export function DeviceInspector({
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
   const [developerModeBusy, setDeveloperModeBusy] = useState(false);
+  const [developerImageStatus, setDeveloperImageStatus] = useState<DeveloperImageMountStatus | null>(null);
+  const [developerImageAction, setDeveloperImageAction] = useState<"start" | "stop" | null>(null);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const [deviceFilesOpen, setDeviceFilesOpen] = useState(false);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
+  const handledDeveloperImageState = useRef<string>("");
   const homeScreenRequest = useRef(0);
 
   const loadHomeScreen = useCallback(async () => {
@@ -183,6 +186,12 @@ export function DeviceInspector({
   const loadBackupStatus = useCallback(async () => {
     const status = await readJson<DeviceBackupStatus>(await request("/api/device/backup"));
     setBackupStatus(status);
+    return status;
+  }, [request]);
+
+  const loadDeveloperImageStatus = useCallback(async () => {
+    const status = await readJson<DeveloperImageMountStatus>(await request("/api/device/developer-image"));
+    setDeveloperImageStatus(status);
     return status;
   }, [request]);
 
@@ -244,6 +253,9 @@ export function DeviceInspector({
     setRenameValue("");
     setRenameBusy(false);
     setDeveloperModeBusy(false);
+    setDeveloperImageStatus(null);
+    setDeveloperImageAction(null);
+    handledDeveloperImageState.current = "";
     setBackupStatus(null);
     setBackupAction(null);
     setDeviceFilesOpen(false);
@@ -277,6 +289,43 @@ export function DeviceInspector({
       if (timer) clearTimeout(timer);
     };
   }, [activeUdid, request]);
+
+  useEffect(() => {
+    if (!activeUdid) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      let next: DeveloperImageMountStatus | null = null;
+      try {
+        next = await readJson<DeveloperImageMountStatus>(await request("/api/device/developer-image"));
+        if (!cancelled) setDeveloperImageStatus(next);
+      } catch {
+        // The regular inspector request path surfaces connection errors.
+      }
+      if (!cancelled) {
+        const active = next && ["validating", "personalizing", "uploading", "mounting"].includes(next.state);
+        timer = setTimeout(poll, active ? 350 : 2_000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeUdid, request]);
+
+  useEffect(() => {
+    if (!developerImageStatus) return;
+    const marker = `${developerImageStatus.state}:${developerImageStatus.error ?? ""}`;
+    if (handledDeveloperImageState.current === marker) return;
+    handledDeveloperImageState.current = marker;
+    if (developerImageStatus.state === "mounted") {
+      setDetails((current) => current ? { ...current, developer_image_mounted: true } : current);
+      void message.success(t("deviceInspector.developerImageMounted"));
+    } else if (developerImageStatus.state === "failed") {
+      void message.error(t("deviceInspector.developerImageMountFailed", { error: developerImageStatus.error ?? "" }));
+    }
+  }, [developerImageStatus, t]);
 
   useEffect(() => {
     if (!deviceEvent || deviceEvent.sequence <= handledDeviceEvent.current) return;
@@ -669,6 +718,79 @@ export function DeviceInspector({
     }
   };
 
+  const selectDeveloperImageFile = async (title: string, extensions: string[]) => {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      title,
+      filters: [{ name: title, extensions }],
+    });
+    return selected && !Array.isArray(selected) ? selected : null;
+  };
+
+  const startDeveloperImageMount = async () => {
+    if (!details || developerImageAction) return;
+    const majorVersion = Number.parseInt(details.product_version.split(".")[0] ?? "", 10);
+    if (!Number.isFinite(majorVersion)) {
+      void message.error(t("deviceInspector.developerImageVersionInvalid"));
+      return;
+    }
+    const image = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImage"), ["dmg"]);
+    if (!image) return;
+
+    let signature: string | undefined;
+    let trustCache: string | undefined;
+    let manifest: string | undefined;
+    if (majorVersion < 17) {
+      signature = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImageSignature"), ["signature"]) ?? undefined;
+      if (!signature) return;
+    } else {
+      trustCache = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImageTrustCache"), ["trustcache"]) ?? undefined;
+      if (!trustCache) return;
+      manifest = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImageManifest"), ["plist"]) ?? undefined;
+      if (!manifest) return;
+    }
+
+    Modal.confirm({
+      title: t("deviceInspector.mountDeveloperImage"),
+      content: t("deviceInspector.mountDeveloperImageConfirm", { version: details.product_version }),
+      okText: t("deviceInspector.mountDeveloperImage"),
+      cancelText: t("common.cancel"),
+      async onOk() {
+        setDeveloperImageAction("start");
+        try {
+          const response = await request("/api/device/developer-image", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image, signature, trust_cache: trustCache, manifest }),
+          });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          await loadDeveloperImageStatus();
+          void message.info(t("deviceInspector.developerImageMountStarted"));
+        } catch (mountError) {
+          void message.error(t("deviceInspector.developerImageMountFailed", { error: String(mountError) }));
+        } finally {
+          setDeveloperImageAction(null);
+        }
+      },
+    });
+  };
+
+  const stopDeveloperImageMount = async () => {
+    if (developerImageAction) return;
+    setDeveloperImageAction("stop");
+    try {
+      const response = await request("/api/device/developer-image", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadDeveloperImageStatus();
+      void message.info(t("deviceInspector.developerImageMountCancelled"));
+    } catch (mountError) {
+      void message.error(t("deviceInspector.developerImageCancelFailed", { error: String(mountError) }));
+    } finally {
+      setDeveloperImageAction(null);
+    }
+  };
+
   const renameDevice = async () => {
     if (!normalizedDeviceName || renameBusy) return;
     setRenameBusy(true);
@@ -734,6 +856,8 @@ export function DeviceInspector({
       : t("deviceInspector.minutes", { count: details.battery.time_remaining_minutes })],
   ] : [];
   const backupRunning = backupStatus?.state === "starting" || backupStatus?.state === "backing_up";
+  const developerImageMountRunning = developerImageStatus != null
+    && ["validating", "personalizing", "uploading", "mounting"].includes(developerImageStatus.state);
   const backupProgress = backupStatus?.progress_percent
     ?? (backupStatus && backupStatus.bytes_total > 0
       ? Math.min(100, backupStatus.bytes_done * 100 / backupStatus.bytes_total)
@@ -808,7 +932,45 @@ export function DeviceInspector({
               showIcon
               message={t("deviceInspector.developerImageMissing")}
               description={t("deviceInspector.developerImageHint")}
+              action={developerImageMountRunning ? (
+                <Button
+                  danger
+                  size="small"
+                  icon={<StopOutlined />}
+                  loading={developerImageAction === "stop"}
+                  disabled={developerImageAction !== null}
+                  onClick={() => void stopDeveloperImageMount()}
+                >{t("deviceInspector.cancelDeveloperImageMount")}</Button>
+              ) : (
+                <Button
+                  size="small"
+                  icon={<UploadOutlined />}
+                  loading={developerImageAction === "start"}
+                  disabled={developerImageAction !== null}
+                  onClick={() => void startDeveloperImageMount()}
+                >{t("deviceInspector.mountDeveloperImage")}</Button>
+              )}
             />
+          )}
+          {developerImageStatus && developerImageStatus.state !== "idle" && developerImageStatus.state !== "mounted" && (
+            <div className="developer-image-progress">
+              <div className="developer-image-progress-heading">
+                <Typography.Text>{t(`deviceInspector.developerImageMountStates.${developerImageStatus.state}`)}</Typography.Text>
+                {developerImageStatus.product_version && (
+                  <Typography.Text type="secondary">iOS {developerImageStatus.product_version}</Typography.Text>
+                )}
+              </div>
+              {developerImageMountRunning && (
+                <Progress
+                  size="small"
+                  percent={developerImageStatus.progress_percent ?? undefined}
+                  status="active"
+                />
+              )}
+              {developerImageStatus.state === "failed" && developerImageStatus.error && (
+                <Alert type="error" showIcon message={t("deviceInspector.developerImageMountFailedTitle")} description={developerImageStatus.error} />
+              )}
+            </div>
           )}
           <div className="device-info-list">
             {details && (

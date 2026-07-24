@@ -707,6 +707,7 @@ struct SessionViews {
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     device_backup: crate::device_backup::DeviceBackupSlot,
+    developer_image: crate::developer_image::DeveloperImageMountSlot,
     device_conditions: crate::device_conditions::DeviceConditionSlot,
 }
 
@@ -769,6 +770,7 @@ pub async fn manage(
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     device_backup: crate::device_backup::DeviceBackupSlot,
+    developer_image: crate::developer_image::DeveloperImageMountSlot,
     device_conditions: crate::device_conditions::DeviceConditionSlot,
     orientation_view: OrientationSlot,
     device_list: DeviceListSlot,
@@ -900,6 +902,7 @@ pub async fn manage(
                 network_capture: network_capture.clone(),
                 bluetooth_capture: bluetooth_capture.clone(),
                 device_backup: device_backup.clone(),
+                developer_image: developer_image.clone(),
                 device_conditions: device_conditions.clone(),
             },
             in_rx,
@@ -1617,6 +1620,14 @@ async fn run(
         supervisor.reporter("device.backup"),
         supervisor.shutdown_receiver(),
     ));
+    let (developer_image_sender, developer_image_receiver) = tokio::sync::mpsc::channel(4);
+    supervisor.spawn(crate::developer_image::serve(
+        provider.clone(),
+        developer_image_receiver,
+        views.developer_image.clone(),
+        supervisor.reporter("device.developer_image"),
+        supervisor.shutdown_receiver(),
+    ));
     let (device_condition_sender, device_condition_receiver) = tokio::sync::mpsc::channel(4);
     supervisor.spawn(crate::device_conditions::supervise(
         adapter.clone(),
@@ -1646,6 +1657,7 @@ async fn run(
         network_capture: network_capture_sender,
         bluetooth_capture: bluetooth_capture_sender,
         device_backup: device_backup_sender,
+        developer_image: developer_image_sender,
         device_conditions: device_condition_sender,
         provisioning: provisioning_sender,
     };
@@ -2037,6 +2049,7 @@ struct DeviceManagementServices {
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
     bluetooth_capture: tokio::sync::mpsc::Sender<crate::bluetooth_capture::BluetoothCaptureCommand>,
     device_backup: tokio::sync::mpsc::Sender<crate::device_backup::DeviceBackupCommand>,
+    developer_image: tokio::sync::mpsc::Sender<crate::developer_image::DeveloperImageMountCommand>,
     device_conditions: tokio::sync::mpsc::Sender<crate::device_conditions::DeviceConditionCommand>,
     provisioning: tokio::sync::mpsc::Sender<crate::provisioning::ProvisioningCommand>,
 }
@@ -2122,6 +2135,20 @@ fn reject_device_backup_command(command: crate::device_backup::DeviceBackupComma
 
     match command {
         DeviceBackupCommand::Start { reply, .. } | DeviceBackupCommand::Stop { reply } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+    }
+}
+
+fn reject_developer_image_command(
+    command: crate::developer_image::DeveloperImageMountCommand,
+    reason: &str,
+) {
+    use crate::developer_image::DeveloperImageMountCommand;
+
+    match command {
+        DeveloperImageMountCommand::Start { reply, .. }
+        | DeveloperImageMountCommand::Stop { reply } => {
             let _ = reply.send(Err(reason.into()));
         }
     }
@@ -2549,6 +2576,20 @@ impl DeviceManagement {
                         }
                     };
                     reject_device_backup_command(command, reason);
+                }
+                None
+            }
+            InputCmd::DeveloperImageMount(command) => {
+                if let Err(error) = self.services.developer_image.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("developer image service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("developer image service is unavailable", command)
+                        }
+                    };
+                    reject_developer_image_command(command, reason);
                 }
                 None
             }
@@ -3526,6 +3567,7 @@ async fn dispatch(
         | InputCmd::NetworkCapture(_)
         | InputCmd::BluetoothCapture(_)
         | InputCmd::DeviceBackup(_)
+        | InputCmd::DeveloperImageMount(_)
         | InputCmd::DeviceCondition(_)
         | InputCmd::AppDocuments(_)
         | InputCmd::DeviceFiles(_)

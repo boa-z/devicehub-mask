@@ -41,6 +41,7 @@ pub struct AppState {
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
     pub bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     pub device_backup: crate::device_backup::DeviceBackupSlot,
+    pub developer_image: crate::developer_image::DeveloperImageMountSlot,
     pub device_conditions: crate::device_conditions::DeviceConditionSlot,
     pub video_counters: VideoCounters,
     pub status: StatusSlot,
@@ -193,6 +194,12 @@ pub fn router(state: AppState, token: String) -> Router {
         .route(
             "/api/device/developer-mode/reveal",
             put(reveal_developer_mode),
+        )
+        .route(
+            "/api/device/developer-image",
+            get(developer_image_status)
+                .put(start_developer_image_mount)
+                .delete(stop_developer_image_mount),
         )
         .route("/api/device/screenshot", get(device_screenshot))
         .route("/api/device/text/paste", put(paste_device_text))
@@ -908,6 +915,73 @@ async fn reveal_developer_mode(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(result))
+}
+
+async fn developer_image_status(
+    State(state): State<AppState>,
+) -> Json<crate::developer_image::DeveloperImageMountStatus> {
+    Json(state.developer_image.get())
+}
+
+async fn start_developer_image_mount(
+    State(state): State<AppState>,
+    Json(request): Json<crate::developer_image::DeveloperImageMountRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeveloperImageMount(
+        crate::developer_image::DeveloperImageMountCommand::Start { request, reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_developer_image_command(response, "start developer image mount").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn stop_developer_image_mount(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeveloperImageMount(
+        crate::developer_image::DeveloperImageMountCommand::Stop { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_developer_image_command(response, "stop developer image mount").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn await_developer_image_command(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    let result = tokio::time::timeout(Duration::from_secs(10), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?;
+    result.map_err(|error| {
+        let status = if error.contains("already running") || error.contains("no developer image") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
+        (status, error)
+    })
 }
 
 async fn device_screenshot(
@@ -2806,6 +2880,7 @@ mod tests {
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),
                 bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot::default(),
                 device_backup: crate::device_backup::DeviceBackupSlot::default(),
+                developer_image: crate::developer_image::DeveloperImageMountSlot::default(),
                 device_conditions: crate::device_conditions::DeviceConditionSlot::default(),
                 video_counters: VideoCounters::default(),
                 status: StatusSlot::default(),
@@ -3902,6 +3977,51 @@ mod tests {
             .unwrap();
         let response = request.await.unwrap().unwrap().0;
         assert!(!response.already_enabled);
+    }
+
+    #[tokio::test]
+    async fn developer_image_endpoints_dispatch_mount_lifecycle() {
+        use crate::developer_image::{
+            DeveloperImageMountCommand, DeveloperImageMountRequest, DeveloperImageMountState,
+        };
+
+        let (state, mut input_rx) = test_state();
+        assert_eq!(
+            developer_image_status(State(state.clone())).await.0.state,
+            DeveloperImageMountState::Idle
+        );
+        let mount_request = DeveloperImageMountRequest {
+            image: PathBuf::from("/DeveloperDiskImage.dmg"),
+            signature: None,
+            trust_cache: Some(PathBuf::from("/DeveloperDiskImage.dmg.trustcache")),
+            manifest: Some(PathBuf::from("/BuildManifest.plist")),
+        };
+        let start = tokio::spawn(start_developer_image_mount(
+            State(state.clone()),
+            Json(mount_request),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeveloperImageMount(DeveloperImageMountCommand::Start { request, reply }) => {
+                assert_eq!(request.image, PathBuf::from("/DeveloperDiskImage.dmg"));
+                assert!(request.signature.is_none());
+                assert_eq!(
+                    request.trust_cache,
+                    Some(PathBuf::from("/DeveloperDiskImage.dmg.trustcache"))
+                );
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let stop = tokio::spawn(stop_developer_image_mount(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeveloperImageMount(DeveloperImageMountCommand::Stop { reply }) => {
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
