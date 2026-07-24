@@ -1,5 +1,6 @@
 export type AfcSortField = "name" | "size" | "modified";
 export type AfcSortDirection = "ascending" | "descending";
+export type AfcAppScope = "documents" | "container";
 
 type AfcEntry = {
   name: string;
@@ -52,4 +53,18 @@ export function sortAfcEntries<T extends AfcEntry>(
       ? collator.compare(left.name, right.name)
       : primary * multiplier;
   });
+}
+
+type AfcApp = {
+  bundle_id: string;
+  name: string;
+  documents_available: boolean;
+  is_developer_app: boolean;
+};
+
+export function availableAfcApps<T extends AfcApp>(apps: readonly T[], scope: AfcAppScope, locale: string): T[] {
+  const collator = new Intl.Collator(locale, { sensitivity: "base", numeric: true });
+  return apps
+    .filter((app) => scope === "documents" ? app.documents_available : app.is_developer_app)
+    .sort((left, right) => collator.compare(left.name, right.name) || left.bundle_id.localeCompare(right.bundle_id));
 }

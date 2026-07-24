@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAfcPath, sortAfcEntries } from "./afcBrowser";
-import type { DeviceFileEntry } from "./types";
+import { availableAfcApps, normalizeAfcPath, sortAfcEntries } from "./afcBrowser";
+import type { DeviceApp, DeviceFileEntry } from "./types";
 
 const entries: DeviceFileEntry[] = [
   { name: "photo10.jpg", path: "/photo10.jpg", kind: "file", size_bytes: 10, modified: "2026-07-20T00:00:00Z" },
@@ -33,5 +33,18 @@ describe("AFC browser", () => {
     expect(sortAfcEntries(entries, "modified", "ascending", "en-US").map((entry) => entry.name))
       .toEqual(["DCIM", "photo10.jpg", "photo2.jpg", "linked"]);
     expect(entries.map((entry) => entry.name)).toEqual(original);
+  });
+
+  it("selects only apps exposed by the requested AFC scope", () => {
+    const app = (name: string, bundle_id: string, documents_available: boolean, is_developer_app: boolean) => ({
+      name, bundle_id, documents_available, is_developer_app,
+    }) as DeviceApp;
+    const apps = [
+      app("Game 10", "com.example.ten", true, false),
+      app("Game 2", "com.example.two", false, true),
+      app("Both", "com.example.both", true, true),
+    ];
+    expect(availableAfcApps(apps, "documents", "en-US").map((item) => item.name)).toEqual(["Both", "Game 10"]);
+    expect(availableAfcApps(apps, "container", "en-US").map((item) => item.name)).toEqual(["Both", "Game 2"]);
   });
 });

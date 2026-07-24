@@ -111,14 +111,20 @@ replaced only after the complete archive has been flushed and synchronized.
 Sysdiagnose can contain logs, app activity, network metadata, and other private
 device information, so share and retain it accordingly.
 
-The top-level **AFC files** workspace opens the standard AFC media container
-exposed by the connected device. Its contents depend on iOS and may include
-directories such as `DCIM`. You can import and export files or complete folder
-trees, create folders, rename entries, and recursively delete a confirmed
-folder. Imports never overwrite an existing device name. Symbolic links and
-other special entries are not traversed. File export writes through a temporary
+The top-level **AFC files** workspace has four explicit scopes. **Public AFC**
+opens the standard media container and may include directories such as `DCIM`.
+**App Documents** lists apps that expose file sharing; **App Container** lists
+developer apps whose full container can be vended through House Arrest. Use the
+searchable app selector to choose the target. **Crash Reports** is read-only and
+supports search, refresh, and export through CrashReportCopyMobile.
+
+Public AFC and app storage can import and export files or complete folder trees,
+create folders, rename entries, and recursively delete a confirmed folder.
+Imports never overwrite an existing device name. Symbolic links and other
+special entries are not traversed. File export writes through a temporary
 sibling, while folder export builds a new temporary tree before publishing the
-selected host destination.
+selected host destination. Scope and app selection are locked during a transfer
+so its progress and cancellation controls remain available.
 
 ### Performance
 

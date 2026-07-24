@@ -21,12 +21,11 @@ exposed as a browser application.
   mapping editor with live or captured-screen backgrounds
 - Editable device identity, metadata and activation readiness, application browsing, running-state detection, launch,
   restart and stop controls, native app icons, IPA installation, safe app
-  removal, sandboxed App Documents transfer, bounded standard AFC file and
+  removal, unified public AFC/App storage/crash-report browsing, bounded file and
   directory management, hardware-button lock, confirmed device restart and
   shutdown, and
   provisioning profile inspection, validated installation and confirmed removal,
-  bounded crash-report browsing and export, plus cancellable CoreDevice
-  sysdiagnose collection
+  plus cancellable CoreDevice sysdiagnose collection
 - One-shot Unicode text paste and optional bidirectional text/image clipboard
   synchronization through the CoreDevice Pasteboard Service
 - On-demand structured iPhone Unified Log console with level/context filtering,

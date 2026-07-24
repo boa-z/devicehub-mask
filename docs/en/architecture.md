@@ -308,12 +308,16 @@ Writes reject name collisions, root mutation, and unsupported local entry types;
 recursive deletion requires an explicit frontend confirmation. No AFC2 path or
 MCP mutation crosses this boundary.
 
-The standard AFC browser is a top-level application workspace rather than a
-Device Inspector tab or modal. It stays mounted across workspace changes so
-navigation, sorting, and active transfer controls survive, but only loads a
-directory while selected and resets when the device changes. Direct path input
-mirrors the backend's UTF-8 byte and component limits before issuing a request;
-the backend remains the authoritative confinement boundary.
+The AFC top-level workspace presents four scopes without merging their service
+or authorization boundaries. Public AFC uses the supervised standard-AFC
+worker. App Documents and App Container use the existing per-application House
+Arrest worker after filtering the current app catalog by the scope actually
+available. Crash Reports remains a read-only CrashReportCopyMobile list and
+export path. Scope and app selection are locked while a transfer is active so
+the owning pane, progress snapshot, and cancellation control cannot disappear.
+The public browser only loads a directory while selected and resets when the
+device changes. Direct path input mirrors the backend's UTF-8 byte and component
+limits before issuing a request; the backend remains authoritative.
 
 Public AFC imports and exports publish a separate session-scoped activity
 snapshot. The transfer reuses one 64 KiB buffer across all files and publishes

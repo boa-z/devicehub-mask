@@ -21,12 +21,16 @@ import { formatFileSize } from "../deviceInspector";
 import type { AppDocumentActivity, AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
-type AppStorageScope = "documents" | "container";
+export type AppStorageScope = "documents" | "container";
 
 type Props = {
   app: DeviceApp | null;
   request: Request;
-  onClose: () => void;
+  onClose?: () => void;
+  active?: boolean;
+  embedded?: boolean;
+  fixedScope?: AppStorageScope;
+  onTransferStateChange?: (active: boolean) => void;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -44,10 +48,10 @@ function parentPath(path: string) {
   return parts.length ? `/${parts.join("/")}` : "/";
 }
 
-export function AppDocumentsModal({ app, request, onClose }: Props) {
+export function AppDocumentsModal({ app, request, onClose = () => undefined, active = true, embedded = false, fixedScope, onTransferStateChange }: Props) {
   const { t, i18n } = useTranslation();
   const [path, setPath] = useState("/");
-  const [scope, setScope] = useState<AppStorageScope>("documents");
+  const [scope, setScope] = useState<AppStorageScope>(fixedScope ?? "documents");
   const [listing, setListing] = useState<AppDocumentList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -58,7 +62,7 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
   const activeBundleIdRef = useRef(app?.bundle_id);
 
   const load = useCallback(async () => {
-    if (!app
+    if (!active || !app
       || (!app.documents_available && scope === "documents")
       || (!app.is_developer_app && scope === "container")) return;
     setBusy("list");
@@ -72,23 +76,28 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
     } finally {
       setBusy(null);
     }
-  }, [app, path, request, scope]);
+  }, [active, app, path, request, scope]);
 
   useEffect(() => {
     activeBundleIdRef.current = app?.bundle_id;
     setPath("/");
-    setScope(app?.documents_available === false ? "container" : "documents");
+    setScope(fixedScope ?? (app?.documents_available === false ? "container" : "documents"));
     setListing(null);
     setError(null);
     setCancelPending(false);
     setCancelRequested(false);
     cancelRequestedRef.current = false;
-  }, [app?.bundle_id, app?.documents_available]);
+  }, [app?.bundle_id, app?.documents_available, fixedScope]);
 
   const transferBusy = busy === "upload" || busy?.startsWith("export:") === true;
   useEffect(() => {
+    onTransferStateChange?.(transferBusy);
+    return () => onTransferStateChange?.(false);
+  }, [onTransferStateChange, transferBusy]);
+
+  useEffect(() => {
     const bundleId = app?.bundle_id;
-    if (!bundleId || !transferBusy) {
+    if (!active || !bundleId || !transferBusy) {
       setActivity(null);
       return;
     }
@@ -109,7 +118,7 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [app?.bundle_id, request, transferBusy]);
+  }, [active, app?.bundle_id, request, transferBusy]);
 
   const changeScope = (nextScope: AppStorageScope) => {
     if (busy !== null || nextScope === scope) return;
@@ -305,20 +314,9 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
     });
   };
 
-  return (
-    <Modal
-      className="app-documents-modal"
-      open={app !== null}
-      width={760}
-      title={app ? t("deviceInspector.appStorageTitle", { name: app.name }) : ""}
-      footer={null}
-      destroyOnHidden
-      closable={busy === null}
-      keyboard={busy === null}
-      maskClosable={busy === null}
-      onCancel={() => { if (busy === null) onClose(); }}
-    >
-      <Segmented
+  const content = (
+    <>
+      {!fixedScope && <Segmented
         block
         className="app-storage-scope"
         value={scope}
@@ -328,7 +326,7 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
           { value: "container", label: t("deviceInspector.appStorageContainer"), disabled: app?.is_developer_app === false },
         ]}
         onChange={(value) => changeScope(value as AppStorageScope)}
-      />
+      />}
       {scope === "container" && (
         <Alert type="warning" showIcon message={t("deviceInspector.appContainerWarning")} />
       )}
@@ -435,6 +433,27 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noDocuments")} />
       )}
       {listing?.truncated && <Alert type="warning" showIcon message={t("deviceInspector.documentsTruncated")} />}
+    </>
+  );
+
+  if (embedded) {
+    return <div className="app-storage-browser">{content}</div>;
+  }
+
+  return (
+    <Modal
+      className="app-documents-modal"
+      open={app !== null}
+      width={760}
+      title={app ? t("deviceInspector.appStorageTitle", { name: app.name }) : ""}
+      footer={null}
+      destroyOnHidden
+      closable={busy === null}
+      keyboard={busy === null}
+      maskClosable={busy === null}
+      onCancel={() => { if (busy === null) onClose(); }}
+    >
+      {content}
     </Modal>
   );
 }

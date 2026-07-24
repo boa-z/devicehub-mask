@@ -32,6 +32,7 @@ type Props = {
   deviceId: string | null;
   refreshToken: number;
   request: Request;
+  onTransferStateChange?: (active: boolean) => void;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -45,7 +46,7 @@ function parentPath(path: string) {
   return parts.length ? `/${parts.join("/")}` : "/";
 }
 
-export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Props) {
+export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTransferStateChange }: Props) {
   const { t, i18n } = useTranslation();
   const [path, setPath] = useState("/");
   const [listing, setListing] = useState<DeviceFileList | null>(null);
@@ -95,6 +96,11 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Pro
   }, [deviceId]);
 
   const transferBusy = busy === "import" || busy?.startsWith("export:") === true;
+  useEffect(() => {
+    onTransferStateChange?.(transferBusy);
+    return () => onTransferStateChange?.(false);
+  }, [onTransferStateChange, transferBusy]);
+
   useEffect(() => {
     if (!deviceId || !transferBusy) {
       setActivity(null);
