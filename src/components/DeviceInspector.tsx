@@ -130,6 +130,8 @@ export function DeviceInspector({
   const [crashReportsTruncated, setCrashReportsTruncated] = useState(false);
   const [query, setQuery] = useState("");
   const [appSort, setAppSort] = useState<DeviceAppSort>("name");
+  const [showSystemApps, setShowSystemApps] = useState(false);
+  const [systemAppsLoading, setSystemAppsLoading] = useState(false);
   const [profileStatus, setProfileStatus] = useState<ProfileStatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -154,6 +156,9 @@ export function DeviceInspector({
   const handledDeviceEvent = useRef(0);
   const handledDeveloperImageState = useRef<string>("");
   const homeScreenRequest = useRef(0);
+  const appListRequest = useRef(0);
+  const systemAppsRequest = useRef(0);
+  const showSystemAppsRef = useRef(false);
 
   const loadHomeScreen = useCallback(async () => {
     const requestId = ++homeScreenRequest.current;
@@ -172,8 +177,13 @@ export function DeviceInspector({
     }
   }, [request]);
 
-  const loadApps = useCallback(async () => {
-    setApps(await readJson<DeviceApp[]>(await request("/api/device/apps")));
+  const loadApps = useCallback(async (includeSystem = showSystemAppsRef.current) => {
+    const requestId = ++appListRequest.current;
+    const suffix = includeSystem ? "?include_system=true" : "";
+    const nextApps = await readJson<DeviceApp[]>(await request(`/api/device/apps${suffix}`));
+    if (appListRequest.current !== requestId) return false;
+    setApps(nextApps);
+    return true;
   }, [request]);
 
   const loadWdaRunnerStatus = useCallback(async () => {
@@ -234,6 +244,11 @@ export function DeviceInspector({
 
   useEffect(() => {
     homeScreenRequest.current += 1;
+    appListRequest.current += 1;
+    systemAppsRequest.current += 1;
+    showSystemAppsRef.current = false;
+    setShowSystemApps(false);
+    setSystemAppsLoading(false);
     setDetails(null);
     setCompanions([]);
     setCompanionError(null);
@@ -346,6 +361,24 @@ export function DeviceInspector({
     setAppOperation(operation);
     return operation;
   }, [readAppOperation]);
+
+  const toggleSystemApps = async () => {
+    if (loading || systemAppsLoading) return;
+    const next = !showSystemApps;
+    const requestId = ++systemAppsRequest.current;
+    setSystemAppsLoading(true);
+    try {
+      if (await loadApps(next)) {
+        showSystemAppsRef.current = next;
+        setShowSystemApps(next);
+      }
+    } catch (systemAppsError) {
+      if (systemAppsRequest.current !== requestId) return;
+      void message.error(t("deviceInspector.systemAppsUnavailable", { error: String(systemAppsError) }));
+    } finally {
+      if (systemAppsRequest.current === requestId) setSystemAppsLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!activeUdid) return;
@@ -1212,6 +1245,17 @@ export function DeviceInspector({
                 />
               </Tooltip>
             </Dropdown>
+            <Tooltip title={t(showSystemApps ? "deviceInspector.hideSystemApps" : "deviceInspector.showSystemApps")}>
+              <Button
+                type={showSystemApps ? "primary" : "default"}
+                aria-label={t(showSystemApps ? "deviceInspector.hideSystemApps" : "deviceInspector.showSystemApps")}
+                aria-pressed={showSystemApps}
+                icon={<AppstoreOutlined />}
+                loading={systemAppsLoading}
+                disabled={loading || systemAppsLoading}
+                onClick={() => void toggleSystemApps()}
+              />
+            </Tooltip>
             <Tooltip title={t("deviceInspector.installApp")}>
               <Button icon={<UploadOutlined />} disabled={appMutationRunning} onClick={() => void installApp()} />
             </Tooltip>
@@ -1320,6 +1364,7 @@ export function DeviceInspector({
                     )}
                     {locationLabel && <Tooltip title={locationTooltip}><Tag color="cyan">{locationLabel}</Tag></Tooltip>}
                     {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
+                    {app.is_first_party && <Tag color="gold">{t("deviceInspector.systemApp")}</Tag>}
                     {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}
                     {activeWdaRunner && wdaRunnerStatus?.phase === "starting" && <Tag color="processing">{t("deviceInspector.wdaRunnerStarting")}</Tag>}
                     {activeWdaRunner && wdaRunnerStatus?.phase === "running" && <Tag color="success">{t("deviceInspector.wdaRunnerRunning")}</Tag>}

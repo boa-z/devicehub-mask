@@ -142,6 +142,13 @@ a new RSD tunnel per operation. Process URLs are matched only when their direct
 parent is the selected app bundle; stop resolves fresh device state and sends a
 fixed SIGTERM without accepting a client PID or signal. Listing falls back to
 Installation Proxy when AppService is absent, with running state left unknown.
+The default scope requests removable user apps only. An explicit system-app
+scope additionally enables CoreDevice default apps; hidden and internal apps
+remain excluded. Installation Proxy `Any` only augments those known CoreDevice
+entries with metadata and is never used to construct a system catalog. If
+CoreDevice listing fails, the system scope reports that limitation instead of
+returning an unreliable catalog. The uninstall path still re-queries a single
+`User` app and never trusts list metadata as authorization.
 The same bounded Installation Proxy metadata query augments either list path
 with `StaticDiskUsage` and `DynamicDiskUsage`; values are validated before they
 cross the private API, and the total is computed with checked arithmetic. Missing

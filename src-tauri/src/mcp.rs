@@ -202,7 +202,7 @@ struct LocationParams {
 struct ListAppsParams {
     /// Case-insensitive app-name or bundle-ID filter.
     query: Option<String>,
-    /// Include Apple first-party apps. Defaults to false.
+    /// Include Apple default apps through CoreDevice AppService. Defaults to false.
     include_system: Option<bool>,
     /// Maximum returned apps. Defaults to 100 and is clamped to 1..200.
     limit: Option<usize>,
@@ -1078,21 +1078,24 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "List launchable apps on the connected iPhone. User-installed apps are returned by default; filter by app name or bundle ID."
+        description = "List launchable apps on the connected iPhone. User-installed apps are returned by default; include_system additionally requests Apple default apps through CoreDevice AppService. Filter by app name or bundle ID."
     )]
     async fn list_apps(
         &self,
         Parameters(params): Parameters<ListAppsParams>,
     ) -> Result<CallToolResult, McpError> {
+        let include_system = params.include_system.unwrap_or(false);
         let (reply, response) = oneshot::channel();
-        self.send(InputCmd::ListApps(reply))?;
+        self.send(InputCmd::ListApps {
+            include_system,
+            reply,
+        })?;
         let mut apps = tokio::time::timeout(APP_WAIT, response)
             .await
             .map_err(|_| McpError::internal_error("app list request timed out", None))?
             .map_err(|_| McpError::internal_error("device session ended", None))?
             .map_err(|error| McpError::internal_error(error, None))?;
         let query = params.query.unwrap_or_default().trim().to_lowercase();
-        let include_system = params.include_system.unwrap_or(false);
         apps.retain(|app| {
             (include_system || !app.is_first_party)
                 && (query.is_empty()

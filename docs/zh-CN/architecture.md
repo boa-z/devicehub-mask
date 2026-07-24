@@ -99,6 +99,10 @@ CoreDevice AppService，避免每次操作创建新的 RSD tunnel。只有可执
 等于目标 App bundle 时才会匹配进程；停止操作会重新读取设备状态并发送固定 SIGTERM，
 客户端不能指定 PID 或信号。缺少 AppService 时，列表回退到 Installation Proxy，运行
 状态保持未知。
+默认范围只请求可移除的用户 App。显式启用系统 App 后，CoreDevice 会额外包含默认 App，
+隐藏和内部 App 仍会被排除。Installation Proxy `Any` 只补充这些 CoreDevice 已知条目的
+元数据，绝不会用来构造系统目录。CoreDevice 列表失败时，系统范围会明确报告限制，不返回
+不可靠的目录。卸载路径依然会按单个 `User` App 重新查询，绝不会把列表元数据当作授权依据。
 同一次经过限制的 Installation Proxy 元数据查询会为两种列表路径补充
 `StaticDiskUsage` 和 `DynamicDiskUsage`；数值通过校验后才会越过私有 API，总量使用
 checked arithmetic 计算。缺失或异常字段保持未知，不会被错误显示为零。

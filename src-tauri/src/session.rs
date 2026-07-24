@@ -2466,10 +2466,16 @@ impl DeviceManagement {
                 developer_mode::execute(self.provider.clone(), command);
                 None
             }
-            InputCmd::ListApps(reply) => {
-                let result =
-                    list_device_apps(self.app_service.as_mut(), self.installation_proxy.as_mut())
-                        .await;
+            InputCmd::ListApps {
+                include_system,
+                reply,
+            } => {
+                let result = list_device_apps(
+                    self.app_service.as_mut(),
+                    self.installation_proxy.as_mut(),
+                    include_system,
+                )
+                .await;
                 let _ = reply.send(result);
                 None
             }
@@ -2865,21 +2871,37 @@ async fn uninstall_user_app(
 async fn list_device_apps(
     app_service: Option<&mut AppServiceClient<Box<dyn ReadWrite>>>,
     mut installation_proxy: Option<&mut InstallationProxyClient>,
+    include_system: bool,
 ) -> Result<Vec<DeviceApp>, String> {
     if let Some(client) = app_service {
-        match client.list_apps(false, true, false, false, false).await {
+        match client
+            .list_apps(false, true, false, false, include_system)
+            .await
+        {
             Ok(entries) => {
-                let installation_apps = match installation_proxy.as_deref_mut() {
-                    Some(client) => match client.get_apps(Some("User"), None).await {
-                        Ok(apps) => apps,
-                        Err(error) => {
-                            tracing::warn!(
-                                "installation proxy app metadata unavailable: {error:?}"
-                            );
-                            std::collections::HashMap::new()
-                        }
-                    },
-                    None => std::collections::HashMap::new(),
+                let application_type = if include_system { "Any" } else { "User" };
+                let bundle_identifiers = entries
+                    .iter()
+                    .map(|entry| entry.bundle_identifier.clone())
+                    .collect();
+                let installation_apps = if entries.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    match installation_proxy.as_deref_mut() {
+                        Some(client) => match client
+                            .get_apps(Some(application_type), Some(bundle_identifiers))
+                            .await
+                        {
+                            Ok(apps) => apps,
+                            Err(error) => {
+                                tracing::warn!(
+                                    "installation proxy app metadata unavailable: {error:?}"
+                                );
+                                std::collections::HashMap::new()
+                            }
+                        },
+                        None => std::collections::HashMap::new(),
+                    }
                 };
                 let processes = match client.list_processes().await {
                     Ok(processes) => Some(processes),
@@ -2927,9 +2949,16 @@ async fn list_device_apps(
                         .collect(),
                 ));
             }
-            Err(error) => tracing::warn!(
-                "CoreDevice AppService list failed; using installation proxy: {error:?}"
-            ),
+            Err(error) => {
+                if include_system {
+                    return Err(format!(
+                        "system app listing requires CoreDevice AppService: {error:?}"
+                    ));
+                }
+                tracing::warn!(
+                    "CoreDevice AppService list failed; using installation proxy: {error:?}"
+                );
+            }
         }
     }
 
@@ -3619,7 +3648,7 @@ async fn dispatch(
         InputCmd::GetDeviceDetails(_)
         | InputCmd::RenameDevice { .. }
         | InputCmd::DeveloperMode(_)
-        | InputCmd::ListApps(_)
+        | InputCmd::ListApps { .. }
         | InputCmd::ListCompanionDevices(_)
         | InputCmd::GetHomeScreenLayout(_)
         | InputCmd::WdaAutomation(_)

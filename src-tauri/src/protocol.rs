@@ -300,7 +300,10 @@ pub enum InputCmd {
     /// Mount a user-selected Developer Disk Image for XCTest services.
     DeveloperImageMount(crate::developer_image::DeveloperImageMountCommand),
     /// List user-facing applications through CoreDevice AppService.
-    ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
+    ListApps {
+        include_system: bool,
+        reply: oneshot::Sender<Result<Vec<DeviceApp>, String>>,
+    },
     /// List Apple Watch devices paired with the active iPhone through CompanionProxy.
     ListCompanionDevices(
         oneshot::Sender<Result<Vec<crate::companion_devices::CompanionDevice>, String>>,

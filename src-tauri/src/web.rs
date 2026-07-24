@@ -1140,11 +1140,21 @@ async fn dispatch_device_power_command(
         })
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct DeviceAppsQuery {
+    #[serde(default)]
+    include_system: bool,
+}
+
 async fn device_apps(
     State(state): State<AppState>,
+    Query(query): Query<DeviceAppsQuery>,
 ) -> Result<Json<Vec<crate::protocol::DeviceApp>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::ListApps(reply)) {
+    if !state.input.try_send(InputCmd::ListApps {
+        include_system: query.include_system,
+        reply,
+    }) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -4073,6 +4083,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn app_list_scope_is_dispatched_to_the_device_session() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(device_apps(
+            State(state),
+            Query(DeviceAppsQuery {
+                include_system: true,
+            }),
+        ));
+
+        let InputCmd::ListApps {
+            include_system,
+            reply,
+        } = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected app list command");
+        };
+        assert!(include_system);
+        reply.send(Ok(Vec::new())).unwrap();
+        assert!(request.await.unwrap().unwrap().0.is_empty());
+    }
+
+    #[tokio::test]
     async fn device_queries_require_an_active_session() {
         let (state, _input_rx) = test_state();
         state.input.set(None);
@@ -4104,7 +4136,7 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            device_apps(State(state.clone())).await,
+            device_apps(State(state.clone()), Query(DeviceAppsQuery::default())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(

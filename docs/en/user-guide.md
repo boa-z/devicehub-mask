@@ -225,6 +225,12 @@ Lockdown Installation Proxy when necessary. When AppService process data is
 available, running apps are marked and can be stopped or restarted. It can also
 select an IPA with the native file dialog, report installation stages, and
 remove confirmed removable user apps.
+The system-app toolbar toggle expands the list to Apple default apps and marks
+them explicitly; it is off by default and does not request hidden or internal
+apps. System apps can be inspected or launched when the device permits it, but
+cannot be uninstalled from this UI. This scope requires CoreDevice AppService;
+the app reports an error rather than treating Installation Proxy's broader
+catalog as an equivalent fallback.
 When iOS reports Installation Proxy disk-usage metadata, each row shows the
 combined installed and data size. Hovering the value shows both components, and
 the sort menu can order known totals from largest to smallest; apps without a
@@ -341,7 +347,10 @@ does not wake an already locked device like a hardware-button toggle can.
 `device_details` refreshes the active device's product and OS versions, hardware
 model, storage, activation, Developer Mode, and battery diagnostics. UDID,
 serial number, and ECID are omitted by default; set `include_identifiers` only
-when stable hardware identity is required. `wait_for_device_event` waits without
+when stable hardware identity is required. `list_apps` returns user-installed
+apps by default. Set `include_system=true` to request Apple default apps as well;
+this requires CoreDevice AppService and does not expose hidden or internal apps.
+`wait_for_device_event` waits without
 polling for normalized app installation/removal, activation, disk-usage,
 device-name, or lock-state changes. Pass the returned event `sequence` as
 `after_sequence` on the next call to close subscription races; raw notification
