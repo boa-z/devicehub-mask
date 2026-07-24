@@ -23,10 +23,10 @@ use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame,
-    FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus, LocationStatusSlot, Orientation,
-    OrientationSlot, RotateDir, StatusSlot, VideoCounters, norm, unrotate_norm,
-    validate_device_name, validate_paste_text,
+    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
+    ForgetDeviceResult, Frame, FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus,
+    LocationStatusSlot, Orientation, OrientationSlot, PairDeviceResult, RotateDir, StatusSlot,
+    VideoCounters, norm, unrotate_norm, validate_device_name, validate_paste_text,
 };
 use crate::{
     performance::{PerformanceDemand, PerformanceSlot},
@@ -73,6 +73,7 @@ struct DeviceView {
     udid: String,
     name: String,
     connection: &'static str,
+    pairing: crate::protocol::DevicePairingState,
 }
 
 #[derive(Serialize)]
@@ -182,6 +183,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
+        .route(
+            "/api/devices/{udid}/pair",
+            put(pair_device).delete(forget_device),
+        )
         .route("/api/device/details", get(device_details))
         .route(
             "/api/device/backup",
@@ -840,6 +845,7 @@ fn status_snapshot(state: &AppState) -> StatusView {
                 udid: device.udid,
                 name: device.name,
                 connection: device.connection.label(),
+                pairing: device.pairing,
             })
             .collect(),
         location: state.location.get(),
@@ -861,7 +867,77 @@ async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String
     StatusCode::ACCEPTED
 }
 
+async fn pair_device(
+    State(state): State<AppState>,
+    Path(selection_id): Path<String>,
+) -> Result<Json<PairDeviceResult>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    state
+        .control
+        .send(ControlCmd::Pair {
+            selection_id,
+            reply,
+        })
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session manager is not running".into(),
+            )
+        })?;
+    let result = tokio::time::timeout(PAIRING_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "device pairing request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device pairing request was interrupted".into(),
+            )
+        })?;
+    Ok(Json(result))
+}
+
+async fn forget_device(
+    State(state): State<AppState>,
+    Path(selection_id): Path<String>,
+) -> Result<Json<ForgetDeviceResult>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    state
+        .control
+        .send(ControlCmd::Forget {
+            selection_id,
+            reply,
+        })
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session manager is not running".into(),
+            )
+        })?;
+    let result = tokio::time::timeout(FORGET_DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "device trust removal request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device trust removal request was interrupted".into(),
+            )
+        })?;
+    Ok(Json(result))
+}
+
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const PAIRING_REQUEST_TIMEOUT: Duration = Duration::from_secs(95);
+const FORGET_DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const WDA_RUNNER_START_TIMEOUT: Duration = Duration::from_secs(35);
 const PROVISIONING_REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
 const SCREENSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
@@ -3852,6 +3928,59 @@ mod tests {
             control_rx.recv().await,
             Some(ControlCmd::Reconnect(udid)) if udid == "device-1"
         ));
+    }
+
+    #[tokio::test]
+    async fn pairing_endpoint_dispatches_to_the_device_manager() {
+        let (state, _input_rx, mut control_rx) = test_state_with_control();
+        let request = tokio::spawn(pair_device(State(state), Path("device-1::usb".into())));
+
+        let Some(ControlCmd::Pair {
+            selection_id,
+            reply,
+        }) = control_rx.recv().await
+        else {
+            panic!("expected pairing command");
+        };
+        assert_eq!(selection_id, "device-1::usb");
+        reply
+            .send(PairDeviceResult {
+                outcome: crate::protocol::PairDeviceOutcome::Paired,
+                error: None,
+            })
+            .unwrap();
+
+        let response = request.await.unwrap().unwrap().0;
+        assert_eq!(response.outcome, crate::protocol::PairDeviceOutcome::Paired);
+        assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn forget_endpoint_dispatches_to_the_device_manager() {
+        let (state, _input_rx, mut control_rx) = test_state_with_control();
+        let request = tokio::spawn(forget_device(State(state), Path("device-1::usb".into())));
+
+        let Some(ControlCmd::Forget {
+            selection_id,
+            reply,
+        }) = control_rx.recv().await
+        else {
+            panic!("expected forget command");
+        };
+        assert_eq!(selection_id, "device-1::usb");
+        reply
+            .send(ForgetDeviceResult {
+                outcome: crate::protocol::ForgetDeviceOutcome::Forgotten,
+                error: None,
+            })
+            .unwrap();
+
+        let response = request.await.unwrap().unwrap().0;
+        assert_eq!(
+            response.outcome,
+            crate::protocol::ForgetDeviceOutcome::Forgotten
+        );
+        assert!(response.error.is_none());
     }
 
     fn test_frame() -> Frame {

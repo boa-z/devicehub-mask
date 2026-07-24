@@ -53,9 +53,10 @@ use crate::hid::{UniversalHidClient, build_multitouch_report};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardContentKind, ClipboardEvent,
     ClipboardSlot, ConnKind, ControlCmd, DeviceActivationState, DeviceApp, DeviceBattery,
-    DeviceDetails, DeviceInfo, DeviceListSlot, DeviceStorage, ErrorSlot, FrameFormat, FrameSlot,
-    InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
-    RotateDir, StatusSlot, VideoCounters, clipboard_preview, device_selector,
+    DeviceDetails, DeviceInfo, DeviceListSlot, DevicePairingState, DeviceStorage, ErrorSlot,
+    ForgetDeviceOutcome, ForgetDeviceResult, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods,
+    LocationStatus, LocationStatusSlot, Orientation, OrientationSlot, PairDeviceOutcome,
+    PairDeviceResult, RotateDir, StatusSlot, VideoCounters, clipboard_preview, device_selector,
 };
 use crate::wifi_devices::{WifiDiscovery, WifiEndpoint};
 use crate::{location, location::LocationCommand};
@@ -679,6 +680,11 @@ const WIFI_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// Per-device budget for resolving `DeviceName` over lockdown; on timeout we fall
 /// back to the UDID so a flaky/locked device doesn't stall the picker.
 const NAME_TIMEOUT: Duration = Duration::from_secs(2);
+/// Pairing includes a user confirmation on the device, but must not wait forever
+/// when the prompt is ignored or the USB transport disappears.
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(90);
+/// Removing trust is local/device I/O only and never waits for a user dialog.
+const FORGET_DEVICE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the manager should do once the current session is no longer running.
 enum Next {
@@ -686,6 +692,16 @@ enum Next {
     Switch(String),
     /// Rebuild a dropped Wi-Fi session while preserving the selected transport.
     RetryWifi(String),
+    /// Stop the active session, then pair this USB transport.
+    Pair {
+        selection_id: String,
+        reply: tokio::sync::oneshot::Sender<PairDeviceResult>,
+    },
+    /// Stop the active session, then revoke this USB trust relationship.
+    Forget {
+        selection_id: String,
+        reply: tokio::sync::oneshot::Sender<ForgetDeviceResult>,
+    },
     /// Go idle (no device); wait for the user to pick one.
     Idle,
     /// The UI is gone - exit the manager entirely.
@@ -782,6 +798,233 @@ impl SessionEndpoint {
     }
 }
 
+fn pairing_failure(error: IdeviceError) -> PairDeviceResult {
+    let outcome = match error {
+        IdeviceError::UserDeniedPairing => PairDeviceOutcome::Denied,
+        IdeviceError::PasswordProtected | IdeviceError::DeviceLocked => PairDeviceOutcome::Locked,
+        _ => PairDeviceOutcome::Failed,
+    };
+    PairDeviceResult {
+        outcome,
+        error: Some(error.to_string()),
+    }
+}
+
+async fn pair_usb_endpoint(endpoint: &UsbmuxdEndpoint) -> PairDeviceResult {
+    if !matches!(endpoint.device.connection_type, Connection::Usb) {
+        return PairDeviceResult {
+            outcome: PairDeviceOutcome::Failed,
+            error: Some("pairing is available only for a USB device".into()),
+        };
+    }
+
+    let device_id = crate::diagnostics::device_id_fingerprint(&endpoint.device.udid);
+    tracing::info!(%device_id, "USB pairing requested by user");
+    let operation = async {
+        let mut usbmuxd = endpoint.address.connect(0).await?;
+        let system_buid = usbmuxd.get_buid().await?;
+        let provider = endpoint
+            .device
+            .to_provider(endpoint.address.clone(), "devicehub-mask-pairing");
+        let mut lockdown = LockdownClient::connect(&provider).await?;
+        let host_id = uuid::Uuid::new_v4().to_string().to_uppercase();
+        let mut pairing_file = lockdown
+            .pair(host_id, system_buid, Some("DeviceHub Mask"))
+            .await?;
+
+        // Do not persist credentials until the device accepts them and a secure
+        // Lockdown session proves the generated record is usable.
+        lockdown.start_session(&pairing_file).await?;
+        pairing_file.udid = Some(endpoint.device.udid.clone());
+        let serialized = pairing_file.serialize()?;
+        usbmuxd
+            .save_pair_record(&endpoint.device.udid, serialized)
+            .await?;
+        Ok::<(), IdeviceError>(())
+    };
+
+    match tokio::time::timeout(PAIRING_TIMEOUT, operation).await {
+        Ok(Ok(())) => {
+            tracing::info!(%device_id, "USB pairing completed");
+            PairDeviceResult {
+                outcome: PairDeviceOutcome::Paired,
+                error: None,
+            }
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%device_id, ?error, "USB pairing failed");
+            pairing_failure(error)
+        }
+        Err(_) => {
+            tracing::warn!(%device_id, timeout_ms = PAIRING_TIMEOUT.as_millis(), "USB pairing timed out");
+            PairDeviceResult {
+                outcome: PairDeviceOutcome::TimedOut,
+                error: Some("timed out waiting for the device trust confirmation".into()),
+            }
+        }
+    }
+}
+
+async fn execute_pair_command(
+    selection_id: String,
+    reply: tokio::sync::oneshot::Sender<PairDeviceResult>,
+    endpoints: &HashMap<String, SessionEndpoint>,
+    status: &StatusSlot,
+) -> bool {
+    let result = match endpoints.get(&selection_id) {
+        Some(SessionEndpoint::Usbmuxd(endpoint)) => {
+            status.set("waiting for device trust confirmation...");
+            pair_usb_endpoint(endpoint).await
+        }
+        Some(SessionEndpoint::Wifi(_)) => PairDeviceResult {
+            outcome: PairDeviceOutcome::Failed,
+            error: Some("pairing is available only for a USB device".into()),
+        },
+        None => PairDeviceResult {
+            outcome: PairDeviceOutcome::Failed,
+            error: Some("the selected USB device is no longer available".into()),
+        },
+    };
+    let paired = result.outcome == PairDeviceOutcome::Paired;
+    let _ = reply.send(result);
+    paired
+}
+
+fn forget_device_result(
+    device_error: Option<String>,
+    host_error: Option<String>,
+) -> ForgetDeviceResult {
+    let outcome = match (device_error.is_some(), host_error.is_some()) {
+        (false, false) => ForgetDeviceOutcome::Forgotten,
+        (true, false) => ForgetDeviceOutcome::HostRecordRemoved,
+        (false, true) => ForgetDeviceOutcome::DeviceForgottenHostCleanupFailed,
+        (true, true) => ForgetDeviceOutcome::Failed,
+    };
+    let error = match (device_error, host_error) {
+        (Some(device), Some(host)) => Some(format!(
+            "device did not confirm revocation: {device}; host record cleanup failed: {host}"
+        )),
+        (Some(device), None) => Some(format!("device did not confirm revocation: {device}")),
+        (None, Some(host)) => Some(format!("host record cleanup failed: {host}")),
+        (None, None) => None,
+    };
+    ForgetDeviceResult { outcome, error }
+}
+
+async fn delete_host_pair_record(endpoint: &UsbmuxdEndpoint) -> Result<(), IdeviceError> {
+    let delete = async {
+        let mut usbmuxd = endpoint.address.connect(0).await?;
+        usbmuxd.delete_pair_record(&endpoint.device.udid).await
+    };
+    match tokio::time::timeout(FORGET_DEVICE_TIMEOUT, delete).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(first_error)) => {
+            tracing::debug!(?first_error, "retrying host pairing record removal");
+            let retry = async {
+                let mut usbmuxd = endpoint.address.connect(0).await?;
+                usbmuxd.delete_pair_record(&endpoint.device.udid).await
+            };
+            tokio::time::timeout(FORGET_DEVICE_TIMEOUT, retry)
+                .await
+                .map_err(|_| IdeviceError::Timeout)?
+        }
+        Err(_) => Err(IdeviceError::Timeout),
+    }
+}
+
+async fn forget_usb_endpoint(
+    endpoint: &UsbmuxdEndpoint,
+    wifi: Option<&mut WifiDiscovery>,
+    pairing_dir: &Path,
+) -> ForgetDeviceResult {
+    if !matches!(endpoint.device.connection_type, Connection::Usb) {
+        return ForgetDeviceResult {
+            outcome: ForgetDeviceOutcome::Failed,
+            error: Some("removing trust is available only for a USB device".into()),
+        };
+    }
+
+    let device_id = crate::diagnostics::device_id_fingerprint(&endpoint.device.udid);
+    tracing::info!(%device_id, "USB trust removal requested by user");
+    let pairing_record = tokio::time::timeout(FORGET_DEVICE_TIMEOUT, async {
+        let mut usbmuxd = endpoint.address.connect(0).await?;
+        usbmuxd.get_pair_record(&endpoint.device.udid).await
+    })
+    .await
+    .map_err(|_| IdeviceError::Timeout)
+    .and_then(|result| result);
+
+    let device_error = match pairing_record {
+        Ok(pairing_file) => {
+            let revoke = async {
+                let provider = endpoint
+                    .device
+                    .to_provider(endpoint.address.clone(), "devicehub-mask-unpairing");
+                let mut lockdown = LockdownClient::connect(&provider).await?;
+                lockdown.unpair(pairing_file.host_id).await
+            };
+            match tokio::time::timeout(FORGET_DEVICE_TIMEOUT, revoke).await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error.to_string()),
+                Err(_) => Some(IdeviceError::Timeout.to_string()),
+            }
+        }
+        Err(error) => Some(error.to_string()),
+    };
+
+    // Always remove the local private-key record after an explicit forget
+    // request, even when the device response was lost or already revoked.
+    let pair_record_error = delete_host_pair_record(endpoint)
+        .await
+        .err()
+        .map(|error| error.to_string());
+    let cache_error = match wifi {
+        Some(discovery) => discovery.remove_pairing(&endpoint.device.udid),
+        None => crate::wifi_devices::remove_cached_pairing(pairing_dir, &endpoint.device.udid),
+    }
+    .err();
+    let host_error = match (pair_record_error, cache_error) {
+        (Some(pair_record), Some(cache)) => Some(format!(
+            "usbmuxd record removal failed: {pair_record}; cached record removal failed: {cache}"
+        )),
+        (Some(pair_record), None) => Some(format!("usbmuxd record removal failed: {pair_record}")),
+        (None, Some(cache)) => Some(format!("cached record removal failed: {cache}")),
+        (None, None) => None,
+    };
+    let result = forget_device_result(device_error, host_error);
+    if result.outcome == ForgetDeviceOutcome::Forgotten {
+        tracing::info!(%device_id, "USB trust relationship removed");
+    } else {
+        tracing::warn!(%device_id, outcome = ?result.outcome, error = ?result.error, "USB trust removal completed with an incomplete result");
+    }
+    result
+}
+
+async fn execute_forget_command(
+    selection_id: String,
+    reply: tokio::sync::oneshot::Sender<ForgetDeviceResult>,
+    endpoints: &HashMap<String, SessionEndpoint>,
+    status: &StatusSlot,
+    wifi: &mut Option<WifiDiscovery>,
+    pairing_dir: &Path,
+) {
+    let result = match endpoints.get(&selection_id) {
+        Some(SessionEndpoint::Usbmuxd(endpoint)) => {
+            status.set("removing device trust...");
+            forget_usb_endpoint(endpoint, wifi.as_mut(), pairing_dir).await
+        }
+        Some(SessionEndpoint::Wifi(_)) => ForgetDeviceResult {
+            outcome: ForgetDeviceOutcome::Failed,
+            error: Some("removing trust is available only for a USB device".into()),
+        },
+        None => ForgetDeviceResult {
+            outcome: ForgetDeviceOutcome::Failed,
+            error: Some("the selected USB device is no longer available".into()),
+        },
+    };
+    let _ = reply.send(result);
+}
+
 /// Supervise the device session: enumerate attached devices for the picker,
 /// connect to one, and tear down / reconnect when the selection changes.
 #[allow(clippy::too_many_arguments)]
@@ -852,7 +1095,10 @@ pub async fn manage(
 
         if target.is_none()
             && auto_pick
-            && let Some(first) = device_list.get().first()
+            && let Some(first) = device_list
+                .get()
+                .into_iter()
+                .find(|device| device.pairing != DevicePairingState::Unpaired)
         {
             target = Some(first.id.clone());
             auto_pick = false;
@@ -873,6 +1119,24 @@ pub async fn manage(
                 cmd = control_rx.recv() => match cmd {
                     Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
                     Some(ControlCmd::Refresh) => names.clear(),
+                    Some(ControlCmd::Pair { selection_id, reply }) => {
+                        let requested = selection_id.clone();
+                        if execute_pair_command(selection_id, reply, &endpoints, &status).await {
+                            target = Some(requested);
+                        }
+                        names.clear();
+                    }
+                    Some(ControlCmd::Forget { selection_id, reply }) => {
+                        execute_forget_command(
+                            selection_id,
+                            reply,
+                            &endpoints,
+                            &status,
+                            &mut wifi,
+                            &pairing_dir,
+                        ).await;
+                        names.clear();
+                    }
                     Some(ControlCmd::Quit) | None => return,
                 },
                 _ = tokio::time::sleep(IDLE_RESCAN) => {}
@@ -891,6 +1155,25 @@ pub async fn manage(
                 cmd = control_rx.recv() => match cmd {
                     Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
                     Some(ControlCmd::Refresh) => names.clear(),
+                    Some(ControlCmd::Pair { selection_id, reply }) => {
+                        let requested = selection_id.clone();
+                        if execute_pair_command(selection_id, reply, &endpoints, &status).await {
+                            target = Some(requested);
+                        }
+                        names.clear();
+                    }
+                    Some(ControlCmd::Forget { selection_id, reply }) => {
+                        execute_forget_command(
+                            selection_id,
+                            reply,
+                            &endpoints,
+                            &status,
+                            &mut wifi,
+                            &pairing_dir,
+                        ).await;
+                        target = None;
+                        names.clear();
+                    }
                     Some(ControlCmd::Quit) | None => return,
                 },
                 _ = tokio::time::sleep(IDLE_RESCAN) => {}
@@ -975,6 +1258,8 @@ pub async fn manage(
                         let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, &mut wifi, &pairing_dir, prefer_netmuxd).await;
                         device_list.set(devices);
                     }
+                    Some(ControlCmd::Pair { selection_id, reply }) => break Next::Pair { selection_id, reply },
+                    Some(ControlCmd::Forget { selection_id, reply }) => break Next::Forget { selection_id, reply },
                     Some(ControlCmd::Quit) | None => break Next::Quit,
                 },
                 _ = active_rescan.tick() => {
@@ -986,7 +1271,10 @@ pub async fn manage(
 
         // For user-initiated transitions the session is still live: stop it and
         // wait for teardown so two sessions never fight over the same media stream.
-        if matches!(outcome, Next::Switch(_) | Next::Quit) {
+        if matches!(
+            outcome,
+            Next::Switch(_) | Next::Pair { .. } | Next::Forget { .. } | Next::Quit
+        ) {
             let _ = in_tx.send(InputCmd::Shutdown);
             let _ = tokio::time::timeout(SWITCH_GRACE, &mut session).await;
         }
@@ -1003,6 +1291,32 @@ pub async fn manage(
                 );
                 target = Some(u);
                 tokio::time::sleep(WIFI_RECONNECT_DELAY).await;
+            }
+            Next::Pair {
+                selection_id,
+                reply,
+            } => {
+                let requested = selection_id.clone();
+                target = execute_pair_command(selection_id, reply, &endpoints, &status)
+                    .await
+                    .then_some(requested);
+                names.clear();
+            }
+            Next::Forget {
+                selection_id,
+                reply,
+            } => {
+                execute_forget_command(
+                    selection_id,
+                    reply,
+                    &endpoints,
+                    &status,
+                    &mut wifi,
+                    &pairing_dir,
+                )
+                .await;
+                target = None;
+                names.clear();
             }
             Next::Idle => target = None,
             Next::Quit => return,
@@ -1064,31 +1378,37 @@ async fn enumerate_devices(
         None => (None, None, Vec::new(), false),
     };
 
-    if let (Some(discovery), Some(usbmuxd)) = (wifi.as_mut(), usbmuxd.as_mut()) {
+    let mut pairing_states = HashMap::new();
+    if let Some(usbmuxd) = usbmuxd.as_mut() {
         for device in devs
             .iter()
             .filter(|device| matches!(device.connection_type, Connection::Usb))
         {
-            if !discovery.pairing_needs_refresh(&device.udid) {
-                continue;
-            }
             match usbmuxd.get_pair_record(&device.udid).await {
                 Ok(pairing_file) => {
-                    if let Err(error) = discovery.cache_pairing(&device.udid, pairing_file) {
-                        tracing::warn!(
-                            device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
-                            %error,
-                            "unable to cache pairing record for Wi-Fi discovery"
-                        );
-                    } else {
-                        discovery.mark_pairing_refreshed(&device.udid);
+                    pairing_states.insert(device.udid.clone(), DevicePairingState::Paired);
+                    if let Some(discovery) = wifi.as_mut()
+                        && discovery.pairing_needs_refresh(&device.udid)
+                    {
+                        if let Err(error) = discovery.cache_pairing(&device.udid, pairing_file) {
+                            tracing::warn!(
+                                device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
+                                %error,
+                                "unable to cache pairing record for Wi-Fi discovery"
+                            );
+                        } else {
+                            discovery.mark_pairing_refreshed(&device.udid);
+                        }
                     }
                 }
-                Err(error) => tracing::debug!(
-                    device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
-                    ?error,
-                    "pairing record unavailable for Wi-Fi discovery"
-                ),
+                Err(error) => {
+                    pairing_states.insert(device.udid.clone(), DevicePairingState::Unpaired);
+                    tracing::debug!(
+                        device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
+                        ?error,
+                        "USB pairing record unavailable"
+                    );
+                }
             }
         }
     }
@@ -1137,6 +1457,7 @@ async fn enumerate_devices(
             udid: dev.udid.clone(),
             name,
             connection,
+            pairing: pairing_states.get(&dev.udid).copied().unwrap_or_default(),
         });
         if let Some(address) = addr.clone() {
             endpoints
@@ -1170,6 +1491,7 @@ async fn enumerate_devices(
                 udid: endpoint.udid.clone(),
                 name,
                 connection: ConnKind::Network,
+                pairing: DevicePairingState::NotApplicable,
             });
             endpoints.insert(id, SessionEndpoint::Wifi(Box::new(endpoint)));
         }
@@ -5527,12 +5849,14 @@ mod tests {
                 udid: "phone".into(),
                 name: "iPhone".into(),
                 connection: ConnKind::Usb,
+                pairing: DevicePairingState::Paired,
             },
             DeviceInfo {
                 id: device_selector("phone", ConnKind::Network),
                 udid: "phone".into(),
                 name: "iPhone".into(),
                 connection: ConnKind::Network,
+                pairing: DevicePairingState::NotApplicable,
             },
         ];
 
@@ -5544,6 +5868,48 @@ mod tests {
             resolve_device_selection("phone::wifi", &devices).as_deref(),
             Some("phone::wifi")
         );
+    }
+
+    #[test]
+    fn pairing_errors_are_normalized_for_the_frontend() {
+        assert_eq!(
+            pairing_failure(IdeviceError::UserDeniedPairing).outcome,
+            PairDeviceOutcome::Denied
+        );
+        assert_eq!(
+            pairing_failure(IdeviceError::PasswordProtected).outcome,
+            PairDeviceOutcome::Locked
+        );
+        assert_eq!(
+            pairing_failure(IdeviceError::DeviceLocked).outcome,
+            PairDeviceOutcome::Locked
+        );
+        assert_eq!(
+            pairing_failure(IdeviceError::DeviceNotFound).outcome,
+            PairDeviceOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn trust_removal_preserves_partial_success() {
+        assert_eq!(
+            forget_device_result(None, None).outcome,
+            ForgetDeviceOutcome::Forgotten
+        );
+        assert_eq!(
+            forget_device_result(Some("device unavailable".into()), None).outcome,
+            ForgetDeviceOutcome::HostRecordRemoved
+        );
+        assert_eq!(
+            forget_device_result(None, Some("host cleanup failed".into())).outcome,
+            ForgetDeviceOutcome::DeviceForgottenHostCleanupFailed
+        );
+        let failed = forget_device_result(
+            Some("device unavailable".into()),
+            Some("host cleanup failed".into()),
+        );
+        assert_eq!(failed.outcome, ForgetDeviceOutcome::Failed);
+        assert!(failed.error.unwrap().contains("host record cleanup failed"));
     }
 
     #[test]

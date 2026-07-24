@@ -32,12 +32,14 @@ import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { appProfileBindingState, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
+import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
 type Props = {
   activeUdid: string | null;
+  activeDeviceId: string | null;
+  canForgetTrust: boolean;
   request: Request;
   activeProfile: string;
   appProfileBindings: Record<string, string>;
@@ -108,6 +110,8 @@ function DeviceAppIcon({ app, request }: { app: DeviceApp; request: Request }) {
 
 export function DeviceInspector({
   activeUdid,
+  activeDeviceId,
+  canForgetTrust,
   request,
   activeProfile,
   appProfileBindings,
@@ -144,6 +148,7 @@ export function DeviceInspector({
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
+  const [forgettingTrust, setForgettingTrust] = useState(false);
   const [backupStatus, setBackupStatus] = useState<DeviceBackupStatus | null>(null);
   const [backupFull, setBackupFull] = useState(false);
   const [backupAction, setBackupAction] = useState<"start" | "stop" | null>(null);
@@ -820,6 +825,39 @@ export function DeviceInspector({
     });
   };
 
+  const confirmForgetTrust = () => {
+    if (!details || !activeDeviceId || !canForgetTrust || forgettingTrust) return;
+    Modal.confirm({
+      title: t("deviceInspector.forgetTrust"),
+      content: t("deviceInspector.forgetTrustConfirm", { name: details.name }),
+      okText: t("deviceInspector.forgetTrustAction"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        setForgettingTrust(true);
+        try {
+          const response = await request(`/api/devices/${encodeURIComponent(activeDeviceId)}/pair`, { method: "DELETE" });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          const result = await response.json() as ForgetDeviceResult;
+          if (result.outcome === "forgotten") {
+            void message.success(t("deviceInspector.trustForgotten"));
+          } else if (result.outcome === "host_record_removed") {
+            void message.warning(t("deviceInspector.hostTrustRemoved", { error: result.error ?? t("device.pairingUnknownError") }));
+          } else if (result.outcome === "device_forgotten_host_cleanup_failed") {
+            void message.error(t("deviceInspector.hostTrustCleanupFailed", { error: result.error ?? t("device.pairingUnknownError") }));
+          } else {
+            throw new Error(result.error ?? t("device.pairingUnknownError"));
+          }
+        } catch (forgetError) {
+          void message.error(t("deviceInspector.forgetTrustFailed", { error: String(forgetError) }));
+          throw forgetError;
+        } finally {
+          setForgettingTrust(false);
+        }
+      },
+    });
+  };
+
   const normalizedDeviceName = normalizeDeviceNameInput(renameValue);
   const prepareDeveloperMode = async () => {
     if (developerModeBusy) return;
@@ -1379,6 +1417,21 @@ export function DeviceInspector({
               onClick={() => confirmDevicePowerAction("shutdown")}
             >{t("deviceInspector.shutdownDevice")}</Button>
           </div>
+          {canForgetTrust && (
+            <div className="device-trust-actions">
+              <div>
+                <Typography.Text strong>{t("deviceInspector.computerTrust")}</Typography.Text>
+                <Typography.Text type="secondary">{t("deviceInspector.computerTrustHint")}</Typography.Text>
+              </div>
+              <Button
+                danger
+                icon={<DisconnectOutlined />}
+                loading={forgettingTrust}
+                disabled={!activeDeviceId || forgettingTrust}
+                onClick={confirmForgetTrust}
+              >{t("deviceInspector.forgetTrust")}</Button>
+            </div>
+          )}
         </div>
       ) : tab === "apps" ? (
         <div className="device-apps-pane">

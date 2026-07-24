@@ -1,6 +1,15 @@
 export type Orientation = "portrait" | "portrait_upside_down" | "landscape_left" | "landscape_right";
 
-export type Device = { id: string; udid: string; name: string; connection: string };
+export type DevicePairingState = "paired" | "unpaired" | "not_applicable";
+export type Device = { id: string; udid: string; name: string; connection: string; pairing: DevicePairingState };
+export type PairDeviceResult = {
+  outcome: "paired" | "denied" | "locked" | "timed_out" | "failed";
+  error: string | null;
+};
+export type ForgetDeviceResult = {
+  outcome: "forgotten" | "host_record_removed" | "device_forgotten_host_cleanup_failed" | "failed";
+  error: string | null;
+};
 export type LocationStatus = {
   available: boolean;
   active: boolean;

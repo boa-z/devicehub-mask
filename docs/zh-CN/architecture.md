@@ -40,6 +40,8 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
+USB Lockdown 配对属于管理器级操作，而不是活动会话的输入命令。枚举会通过当前选中的 usbmuxd 后端检查电脑配对记录，只向私有 API 暴露 `paired`、`unpaired` 或 `not_applicable`；证书和记录正文不会越过边界。配对只接受已枚举的 USB 选择项，并且仅由桌面端显式操作启动；设备信任对话框最长等待 90 秒，生成凭据后先使用 `StartSession` 验证，只在序列化到电脑记录时补充 UDID，再通过同一个系统 usbmuxd 或内置 netmuxd 地址保存。显式移除信任复用同一管理器边界，并先拆除活动会话；后端读取但不暴露 Host ID，有界尝试设备端 `Unpair`，随后始终删除 usbmuxd 记录并使用一次新连接重试，同时清理内存与磁盘中的 Wi-Fi 发现缓存。结果会保留两侧各自是否完成，设备响应丢失时不会误报为完整成功。若另一设备会话仍在运行，管理器会先完成拆除，以维持单一服务所有权。拒绝、锁定、超时和普通失败会归一化后交给前端，日志只包含设备指纹。MCP 可以观察配对状态，并会收到区分 USB 与 Wi-Fi 条目的传输选择 ID，但不能触发或撤销需要人工确认的信任关系。
+
 可选设备服务统一运行在该 runtime 内的 Tokio `LocalSet` 和服务监督器下。这样不可 `Send` 的 DVT channel 始终留在 CoreDevice 所有者线程，而 HTTP、WebSocket 和 MCP 传输仍可使用多线程 runtime。每项服务发布统一的阶段、尝试次数、重启次数、最后错误和 更新时间。虚拟定位、Condition Inducer、Sysmontap、Graphics、NetworkMonitor 与 EnergyMonitor 通道分别使用有上限的指数退避恢复；单个通道断开不会终止视频或 HID。
 
 受监督的 Notification Proxy 会把厂商通知名称缩减为固定事件枚举。App、磁盘、名称和 激活状态变化只刷新受影响的前端数据。SpringBoard 锁屏状态变化会释放所有活动输入，并在 不虚构已锁定/已解锁值的前提下转发，因为该通知不包含状态载荷。MCP 使用单调事件序列， 避免读取游标与订阅之间的竞态。

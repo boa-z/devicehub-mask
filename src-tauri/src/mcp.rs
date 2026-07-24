@@ -1684,20 +1684,22 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "List attached iOS devices with UDID, name, connection type and active state."
+        description = "List attached iOS device transports with stable selection ID, UDID, name, connection type, pairing state, and active state. Use the selection ID to distinguish USB from Wi-Fi."
     )]
     async fn list_devices(&self) -> Result<CallToolResult, McpError> {
-        let active = self.active.get();
-        let devices: Vec<_> = self
-            .devices
-            .get()
+        let active = self.active.selection_id();
+        let listed = self.devices.get();
+        let devices: Vec<_> = listed
             .into_iter()
             .map(|device| {
+                let is_active = active.as_deref() == Some(device.id.as_str());
                 json!({
+                    "id": device.id,
                     "udid": device.udid,
                     "name": device.name,
                     "connection": device.connection.label(),
-                    "active": active.as_deref() == Some(device.udid.as_str()),
+                    "pairing": device.pairing,
+                    "active": is_active,
                 })
             })
             .collect();
@@ -1709,6 +1711,18 @@ impl DeviceHub {
         udid: String,
         reconnect: bool,
     ) -> Result<CallToolResult, McpError> {
+        let devices = self.devices.get();
+        let selected = devices
+            .iter()
+            .find(|device| device.id == udid)
+            .or_else(|| devices.iter().find(|device| device.udid == udid));
+        if selected
+            .is_some_and(|device| device.pairing == crate::protocol::DevicePairingState::Unpaired)
+        {
+            return ok_text(
+                "This USB device has not trusted the computer. Complete pairing from the DeviceHub Mask desktop device picker first.",
+            );
+        }
         if !reconnect
             && self.active.get().as_deref() == Some(udid.as_str())
             && self.device_control.latest_frame().is_some()
@@ -1749,7 +1763,9 @@ impl DeviceHub {
         ))
     }
 
-    #[tool(description = "Connect to an attached device by UDID and wait for a new screen frame.")]
+    #[tool(
+        description = "Connect to an attached device by selection ID from list_devices (or a legacy UDID) and wait for a new screen frame."
+    )]
     async fn connect_device(
         &self,
         Parameters(params): Parameters<DeviceParams>,
@@ -1758,7 +1774,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Tear down and reconnect the selected device by UDID, then wait for a new screen frame."
+        description = "Tear down and reconnect a device by selection ID from list_devices (or a legacy UDID), then wait for a new screen frame."
     )]
     async fn reconnect_device(
         &self,
@@ -2197,6 +2213,56 @@ mod tests {
         assert!(validate_touch_count(6).is_err());
         assert!(valid_bundle_identifier("com.example.game"));
         assert!(!valid_bundle_identifier("invalid bundle"));
+    }
+
+    #[tokio::test]
+    async fn device_list_distinguishes_usb_and_wifi_transports() {
+        let devices = DeviceListSlot::default();
+        devices.set(vec![
+            crate::protocol::DeviceInfo {
+                id: "phone::usb".into(),
+                udid: "phone".into(),
+                name: "iPhone".into(),
+                connection: crate::protocol::ConnKind::Usb,
+                pairing: crate::protocol::DevicePairingState::Unpaired,
+            },
+            crate::protocol::DeviceInfo {
+                id: "phone::wifi".into(),
+                udid: "phone".into(),
+                name: "iPhone".into(),
+                connection: crate::protocol::ConnKind::Network,
+                pairing: crate::protocol::DevicePairingState::NotApplicable,
+            },
+        ]);
+        let active = ActiveSlot::default();
+        active.set_selected("phone".into(), "phone::wifi".into());
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            InputSink::default(),
+            OrientationSlot::default(),
+            devices,
+            active,
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+
+        let result = hub.list_devices().await.unwrap();
+        let text = result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text.text).unwrap();
+        assert_eq!(value["devices"][0]["id"], "phone::usb");
+        assert_eq!(value["devices"][0]["pairing"], "unpaired");
+        assert_eq!(value["devices"][0]["active"], false);
+        assert_eq!(value["devices"][1]["id"], "phone::wifi");
+        assert_eq!(value["devices"][1]["active"], true);
     }
 
     #[tokio::test]

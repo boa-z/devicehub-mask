@@ -105,6 +105,17 @@ impl WifiDiscovery {
         self.refreshed_pairings.insert(udid.to_owned());
     }
 
+    pub fn remove_pairing(&mut self, udid: &str) -> Result<(), String> {
+        self.pairing_files.remove(udid);
+        self.refreshed_pairings.remove(udid);
+        remove_cached_pairing(&self.pairing_dir, udid)?;
+        tracing::info!(
+            device_id = %crate::diagnostics::device_id_fingerprint(udid),
+            "removed cached pairing record for Wi-Fi discovery"
+        );
+        Ok(())
+    }
+
     pub fn refresh(&mut self) -> Vec<WifiEndpoint> {
         self.expire_removed_services();
         while let Ok(event) = self.receiver.try_recv() {
@@ -341,6 +352,15 @@ fn pairing_path(directory: &Path, udid: &str) -> Result<PathBuf, String> {
     Ok(directory.join(format!("{udid}.plist")))
 }
 
+pub(crate) fn remove_cached_pairing(directory: &Path, udid: &str) -> Result<(), String> {
+    let path = pairing_path(directory, udid)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot remove cached pairing record: {error}")),
+    }
+}
+
 fn secure_directory(directory: &Path) -> Result<(), String> {
     std::fs::create_dir_all(directory)
         .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
@@ -379,5 +399,24 @@ mod tests {
         );
         assert!(pairing_path(directory, "../device").is_err());
         assert!(pairing_path(directory, "device/name").is_err());
+    }
+
+    #[test]
+    fn cached_pairing_removal_is_idempotent_and_confined() {
+        let directory = std::env::temp_dir().join(format!(
+            "devicehub-mask-pairing-removal-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let udid = "00008110-0011223344556677";
+        let path = directory.join(format!("{udid}.plist"));
+        std::fs::write(&path, b"pairing").unwrap();
+
+        remove_cached_pairing(&directory, udid).unwrap();
+        assert!(!path.exists());
+        remove_cached_pairing(&directory, udid).unwrap();
+        assert!(remove_cached_pairing(&directory, "../outside").is_err());
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

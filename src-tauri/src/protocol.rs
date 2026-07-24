@@ -497,6 +497,46 @@ pub fn device_selector(udid: &str, connection: ConnKind) -> String {
     format!("{udid}::{}", connection.selector_suffix())
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DevicePairingState {
+    #[default]
+    NotApplicable,
+    Paired,
+    Unpaired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairDeviceOutcome {
+    Paired,
+    Denied,
+    Locked,
+    TimedOut,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairDeviceResult {
+    pub outcome: PairDeviceOutcome,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgetDeviceOutcome {
+    Forgotten,
+    HostRecordRemoved,
+    DeviceForgottenHostCleanupFailed,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgetDeviceResult {
+    pub outcome: ForgetDeviceOutcome,
+    pub error: Option<String>,
+}
+
 /// One device usbmuxd currently knows about, for the picker dropdown.
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
@@ -506,6 +546,7 @@ pub struct DeviceInfo {
     /// The device's `DeviceName` (best-effort; falls back to the UDID).
     pub name: String,
     pub connection: ConnKind,
+    pub pairing: DevicePairingState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -812,7 +853,7 @@ impl ErrorSlot {
 }
 
 /// A control command from the UI to the session *manager*: which device to talk to.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ControlCmd {
     /// Re-enumerate attached devices and refresh the picker list.
     Refresh,
@@ -820,6 +861,16 @@ pub enum ControlCmd {
     Connect(String),
     /// Tear down the current session even when it already targets this UDID, then reconnect.
     Reconnect(String),
+    /// Pair an enumerated USB transport after an explicit user request.
+    Pair {
+        selection_id: String,
+        reply: oneshot::Sender<PairDeviceResult>,
+    },
+    /// Revoke and remove the trust record for an enumerated USB transport.
+    Forget {
+        selection_id: String,
+        reply: oneshot::Sender<ForgetDeviceResult>,
+    },
     /// Tear down the current session and exit the manager
     Quit,
 }

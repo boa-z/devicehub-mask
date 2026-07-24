@@ -163,6 +163,9 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-power-actions > div { min-width: 0; grid-column: 1 / -1; display: flex; flex-direction: column; gap: 1px; }
 .device-power-actions > div .ant-typography { margin: 0; font-size: 11px; }
 .device-power-actions > .ant-btn { width: 100%; min-width: 0; }
+.device-trust-actions { padding-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; border-top: 1px solid #303638; }
+.device-trust-actions > div { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.device-trust-actions > div .ant-typography { margin: 0; font-size: 11px; }
 .device-apps-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .device-app-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 32px); gap: 6px; }
 .device-app-toolbar .ant-btn { width: 32px; padding-inline: 0; }
