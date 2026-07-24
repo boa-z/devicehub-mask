@@ -299,6 +299,10 @@ pub enum InputCmd {
     DeveloperMode(crate::developer_mode::DeveloperModeCommand),
     /// List user-facing applications through CoreDevice AppService.
     ListApps(oneshot::Sender<Result<Vec<DeviceApp>, String>>),
+    /// List Apple Watch devices paired with the active iPhone through CompanionProxy.
+    ListCompanionDevices(
+        oneshot::Sender<Result<Vec<crate::companion_devices::CompanionDevice>, String>>,
+    ),
     /// Read one validated PNG application icon through SpringBoardServices.
     GetAppIcon {
         bundle_id: String,

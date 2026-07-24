@@ -10,6 +10,7 @@ import {
   FolderOpenOutlined,
   InfoCircleOutlined,
   LinkOutlined,
+  MobileOutlined,
   PlayCircleOutlined,
   PoweroffOutlined,
   ReloadOutlined,
@@ -25,7 +26,7 @@ import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ProvisioningProfile } from "../types";
+import type { AppOperation, CompanionDevice, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ProvisioningProfile } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -112,6 +113,9 @@ export function DeviceInspector({
   const { t, i18n } = useTranslation();
   const [tab, setTab] = useState<DeviceInspectorTab>("info");
   const [details, setDetails] = useState<DeviceDetails | null>(null);
+  const [companions, setCompanions] = useState<CompanionDevice[]>([]);
+  const [companionError, setCompanionError] = useState<string | null>(null);
+  const [companionLoading, setCompanionLoading] = useState(false);
   const [apps, setApps] = useState<DeviceApp[]>([]);
   const [profiles, setProfiles] = useState<ProvisioningProfile[]>([]);
   const [crashReports, setCrashReports] = useState<DeviceCrashReport[]>([]);
@@ -144,7 +148,20 @@ export function DeviceInspector({
     setError(null);
     try {
       if (tab === "info") {
-        setDetails(await readJson<DeviceDetails>(await request("/api/device/details")));
+        const nextDetails = await readJson<DeviceDetails>(await request("/api/device/details"));
+        setDetails(nextDetails);
+        setCompanions([]);
+        setCompanionError(null);
+        if (nextDetails.product_type.startsWith("iPhone")) {
+          setCompanionLoading(true);
+          try {
+            setCompanions(await readJson<CompanionDevice[]>(await request("/api/device/companions")));
+          } catch (companionLoadError) {
+            setCompanionError(String(companionLoadError));
+          } finally {
+            setCompanionLoading(false);
+          }
+        }
       } else if (tab === "apps") {
         await loadApps();
       } else if (tab === "profiles") {
@@ -163,6 +180,9 @@ export function DeviceInspector({
 
   useEffect(() => {
     setDetails(null);
+    setCompanions([]);
+    setCompanionError(null);
+    setCompanionLoading(false);
     setApps([]);
     setProfiles([]);
     setCrashReports([]);
@@ -278,6 +298,11 @@ export function DeviceInspector({
   const copyBundleId = async (bundleId: string) => {
     await navigator.clipboard.writeText(bundleId);
     void message.success(t("deviceInspector.bundleIdCopied"));
+  };
+
+  const copyCompanionIdentifier = async (identifier: string) => {
+    await navigator.clipboard.writeText(identifier);
+    void message.success(t("deviceInspector.companionIdentifierCopied"));
   };
 
   const changeAppProfileBinding = async (bundleId: string, bind: boolean) => {
@@ -596,6 +621,60 @@ export function DeviceInspector({
                 <Typography.Text type="secondary" ellipsis={{ tooltip: value }}>{value}</Typography.Text>
               </div>
             ))}
+            {details?.product_type.startsWith("iPhone") && <div className="device-companion-section">
+              <div className="device-companion-heading">
+                <Typography.Text strong>{t("deviceInspector.companions")}</Typography.Text>
+                <Typography.Text type="secondary">{t("deviceInspector.companionsHint")}</Typography.Text>
+              </div>
+              {companionLoading ? (
+                <div className="device-companion-loading"><Spin size="small" /></div>
+              ) : companionError ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={t("deviceInspector.companionsUnavailable")}
+                  description={companionError}
+                />
+              ) : companions.length === 0 ? (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={t("deviceInspector.noCompanions")}
+                />
+              ) : (
+                <div className="device-companion-list">
+                  {companions.map((companion) => (
+                    <div className="device-companion-row" key={companion.identifier}>
+                      <MobileOutlined className="device-companion-icon" aria-hidden="true" />
+                      <div className="device-companion-meta">
+                        <Typography.Text strong ellipsis={{ tooltip: companion.name ?? t("deviceInspector.appleWatch") }}>
+                          {companion.name ?? t("deviceInspector.appleWatch")}
+                        </Typography.Text>
+                        <Typography.Text type="secondary" ellipsis={{ tooltip: companion.identifier }}>
+                          {companion.identifier}
+                        </Typography.Text>
+                        <div>
+                          {companion.product_type && <Tag>{companion.product_type}</Tag>}
+                          {companion.product_version && (
+                            <Tag color="blue">
+                              {t("deviceInspector.watchOs", { version: companion.product_version })}
+                            </Tag>
+                          )}
+                          {companion.build_version && <Tag>{companion.build_version}</Tag>}
+                        </div>
+                      </div>
+                      <Tooltip title={t("deviceInspector.copyCompanionIdentifier")}>
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<CopyOutlined />}
+                          onClick={() => void copyCompanionIdentifier(companion.identifier)}
+                        />
+                      </Tooltip>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>}
           </div>
           <div className="device-power-actions">
             <div>

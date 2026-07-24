@@ -2,6 +2,7 @@ mod app_documents;
 mod app_icons;
 mod audio_output;
 mod browser_video;
+mod companion_devices;
 mod crash_reports;
 mod decode;
 mod demand;

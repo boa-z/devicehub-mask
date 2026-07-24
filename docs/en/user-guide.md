@@ -30,6 +30,13 @@ Developer Mode, restart the device, or accept the device-side confirmation;
 those steps remain explicit user actions because DVT diagnostics and performance
 services depend on the resulting trusted state.
 
+When the active device is an iPhone, the Info tab also performs a read-only
+CompanionProxy query for paired Apple Watch devices. An empty list is valid, and
+the device name, product type, watchOS version, or build may be absent depending
+on the iPhone and watchOS versions. This view does not control the Watch, start
+Watch services, or forward Watch ports. Treat the companion identifier as
+sensitive device metadata when copying or sharing it.
+
 The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri,
 and Action. Always-on-top, inspector visibility, and fullscreen controls are in
 the title toolbar. Hiding the inspector gives the device view more room without
@@ -111,7 +118,8 @@ Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health
 section reports whether device heartbeat, virtual location, device conditions,
 system monitoring, graphics monitoring, network monitoring, energy monitoring,
-and packet capture are connecting, ready, recovering, unavailable, or stopped.
+paired Apple Watch discovery, and packet capture are connecting, ready,
+recovering, unavailable, or stopped.
 The heartbeat responds to the device's Lockdown keep-alive requests throughout
 the active session; sleep, timeout, or transport failures are recovered under
 the same bounded supervisor. A service reconnect does not tear down video or
@@ -258,6 +266,12 @@ polling for normalized app installation/removal, disk-usage, or device-name
 changes. Pass the returned event `sequence` as `after_sequence` on the next call
 to close subscription races; raw notification names and payloads are never
 returned.
+
+`list_companion_devices` performs the same bounded, read-only CompanionProxy
+query as the Info tab and returns available metadata for Apple Watch devices
+paired with the active iPhone. An empty result is valid; the tool does not expose
+Watch control, service startup, or port forwarding. Companion identifiers should
+be handled as sensitive device metadata.
 
 `performance_snapshot` temporarily enables the existing DVT performance
 services and returns CPU, top-process, energy, graphics, GPU-memory, and network

@@ -134,6 +134,14 @@ Native screenshots use a separate bounded CoreDevice ScreenCaptureService
 channel. The worker accepts one queued request, validates the PNG and dimensions,
 and caps the response at 32 MiB; capture never occupies the HID dispatch loop.
 
+Paired Apple Watch discovery uses a separate request-driven CompanionProxy RSD
+channel over the active iPhone transport. The worker lazily connects, accepts at
+most two queued commands, returns at most sixteen sanitized registry entries,
+and discards its client after a failed request so the next query reconnects.
+Only selected display metadata is read; Watch service startup, control, and port
+forwarding are outside this boundary. Empty registries are valid, individual
+metadata values may be absent, and companion identifiers remain sensitive.
+
 Device packet capture is a separate, user-initiated pcapd worker over a cloned
 RSD tunnel. It writes normalized Ethernet records directly to a same-directory
 temporary host file, caps packets at the negotiated 256 KiB snapshot size and

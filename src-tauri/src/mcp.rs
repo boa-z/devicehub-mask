@@ -1065,6 +1065,27 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "List Apple Watch devices paired with the connected iPhone. Returns read-only name, product type, and watchOS version metadata when available."
+    )]
+    async fn list_companion_devices(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::ListCompanionDevices(reply))?;
+        let devices = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("companion device request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        let count = devices.len();
+        ok_text(
+            json!({
+                "devices": devices,
+                "count": count,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
         description = "Launch an installed app by bundle ID, or restart it when already running, and optionally wait for its screen to become stable. Use list_apps to discover bundle IDs and running state."
     )]
     async fn launch_app(
@@ -1607,7 +1628,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use device_details for battery and system context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -1727,6 +1748,7 @@ mod tests {
             "press_button",
             "rotate",
             "list_apps",
+            "list_companion_devices",
             "launch_app",
             "stop_app",
             "list_crash_reports",
@@ -1811,6 +1833,48 @@ mod tests {
             assert_eq!(text.contains("private-serial"), include_identifiers);
             assert_eq!(text.contains("private-udid"), include_identifiers);
         }
+    }
+
+    #[tokio::test]
+    async fn companion_devices_tool_returns_bounded_read_only_metadata() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+        let task = tokio::spawn(async move { hub.list_companion_devices().await.unwrap() });
+        let InputCmd::ListCompanionDevices(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected companion device command");
+        };
+        reply
+            .send(Ok(vec![crate::companion_devices::CompanionDevice {
+                identifier: "watch-id".into(),
+                name: Some("Test Watch".into()),
+                product_type: Some("Watch7,5".into()),
+                product_version: Some("27.0".into()),
+                build_version: None,
+            }]))
+            .unwrap();
+        let result = task.await.unwrap();
+        let text = result
+            .content
+            .iter()
+            .find_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .unwrap();
+        assert!(text.contains("Test Watch"));
+        assert!(text.contains(r#""count":1"#));
     }
 
     #[tokio::test]

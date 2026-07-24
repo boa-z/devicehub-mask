@@ -1518,6 +1518,14 @@ async fn run(
         app_icon_receiver,
         supervisor.shutdown_receiver(),
     ));
+    let (companion_sender, companion_receiver) = tokio::sync::mpsc::channel(2);
+    supervisor.spawn(crate::companion_devices::serve(
+        adapter.clone(),
+        handshake.clone(),
+        companion_receiver,
+        supervisor.reporter("device.companions"),
+        supervisor.shutdown_receiver(),
+    ));
     let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
     supervisor.spawn(crate::app_documents::serve(
         adapter.clone(),
@@ -1560,6 +1568,7 @@ async fn run(
     ));
     let device_management_services = DeviceManagementServices {
         icons: app_icon_sender,
+        companions: companion_sender,
         documents: app_documents_sender,
         screen_capture: screen_capture_sender,
         network_capture: network_capture_sender,
@@ -1944,6 +1953,7 @@ struct LocationBridge {
 
 struct DeviceManagementServices {
     icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
+    companions: tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
@@ -2250,6 +2260,25 @@ impl DeviceManagement {
                     list_device_apps(self.app_service.as_mut(), self.installation_proxy.as_mut())
                         .await;
                 let _ = reply.send(result);
+                None
+            }
+            InputCmd::ListCompanionDevices(reply) => {
+                let command = crate::companion_devices::CompanionDeviceCommand::List { reply };
+                if let Err(error) = self.services.companions.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("companion device service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("companion device service is unavailable", command)
+                        }
+                    };
+                    match command {
+                        crate::companion_devices::CompanionDeviceCommand::List { reply } => {
+                            let _ = reply.send(Err(reason.into()));
+                        }
+                    }
+                }
                 None
             }
             InputCmd::GetAppIcon { bundle_id, reply } => {
@@ -3242,6 +3271,7 @@ async fn dispatch(
         | InputCmd::RenameDevice { .. }
         | InputCmd::DeveloperMode(_)
         | InputCmd::ListApps(_)
+        | InputCmd::ListCompanionDevices(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
         | InputCmd::NetworkCapture(_)

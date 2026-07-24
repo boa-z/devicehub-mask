@@ -125,6 +125,13 @@ export type DeviceDetails = {
   developer_mode_enabled: boolean | null;
   battery: DeviceBattery | null;
 };
+export type CompanionDevice = {
+  identifier: string;
+  name: string | null;
+  product_type: string | null;
+  product_version: string | null;
+  build_version: string | null;
+};
 export type DeviceActivationState = "activated" | "unactivated" | "factory_activated" | "soft_activated" | "unknown";
 export type DeviceStorage = {
   data_capacity_bytes: number | null;

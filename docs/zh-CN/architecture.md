@@ -95,6 +95,12 @@ FIFO 缓存；前端只请求接近可视区域的 App 行。
 原生截图使用独立、有界的 CoreDevice ScreenCaptureService channel。worker 只接受一条
 排队请求，校验 PNG 与尺寸并把响应限制在 32 MiB；截图不会占用 HID 分发循环。
 
+配对 Apple Watch 发现通过活动 iPhone 传输上的独立、按请求工作的 CompanionProxy RSD
+channel 完成。worker 延迟建立连接，最多接受两条排队命令，返回最多十六条经过净化的
+注册项；请求失败后会丢弃 client，使下一次查询重新连接。它只读取选定的展示元数据，
+不启动 Watch 服务、不控制 Watch，也不转发端口。空注册表是有效结果，单项元数据可能
+缺失，配对设备标识符仍属于敏感信息。
+
 设备网络抓包由独立、用户主动启动的 pcapd worker 通过克隆 RSD tunnel 执行。它将标准化
 以太网记录直接写入目标同目录的主机临时文件，单包限制为协商的 256 KiB snapshot，完整
 抓包限制为 256 MiB，最后原子替换所选 `.pcap` 目标。手动停止、超时、数据流失败和会话

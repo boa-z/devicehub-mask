@@ -168,6 +168,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
+        .route("/api/device/companions", get(device_companions))
         .route("/api/device/name", put(rename_device))
         .route(
             "/api/device/developer-mode/reveal",
@@ -836,6 +837,34 @@ async fn device_apps(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(apps))
+}
+
+async fn device_companions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::companion_devices::CompanionDevice>>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::ListCompanionDevices(reply)) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let devices = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "companion device request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(devices))
 }
 
 async fn device_app_icon(
@@ -3077,6 +3106,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn companion_endpoint_dispatches_a_read_only_device_query() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(device_companions(State(state)));
+        let InputCmd::ListCompanionDevices(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected companion device query");
+        };
+        reply
+            .send(Ok(vec![crate::companion_devices::CompanionDevice {
+                identifier: "watch-id".into(),
+                name: Some("Test Watch".into()),
+                product_type: Some("Watch7,5".into()),
+                product_version: Some("27.0".into()),
+                build_version: Some("24A123".into()),
+            }]))
+            .unwrap();
+        let response = request.await.unwrap().unwrap();
+        assert_eq!(response.0.len(), 1);
+        assert_eq!(response.0[0].name.as_deref(), Some("Test Watch"));
+    }
+
+    #[tokio::test]
     async fn device_queries_require_an_active_session() {
         let (state, _input_rx) = test_state();
         state.input.set(None);
@@ -3101,6 +3151,10 @@ mod tests {
         ));
         assert!(matches!(
             device_apps(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            device_companions(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(

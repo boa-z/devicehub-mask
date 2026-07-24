@@ -79,6 +79,18 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-info-value-action { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .device-info-value-action > .ant-typography { min-width: 0; margin: 0; }
 .device-info-value-action > .ant-btn { flex: 0 0 24px; width: 24px; height: 24px; padding: 0; }
+.device-companion-section { padding: 14px 4px 4px; display: flex; flex-direction: column; gap: 10px; }
+.device-companion-heading { display: flex; flex-direction: column; gap: 2px; }
+.device-companion-heading .ant-typography { margin: 0; font-size: 11px; }
+.device-companion-loading { min-height: 70px; display: grid; place-items: center; }
+.device-companion-list { border-top: 1px solid #303638; }
+.device-companion-row { min-height: 70px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 32px minmax(0, 1fr) 24px; align-items: center; gap: 8px; }
+.device-companion-icon { width: 30px; height: 30px; border-radius: 7px; background: #3a4244; display: grid; place-items: center; font-size: 16px; }
+.device-companion-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.device-companion-meta > .ant-typography { margin: 0; }
+.device-companion-meta > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.device-companion-meta .ant-tag { margin: 0; padding-inline: 5px; font-size: 10px; line-height: 16px; }
+.device-companion-row > .ant-btn { width: 24px; height: 24px; padding: 0; }
 .device-power-actions { padding-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; }
 .device-power-actions > div { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .device-power-actions > div .ant-typography { margin: 0; font-size: 11px; }
