@@ -32,7 +32,7 @@ exposed as a browser application.
 - On-demand normalized iPhone CPU, top-process CPU, memory and relative energy
   rankings, Core Animation FPS, GPU-memory, and device network telemetry with
   supervised DVT service recovery, device-wide DVT network/thermal condition
-  simulation, plus bounded PCAP export through pcapd
+  simulation, plus bounded network and Bluetooth HCI PCAP export
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch,
   app lifecycle control, frame synchronization, device switching, DVT virtual
   location, bounded performance snapshots, filtered device logs, and crash

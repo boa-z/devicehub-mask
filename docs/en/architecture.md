@@ -176,6 +176,13 @@ destination. Stop, timeout, stream failure, and session shutdown all finalize
 the writer. Only bounded counters and state reach the private API; packet bytes
 never enter WebView or MCP transports.
 
+Bluetooth HCI capture follows the same ownership model around idevice's
+`BTPacketLogger` stream. It writes big-endian PCAP records using DLT 201 and a
+four-byte direction pseudo-header, bounds captures to five minutes and 64 MiB,
+and atomically replaces the selected destination. A missing device-side
+Bluetooth Logging profile is represented by a valid capture with zero packets,
+not by inventing an availability result from a silent stream.
+
 Restart and shutdown are separate fixed private-API commands rather than a
 client-supplied DiagnosticsRelay operation. Each opens an independent relay
 connection in a bounded task, so waiting for the device acknowledgement does

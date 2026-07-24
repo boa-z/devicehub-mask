@@ -1,6 +1,7 @@
 mod app_documents;
 mod app_icons;
 mod audio_output;
+mod bluetooth_capture;
 mod browser_video;
 mod companion_devices;
 mod crash_reports;
@@ -201,6 +202,7 @@ fn spawn_backend(
                 let clipboard = ClipboardSlot::default();
                 let device_events = device_events::DeviceEventSlot::default();
                 let network_capture = network_capture::NetworkCaptureSlot::default();
+                let bluetooth_capture = bluetooth_capture::BluetoothCaptureSlot::default();
                 let device_conditions = device_conditions::DeviceConditionSlot::default();
                 let orientation = OrientationSlot::default();
                 let devices = DeviceListSlot::default();
@@ -247,6 +249,7 @@ fn spawn_backend(
                     clipboard.clone(),
                     device_events.clone(),
                     network_capture.clone(),
+                    bluetooth_capture.clone(),
                     device_conditions.clone(),
                     orientation.clone(),
                     devices.clone(),
@@ -269,6 +272,7 @@ fn spawn_backend(
                         clipboard,
                         device_events,
                         network_capture,
+                        bluetooth_capture,
                         device_conditions,
                         video_counters,
                         status,

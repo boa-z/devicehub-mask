@@ -4,7 +4,7 @@ import { Alert, Button, Modal, Segmented, Select, Space, Tag, Typography, messag
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sortProcesses, type ProcessSort } from "../processPerformance";
-import { networkCaptureDurations, networkCaptureFilename, networkCaptureRunning } from "../networkCapture";
+import { bluetoothCaptureFilename, networkCaptureDurations, networkCaptureFilename, networkCaptureRunning } from "../networkCapture";
 import { decodeDeviceConditionSelection, deviceConditionSelectionExists, encodeDeviceConditionSelection } from "../deviceConditions";
 import type { PerformanceSnapshot, PerformanceView, ServiceHealth, StreamMetrics } from "../types";
 
@@ -92,6 +92,8 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const [processSort, setProcessSort] = useState<ProcessSort>("cpu");
   const [captureDuration, setCaptureDuration] = useState<number>(30);
   const [captureBusy, setCaptureBusy] = useState(false);
+  const [bluetoothDuration, setBluetoothDuration] = useState<number>(30);
+  const [bluetoothBusy, setBluetoothBusy] = useState(false);
   const [conditionSelection, setConditionSelection] = useState<string | null>(null);
   const [conditionBusy, setConditionBusy] = useState(false);
   const condition = view?.device_conditions;
@@ -141,6 +143,11 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const captureIsRunning = capture ? networkCaptureRunning(capture) : false;
   const captureStatus = capture
     ? `${t(`performance.captureStates.${capture.state}`)}${capture.stop_reason ? ` · ${t(`performance.captureReasons.${capture.stop_reason}`)}` : ""}`
+    : t("performance.captureStates.idle");
+  const bluetoothCapture = view?.bluetooth_capture;
+  const bluetoothCaptureIsRunning = bluetoothCapture ? networkCaptureRunning(bluetoothCapture) : false;
+  const bluetoothCaptureStatus = bluetoothCapture
+    ? `${t(`performance.captureStates.${bluetoothCapture.state}`)}${bluetoothCapture.stop_reason ? ` · ${t(`performance.captureReasons.${bluetoothCapture.stop_reason}`)}` : ""}`
     : t("performance.captureStates.idle");
   const conditionOptions = (condition?.groups ?? []).map((group) => ({
     label: group.identifier,
@@ -192,6 +199,41 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       void message.error(t("performance.captureStopFailed", { error: String(captureError) }));
     } finally {
       setCaptureBusy(false);
+    }
+  };
+
+  const startBluetoothCapture = async () => {
+    const destination = await save({
+      defaultPath: bluetoothCaptureFilename(deviceName),
+      filters: [{ name: "Bluetooth HCI PCAP", extensions: ["pcap"] }],
+    });
+    if (!destination) return;
+    setBluetoothBusy(true);
+    try {
+      const response = await request("/api/performance/bluetooth-capture", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destination, duration_seconds: bluetoothDuration }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      void message.success(t("performance.bluetoothCaptureStarted"));
+    } catch (captureError) {
+      void message.error(t("performance.bluetoothCaptureStartFailed", { error: String(captureError) }));
+    } finally {
+      setBluetoothBusy(false);
+    }
+  };
+
+  const stopBluetoothCapture = async () => {
+    setBluetoothBusy(true);
+    try {
+      const response = await request("/api/performance/bluetooth-capture", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      void message.success(t("performance.bluetoothCaptureSaved"));
+    } catch (captureError) {
+      void message.error(t("performance.bluetoothCaptureStopFailed", { error: String(captureError) }));
+    } finally {
+      setBluetoothBusy(false);
     }
   };
 
@@ -370,6 +412,43 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.captureElapsed")}</span><strong>{((capture?.elapsed_ms ?? 0) / 1000).toFixed(1)} s</strong></div>
         </div>
         {capture?.error && <Alert type="warning" showIcon message={t("performance.captureFailed")} description={capture.error} />}
+      </section>
+
+      <section className="performance-section">
+        <div className="performance-process-header">
+          <div>
+            <Typography.Title level={5}>{t("performance.bluetoothCapture")}</Typography.Title>
+            <Typography.Text type="secondary">{t("performance.bluetoothCaptureHint")}</Typography.Text>
+          </div>
+          <Space wrap className="performance-capture-controls">
+            <Select<number>
+              aria-label={t("performance.captureDuration")}
+              value={bluetoothDuration}
+              disabled={!activeUdid || bluetoothCaptureIsRunning || bluetoothBusy}
+              options={networkCaptureDurations.map((seconds) => ({
+                value: seconds,
+                label: t("performance.captureSeconds", { count: seconds }),
+              }))}
+              onChange={setBluetoothDuration}
+            />
+            {bluetoothCaptureIsRunning ? (
+              <Button danger icon={<StopOutlined />} loading={bluetoothBusy} onClick={() => void stopBluetoothCapture()}>
+                {t("performance.stopBluetoothCapture")}
+              </Button>
+            ) : (
+              <Button type="primary" icon={<DownloadOutlined />} disabled={!activeUdid} loading={bluetoothBusy} onClick={() => void startBluetoothCapture()}>
+                {t("performance.startBluetoothCapture")}
+              </Button>
+            )}
+          </Space>
+        </div>
+        <div className="performance-transport-grid performance-capture-grid">
+          <div><span>{t("performance.captureStatus")}</span><strong>{bluetoothCaptureStatus}</strong></div>
+          <div><span>{t("performance.capturePackets")}</span><strong>{bluetoothCapture?.packet_count ?? 0}</strong></div>
+          <div><span>{t("performance.captureSize")}</span><strong>{fileSize(bluetoothCapture?.bytes_written)}</strong></div>
+          <div><span>{t("performance.captureElapsed")}</span><strong>{((bluetoothCapture?.elapsed_ms ?? 0) / 1000).toFixed(1)} s</strong></div>
+        </div>
+        {bluetoothCapture?.error && <Alert type="warning" showIcon message={t("performance.bluetoothCaptureFailed")} description={bluetoothCapture.error} />}
       </section>
 
       <section className="performance-section">

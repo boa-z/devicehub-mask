@@ -135,6 +135,15 @@ metrics, JPEG latency, device resolution, GPU, and whether the installed release
 or a debug build was tested. Debug builds are not representative of release
 performance.
 
+## Bluetooth Capture Contains No Packets
+
+Install Apple's Bluetooth Logging configuration profile on the iPhone before
+starting an HCI capture. `BTPacketLogger` can accept the connection without that
+profile but remain silent, so a valid 24-byte PCAP containing only the global
+header is expected in that case. Keep the target Bluetooth controller or audio
+device active during the capture and inspect `bluetooth.capture` in Service
+health if starting the service itself fails.
+
 ## Update Check Fails
 
 - Confirm the nightly release has `latest.json`, the platform updater artifact,

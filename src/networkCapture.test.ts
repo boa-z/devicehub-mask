@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { networkCaptureFilename, networkCaptureRunning } from "./networkCapture";
+import { bluetoothCaptureFilename, networkCaptureFilename, networkCaptureRunning } from "./networkCapture";
 import type { NetworkCaptureStatus } from "./types";
 
 function status(state: NetworkCaptureStatus["state"]): NetworkCaptureStatus {
@@ -27,5 +27,10 @@ describe("network capture", () => {
       .toBe("devicehub-mask_Boa's iPhone - Lab_2026-07-24T01-02-03-004Z.pcap");
     expect(networkCaptureFilename("", new Date("2026-07-24T01:02:03.004Z")))
       .toContain("devicehub-mask_iPhone_");
+  });
+
+  it("creates a distinct Bluetooth capture filename", () => {
+    expect(bluetoothCaptureFilename("Lab / iPhone", new Date("2026-07-24T01:02:03.004Z")))
+      .toBe("devicehub-mask_Lab - iPhone_bluetooth_2026-07-24T01-02-03-004Z.pcap");
   });
 });

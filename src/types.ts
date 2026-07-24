@@ -83,6 +83,17 @@ export type NetworkCaptureStatus = {
   stop_reason: NetworkCaptureStopReason | null;
   error: string | null;
 };
+export type BluetoothCaptureState = NetworkCaptureState;
+export type BluetoothCaptureStopReason = NetworkCaptureStopReason;
+export type BluetoothCaptureStatus = {
+  state: BluetoothCaptureState;
+  packet_count: number;
+  bytes_written: number;
+  elapsed_ms: number;
+  duration_seconds: number | null;
+  stop_reason: BluetoothCaptureStopReason | null;
+  error: string | null;
+};
 export type DeviceConditionProfile = {
   identifier: string;
   description: string;
@@ -108,6 +119,7 @@ export type PerformanceView = {
   services: ServiceHealth[];
   sampling: boolean;
   network_capture: NetworkCaptureStatus;
+  bluetooth_capture: BluetoothCaptureStatus;
   device_conditions: DeviceConditionStatus;
 };
 export type DeviceDetails = {

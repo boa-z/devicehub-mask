@@ -116,12 +116,23 @@ PCAP when the device session ends or the capture stream fails. Packet contents
 never pass through the WebView or MCP server. Treat the saved file as sensitive:
 it can contain addresses, protocol metadata, and unencrypted application data.
 
+Bluetooth HCI Capture records controller, headset, and other Bluetooth traffic
+through the device's `BTPacketLogger` service as a Wireshark-compatible
+`BLUETOOTH_HCI_H4_WITH_PHDR` PCAP. It has the same explicit-start and
+session-cleanup behavior, with a five-minute and 64 MiB limit. The iPhone must
+have Apple's Bluetooth Logging configuration profile installed; without that
+profile the service may produce a valid header-only capture. Bluetooth captures
+can expose device activity and should also be treated as sensitive. Raw packets
+are written directly to the selected host file and never sent to the WebView or
+MCP server.
+
 Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health
 section reports whether device heartbeat, virtual location, device conditions,
 device notifications, system monitoring, graphics monitoring, network
 monitoring, energy monitoring, paired Apple Watch discovery, home-screen layout
-reads, and packet capture are connecting, ready, recovering, unavailable, or stopped.
+reads, packet capture, and Bluetooth HCI capture are connecting, ready,
+recovering, unavailable, or stopped.
 The heartbeat responds to the device's Lockdown keep-alive requests throughout
 the active session; sleep, timeout, or transport failures are recovered under
 the same bounded supervisor. A service reconnect does not tear down video or

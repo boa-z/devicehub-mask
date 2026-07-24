@@ -113,6 +113,13 @@ npm run tauri:dev
 仅在诊断原始分辨率时设置为 `0`。记录 CPU、全部 FPS 指标、JPEG 延迟、设备分辨率、
 GPU，以及测试的是安装版还是 debug 版。Debug 构建不能代表 release 性能。
 
+## 蓝牙抓包没有数据包
+
+开始 HCI 抓包前，需要在 iPhone 上安装 Apple Bluetooth Logging 配置描述文件。未安装时
+`BTPacketLogger` 可能接受连接但保持静默，此时生成只有 24 字节全局文件头的有效 PCAP
+属于预期行为。抓包期间保持目标蓝牙手柄或音频设备活跃；如果服务本身无法启动，请在
+“服务健康”中检查 `bluetooth.capture`。
+
 ## 检查更新失败
 
 - 确认 nightly release 包含 `latest.json`、当前平台更新产物和对应 `.sig`。

@@ -318,6 +318,8 @@ pub enum InputCmd {
     TakeScreenshot(oneshot::Sender<Result<Vec<u8>, String>>),
     /// Start or stop a bounded pcapd capture owned by the active device session.
     NetworkCapture(crate::network_capture::NetworkCaptureCommand),
+    /// Start or stop a bounded Bluetooth HCI capture owned by the active session.
+    BluetoothCapture(crate::bluetooth_capture::BluetoothCaptureCommand),
     /// Apply or clear a DVT device-wide network/thermal condition.
     DeviceCondition(crate::device_conditions::DeviceConditionCommand),
     /// Access one application's vended Documents root through House Arrest.
