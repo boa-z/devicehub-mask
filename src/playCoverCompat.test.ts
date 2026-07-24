@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { keyboardCodeForUsage, keyboardUsage } from "./control";
 import { importPlayCoverConfig, parsePlayCoverPlist } from "./playCoverCompat";
+import { mappingBindingLabel } from "./types";
 
 const transform = (xCoord: number, yCoord: number, size = 20) => ({ xCoord, yCoord, size });
 
@@ -35,6 +36,7 @@ describe("PlayCover compatibility", () => {
       bind: { type: "Button", up: ["KeyW"], down: ["KeyS"], left: ["KeyA"], right: ["KeyD"] },
       position: { x: 0.2, y: 0.75 },
     });
+    expect(result.profile.mappings.map(mappingBindingLabel)).toEqual(["Space", "Q", "WASD"]);
   });
 
   it("skips unsupported mouse and controller bindings without inventing keys", () => {

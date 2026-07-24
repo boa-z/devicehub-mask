@@ -440,6 +440,32 @@ export function createMapping(type: ScrcpyMappingType, position: Position, frame
 
 export function mappingPosition(mapping: Mapping): Position { return "position" in mapping ? mapping.position : { x: mapping.x, y: mapping.y }; }
 export function mappingLabel(mapping: Mapping): string { return "label" in mapping ? mapping.label : mapping.note || mapping.type; }
+export function keyboardBindingLabel(code: string): string {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  const labels: Record<string, string> = {
+    ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+    ControlLeft: "Ctrl", ControlRight: "Ctrl", ShiftLeft: "Shift", ShiftRight: "Shift",
+    AltLeft: "Alt", AltRight: "Alt", MetaLeft: "Meta", MetaRight: "Meta",
+  };
+  return labels[code] ?? code.replace(/^Numpad/, "Num ");
+}
+export function mappingBindingLabel(mapping: Mapping): string | undefined {
+  if (mapping.type === "touch") return keyboardBindingLabel(mapping.key);
+  const direction = mapping.type === "dpad"
+    ? { up: [mapping.keys.up], left: [mapping.keys.left], down: [mapping.keys.down], right: [mapping.keys.right] }
+    : mapping.type === "DirectionPad" && mapping.bind.type === "Button"
+      ? { up: mapping.bind.up, left: mapping.bind.left, down: mapping.bind.down, right: mapping.bind.right }
+      : undefined;
+  if (direction) {
+    const groups = [direction.up, direction.left, direction.down, direction.right]
+      .map((keys) => keys.filter(Boolean).map(keyboardBindingLabel).join("+"));
+    if (groups.every((group) => group.length === 1)) return groups.join("");
+    return groups.filter(Boolean).join("/") || undefined;
+  }
+  const keys = "bind" in mapping && Array.isArray(mapping.bind) ? mapping.bind : [];
+  return keys.length ? keys.map(keyboardBindingLabel).join("+") : undefined;
+}
 export function mappingContactIds(mapping: Mapping): number[] {
   if ("contactId" in mapping) return [mapping.contactId];
   if (!("pointer_id" in mapping)) return [];
