@@ -100,6 +100,7 @@ struct StreamMetricsView {
 #[derive(Serialize)]
 struct PerformanceView {
     sample: crate::performance::PerformanceSnapshot,
+    app_activity: Vec<crate::performance::AppActivityEvent>,
     services: Vec<crate::supervisor::ServiceHealth>,
     sampling: bool,
     network_capture: crate::network_capture::NetworkCaptureStatus,
@@ -339,6 +340,7 @@ async fn status(State(state): State<AppState>) -> Json<StatusView> {
 async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
     Json(PerformanceView {
         sample: state.performance.get(),
+        app_activity: state.performance.app_activity(),
         services: state.services.snapshot(),
         sampling: state.performance_demand.enabled(),
         network_capture: state.network_capture.get(),
@@ -3382,6 +3384,7 @@ mod tests {
         assert!(state.performance_demand.enabled());
         let view = performance(State(state.clone())).await.0;
         assert!(view.sampling);
+        assert!(view.app_activity.is_empty());
         assert_eq!(
             stop_performance_sampling(State(state.clone())).await,
             StatusCode::NO_CONTENT

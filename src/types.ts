@@ -72,6 +72,15 @@ export type PerformanceSnapshot = {
   network_tx_bytes_per_second: number | null;
   network_recent_connections: number | null;
 };
+export type AppActivityEvent = {
+  sequence: number;
+  received_at_ms: number;
+  notification_type: string;
+  app_name: string | null;
+  exec_name: string | null;
+  pid: number | null;
+  state_description: string | null;
+};
 export type NetworkCaptureState = "idle" | "starting" | "capturing" | "completed" | "failed";
 export type NetworkCaptureStopReason = "user_requested" | "duration_limit" | "size_limit" | "session_ended" | "stream_ended";
 export type NetworkCaptureStatus = {
@@ -149,6 +158,7 @@ export type DeviceConditionStatus = {
 };
 export type PerformanceView = {
   sample: PerformanceSnapshot;
+  app_activity: AppActivityEvent[];
   services: ServiceHealth[];
   sampling: boolean;
   network_capture: NetworkCaptureStatus;

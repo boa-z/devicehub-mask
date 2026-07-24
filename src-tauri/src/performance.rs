@@ -1,6 +1,7 @@
 //! Supervised DVT performance sampling over the active CoreDevice tunnel.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -8,6 +9,7 @@ use idevice::dvt::device_info::DeviceInfoClient;
 use idevice::dvt::energy_monitor::{EnergyMonitorClient, EnergySample};
 use idevice::dvt::graphics::GraphicsClient;
 use idevice::dvt::network_monitor::{NetworkEvent, NetworkMonitorClient};
+use idevice::dvt::notifications::{NotificationInfo, NotificationsClient};
 use idevice::dvt::remote_server::RemoteServerClient;
 use idevice::dvt::sysmontap::{SysmontapClient, SysmontapConfig, SysmontapSample};
 use idevice::rsd::RsdHandshake;
@@ -29,6 +31,10 @@ const ENERGY_OPERATION_TIMEOUT: Duration = Duration::from_secs(4);
 const NETWORK_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const NETWORK_CONNECTION_TTL: Duration = Duration::from_secs(60);
 const MAX_NETWORK_CONNECTIONS: usize = 16_384;
+const MAX_ACTIVITY_EVENTS: usize = 100;
+const MAX_ACTIVITY_TYPE_CHARS: usize = 96;
+const MAX_ACTIVITY_NAME_CHARS: usize = 128;
+const MAX_ACTIVITY_STATE_CHARS: usize = 160;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessPerformance {
@@ -69,16 +75,55 @@ pub struct PerformanceSnapshot {
     pub network_recent_connections: Option<u32>,
 }
 
-#[derive(Clone, Default)]
-pub struct PerformanceSlot(Arc<Mutex<PerformanceSnapshot>>);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppActivityEvent {
+    pub sequence: u64,
+    pub received_at_ms: u64,
+    pub notification_type: String,
+    pub app_name: Option<String>,
+    pub exec_name: Option<String>,
+    pub pid: Option<u32>,
+    pub state_description: Option<String>,
+}
+
+struct PerformanceSlotInner {
+    sample: Mutex<PerformanceSnapshot>,
+    activity_events: Mutex<VecDeque<AppActivityEvent>>,
+    activity_sequence: AtomicU64,
+}
+
+#[derive(Clone)]
+pub struct PerformanceSlot(Arc<PerformanceSlotInner>);
+
+impl Default for PerformanceSlot {
+    fn default() -> Self {
+        Self(Arc::new(PerformanceSlotInner {
+            sample: Mutex::new(PerformanceSnapshot::default()),
+            activity_events: Mutex::new(VecDeque::with_capacity(MAX_ACTIVITY_EVENTS)),
+            activity_sequence: AtomicU64::new(0),
+        }))
+    }
+}
 
 impl PerformanceSlot {
     pub fn get(&self) -> PerformanceSnapshot {
-        self.0.lock().unwrap().clone()
+        self.0.sample.lock().unwrap().clone()
+    }
+
+    pub fn app_activity(&self) -> Vec<AppActivityEvent> {
+        self.0
+            .activity_events
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect()
     }
 
     pub fn reset(&self) {
-        *self.0.lock().unwrap() = PerformanceSnapshot::default();
+        *self.0.sample.lock().unwrap() = PerformanceSnapshot::default();
+        self.0.activity_events.lock().unwrap().clear();
+        self.0.activity_sequence.store(0, Ordering::Relaxed);
     }
 
     fn update_system(
@@ -87,7 +132,7 @@ impl PerformanceSlot {
         cpu_count: u32,
         process_schema: &ProcessSchema,
     ) {
-        let mut snapshot = self.0.lock().unwrap();
+        let mut snapshot = self.0.sample.lock().unwrap();
         snapshot.captured_at_ms = unix_millis();
         snapshot.logical_cpu_count = Some(cpu_count);
         if let Some(processes) = sample.processes.as_ref() {
@@ -114,7 +159,7 @@ impl PerformanceSlot {
     }
 
     fn update_graphics(&self, sample: &idevice::dvt::graphics::GraphicsSample) {
-        let mut snapshot = self.0.lock().unwrap();
+        let mut snapshot = self.0.sample.lock().unwrap();
         snapshot.captured_at_ms = unix_millis();
         snapshot.graphics_fps = sample.fps.is_finite().then_some(sample.fps.max(0.0));
         snapshot.gpu_allocated_bytes = Some(sample.alloc_system_memory);
@@ -124,7 +169,7 @@ impl PerformanceSlot {
     }
 
     fn update_network(&self, sample: NetworkRateSample) {
-        let mut snapshot = self.0.lock().unwrap();
+        let mut snapshot = self.0.sample.lock().unwrap();
         snapshot.captured_at_ms = unix_millis();
         snapshot.network_rx_bytes_per_second = Some(sample.rx_bytes_per_second);
         snapshot.network_tx_bytes_per_second = Some(sample.tx_bytes_per_second);
@@ -132,7 +177,7 @@ impl PerformanceSlot {
     }
 
     fn energy_targets(&self) -> Vec<u32> {
-        let snapshot = self.0.lock().unwrap();
+        let snapshot = self.0.sample.lock().unwrap();
         let mut seen = HashSet::with_capacity(MAX_ENERGY_PROCESSES);
         let mut pids = snapshot
             .top_processes
@@ -146,7 +191,7 @@ impl PerformanceSlot {
     }
 
     fn update_energy(&self, samples: Vec<EnergySample>) {
-        let mut snapshot = self.0.lock().unwrap();
+        let mut snapshot = self.0.sample.lock().unwrap();
         let names = snapshot
             .top_processes
             .iter()
@@ -179,6 +224,45 @@ impl PerformanceSlot {
         processes.truncate(MAX_ENERGY_PROCESSES);
         snapshot.captured_at_ms = unix_millis();
         snapshot.energy_processes = processes;
+    }
+
+    fn publish_app_activity(&self, notification: NotificationInfo) {
+        let sequence = self
+            .0
+            .activity_sequence
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .max(1);
+        let event = AppActivityEvent {
+            sequence,
+            received_at_ms: unix_millis(),
+            notification_type: bounded_activity_text(
+                &notification.notification_type,
+                MAX_ACTIVITY_TYPE_CHARS,
+            )
+            .unwrap_or_else(|| "unknown".into()),
+            app_name: bounded_activity_text(&notification.app_name, MAX_ACTIVITY_NAME_CHARS),
+            exec_name: bounded_activity_text(&notification.exec_name, MAX_ACTIVITY_NAME_CHARS),
+            pid: (notification.pid > 0).then_some(notification.pid),
+            state_description: bounded_activity_text(
+                &notification.state_description,
+                MAX_ACTIVITY_STATE_CHARS,
+            ),
+        };
+        let mut events = self.0.activity_events.lock().unwrap();
+        if events.len() == MAX_ACTIVITY_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event);
+    }
+}
+
+fn bounded_activity_text(value: &str, max_chars: usize) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized.chars().take(max_chars).collect())
     }
 }
 
@@ -459,6 +543,48 @@ pub async fn supervise_energy(
     reporter.stopped(attempt);
 }
 
+pub async fn supervise_app_activity(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    slot: PerformanceSlot,
+    reporter: ServiceReporter,
+    mut enabled: watch::Receiver<bool>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut attempt = 0;
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        if !wait_until_enabled(&mut enabled, &mut shutdown, &reporter, attempt).await {
+            break;
+        }
+        attempt += 1;
+        reporter.connecting(attempt);
+        let result = run_app_activity_once(
+            adapter.clone(),
+            handshake.clone(),
+            slot.clone(),
+            &mut shutdown,
+            &mut enabled,
+            &reporter,
+            attempt,
+        )
+        .await;
+        if *shutdown.borrow() {
+            break;
+        }
+        let Some(error) = result.err() else {
+            continue;
+        };
+        reporter.retrying(attempt, error);
+        if !wait_for_retry(&mut shutdown, reconnect_backoff(attempt - 1)).await {
+            break;
+        }
+    }
+    reporter.stopped(attempt);
+}
+
 async fn run_system_once(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
@@ -685,6 +811,50 @@ async fn run_energy_once(
             }
         }
     }
+}
+
+async fn run_app_activity_once(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    slot: PerformanceSlot,
+    shutdown: &mut watch::Receiver<bool>,
+    enabled: &mut watch::Receiver<bool>,
+    reporter: &ServiceReporter,
+    attempt: u32,
+) -> Result<(), String> {
+    let mut remote = connect_remote(adapter, handshake).await?;
+    let mut client = NotificationsClient::new(&mut remote)
+        .await
+        .map_err(|error| format!("DVT app activity channel failed: {error:?}"))?;
+    tokio::time::timeout(SETUP_TIMEOUT, client.start_notifications())
+        .await
+        .map_err(|_| "DVT app activity setup timed out".to_string())?
+        .map_err(|error| format!("DVT app activity setup failed: {error:?}"))?;
+    reporter.ready(attempt);
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    stop_app_activity(&mut client).await;
+                    return Ok(());
+                }
+            }
+            changed = enabled.changed() => {
+                if changed.is_err() || !*enabled.borrow() {
+                    stop_app_activity(&mut client).await;
+                    return Ok(());
+                }
+            }
+            notification = client.get_notification() => match notification {
+                Ok(notification) => slot.publish_app_activity(notification),
+                Err(error) => return Err(format!("DVT app activity stream failed: {error:?}")),
+            }
+        }
+    }
+}
+
+async fn stop_app_activity<R: ReadWrite>(client: &mut NotificationsClient<'_, R>) {
+    let _ = tokio::time::timeout(SETUP_TIMEOUT, client.stop_notifications()).await;
 }
 
 async fn stop_energy_sampling<R: ReadWrite>(client: &mut EnergyMonitorClient<'_, R>, pids: &[u32]) {
@@ -1054,10 +1224,50 @@ mod tests {
     }
 
     #[test]
+    fn app_activity_is_sanitized_bounded_and_reset_with_the_session() {
+        let slot = PerformanceSlot::default();
+        for index in 0..=MAX_ACTIVITY_EVENTS {
+            slot.publish_app_activity(NotificationInfo {
+                notification_type: " application\nstate ".into(),
+                mach_absolute_time: index as i64,
+                exec_name: " Example\tGame ".into(),
+                app_name: " Example  Game ".into(),
+                pid: (index + 1) as u32,
+                state_description: " foreground\nactive ".into(),
+            });
+        }
+
+        let events = slot.app_activity();
+        assert_eq!(events.len(), MAX_ACTIVITY_EVENTS);
+        assert_eq!(events.first().unwrap().sequence, 2);
+        assert_eq!(events.last().unwrap().sequence, 101);
+        assert_eq!(
+            events.last().unwrap().notification_type,
+            "application state"
+        );
+        assert_eq!(
+            events.last().unwrap().exec_name.as_deref(),
+            Some("Example Game")
+        );
+        assert_eq!(
+            events.last().unwrap().app_name.as_deref(),
+            Some("Example Game")
+        );
+        assert_eq!(
+            events.last().unwrap().state_description.as_deref(),
+            Some("foreground active")
+        );
+        assert_eq!(events.last().unwrap().pid, Some(101));
+
+        slot.reset();
+        assert!(slot.app_activity().is_empty());
+    }
+
+    #[test]
     fn energy_sampling_tracks_ranked_processes_and_sanitizes_scores() {
         let slot = PerformanceSlot::default();
         {
-            let mut snapshot = slot.0.lock().unwrap();
+            let mut snapshot = slot.0.sample.lock().unwrap();
             snapshot.top_processes = (0..20)
                 .map(|index| ProcessPerformance {
                     pid: 100 - index,

@@ -87,7 +87,7 @@ function ServiceRow({ service }: { service: ServiceHealth }) {
 }
 
 export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, error, deviceName, request }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [history, setHistory] = useState<PerformanceSnapshot[]>([]);
   const [processSort, setProcessSort] = useState<ProcessSort>("cpu");
   const [captureDuration, setCaptureDuration] = useState<number>(30);
@@ -97,6 +97,10 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const [conditionSelection, setConditionSelection] = useState<string | null>(null);
   const [conditionBusy, setConditionBusy] = useState(false);
   const condition = view?.device_conditions;
+  const appActivity = useMemo(
+    () => [...(view?.app_activity ?? [])].reverse().slice(0, 20),
+    [view?.app_activity],
+  );
 
   useEffect(() => {
     setHistory([]);
@@ -375,6 +379,35 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           description={condition.error ?? t("performance.conditionsUnavailableHint")}
         />}
         {condition?.error && condition.cleanup_pending && <Typography.Text type="danger">{condition.error}</Typography.Text>}
+      </section>
+
+      <section className="performance-section">
+        <div className="performance-process-header">
+          <div>
+            <Typography.Title level={5}>{t("performance.appActivity")}</Typography.Title>
+            <Typography.Text type="secondary">{t("performance.appActivityHint")}</Typography.Text>
+          </div>
+        </div>
+        <div className="performance-process-table-wrap">
+          <table className="performance-process-table performance-activity-table">
+            <colgroup><col /><col /><col /><col /></colgroup>
+            <thead><tr>
+              <th>{t("performance.eventTime")}</th>
+              <th>{t("performance.activityApp")}</th>
+              <th>{t("performance.activityState")}</th>
+              <th>{t("performance.pid")}</th>
+            </tr></thead>
+            <tbody>
+              {appActivity.map((event) => <tr key={event.sequence}>
+                <td>{new Date(event.received_at_ms).toLocaleTimeString(i18n.resolvedLanguage ?? i18n.language)}</td>
+                <td><span title={event.exec_name ?? event.app_name ?? undefined}>{event.app_name ?? event.exec_name ?? t("performance.unknownApp")}</span></td>
+                <td><span title={event.notification_type}>{event.state_description ?? event.notification_type}</span></td>
+                <td>{event.pid ?? "-"}</td>
+              </tr>)}
+              {appActivity.length === 0 && <tr className="performance-process-empty"><td colSpan={4}>{t("performance.waitingAppActivity")}</td></tr>}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section className="performance-section">

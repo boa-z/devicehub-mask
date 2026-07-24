@@ -118,6 +118,11 @@ Top Processes shows the union of the ten busiest CPU processes and ten largest
 physical-memory processes. Switch between CPU and Memory sorting. Process CPU
 uses the same logical-core normalization as system CPU, so 100% represents the
 device's total processing capacity rather than one fully occupied core.
+App Activity shows the latest twenty application-state and memory notifications
+reported by Apple Instruments, newest first. The backend retains at most one
+hundred sanitized events for the current device session; reconnecting to a new
+session clears them. Event names and states are device-provided and can vary by
+iOS version.
 
 Device Conditions lists only the DVT network and thermal profiles reported by
 the connected iPhone. Applying one requires confirmation because it affects the
@@ -154,7 +159,8 @@ is left, so monitoring does not add permanent device load. The service-health
 section reports whether device heartbeat, virtual location, device conditions,
 device notifications, system monitoring, graphics monitoring, network
 monitoring, energy monitoring, paired Apple Watch discovery, home-screen layout
-reads, packet capture, and Bluetooth HCI capture are connecting, ready,
+reads, app activity monitoring, packet capture, and Bluetooth HCI capture are
+connecting, ready,
 recovering, unavailable, or stopped.
 The heartbeat responds to the device's Lockdown keep-alive requests throughout
 the active session; sleep, timeout, or transport failures are recovered under

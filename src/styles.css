@@ -282,6 +282,13 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .performance-energy-table { min-width: 760px; }
 .performance-energy-table col:nth-child(2) { width: 76px; }
 .performance-energy-table col:nth-child(n+3) { width: 108px; }
+.performance-activity-table { min-width: 640px; }
+.performance-activity-table col:nth-child(1) { width: 132px; }
+.performance-activity-table col:nth-child(2) { width: 34%; }
+.performance-activity-table col:nth-child(3) { width: auto; }
+.performance-activity-table col:nth-child(4) { width: 76px; }
+.performance-activity-table th:nth-child(-n+3), .performance-activity-table td:nth-child(-n+3) { text-align: left; }
+.performance-activity-table td:nth-child(2) span, .performance-activity-table td:nth-child(3) span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .performance-process-table th, .performance-process-table td { height: 42px; padding: 8px 12px; border-bottom: 1px solid #303638; text-align: right; font-variant-numeric: tabular-nums; }
 .performance-process-table th { color: #899493; font-size: 11px; font-weight: 500; }
 .performance-process-table th:first-child, .performance-process-table td:first-child { text-align: left; }

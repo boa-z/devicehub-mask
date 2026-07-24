@@ -127,6 +127,12 @@ EnergyMonitor follows at most the first sixteen processes from that bounded list
 on another RemoteServer connection. It updates the device subscription when the
 PID set changes, cancels sampling on demand loss, and exposes Apple's relative
 total, CPU, GPU, networking, display, location, and app-state energy scores.
+App activity uses a separate DVT Notifications connection that exists only while
+the Performance workspace requests sampling. Notification types, app or process
+names, and state values are whitespace-normalized and length-bounded before they
+reach the private API. The session retains at most 100 events with monotonic
+sequence numbers, clears them when the device session resets, and never exposes
+the original archived notification payload.
 
 Lockdown metadata is read at connection and refreshed for Device Info requests,
 so push notifications for storage or device-name changes surface current values.
