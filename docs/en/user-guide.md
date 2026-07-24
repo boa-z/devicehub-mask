@@ -93,12 +93,12 @@ accordingly. This version intentionally does not expose restore or erase.
 
 **Device public files** in the Info tab opens the standard AFC media container
 exposed by the connected device. Its contents depend on iOS and may include
-directories such as `DCIM`. This workspace is deliberately read-only: it can
-browse directories and export regular files through the native save dialog,
-but it cannot upload, rename, delete, or create device content. Symbolic links
-and other special entries cannot be opened or exported. Export writes through
-a temporary sibling file and replaces the selected host destination only after
-the complete device file has been received.
+directories such as `DCIM`. You can import and export files or complete folder
+trees, create folders, rename entries, and recursively delete a confirmed
+folder. Imports never overwrite an existing device name. Symbolic links and
+other special entries are not traversed. File export writes through a temporary
+sibling, while folder export builds a new temporary tree before publishing the
+selected host destination.
 
 ### Performance
 
@@ -242,7 +242,7 @@ confines every operation to that application's vended Documents root.
 App Documents and Device public files are separate boundaries. App Documents
 uses House Arrest for one file-sharing application's sandbox and supports
 explicit mutations. Device public files uses the device-wide standard AFC media
-container and exposes only browsing and regular-file export.
+container; its available content and write permissions remain controlled by iOS.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or

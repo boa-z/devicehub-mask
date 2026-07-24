@@ -237,12 +237,15 @@ Public device files use a separate supervised standard-AFC worker. USB first
 opens `com.apple.afc` through the paired lockdown provider and can fall back to
 the cloned RSD tunnel; Wi-Fi uses `com.apple.afc.shim.remote` through RSD. AFC2
 is never requested. The worker reuses one client until an operation fails, but
-the private API exposes only bounded directory listing and regular-file export.
-Paths reject traversal, backslashes, NULs, and unsafe components; symbolic links
-and special entries are not traversed. Exports use a 64 KiB buffered stream,
-verify the byte count against the initial AFC metadata, and atomically replace
-the native-dialog destination through a temporary sibling. No upload, rename,
-delete, directory creation, recursive export, or MCP tool crosses this boundary.
+the private API exposes only bounded operations rooted in that standard AFC
+container. Paths reject traversal, backslashes, NULs, and unsafe components;
+symbolic links and special entries are not traversed. File transfer uses 64 KiB
+buffering and verifies byte counts. Imports stage under a unique remote name and
+rename only after completion; exports stage beside the selected host target.
+Recursive transfers are iterative and limited to 64 levels and 100,000 entries.
+Writes reject name collisions, root mutation, and unsupported local entry types;
+recursive deletion requires an explicit frontend confirmation. No AFC2 path or
+MCP mutation crosses this boundary.
 
 Clipboard synchronization connects CoreDevice Pasteboard Service only when its
 persisted opt-in setting is enabled for a newly connected session. Device changes

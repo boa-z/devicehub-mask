@@ -2186,6 +2186,14 @@ fn reject_device_file_command(command: crate::device_files::DeviceFileCommand, r
         DeviceFileCommand::Export { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
+        DeviceFileCommand::Import { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        DeviceFileCommand::CreateDirectory { reply, .. }
+        | DeviceFileCommand::Rename { reply, .. }
+        | DeviceFileCommand::Delete { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
     }
 }
 

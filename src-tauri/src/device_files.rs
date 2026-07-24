@@ -1,4 +1,4 @@
-//! Read-only access to the device's public AFC media container.
+//! Bounded file management for the device's public AFC media container.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,6 +23,8 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_DIRECTORY_ENTRIES: usize = 1_000;
 const MAX_PATH_BYTES: usize = 1_024;
 const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_TRANSFER_ENTRIES: usize = 100_000;
+const MAX_TRANSFER_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +50,13 @@ pub struct DeviceFileList {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct DeviceFileTransfer {
+    pub bytes_transferred: u64,
+    pub files_transferred: u64,
+    pub directories_transferred: u64,
+}
+
 #[derive(Debug)]
 pub enum DeviceFileCommand {
     List {
@@ -57,7 +66,26 @@ pub enum DeviceFileCommand {
     Export {
         path: String,
         destination: PathBuf,
-        reply: oneshot::Sender<Result<u64, String>>,
+        reply: oneshot::Sender<Result<DeviceFileTransfer, String>>,
+    },
+    Import {
+        directory: String,
+        source: PathBuf,
+        reply: oneshot::Sender<Result<DeviceFileEntry, String>>,
+    },
+    CreateDirectory {
+        directory: String,
+        name: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Rename {
+        path: String,
+        name: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Delete {
+        path: String,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -189,6 +217,50 @@ async fn handle(client: &mut AfcClient, command: DeviceFileCommand) -> Result<()
             let _ = reply.send(result);
             if failed { Err(()) } else { Ok(()) }
         }
+        DeviceFileCommand::Import {
+            directory,
+            source,
+            reply,
+        } => {
+            let result =
+                tokio::time::timeout(TRANSFER_TIMEOUT, import_path(client, &directory, &source))
+                    .await
+                    .unwrap_or_else(|_| Err("device file import timed out".into()));
+            let failed = result.is_err();
+            let _ = reply.send(result);
+            if failed { Err(()) } else { Ok(()) }
+        }
+        DeviceFileCommand::CreateDirectory {
+            directory,
+            name,
+            reply,
+        } => {
+            let result = tokio::time::timeout(
+                METADATA_TIMEOUT,
+                create_directory(client, &directory, &name),
+            )
+            .await
+            .unwrap_or_else(|_| Err("device directory creation timed out".into()));
+            let failed = result.is_err();
+            let _ = reply.send(result);
+            if failed { Err(()) } else { Ok(()) }
+        }
+        DeviceFileCommand::Rename { path, name, reply } => {
+            let result = tokio::time::timeout(METADATA_TIMEOUT, rename_path(client, &path, &name))
+                .await
+                .unwrap_or_else(|_| Err("device file rename timed out".into()));
+            let failed = result.is_err();
+            let _ = reply.send(result);
+            if failed { Err(()) } else { Ok(()) }
+        }
+        DeviceFileCommand::Delete { path, reply } => {
+            let result = tokio::time::timeout(METADATA_TIMEOUT, delete_path(client, &path))
+                .await
+                .unwrap_or_else(|_| Err("device file deletion timed out".into()));
+            let failed = result.is_err();
+            let _ = reply.send(result);
+            if failed { Err(()) } else { Ok(()) }
+        }
     }
 }
 
@@ -198,6 +270,14 @@ fn reject(command: DeviceFileCommand, error: String) {
             let _ = reply.send(Err(error));
         }
         DeviceFileCommand::Export { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        DeviceFileCommand::Import { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
+        DeviceFileCommand::CreateDirectory { reply, .. }
+        | DeviceFileCommand::Rename { reply, .. }
+        | DeviceFileCommand::Delete { reply, .. } => {
             let _ = reply.send(Err(error));
         }
     }
@@ -257,17 +337,35 @@ async fn export_file(
     client: &mut AfcClient,
     path: &str,
     destination: &Path,
-) -> Result<u64, String> {
+) -> Result<DeviceFileTransfer, String> {
     let path = normalize_path(path, false)?;
-    validate_export_destination(destination).await?;
     let info = client
         .get_file_info(path.clone())
         .await
         .map_err(|error| format!("unable to inspect device file: {error:?}"))?;
-    if info.st_ifmt != "S_IFREG" || info.st_link_target.is_some() {
-        return Err("only regular device files can be exported".into());
+    if info.st_link_target.is_some() {
+        return Err("symbolic links cannot be exported".into());
     }
-    let expected_size = info.size as u64;
+    match info.st_ifmt.as_str() {
+        "S_IFREG" => export_regular_file(client, &path, destination, info.size as u64)
+            .await
+            .map(|bytes_transferred| DeviceFileTransfer {
+                bytes_transferred,
+                files_transferred: 1,
+                directories_transferred: 0,
+            }),
+        "S_IFDIR" => export_directory(client, &path, destination).await,
+        _ => Err("only regular device files and directories can be exported".into()),
+    }
+}
+
+async fn export_regular_file(
+    client: &mut AfcClient,
+    path: &str,
+    destination: &Path,
+    expected_size: u64,
+) -> Result<u64, String> {
+    validate_export_destination(destination).await?;
     let temporary = crate::app_documents::temporary_sibling(destination, "device-export")?;
     let result = async {
         let remote = client
@@ -304,6 +402,302 @@ async fn export_file(
     result
 }
 
+async fn export_directory(
+    client: &mut AfcClient,
+    path: &str,
+    destination: &Path,
+) -> Result<DeviceFileTransfer, String> {
+    validate_new_directory_destination(destination).await?;
+    let temporary = crate::app_documents::temporary_sibling(destination, "device-export-dir")?;
+    tokio::fs::create_dir(&temporary)
+        .await
+        .map_err(|error| format!("unable to create temporary export directory: {error}"))?;
+    let result = async {
+        let mut transfer = DeviceFileTransfer {
+            directories_transferred: 1,
+            ..DeviceFileTransfer::default()
+        };
+        let mut entries_seen = 0usize;
+        let mut pending = vec![(path.to_owned(), temporary.clone(), 0usize)];
+        while let Some((remote_directory, local_directory, depth)) = pending.pop() {
+            if depth >= MAX_TRANSFER_DEPTH {
+                return Err("device directory export exceeds the maximum nesting depth".into());
+            }
+            let names = client
+                .list_dir(remote_directory.clone())
+                .await
+                .map_err(|error| {
+                    format!("unable to list device directory during export: {error:?}")
+                })?;
+            for name in names.into_iter().filter(|name| name != "." && name != "..") {
+                validate_name(&name)?;
+                entries_seen += 1;
+                if entries_seen > MAX_TRANSFER_ENTRIES {
+                    return Err("device directory export contains too many entries".into());
+                }
+                let remote_path = join_path(&remote_directory, &name)?;
+                let local_path = local_directory.join(&name);
+                let info = client
+                    .get_file_info(remote_path.clone())
+                    .await
+                    .map_err(|error| {
+                        format!("unable to inspect device entry during export: {error:?}")
+                    })?;
+                if info.st_link_target.is_some() {
+                    return Err(format!("symbolic link cannot be exported: {remote_path}"));
+                }
+                match info.st_ifmt.as_str() {
+                    "S_IFDIR" => {
+                        tokio::fs::create_dir(&local_path).await.map_err(|error| {
+                            format!("unable to create exported directory: {error}")
+                        })?;
+                        transfer.directories_transferred += 1;
+                        pending.push((remote_path, local_path, depth + 1));
+                    }
+                    "S_IFREG" => {
+                        transfer.bytes_transferred += export_regular_file(
+                            client,
+                            &remote_path,
+                            &local_path,
+                            info.size as u64,
+                        )
+                        .await?;
+                        transfer.files_transferred += 1;
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported device entry cannot be exported: {remote_path}"
+                        ));
+                    }
+                }
+            }
+        }
+        tokio::fs::rename(&temporary, destination)
+            .await
+            .map_err(|error| format!("unable to finish directory export: {error}"))?;
+        Ok(transfer)
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_dir_all(&temporary).await;
+    }
+    result
+}
+
+async fn import_path(
+    client: &mut AfcClient,
+    directory: &str,
+    source: &Path,
+) -> Result<DeviceFileEntry, String> {
+    let directory = normalize_path(directory, true)?;
+    let source_metadata = tokio::fs::symlink_metadata(source)
+        .await
+        .map_err(|error| format!("import source is unavailable: {error}"))?;
+    if source_metadata.file_type().is_symlink()
+        || (!source_metadata.is_file() && !source_metadata.is_dir())
+    {
+        return Err("import source must be a regular file or directory".into());
+    }
+    let source = tokio::fs::canonicalize(source)
+        .await
+        .map_err(|error| format!("import source is unavailable: {error}"))?;
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "import source has an unsupported file name".to_string())?
+        .to_owned();
+    validate_name(&name)?;
+    ensure_name_available(client, &directory, &name).await?;
+    let target = join_path(&directory, &name)?;
+    let temporary = join_path(
+        &directory,
+        &format!(".devicehub-import-{}", uuid::Uuid::new_v4()),
+    )?;
+
+    let result = async {
+        if source_metadata.is_file() {
+            upload_regular_file(client, &source, &temporary).await?;
+        } else {
+            import_directory(client, &source, &temporary).await?;
+        }
+        client
+            .rename(temporary.clone(), target.clone())
+            .await
+            .map_err(|error| format!("unable to finish device file import: {error:?}"))?;
+        let info = client
+            .get_file_info(target.clone())
+            .await
+            .map_err(|error| format!("unable to inspect imported device file: {error:?}"))?;
+        Ok(entry_from_info(name, target, &info))
+    }
+    .await;
+    if result.is_err() {
+        let _ = client.remove_all(temporary).await;
+    }
+    result
+}
+
+async fn upload_regular_file(
+    client: &mut AfcClient,
+    source: &Path,
+    target: &str,
+) -> Result<u64, String> {
+    let metadata = tokio::fs::symlink_metadata(source)
+        .await
+        .map_err(|error| format!("unable to inspect import source: {error}"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("import source must contain only regular files and directories".into());
+    }
+    let mut local = tokio::fs::File::open(source)
+        .await
+        .map_err(|error| format!("unable to open import source: {error}"))?;
+    let mut remote = client
+        .open(target.to_owned(), AfcFopenMode::WrOnly)
+        .await
+        .map_err(|error| format!("unable to create device file: {error:?}"))?;
+    let bytes = tokio::io::copy(&mut local, &mut remote)
+        .await
+        .map_err(|error| format!("unable to import device file: {error}"))?;
+    if bytes != metadata.len() {
+        return Err("import source changed while it was being transferred".into());
+    }
+    remote
+        .shutdown()
+        .await
+        .map_err(|error| format!("unable to flush imported device file: {error}"))?;
+    remote
+        .close()
+        .await
+        .map_err(|error| format!("unable to close imported device file: {error:?}"))?;
+    Ok(bytes)
+}
+
+async fn import_directory(
+    client: &mut AfcClient,
+    source: &Path,
+    target: &str,
+) -> Result<DeviceFileTransfer, String> {
+    client
+        .mk_dir(target.to_owned())
+        .await
+        .map_err(|error| format!("unable to create device directory: {error:?}"))?;
+    let mut transfer = DeviceFileTransfer {
+        directories_transferred: 1,
+        ..DeviceFileTransfer::default()
+    };
+    let mut entries_seen = 0usize;
+    let mut pending = vec![(source.to_owned(), target.to_owned(), 0usize)];
+    while let Some((local_directory, remote_directory, depth)) = pending.pop() {
+        if depth >= MAX_TRANSFER_DEPTH {
+            return Err("import directory exceeds the maximum nesting depth".into());
+        }
+        let mut entries = tokio::fs::read_dir(&local_directory)
+            .await
+            .map_err(|error| format!("unable to read import directory: {error}"))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| format!("unable to read import directory: {error}"))?
+        {
+            entries_seen += 1;
+            if entries_seen > MAX_TRANSFER_ENTRIES {
+                return Err("import directory contains too many entries".into());
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "import source has an unsupported file name".to_string())?;
+            validate_name(&name)?;
+            let remote_path = join_path(&remote_directory, &name)?;
+            let metadata = tokio::fs::symlink_metadata(entry.path())
+                .await
+                .map_err(|error| format!("unable to inspect import entry: {error}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err("import directories cannot contain symbolic links".into());
+            }
+            if metadata.is_dir() {
+                client
+                    .mk_dir(remote_path.clone())
+                    .await
+                    .map_err(|error| format!("unable to create device directory: {error:?}"))?;
+                transfer.directories_transferred += 1;
+                pending.push((entry.path(), remote_path, depth + 1));
+            } else if metadata.is_file() {
+                transfer.bytes_transferred +=
+                    upload_regular_file(client, &entry.path(), &remote_path).await?;
+                transfer.files_transferred += 1;
+            } else {
+                return Err("import source contains an unsupported entry type".into());
+            }
+        }
+    }
+    Ok(transfer)
+}
+
+async fn create_directory(
+    client: &mut AfcClient,
+    directory: &str,
+    name: &str,
+) -> Result<(), String> {
+    let directory = normalize_path(directory, true)?;
+    validate_name(name)?;
+    ensure_name_available(client, &directory, name).await?;
+    client
+        .mk_dir(join_path(&directory, name)?)
+        .await
+        .map_err(|error| format!("unable to create device directory: {error:?}"))
+}
+
+async fn rename_path(client: &mut AfcClient, path: &str, name: &str) -> Result<(), String> {
+    let path = normalize_path(path, false)?;
+    validate_name(name)?;
+    let parent = parent_path(&path);
+    ensure_name_available(client, &parent, name).await?;
+    client
+        .rename(path, join_path(&parent, name)?)
+        .await
+        .map_err(|error| format!("unable to rename device file: {error:?}"))
+}
+
+async fn delete_path(client: &mut AfcClient, path: &str) -> Result<(), String> {
+    let path = normalize_path(path, false)?;
+    client
+        .remove_all(path)
+        .await
+        .map_err(|error| format!("unable to delete device file: {error:?}"))
+}
+
+async fn ensure_name_available(
+    client: &mut AfcClient,
+    directory: &str,
+    name: &str,
+) -> Result<(), String> {
+    let entries = client
+        .list_dir(directory.to_owned())
+        .await
+        .map_err(|error| format!("unable to inspect device directory: {error:?}"))?;
+    if entries.iter().any(|entry| entry == name) {
+        Err("a device file with this name already exists".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn entry_from_info(name: String, path: String, info: &idevice::afc::FileInfo) -> DeviceFileEntry {
+    let kind = match info.st_ifmt.as_str() {
+        "S_IFREG" if info.st_link_target.is_none() => DeviceFileKind::File,
+        "S_IFDIR" if info.st_link_target.is_none() => DeviceFileKind::Directory,
+        _ => DeviceFileKind::Other,
+    };
+    DeviceFileEntry {
+        name,
+        path,
+        kind,
+        size_bytes: info.size as u64,
+        modified: info.modified.and_utc().to_rfc3339(),
+    }
+}
+
 async fn validate_export_destination(destination: &Path) -> Result<(), String> {
     if !destination.is_absolute() || destination.file_name().is_none() {
         return Err("export destination must be an absolute file path".into());
@@ -318,6 +712,17 @@ async fn validate_export_destination(destination: &Path) -> Result<(), String> {
         return Err("export destination parent is not a directory".into());
     }
     Ok(())
+}
+
+async fn validate_new_directory_destination(destination: &Path) -> Result<(), String> {
+    validate_export_destination(destination).await?;
+    match tokio::fs::symlink_metadata(destination).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err("directory export destination already exists".into()),
+        Err(error) => Err(format!(
+            "unable to inspect directory export destination: {error}"
+        )),
+    }
 }
 
 fn normalize_path(path: &str, allow_root: bool) -> Result<String, String> {
@@ -363,6 +768,13 @@ fn join_path(directory: &str, name: &str) -> Result<String, String> {
         },
         false,
     )
+}
+
+fn parent_path(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(parent, _)| if parent.is_empty() { "/" } else { parent })
+        .unwrap_or("/")
+        .to_owned()
 }
 
 fn kind_order(kind: DeviceFileKind) -> u8 {

@@ -324,7 +324,7 @@ pub enum InputCmd {
     BluetoothCapture(crate::bluetooth_capture::BluetoothCaptureCommand),
     /// Start or cancel a MobileBackup2 backup owned by the active session.
     DeviceBackup(crate::device_backup::DeviceBackupCommand),
-    /// Browse or export the device's read-only public AFC media container.
+    /// Manage the device's public AFC media container with bounded operations.
     DeviceFiles(crate::device_files::DeviceFileCommand),
     /// Apply or clear a DVT device-wide network/thermal condition.
     DeviceCondition(crate::device_conditions::DeviceConditionCommand),

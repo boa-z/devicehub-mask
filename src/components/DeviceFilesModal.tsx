@@ -1,14 +1,19 @@
 import {
   ArrowLeftOutlined,
+  DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
+  FileAddOutlined,
   FileOutlined,
+  FolderAddOutlined,
   FolderOpenOutlined,
   FolderOutlined,
   HomeOutlined,
   ReloadOutlined,
+  UploadOutlined,
 } from "@ant-design/icons";
-import { save } from "@tauri-apps/plugin-dialog";
-import { Alert, Breadcrumb, Button, Empty, Modal, Spin, Tooltip, Typography, message } from "antd";
+import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
+import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../deviceInspector";
@@ -86,8 +91,41 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
     ];
   }, [busy, path, t]);
 
-  const exportFile = async (entry: DeviceFileEntry) => {
-    if (entry.kind !== "file") return;
+  const mutate = async (operation: string, call: () => Promise<Response>, success: string, refresh = true) => {
+    const version = ++requestVersion.current;
+    setBusy(operation);
+    try {
+      const response = await call();
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      if (requestVersion.current === version) void message.success(success);
+      if (refresh && requestVersion.current === version) await load();
+      return true;
+    } catch (mutationError) {
+      if (requestVersion.current === version) {
+        void message.error(t("deviceInspector.deviceFileOperationFailed", { error: String(mutationError) }));
+      }
+      return false;
+    } finally {
+      if (requestVersion.current === version) setBusy(null);
+    }
+  };
+
+  const importPath = async (directory: boolean) => {
+    const source = await openDialog({ multiple: false, directory });
+    if (!source || Array.isArray(source)) return;
+    await mutate(
+      "import",
+      () => request("/api/device/files/import", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ directory: path, source }),
+      }),
+      t(directory ? "deviceInspector.deviceDirectoryImported" : "deviceInspector.deviceFileImported"),
+    );
+  };
+
+  const exportPath = async (entry: DeviceFileEntry) => {
+    if (entry.kind === "other") return;
     const destination = await save({ defaultPath: entry.name });
     if (!destination) return;
     const version = ++requestVersion.current;
@@ -99,9 +137,12 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
         body: JSON.stringify({ path: entry.path, destination }),
       });
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
-      const result = await response.json() as { bytes_written: number };
+      const result = await response.json() as { bytes_written: number; files_written: number };
       if (requestVersion.current === version) {
-        void message.success(t("deviceInspector.deviceFileExported", { size: formatFileSize(result.bytes_written) }));
+        void message.success(t("deviceInspector.deviceFileExported", {
+          size: formatFileSize(result.bytes_written),
+          count: result.files_written,
+        }));
       }
     } catch (exportError) {
       if (requestVersion.current === version) {
@@ -110,6 +151,73 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
     } finally {
       if (requestVersion.current === version) setBusy(null);
     }
+  };
+
+  const createDirectory = () => {
+    let name = "";
+    Modal.confirm({
+      title: t("deviceInspector.createDeviceDirectory"),
+      content: <Input autoFocus maxLength={255} placeholder={t("deviceInspector.deviceFileName")} onChange={(event) => { name = event.target.value; }} />,
+      okText: t("common.create"),
+      cancelText: t("common.cancel"),
+      async onOk() {
+        if (!name.trim()) throw new Error(t("deviceInspector.deviceFileNameRequired"));
+        const succeeded = await mutate(
+          "mkdir",
+          () => request("/api/device/files/directory", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ directory: path, name: name.trim() }),
+          }),
+          t("deviceInspector.deviceDirectoryCreated"),
+        );
+        if (!succeeded) throw new Error(t("deviceInspector.deviceFileOperationRetry"));
+      },
+    });
+  };
+
+  const rename = (entry: DeviceFileEntry) => {
+    let name = entry.name;
+    Modal.confirm({
+      title: t("deviceInspector.renameDeviceFile"),
+      content: <Input autoFocus defaultValue={entry.name} maxLength={255} onChange={(event) => { name = event.target.value; }} />,
+      okText: t("common.rename"),
+      cancelText: t("common.cancel"),
+      async onOk() {
+        if (!name.trim()) throw new Error(t("deviceInspector.deviceFileNameRequired"));
+        const succeeded = await mutate(
+          `rename:${entry.path}`,
+          () => request("/api/device/files/rename", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: entry.path, name: name.trim() }),
+          }),
+          t("deviceInspector.deviceFileRenamed"),
+        );
+        if (!succeeded) throw new Error(t("deviceInspector.deviceFileOperationRetry"));
+      },
+    });
+  };
+
+  const remove = (entry: DeviceFileEntry) => {
+    Modal.confirm({
+      title: t("deviceInspector.deleteDeviceFile"),
+      content: t(entry.kind === "directory"
+        ? "deviceInspector.deleteDeviceDirectoryConfirm"
+        : "deviceInspector.deleteDeviceFileConfirm", { name: entry.name }),
+      okText: t("common.delete"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        const query = new URLSearchParams({ path: entry.path });
+        const succeeded = await mutate(
+          `delete:${entry.path}`,
+          () => request(`/api/device/files?${query}`, { method: "DELETE" }),
+          t("deviceInspector.deviceFileDeleted"),
+        );
+        if (!succeeded) throw new Error(t("deviceInspector.deviceFileOperationRetry"));
+      },
+    });
   };
 
   return (
@@ -130,6 +238,21 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
           <Button icon={<ArrowLeftOutlined />} aria-label={t("common.back")} disabled={path === "/" || busy !== null} onClick={() => setPath(parentPath(path))} />
         </Tooltip>
         <Breadcrumb items={breadcrumbs} />
+        <Tooltip title={t("deviceInspector.createDeviceDirectory")}>
+          <Button icon={<FolderAddOutlined />} aria-label={t("deviceInspector.createDeviceDirectory")} disabled={busy !== null} onClick={createDirectory} />
+        </Tooltip>
+        <Dropdown
+          disabled={busy !== null}
+          menu={{
+            items: [
+              { key: "file", icon: <FileAddOutlined />, label: t("deviceInspector.importDeviceFile") },
+              { key: "directory", icon: <FolderAddOutlined />, label: t("deviceInspector.importDeviceDirectory") },
+            ],
+            onClick: ({ key }) => void importPath(key === "directory"),
+          }}
+        >
+          <Button icon={<UploadOutlined />} aria-label={t("deviceInspector.importDevicePath")} disabled={busy !== null} />
+        </Dropdown>
         <Tooltip title={t("deviceInspector.refreshDeviceFiles")}>
           <Button icon={<ReloadOutlined />} aria-label={t("deviceInspector.refreshDeviceFiles")} disabled={busy !== null} onClick={() => void load()} />
         </Tooltip>
@@ -154,9 +277,11 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
                 {entry.kind === "directory" && (
                   <Tooltip title={t("deviceInspector.openDeviceDirectory")}><Button size="small" icon={<FolderOpenOutlined />} aria-label={t("deviceInspector.openDeviceDirectory")} disabled={busy !== null} onClick={() => setPath(entry.path)} /></Tooltip>
                 )}
-                {entry.kind === "file" && (
-                  <Tooltip title={t("deviceInspector.exportDeviceFile")}><Button size="small" icon={<DownloadOutlined />} aria-label={t("deviceInspector.exportDeviceFile")} loading={busy === `export:${entry.path}`} disabled={busy !== null && busy !== `export:${entry.path}`} onClick={() => void exportFile(entry)} /></Tooltip>
+                {entry.kind !== "other" && (
+                  <Tooltip title={t("deviceInspector.exportDevicePath")}><Button size="small" icon={<DownloadOutlined />} aria-label={t("deviceInspector.exportDevicePath")} loading={busy === `export:${entry.path}`} disabled={busy !== null && busy !== `export:${entry.path}`} onClick={() => void exportPath(entry)} /></Tooltip>
                 )}
+                <Tooltip title={t("deviceInspector.renameDeviceFile")}><Button size="small" icon={<EditOutlined />} aria-label={t("deviceInspector.renameDeviceFile")} disabled={busy !== null || entry.kind === "other"} onClick={() => rename(entry)} /></Tooltip>
+                <Tooltip title={t("deviceInspector.deleteDeviceFile")}><Button size="small" danger icon={<DeleteOutlined />} aria-label={t("deviceInspector.deleteDeviceFile")} disabled={busy !== null || entry.kind === "other"} onClick={() => remove(entry)} /></Tooltip>
               </div>
             </div>
           ))}

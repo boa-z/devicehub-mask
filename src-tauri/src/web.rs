@@ -216,8 +216,17 @@ pub fn router(state: AppState, token: String) -> Router {
                 .put(set_device_location)
                 .delete(clear_device_location),
         )
-        .route("/api/device/files", get(device_files))
+        .route(
+            "/api/device/files",
+            get(device_files).delete(delete_device_file),
+        )
         .route("/api/device/files/export", put(export_device_file))
+        .route("/api/device/files/import", put(import_device_file))
+        .route(
+            "/api/device/files/directory",
+            put(create_device_file_directory),
+        )
+        .route("/api/device/files/rename", put(rename_device_file))
         .route("/api/device/apps", get(device_apps))
         .route("/api/device/apps/{bundle_id}/icon", get(device_app_icon))
         .route(
@@ -1554,6 +1563,24 @@ struct ExportDeviceFileRequest {
     destination: PathBuf,
 }
 
+#[derive(Deserialize)]
+struct ImportDeviceFileRequest {
+    directory: String,
+    source: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct CreateDeviceFileDirectoryRequest {
+    directory: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RenameDeviceFileRequest {
+    path: String,
+    name: String,
+}
+
 async fn device_files(
     State(state): State<AppState>,
     Query(query): Query<DeviceFileQuery>,
@@ -1584,8 +1611,80 @@ async fn export_device_file(
             reply,
         },
     )?;
-    let bytes_written = await_device_file_response(response, "device file export").await?;
-    Ok(Json(json!({ "bytes_written": bytes_written })))
+    let transfer = await_device_file_response(response, "device file export").await?;
+    Ok(Json(json!({
+        "bytes_written": transfer.bytes_transferred,
+        "files_written": transfer.files_transferred,
+        "directories_written": transfer.directories_transferred,
+    })))
+}
+
+async fn import_device_file(
+    State(state): State<AppState>,
+    Json(request): Json<ImportDeviceFileRequest>,
+) -> Result<Json<crate::device_files::DeviceFileEntry>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Import {
+            directory: request.directory,
+            source: request.source,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_device_file_response(response, "device file import").await?,
+    ))
+}
+
+async fn create_device_file_directory(
+    State(state): State<AppState>,
+    Json(request): Json<CreateDeviceFileDirectoryRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::CreateDirectory {
+            directory: request.directory,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_device_file_response(response, "device directory creation").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rename_device_file(
+    State(state): State<AppState>,
+    Json(request): Json<RenameDeviceFileRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Rename {
+            path: request.path,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_device_file_response(response, "device file rename").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_device_file(
+    State(state): State<AppState>,
+    Query(query): Query<DeviceFileQuery>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Delete {
+            path: query.path,
+            reply,
+        },
+    )?;
+    await_device_file_response(response, "device file deletion").await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn dispatch_device_file_command(
@@ -1621,10 +1720,16 @@ async fn await_device_file_response<T>(
             )
         })?
         .map_err(|error| {
-            let status = if error.starts_with("invalid ")
+            let status = if error.contains("already exists") {
+                StatusCode::CONFLICT
+            } else if error.starts_with("invalid ")
                 || error.contains("cannot be exported")
+                || error.contains("cannot be modified")
                 || error.contains("only regular device files")
                 || error.contains("destination")
+                || error.contains("import source")
+                || error.contains("symbolic link")
+                || error.contains("unsupported")
             {
                 StatusCode::BAD_REQUEST
             } else {
@@ -4243,8 +4348,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_file_endpoints_dispatch_read_only_commands() {
-        use crate::device_files::{DeviceFileCommand, DeviceFileList};
+    async fn device_file_endpoints_dispatch_typed_commands() {
+        use crate::device_files::{
+            DeviceFileCommand, DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer,
+        };
 
         let (state, mut input_rx) = test_state();
         let list = tokio::spawn(device_files(
@@ -4269,7 +4376,7 @@ mod tests {
         assert_eq!(list.await.unwrap().unwrap().0.path, "/DCIM");
 
         let export = tokio::spawn(export_device_file(
-            State(state),
+            State(state.clone()),
             Json(ExportDeviceFileRequest {
                 path: "/DCIM/100APPLE/IMG_0001.HEIC".into(),
                 destination: std::env::temp_dir().join("photo.heic"),
@@ -4283,14 +4390,102 @@ mod tests {
             }) => {
                 assert_eq!(path, "/DCIM/100APPLE/IMG_0001.HEIC");
                 assert_eq!(destination, std::env::temp_dir().join("photo.heic"));
-                reply.send(Ok(42)).unwrap();
+                reply
+                    .send(Ok(DeviceFileTransfer {
+                        bytes_transferred: 42,
+                        files_transferred: 1,
+                        directories_transferred: 0,
+                    }))
+                    .unwrap();
             }
             _ => panic!("unexpected command"),
         }
         assert_eq!(
             export.await.unwrap().unwrap().0,
-            json!({ "bytes_written": 42 })
+            json!({ "bytes_written": 42, "files_written": 1, "directories_written": 0 })
         );
+
+        let import = tokio::spawn(import_device_file(
+            State(state.clone()),
+            Json(ImportDeviceFileRequest {
+                directory: "/Downloads".into(),
+                source: PathBuf::from("archive.zip"),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Import {
+                directory,
+                source,
+                reply,
+            }) => {
+                assert_eq!(directory, "/Downloads");
+                assert_eq!(source, PathBuf::from("archive.zip"));
+                reply
+                    .send(Ok(DeviceFileEntry {
+                        name: "archive.zip".into(),
+                        path: "/Downloads/archive.zip".into(),
+                        kind: DeviceFileKind::File,
+                        size_bytes: 42,
+                        modified: "2026-07-24T00:00:00Z".into(),
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(import.await.unwrap().unwrap().0.size_bytes, 42);
+
+        let create = tokio::spawn(create_device_file_directory(
+            State(state.clone()),
+            Json(CreateDeviceFileDirectoryRequest {
+                directory: "/".into(),
+                name: "Shared".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::CreateDirectory {
+                directory,
+                name,
+                reply,
+            }) => {
+                assert_eq!(directory, "/");
+                assert_eq!(name, "Shared");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(create.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let rename = tokio::spawn(rename_device_file(
+            State(state.clone()),
+            Json(RenameDeviceFileRequest {
+                path: "/Downloads/archive.zip".into(),
+                name: "backup.zip".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Rename { path, name, reply }) => {
+                assert_eq!(path, "/Downloads/archive.zip");
+                assert_eq!(name, "backup.zip");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(rename.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let delete = tokio::spawn(delete_device_file(
+            State(state),
+            Query(DeviceFileQuery {
+                path: "/Downloads/backup.zip".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Delete { path, reply }) => {
+                assert_eq!(path, "/Downloads/backup.zip");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(delete.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

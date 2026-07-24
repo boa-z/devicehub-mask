@@ -142,7 +142,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-app-actions { width: 80px; display: grid; grid-template-columns: repeat(3, 24px); justify-content: end; gap: 4px; }
 .app-documents-modal .ant-modal-body { min-height: min(520px, 70vh); display: flex; flex-direction: column; gap: 10px; }
 .app-documents-toolbar { display: grid; grid-template-columns: 32px minmax(0, 1fr) repeat(3, 32px); align-items: center; gap: 6px; }
-.app-documents-toolbar.device-files-toolbar { grid-template-columns: 32px minmax(0, 1fr) 32px; }
+.app-documents-toolbar.device-files-toolbar { grid-template-columns: 32px minmax(0, 1fr) repeat(3, 32px); }
 .app-documents-toolbar > .ant-btn { width: 32px; padding-inline: 0; }
 .app-documents-toolbar .ant-breadcrumb { min-width: 0; overflow: hidden; }
 .app-documents-toolbar .ant-breadcrumb ol { flex-wrap: nowrap; }
