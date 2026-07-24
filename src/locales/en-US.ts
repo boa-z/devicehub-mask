@@ -217,6 +217,7 @@ export const enUS = {
       "performance.energy": "Energy monitor",
       "performance.app_activity": "App activity monitor",
       "performance.process_inventory": "Process inventory",
+      "device.app_lifecycle": "App lifecycle",
       "network.capture": "Packet capture",
       "bluetooth.capture": "Bluetooth HCI capture",
       "device.sysdiagnose": "System diagnostics",

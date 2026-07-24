@@ -319,10 +319,10 @@ pub enum InputCmd {
     ),
     /// Read normalized, ordinal home-screen app locations through SpringBoardServices.
     GetHomeScreenLayout(oneshot::Sender<Result<crate::home_screen::HomeScreenLayout, String>>),
-    /// Read a bounded running-process inventory through DVT DeviceInfo.
-    ListRunningProcesses(
-        oneshot::Sender<Result<crate::running_processes::RunningProcessList, String>>,
-    ),
+    /// Execute a bounded, read-only DVT DeviceInfo process query.
+    RunningProcess(crate::running_processes::RunningProcessCommand),
+    /// Execute a bounded, bundle-aware CoreDevice application lifecycle query.
+    AppLifecycle(crate::app_lifecycle::AppLifecycleCommand),
     /// Perform bounded, on-demand semantic automation through WebDriverAgent.
     WdaAutomation(crate::wda_automation::WdaAutomationCommand),
     /// Manage one installed WebDriverAgent XCTest runner for the active session.

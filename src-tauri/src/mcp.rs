@@ -46,6 +46,10 @@ const GRID_LABEL_EVERY: u32 = 2;
 const DEVICE_WAIT: Duration = Duration::from_secs(20);
 const DEVICE_DETAILS_WAIT: Duration = Duration::from_secs(8);
 const DEVICE_EVENT_WAIT_MAX: Duration = Duration::from_secs(30);
+const PROCESS_WAIT_DEFAULT: Duration = Duration::from_secs(5);
+const PROCESS_WAIT_MAX: Duration = Duration::from_secs(10);
+const APP_STATE_WAIT_DEFAULT: Duration = Duration::from_secs(5);
+const APP_STATE_WAIT_MAX: Duration = Duration::from_secs(10);
 const LOCATION_WAIT: Duration = Duration::from_secs(10);
 const CLIPBOARD_WAIT: Duration = Duration::from_secs(10);
 const APP_WAIT: Duration = Duration::from_secs(15);
@@ -193,6 +197,52 @@ struct DeviceEventParams {
     /// When omitted, wait only for an event occurring after this call starts.
     after_sequence: Option<u64>,
     /// Maximum wait in milliseconds. Defaults to 10000 and is clamped to 0..30000.
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RunningProcessWaitState {
+    Running,
+    Stopped,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RunningProcessParams {
+    /// PID obtained from list_processes or another current device snapshot. Must be greater than zero.
+    pid: u32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RunningProcessWaitParams {
+    /// PID obtained from list_processes or another current device snapshot. Must be greater than zero.
+    pid: u32,
+    /// Process state to wait for.
+    state: RunningProcessWaitState,
+    /// Maximum polling time in milliseconds. Defaults to 5000 and cannot exceed 10000. Zero checks once.
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum AppWaitState {
+    Running,
+    Stopped,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct AppStatusParams {
+    /// Exact bundle identifier returned by list_apps.
+    bundle_id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct AppWaitParams {
+    /// Exact bundle identifier returned by list_apps.
+    bundle_id: String,
+    /// Application state to wait for.
+    state: AppWaitState,
+    /// Maximum polling time in milliseconds. Defaults to 5000 and cannot exceed 10000. Zero checks once.
     timeout_ms: Option<u64>,
 }
 
@@ -365,9 +415,13 @@ fn valid_bundle_identifier(bundle_id: &str) -> bool {
     !bundle_id.is_empty()
         && bundle_id.len() <= 255
         && bundle_id.contains('.')
-        && bundle_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        && bundle_id.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 fn validate_touch_count(count: usize) -> Result<(), McpError> {
@@ -378,6 +432,17 @@ fn validate_touch_count(count: usize) -> Result<(), McpError> {
             "contacts must contain between one and five touch paths",
             None,
         ))
+    }
+}
+
+fn validate_process_pid(pid: u32) -> Result<(), McpError> {
+    if pid == 0 {
+        Err(McpError::invalid_params(
+            "process PID must be greater than zero",
+            None,
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -1238,7 +1303,9 @@ impl DeviceHub {
     )]
     async fn list_processes(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
-        self.send(InputCmd::ListRunningProcesses(reply))?;
+        self.send(InputCmd::RunningProcess(
+            crate::running_processes::RunningProcessCommand::List { reply },
+        ))?;
         let list = tokio::time::timeout(APP_WAIT, response)
             .await
             .map_err(|_| McpError::internal_error("running process request timed out", None))?
@@ -1247,6 +1314,164 @@ impl DeviceHub {
         ok_text(serde_json::to_string(&list).map_err(|error| {
             McpError::internal_error(
                 format!("unable to serialize running process inventory: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Check whether one positive PID from a current device snapshot is still running through DVT DeviceInfo. Returns only the PID, running state, and a bounded executable name when available; it does not inspect process memory."
+    )]
+    async fn process_status(
+        &self,
+        Parameters(params): Parameters<RunningProcessParams>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_process_pid(params.pid)?;
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::RunningProcess(
+            crate::running_processes::RunningProcessCommand::Inspect {
+                pid: params.pid,
+                reply,
+            },
+        ))?;
+        let status = tokio::time::timeout(APP_WAIT + Duration::from_secs(1), response)
+            .await
+            .map_err(|_| {
+                McpError::internal_error("running process status request timed out", None)
+            })?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&status).map_err(|error| {
+            McpError::internal_error(
+                format!("unable to serialize running process status: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Wait on the device for one positive PID from a current process snapshot to become running or stopped. Polling stays inside one bounded DVT DeviceInfo channel, defaults to five seconds, accepts at most ten seconds, and never terminates a process. PID reuse is possible, so use this only for short waits after a fresh snapshot."
+    )]
+    async fn wait_for_process(
+        &self,
+        Parameters(params): Parameters<RunningProcessWaitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_process_pid(params.pid)?;
+        let timeout = Duration::from_millis(
+            params
+                .timeout_ms
+                .unwrap_or(PROCESS_WAIT_DEFAULT.as_millis() as u64),
+        );
+        if timeout > PROCESS_WAIT_MAX {
+            return Err(McpError::invalid_params(
+                format!(
+                    "process wait cannot exceed {} milliseconds",
+                    PROCESS_WAIT_MAX.as_millis()
+                ),
+                None,
+            ));
+        }
+        let expected_running = matches!(params.state, RunningProcessWaitState::Running);
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::RunningProcess(
+            crate::running_processes::RunningProcessCommand::Wait {
+                pid: params.pid,
+                expected_running,
+                timeout_ms: timeout.as_millis() as u64,
+                reply,
+            },
+        ))?;
+        let result = tokio::time::timeout(APP_WAIT + timeout, response)
+            .await
+            .map_err(|_| McpError::internal_error("running process wait timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&result).map_err(|error| {
+            McpError::internal_error(
+                format!("unable to serialize running process wait: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Check whether one exact bundle identifier returned by list_apps is installed and whether its main application process is running. Uses an isolated CoreDevice AppService channel and returns no bundle path or process metadata."
+    )]
+    async fn app_status(
+        &self,
+        Parameters(params): Parameters<AppStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if !valid_bundle_identifier(&params.bundle_id) {
+            return Err(McpError::invalid_params(
+                "invalid application bundle identifier",
+                None,
+            ));
+        }
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::AppLifecycle(
+            crate::app_lifecycle::AppLifecycleCommand::Inspect {
+                bundle_id: params.bundle_id,
+                reply,
+            },
+        ))?;
+        let status = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("application status request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&status).map_err(|error| {
+            McpError::internal_error(
+                format!("unable to serialize application status: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Wait for one exact bundle identifier returned by list_apps to become running or stopped. Polling stays inside one isolated CoreDevice AppService channel, defaults to five seconds, accepts at most ten seconds, and never launches or terminates an app. An app that is not installed is reported explicitly and satisfies stopped."
+    )]
+    async fn wait_for_app(
+        &self,
+        Parameters(params): Parameters<AppWaitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if !valid_bundle_identifier(&params.bundle_id) {
+            return Err(McpError::invalid_params(
+                "invalid application bundle identifier",
+                None,
+            ));
+        }
+        let timeout = Duration::from_millis(
+            params
+                .timeout_ms
+                .unwrap_or(APP_STATE_WAIT_DEFAULT.as_millis() as u64),
+        );
+        if timeout > APP_STATE_WAIT_MAX {
+            return Err(McpError::invalid_params(
+                format!(
+                    "application wait cannot exceed {} milliseconds",
+                    APP_STATE_WAIT_MAX.as_millis()
+                ),
+                None,
+            ));
+        }
+        let expected_running = matches!(params.state, AppWaitState::Running);
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::AppLifecycle(
+            crate::app_lifecycle::AppLifecycleCommand::Wait {
+                bundle_id: params.bundle_id,
+                expected_running,
+                timeout_ms: timeout.as_millis() as u64,
+                reply,
+            },
+        ))?;
+        let result = tokio::time::timeout(APP_WAIT + timeout + Duration::from_secs(1), response)
+            .await
+            .map_err(|_| McpError::internal_error("application state wait timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&result).map_err(|error| {
+            McpError::internal_error(
+                format!("unable to serialize application state wait: {error}"),
                 None,
             )
         })?)
@@ -2340,7 +2565,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_device_state, wda_ui_tree, wda_find_elements, wda_inspect_element, wda_wait_for_element, wda_click, wda_type_text, wda_double_tap, wda_touch_and_hold, and wda_scroll. WDA element rectangles use the logical coordinate space reported by wda_device_state, not screenshot pixels. Inspect a match before acting when visibility, enabled, or selected state matters, and use wda_wait_for_element instead of repeatedly polling for presence, visibility, enabled, or selected state. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes, performance_snapshot, and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_device_state, wda_ui_tree, wda_find_elements, wda_inspect_element, wda_wait_for_element, wda_click, wda_type_text, wda_double_tap, wda_touch_and_hold, and wda_scroll. WDA element rectangles use the logical coordinate space reported by wda_device_state, not screenshot pixels. Inspect a match before acting when visibility, enabled, or selected state matters, and use wda_wait_for_element instead of repeatedly polling for presence, visibility, enabled, or selected state. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, then app_status or wait_for_app for bundle-aware lifecycle checks. Use home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes for a current PID snapshot, then process_status or wait_for_process only when PID-level diagnosis is required. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -2489,6 +2714,10 @@ mod tests {
             "list_companion_devices",
             "home_screen_layout",
             "list_processes",
+            "process_status",
+            "wait_for_process",
+            "app_status",
+            "wait_for_app",
             "wda_runner_status",
             "wda_start",
             "wda_stop",
@@ -2543,6 +2772,7 @@ mod tests {
         assert!(validate_touch_count(0).is_err());
         assert!(validate_touch_count(6).is_err());
         assert!(valid_bundle_identifier("com.example.game"));
+        assert!(!valid_bundle_identifier("com..game"));
         assert!(!valid_bundle_identifier("invalid bundle"));
     }
 
@@ -2710,7 +2940,10 @@ mod tests {
             control,
         );
         let task = tokio::spawn(async move { hub.list_processes().await.unwrap() });
-        let InputCmd::ListRunningProcesses(reply) = input_rx.recv().await.unwrap() else {
+        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::List {
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
             panic!("expected running process command");
         };
         reply
@@ -2733,6 +2966,220 @@ mod tests {
         assert!(text.contains("Example App"));
         assert!(text.contains(r#""pid":42"#));
         assert!(text.contains(r#""truncated":false"#));
+    }
+
+    #[tokio::test]
+    async fn process_status_tools_dispatch_bounded_dvt_queries() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+
+        let status_hub = hub.clone();
+        let status_task = tokio::spawn(async move {
+            status_hub
+                .process_status(Parameters(RunningProcessParams { pid: 42 }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::Inspect {
+            pid,
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected process status command");
+        };
+        assert_eq!(pid, 42);
+        reply
+            .send(Ok(crate::running_processes::RunningProcessStatus {
+                pid,
+                running: true,
+                executable_name: Some("Example".into()),
+            }))
+            .unwrap();
+        assert!(status_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""running":true"#)
+                    && text.text.contains(r#""executable_name":"Example""#)
+            })
+        }));
+
+        assert!(
+            hub.wait_for_process(Parameters(RunningProcessWaitParams {
+                pid: 42,
+                state: RunningProcessWaitState::Stopped,
+                timeout_ms: Some(10_001),
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.process_status(Parameters(RunningProcessParams { pid: 0 }))
+                .await
+                .is_err()
+        );
+
+        let wait_task = tokio::spawn(async move {
+            hub.wait_for_process(Parameters(RunningProcessWaitParams {
+                pid: 42,
+                state: RunningProcessWaitState::Stopped,
+                timeout_ms: Some(500),
+            }))
+            .await
+            .unwrap()
+        });
+        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::Wait {
+            pid,
+            expected_running,
+            timeout_ms,
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected process wait command");
+        };
+        assert_eq!(pid, 42);
+        assert!(!expected_running);
+        assert_eq!(timeout_ms, 500);
+        reply
+            .send(Ok(crate::running_processes::RunningProcessWaitResult {
+                condition_met: true,
+                expected_running,
+                elapsed_ms: 250,
+                process: crate::running_processes::RunningProcessStatus {
+                    pid,
+                    running: false,
+                    executable_name: None,
+                },
+            }))
+            .unwrap();
+        assert!(wait_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""condition_met":true"#)
+                    && text.text.contains(r#""expected_running":false"#)
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn app_status_tools_dispatch_bounded_bundle_queries() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+
+        let status_hub = hub.clone();
+        let status_task = tokio::spawn(async move {
+            status_hub
+                .app_status(Parameters(AppStatusParams {
+                    bundle_id: "com.example.game".into(),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::AppLifecycle(crate::app_lifecycle::AppLifecycleCommand::Inspect {
+            bundle_id,
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected application status command");
+        };
+        assert_eq!(bundle_id, "com.example.game");
+        reply
+            .send(Ok(crate::app_lifecycle::AppLifecycleStatus {
+                bundle_id,
+                installed: true,
+                running: true,
+            }))
+            .unwrap();
+        assert!(status_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""installed":true"#) && text.text.contains(r#""running":true"#)
+            })
+        }));
+
+        assert!(
+            hub.app_status(Parameters(AppStatusParams {
+                bundle_id: "com..game".into(),
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.wait_for_app(Parameters(AppWaitParams {
+                bundle_id: "com.example.game".into(),
+                state: AppWaitState::Stopped,
+                timeout_ms: Some(10_001),
+            }))
+            .await
+            .is_err()
+        );
+        assert!(input_rx.try_recv().is_err());
+
+        let wait_task = tokio::spawn(async move {
+            hub.wait_for_app(Parameters(AppWaitParams {
+                bundle_id: "com.example.game".into(),
+                state: AppWaitState::Stopped,
+                timeout_ms: Some(500),
+            }))
+            .await
+            .unwrap()
+        });
+        let InputCmd::AppLifecycle(crate::app_lifecycle::AppLifecycleCommand::Wait {
+            bundle_id,
+            expected_running,
+            timeout_ms,
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected application wait command");
+        };
+        assert_eq!(bundle_id, "com.example.game");
+        assert!(!expected_running);
+        assert_eq!(timeout_ms, 500);
+        reply
+            .send(Ok(crate::app_lifecycle::AppLifecycleWaitResult {
+                condition_met: true,
+                expected_running,
+                elapsed_ms: 250,
+                app: crate::app_lifecycle::AppLifecycleStatus {
+                    bundle_id,
+                    installed: true,
+                    running: false,
+                },
+            }))
+            .unwrap();
+        assert!(wait_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""condition_met":true"#)
+                    && text.text.contains(r#""expected_running":false"#)
+            })
+        }));
     }
 
     #[tokio::test]

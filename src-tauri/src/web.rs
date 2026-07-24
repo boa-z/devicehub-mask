@@ -396,7 +396,9 @@ async fn running_processes(
     State(state): State<AppState>,
 ) -> Result<Json<crate::running_processes::RunningProcessList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::ListRunningProcesses(reply)) {
+    if !state.input.try_send(InputCmd::RunningProcess(
+        crate::running_processes::RunningProcessCommand::List { reply },
+    )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -4941,7 +4943,10 @@ mod tests {
     async fn running_process_endpoint_dispatches_a_bounded_read_only_query() {
         let (state, mut input_rx) = test_state();
         let request = tokio::spawn(running_processes(State(state)));
-        let InputCmd::ListRunningProcesses(reply) = input_rx.recv().await.unwrap() else {
+        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::List {
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
             panic!("expected running process query");
         };
         reply

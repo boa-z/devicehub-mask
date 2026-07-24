@@ -1,6 +1,7 @@
 mod app_console;
 mod app_documents;
 mod app_icons;
+mod app_lifecycle;
 mod application;
 mod audio_output;
 mod bluetooth_capture;

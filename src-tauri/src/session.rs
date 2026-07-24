@@ -1928,6 +1928,14 @@ async fn run(
         supervisor.reporter("performance.process_inventory"),
         supervisor.shutdown_receiver(),
     ));
+    let (app_lifecycle_sender, app_lifecycle_receiver) = tokio::sync::mpsc::channel(2);
+    supervisor.spawn(crate::app_lifecycle::serve(
+        adapter.clone(),
+        handshake.clone(),
+        app_lifecycle_receiver,
+        supervisor.reporter("device.app_lifecycle"),
+        supervisor.shutdown_receiver(),
+    ));
     let (wda_sender, wda_receiver) = tokio::sync::mpsc::channel(4);
     supervisor.spawn(crate::wda_automation::serve(
         provider.clone(),
@@ -2071,6 +2079,7 @@ async fn run(
         companions: companion_sender,
         home_screen: home_screen_sender,
         running_processes: running_process_sender,
+        app_lifecycle: app_lifecycle_sender,
         wda: wda_sender,
         wda_runner: wda_runner_sender,
         app_console: app_console_sender,
@@ -2112,6 +2121,10 @@ async fn run(
                     views.app_operation.clone(),
                     device_details,
                     installation_proxy,
+                    AppServiceTransport {
+                        adapter: adapter.clone(),
+                        handshake: handshake.clone(),
+                    },
                     device_management_services,
                 ),
                 &mut input_rx,
@@ -2286,6 +2299,8 @@ async fn run(
         Ok::<(), String>(())
     };
 
+    let management_app_adapter = adapter.clone();
+    let management_app_handshake = handshake.clone();
     tokio::select! {
         _ = video_task(
             video_udp.clone(),
@@ -2330,6 +2345,10 @@ async fn run(
                 device_details,
                 app_service,
                 installation_proxy,
+                AppServiceTransport {
+                    adapter: management_app_adapter,
+                    handshake: management_app_handshake,
+                },
                 device_management_services,
             ),
             &mut input_rx,
@@ -2467,6 +2486,7 @@ struct DeviceManagementServices {
     companions: tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
     home_screen: tokio::sync::mpsc::Sender<crate::home_screen::HomeScreenCommand>,
     running_processes: tokio::sync::mpsc::Sender<crate::running_processes::RunningProcessCommand>,
+    app_lifecycle: tokio::sync::mpsc::Sender<crate::app_lifecycle::AppLifecycleCommand>,
     wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
     wda_runner: tokio::sync::mpsc::Sender<crate::wda_runner::WdaRunnerCommand>,
     app_console: tokio::sync::mpsc::Sender<crate::app_console::AppConsoleCommand>,
@@ -2678,7 +2698,13 @@ struct DeviceManagement {
     details: Option<DeviceDetails>,
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
+    app_service_transport: AppServiceTransport,
     services: DeviceManagementServices,
+}
+
+struct AppServiceTransport {
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
 }
 
 struct ActiveAppOperation {
@@ -2704,6 +2730,7 @@ impl DeviceManagement {
         details: Option<DeviceDetails>,
         app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
         installation_proxy: Option<InstallationProxyClient>,
+        app_service_transport: AppServiceTransport,
         services: DeviceManagementServices,
     ) -> Self {
         Self {
@@ -2714,6 +2741,7 @@ impl DeviceManagement {
             details,
             app_service,
             installation_proxy,
+            app_service_transport,
             services,
         }
     }
@@ -2723,6 +2751,7 @@ impl DeviceManagement {
         app_operation: AppOperationSlot,
         details: Option<DeviceDetails>,
         installation_proxy: Option<InstallationProxyClient>,
+        app_service_transport: AppServiceTransport,
         services: DeviceManagementServices,
     ) -> Self {
         Self::new(
@@ -2731,8 +2760,60 @@ impl DeviceManagement {
             details,
             None,
             installation_proxy,
+            app_service_transport,
             services,
         )
+    }
+
+    async fn reconnect_app_clients(&mut self) -> Result<(), String> {
+        self.app_service.take();
+        self.installation_proxy.take();
+        let mut adapter = self.app_service_transport.adapter.clone();
+        let mut handshake = self.app_service_transport.handshake.clone();
+        let provider = self.provider.clone();
+        let (app_service, installation_proxy) = tokio::join!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                AppServiceClient::connect_rsd(&mut adapter, &mut handshake),
+            ),
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                InstallationProxyClient::connect(&*provider),
+            ),
+        );
+        let mut errors = Vec::new();
+        match app_service {
+            Ok(Ok(client)) => self.app_service = Some(client),
+            Ok(Err(error)) => errors.push(format!("CoreDevice AppService: {error:?}")),
+            Err(_) => errors.push("CoreDevice AppService connection timed out".into()),
+        }
+        match installation_proxy {
+            Ok(Ok(client)) => self.installation_proxy = Some(client),
+            Ok(Err(error)) => errors.push(format!("InstallationProxy: {error:?}")),
+            Err(_) => errors.push("InstallationProxy connection timed out".into()),
+        }
+        if self.app_service.is_some() || self.installation_proxy.is_some() {
+            if !errors.is_empty() {
+                tracing::debug!(errors = ?errors, "some app listing services remain unavailable after reconnect");
+            }
+            Ok(())
+        } else {
+            Err(format!(
+                "unable to reconnect app listing services: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
+    async fn ensure_app_service(&mut self) -> Result<(), String> {
+        if self.app_service.is_some() {
+            return Ok(());
+        }
+        self.reconnect_app_clients().await?;
+        self.app_service
+            .is_some()
+            .then_some(())
+            .ok_or_else(|| "CoreDevice AppService is unavailable after reconnect".to_string())
     }
 
     fn clear_finished_operation(&mut self) {
@@ -2961,13 +3042,41 @@ impl DeviceManagement {
                 include_app_clips,
                 reply,
             } => {
-                let result = list_device_apps(
+                let first = list_device_apps(
                     self.app_service.as_mut(),
                     self.installation_proxy.as_mut(),
                     include_system,
                     include_app_clips,
+                    false,
                 )
                 .await;
+                let result = match first {
+                    Ok(apps) => Ok(apps),
+                    Err(first_error) => {
+                        tracing::warn!(
+                            error = %first_error,
+                            "app listing failed; reconnecting read-only services once"
+                        );
+                        match self.reconnect_app_clients().await {
+                            Ok(()) => list_device_apps(
+                                self.app_service.as_mut(),
+                                self.installation_proxy.as_mut(),
+                                include_system,
+                                include_app_clips,
+                                true,
+                            )
+                            .await
+                            .map_err(|retry_error| {
+                                format!(
+                                    "{retry_error} (initial app listing failure: {first_error})"
+                                )
+                            }),
+                            Err(reconnect_error) => {
+                                Err(format!("{first_error}; {reconnect_error}"))
+                            }
+                        }
+                    }
+                };
                 let _ = reply.send(result);
                 None
             }
@@ -3006,8 +3115,7 @@ impl DeviceManagement {
                 }
                 None
             }
-            InputCmd::ListRunningProcesses(reply) => {
-                let command = crate::running_processes::RunningProcessCommand::List { reply };
+            InputCmd::RunningProcess(command) => {
                 if let Err(error) = self.services.running_processes.try_send(command) {
                     let (reason, command) = match error {
                         tokio::sync::mpsc::error::TrySendError::Full(command) => {
@@ -3017,8 +3125,21 @@ impl DeviceManagement {
                             ("running process service is unavailable", command)
                         }
                     };
-                    let crate::running_processes::RunningProcessCommand::List { reply } = command;
-                    let _ = reply.send(Err(reason.into()));
+                    command.reject(reason);
+                }
+                None
+            }
+            InputCmd::AppLifecycle(command) => {
+                if let Err(error) = self.services.app_lifecycle.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("application lifecycle service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("application lifecycle service is unavailable", command)
+                        }
+                    };
+                    command.reject(reason);
                 }
                 None
             }
@@ -3247,22 +3368,37 @@ impl DeviceManagement {
                 None
             }
             InputCmd::LaunchApp { bundle_id, reply } => {
-                let result = match self.app_service.as_mut() {
-                    Some(client) => client
+                let result = match self.ensure_app_service().await {
+                    Ok(()) => self
+                        .app_service
+                        .as_mut()
+                        .expect("AppService was ensured")
                         .launch_application(bundle_id, &[], true, false, None, None, None)
                         .await
                         .map(|_| ())
                         .map_err(|error| format!("unable to launch app: {error:?}")),
-                    None => Err("app launch requires the CoreDevice AppService".to_string()),
+                    Err(error) => Err(format!("app launch requires AppService: {error}")),
                 };
+                if result.is_err() {
+                    self.app_service.take();
+                }
                 let _ = reply.send(result);
                 None
             }
             InputCmd::StopApp { bundle_id, reply } => {
-                let result = match self.app_service.as_mut() {
-                    Some(client) => stop_device_app(client, &bundle_id).await,
-                    None => Err("app stop requires the CoreDevice AppService".to_string()),
+                let result = match self.ensure_app_service().await {
+                    Ok(()) => {
+                        stop_device_app(
+                            self.app_service.as_mut().expect("AppService was ensured"),
+                            &bundle_id,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(format!("app stop requires AppService: {error}")),
                 };
+                if result.is_err() {
+                    self.app_service.take();
+                }
                 let _ = reply.send(result);
                 None
             }
@@ -3557,6 +3693,7 @@ async fn list_device_apps(
     mut installation_proxy: Option<&mut InstallationProxyClient>,
     include_system: bool,
     include_app_clips: bool,
+    allow_fallback_after_app_service_error: bool,
 ) -> Result<Vec<DeviceApp>, String> {
     if let Some(client) = app_service {
         match client
@@ -3620,7 +3757,7 @@ async fn list_device_apps(
                                 is_running: processes.as_ref().map(|processes| {
                                     processes.iter().any(|process| {
                                         process.executable_url.as_ref().is_some_and(|executable| {
-                                            process_executable_belongs_to_app(
+                                            crate::app_lifecycle::process_executable_belongs_to_app(
                                                 &entry.path,
                                                 &executable.relative,
                                             )
@@ -3648,6 +3785,9 @@ async fn list_device_apps(
                 ));
             }
             Err(error) => {
+                if !allow_fallback_after_app_service_error {
+                    return Err(format!("CoreDevice AppService list failed: {error:?}"));
+                }
                 if let Some(scope) = extended_app_scope(include_system, include_app_clips) {
                     return Err(format!(
                         "{scope} listing requires CoreDevice AppService: {error:?}"
@@ -3840,21 +3980,6 @@ fn installation_supports_documents(value: &plist::Value) -> bool {
     })
 }
 
-fn normalized_app_path(path: &str) -> &str {
-    path.strip_prefix("file://localhost")
-        .or_else(|| path.strip_prefix("file://"))
-        .unwrap_or(path)
-        .trim_end_matches('/')
-}
-
-fn process_executable_belongs_to_app(app_path: &str, executable_path: &str) -> bool {
-    let app_path = normalized_app_path(app_path);
-    let executable_path = normalized_app_path(executable_path);
-    executable_path
-        .rsplit_once('/')
-        .is_some_and(|(parent, executable)| parent == app_path && !executable.is_empty())
-}
-
 async fn stop_device_app(
     client: &mut AppServiceClient<Box<dyn ReadWrite>>,
     bundle_id: &str,
@@ -3875,7 +4000,10 @@ async fn stop_device_app(
         .into_iter()
         .filter(|process| {
             process.executable_url.as_ref().is_some_and(|executable| {
-                process_executable_belongs_to_app(&app.path, &executable.relative)
+                crate::app_lifecycle::process_executable_belongs_to_app(
+                    &app.path,
+                    &executable.relative,
+                )
             })
         })
         .map(|process| process.pid)
@@ -4446,7 +4574,8 @@ async fn dispatch(
         | InputCmd::ListApps { .. }
         | InputCmd::ListCompanionDevices(_)
         | InputCmd::GetHomeScreenLayout(_)
-        | InputCmd::ListRunningProcesses(_)
+        | InputCmd::RunningProcess(_)
+        | InputCmd::AppLifecycle(_)
         | InputCmd::WdaAutomation(_)
         | InputCmd::WdaRunner(_)
         | InputCmd::AppConsole(_)
@@ -6770,11 +6899,15 @@ mod tests {
     #[tokio::test]
     async fn extended_app_scopes_require_coredevice_app_service() {
         assert_eq!(
-            list_device_apps(None, None, false, true).await.unwrap_err(),
+            list_device_apps(None, None, false, true, true)
+                .await
+                .unwrap_err(),
             "App Clip listing requires CoreDevice AppService, but it is unavailable"
         );
         assert_eq!(
-            list_device_apps(None, None, true, true).await.unwrap_err(),
+            list_device_apps(None, None, true, true, true)
+                .await
+                .unwrap_err(),
             "system app and App Clip listing requires CoreDevice AppService, but it is unavailable"
         );
     }
@@ -6877,26 +7010,5 @@ mod tests {
             plist::Value::String("17.0 beta".into()),
         )]));
         assert_eq!(app_minimum_os_version(&invalid), None);
-    }
-
-    #[test]
-    fn matches_only_an_apps_main_executable() {
-        let app = "/private/var/containers/Bundle/Application/UUID/Example.app/";
-        assert!(process_executable_belongs_to_app(
-            app,
-            "file:///private/var/containers/Bundle/Application/UUID/Example.app/Example"
-        ));
-        assert!(process_executable_belongs_to_app(
-            "file://localhost/private/var/containers/Bundle/Application/UUID/Example.app",
-            "/private/var/containers/Bundle/Application/UUID/Example.app/Example"
-        ));
-        assert!(!process_executable_belongs_to_app(
-            app,
-            "/private/var/containers/Bundle/Application/UUID/Example.app/PlugIns/Widget.appex/Widget"
-        ));
-        assert!(!process_executable_belongs_to_app(
-            app,
-            "/private/var/containers/Bundle/Application/OTHER/Example.app/Example"
-        ));
     }
 }

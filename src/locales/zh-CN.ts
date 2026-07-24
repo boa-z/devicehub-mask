@@ -204,6 +204,7 @@ export const zhCN = {
       "performance.energy": "能耗监控",
       "performance.app_activity": "App 活动监控",
       "performance.process_inventory": "进程清单",
+      "device.app_lifecycle": "App 生命周期",
       "network.capture": "网络抓包",
       "bluetooth.capture": "蓝牙 HCI 抓包",
       "device.sysdiagnose": "系统诊断",
