@@ -60,19 +60,44 @@ function contact(mapping: Mapping, held: ReadonlySet<string>, frame: { width: nu
   return { identity: mapping.pointer_id, touching: active, ...position };
 }
 
+function activeBindingKeys(mapping: Mapping, held: ReadonlySet<string>): string[] {
+  if (mapping.type === "touch") return pressed(held, mapping.key) ? [mapping.key] : [];
+  if (mapping.type === "dpad") return Object.values(mapping.keys).filter((key) => pressed(held, key));
+  if (mapping.type === "DirectionPad" && mapping.bind.type === "Button") {
+    return [...mapping.bind.up, ...mapping.bind.down, ...mapping.bind.left, ...mapping.bind.right]
+      .filter((key) => pressed(held, key));
+  }
+  if (!("bind" in mapping) || !Array.isArray(mapping.bind) || !bound(held, mapping.bind)) return [];
+  return mapping.bind;
+}
+
 export function buildMappingRuntimeFrame(mappings: Mapping[], held: ReadonlySet<string>, frame = { width: 1296, height: 2816 }, now = performance.now(), heldSince: ReadonlyMap<string, number> = new Map(), offsets: ReadonlyMap<string, { x: number; y: number }> = new Map()): MappingRuntimeFrame {
   const evaluated = mappings
-    .map((mapping) => ({ mappingId: mapping.id, contact: contact(mapping, held, frame, now, heldSince, offsets) }))
-    .filter((value): value is { mappingId: string; contact: TouchContact } => Boolean(value.contact));
-  const active = evaluated.filter((value) => value.contact.touching);
+    .map((mapping) => ({ mapping, contact: contact(mapping, held, frame, now, heldSince, offsets) }))
+    .filter((value): value is { mapping: Mapping; contact: TouchContact } => Boolean(value.contact));
+  const claimedKeys = new Set<string>();
+  const active = evaluated.filter((value) => {
+    if (!value.contact.touching) return false;
+    const keys = activeBindingKeys(value.mapping, held);
+    if (keys.some((key) => claimedKeys.has(key))) {
+      value.contact = { ...value.contact, touching: false };
+      return false;
+    }
+    for (const key of keys) claimedKeys.add(key);
+    return true;
+  });
   const inactive = evaluated.filter((value) => !value.contact.touching);
   const unique = new Map<number, TouchContact>();
+  const activeMappingIds = new Set<string>();
   for (const value of [...active, ...inactive]) {
-    if (!unique.has(value.contact.identity) && unique.size < 5) unique.set(value.contact.identity, value.contact);
+    if (!unique.has(value.contact.identity) && unique.size < 5) {
+      unique.set(value.contact.identity, value.contact);
+      if (value.contact.touching) activeMappingIds.add(value.mapping.id);
+    }
   }
   return {
     contacts: [...unique.values()],
-    activeMappingIds: new Set(active.map((value) => value.mappingId)),
+    activeMappingIds,
   };
 }
 
