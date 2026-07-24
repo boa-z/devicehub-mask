@@ -69,6 +69,8 @@ For a cross-platform comparison, try the experimental Browser / WebCodecs decode
 
 If WebCodecs reports `OperationError: Unsupported configuration`, the app reads the HEVC profile and level from the stream SPS and retries conservative `hev1` and `hvc1` configurations. If all exact configurations fail, the current run reconnects with Native / FFmpeg; this usually means the platform WebView or its system HEVC component cannot decode that device's resolution/profile.
 
+`browser video client lagged` means the WebSocket sender briefly fell behind the compressed HEVC broadcast; it does not mean CoreDevice stopped producing frames. The app discards dependent frames, repeatedly requests IRAP until resynchronized, and resumes without reconnecting. If the toolbar remains at nonzero Source/Decode but zero Send/Display for more than a few seconds, collect Debug logs containing the lag warning, following PLI/FIR requests, received IRAP entries, and `devicehub_mask::perf` output.
+
 Use the live Decode / Send / Display FPS and JPEG latency metrics:
 
 - Source FPS reports complete RTP frame markers; Decode and Published FPS separate FFmpeg output from duplicate-frame suppression.

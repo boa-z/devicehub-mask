@@ -29,6 +29,10 @@ export function parseBrowserVideoPacket(buffer: ArrayBuffer): BrowserVideoPacket
   };
 }
 
+export function browserVideoSequenceDiscontinuous(previous: bigint | null, packet: BrowserVideoPacket): boolean {
+  return previous !== null && packet.sequence !== previous + 1n && !packet.key;
+}
+
 export function hevcCodecFromAnnexB(data: Uint8Array): string | null {
   for (const nal of annexBNalUnits(data)) {
     if (nal.length < 15 || ((nal[0] >> 1) & 0x3f) !== 33) continue;
@@ -121,6 +125,22 @@ export class BrowserVideoDecoder {
     this.submitted.clear();
     if (this.outputTimer !== undefined) window.clearTimeout(this.outputTimer);
     this.outputTimer = undefined;
+  }
+
+  resync() {
+    if (this.closed) return;
+    this.waitingForKeyframe = true;
+    this.submitted.clear();
+    if (this.outputTimer !== undefined) window.clearTimeout(this.outputTimer);
+    this.outputTimer = undefined;
+    try {
+      if (this.decoder?.state === "configured") this.decoder.reset();
+      else this.decoder = null;
+    } catch {
+      try { this.decoder?.close(); } catch { /* The decoder may already be closed. */ }
+      this.decoder = null;
+    }
+    this.callbacks.requestKeyframe();
   }
 
   private async configure(width: number, height: number, codec: string) {

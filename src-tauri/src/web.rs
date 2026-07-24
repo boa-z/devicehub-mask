@@ -2655,6 +2655,9 @@ async fn websocket(socket: WebSocket, state: AppState) {
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
         metrics_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut browser_resync_tick = tokio::time::interval(Duration::from_secs(1));
+        browser_resync_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        browser_resync_tick.tick().await;
         let mut metrics_started = Instant::now();
         let mut metrics_counters = send_state.video_counters.snapshot();
         let mut metrics_frame_version = send_state.frames.version();
@@ -2720,11 +2723,9 @@ async fn websocket(socket: WebSocket, state: AppState) {
                             if !send_video_active.load(Ordering::Acquire) {
                                 continue;
                             }
-                            if send_browser_resync.load(Ordering::Acquire) {
-                                if !frame.key {
-                                    continue;
-                                }
-                                send_browser_resync.store(false, Ordering::Relaxed);
+                            let completes_resync = send_browser_resync.load(Ordering::Acquire);
+                            if completes_resync && !frame.key {
+                                continue;
                             }
                             let packet = crate::browser_video::encode_packet(&frame);
                             sent_frames += 1;
@@ -2733,15 +2734,24 @@ async fn websocket(socket: WebSocket, state: AppState) {
                             if sender.send(Message::Binary(packet.into())).await.is_err() {
                                 break;
                             }
+                            if completes_resync {
+                                send_browser_resync.store(false, Ordering::Release);
+                            }
                             websocket_send_time += send_started.elapsed();
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                             tracing::warn!(skipped, "browser video client lagged; requesting keyframe");
-                            send_browser_resync.store(true, Ordering::Relaxed);
+                            send_browser_resync.store(true, Ordering::Release);
+                            browser_frame_rx = browser_frame_rx.resubscribe();
                             send_state.browser_frames.request_keyframe();
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
+                }
+                _ = browser_resync_tick.tick(), if send_video_active.load(Ordering::Acquire)
+                    && send_browser_resync.load(Ordering::Acquire) => {
+                    tracing::debug!("browser video resync still waiting; requesting another keyframe");
+                    send_state.browser_frames.request_keyframe();
                 }
                 clipboard = clipboard_rx.recv() => {
                     match clipboard {
@@ -3040,6 +3050,7 @@ fn handle_client_message(
             tracing::debug!(active, "updated WebView video demand");
         }
         ClientMessage::BrowserVideoKeyframe => {
+            browser_resync.store(true, Ordering::Release);
             state.browser_frames.request_keyframe();
         }
         ClientMessage::BrowserDecoderError { message } => {
@@ -3960,6 +3971,26 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
             .await
             .expect("video demand resume should request a keyframe");
+    }
+
+    #[tokio::test]
+    async fn browser_decoder_keyframe_request_enters_resync() {
+        let (state, _input_rx) = test_state();
+        let active = AtomicBool::new(true);
+        let resync = AtomicBool::new(false);
+        let keyframes = state.browser_frames.clone();
+
+        assert!(!handle_client_message(
+            &state,
+            r#"{"type":"browser_video_keyframe"}"#,
+            &mut HashSet::new(),
+            &active,
+            &resync,
+        ));
+        assert!(resync.load(Ordering::Acquire));
+        tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
+            .await
+            .expect("browser decoder recovery should request a keyframe");
     }
 
     #[test]

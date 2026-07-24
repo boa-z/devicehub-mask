@@ -69,6 +69,8 @@ Windows 上保持手机连接和解锁，然后运行：
 
 如果 WebCodecs 报告 `OperationError: Unsupported configuration`，应用会从数据流 SPS 读取 HEVC profile 与 level，并重试保守的 `hev1`、`hvc1` 配置。准确配置全部失败后，本次运行会 重连到“原生 / FFmpeg”；这通常表示平台 WebView 或系统 HEVC 组件无法解码当前设备的分辨率 或 profile。
 
+`browser video client lagged` 表示 WebSocket 发送端短暂落后于压缩 HEVC 广播，不代表 CoreDevice 已停止产出画面。应用会丢弃不可继续解码的依赖帧，重复请求 IRAP 直到重同步，并在无需重新连接设备的情况下恢复。如果工具栏的“源/解码”持续非零，而“发送/显示”超过数秒仍为零，请采集包含 lag 警告、后续 PLI/FIR 请求、收到 IRAP 记录和 `devicehub_mask::perf` 输出的 Debug 日志。
+
 观察界面的解码 / 发送 / 显示 FPS 和 JPEG 延迟：
 
 - 源 FPS 来自完整 RTP 帧 marker；解码与发布 FPS 会区分 FFmpeg 输出和重复帧抑制。

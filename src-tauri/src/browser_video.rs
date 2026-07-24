@@ -7,7 +7,9 @@ use bytes::Bytes;
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
 
-const CHANNEL_CAPACITY: usize = 8;
+// Cover short WebSocket stalls while a large IRAP access unit is copied into the
+// platform WebView. At 60 FPS this retains roughly half a second of compressed data.
+const CHANNEL_CAPACITY: usize = 32;
 const PACKET_MAGIC: &[u8; 4] = b"DHV1";
 const PACKET_HEADER_LEN: usize = 28;
 
@@ -285,6 +287,26 @@ mod tests {
         assert_eq!(u16::from_be_bytes(packet[24..26].try_into().unwrap()), 1290);
         assert_eq!(u16::from_be_bytes(packet[26..28].try_into().unwrap()), 2796);
         assert_eq!(&packet[28..], frame.bytes.as_ref());
+    }
+
+    #[tokio::test]
+    async fn browser_channel_absorbs_a_short_websocket_stall() {
+        let slot = BrowserVideoSlot::default();
+        let mut receiver = slot.subscribe();
+        for timestamp in 0..CHANNEL_CAPACITY {
+            slot.publish(
+                timestamp as u64,
+                timestamp == 0,
+                100,
+                200,
+                vec![timestamp as u8],
+            );
+        }
+
+        for sequence in 1..=CHANNEL_CAPACITY {
+            let frame = receiver.recv().await.expect("buffered browser frame");
+            assert_eq!(frame.sequence, sequence as u64);
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserVideoDecoder, hevcCodecFromAnnexB, parseBrowserVideoPacket, type BrowserVideoPacket } from "./browserVideo";
+import { BrowserVideoDecoder, browserVideoSequenceDiscontinuous, hevcCodecFromAnnexB, parseBrowserVideoPacket, type BrowserVideoPacket } from "./browserVideo";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -23,6 +23,20 @@ describe("browser video packet", () => {
 
   it("leaves legacy JPEG messages untouched", () => {
     expect(parseBrowserVideoPacket(new Uint8Array([0xff, 0xd8, 0xff]).buffer)).toBeNull();
+  });
+
+  it("requires resync for a delta-frame sequence gap but accepts a new keyframe", () => {
+    const packet = {
+      key: false,
+      timestamp: 2,
+      sequence: 9n,
+      width: 100,
+      height: 200,
+      data: new Uint8Array(),
+    };
+    expect(browserVideoSequenceDiscontinuous(7n, packet)).toBe(true);
+    expect(browserVideoSequenceDiscontinuous(7n, { ...packet, key: true })).toBe(false);
+    expect(browserVideoSequenceDiscontinuous(8n, packet)).toBe(false);
   });
 });
 

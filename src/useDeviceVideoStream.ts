@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BrowserVideoDecoder, parseBrowserVideoPacket } from "./browserVideo";
+import { BrowserVideoDecoder, browserVideoSequenceDiscontinuous, parseBrowserVideoPacket } from "./browserVideo";
 import { logFrontend } from "./diagnostics";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "./types";
@@ -172,6 +172,9 @@ export function useDeviceVideoStream({
       let socketClosed = false;
       let pendingFrame: Blob | null = null;
       let decoding = false;
+      let browserTransportActive = false;
+      let lastBrowserSequence: bigint | null = null;
+      let browserSequenceResync = false;
       let metricsTimer: number | undefined;
       let frontendMetrics = createFrontendMetrics();
       const presentFrame = (
@@ -318,6 +321,9 @@ export function useDeviceVideoStream({
           if (data.type === "metrics") {
             const metrics = data.payload as StreamMetrics;
             setStreamMetrics(metrics);
+            if (browserTransportActive && metrics.decoded_fps > 0 && metrics.sent_fps === 0 && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: "browser_video_keyframe" }));
+            }
             if (hasDecodedVideoActivity(metrics)) {
               lastVideoActivityAtRef.current = performance.now();
               setStreamStalled(false);
@@ -338,9 +344,22 @@ export function useDeviceVideoStream({
           return;
         }
         if (browserPacket) {
+          browserTransportActive = true;
+          if (browserSequenceResync && !browserPacket.key) return;
+          if (browserVideoSequenceDiscontinuous(lastBrowserSequence, browserPacket)) {
+            frontendMetrics.replacedFrames += 1;
+            browserSequenceResync = true;
+            browserDecoder.resync();
+            return;
+          }
+          if (browserPacket.key) browserSequenceResync = false;
+          lastBrowserSequence = browserPacket.sequence;
           browserDecoder.enqueue(browserPacket);
           return;
         }
+        browserTransportActive = false;
+        lastBrowserSequence = null;
+        browserSequenceResync = false;
         if (pendingFrame) {
           frontendMetrics.replacedFrames += 1;
           if (socket.readyState === WebSocket.OPEN) {
