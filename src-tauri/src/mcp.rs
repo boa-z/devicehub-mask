@@ -1232,7 +1232,7 @@ impl DeviceHub {
             include_app_clips,
             reply,
         })?;
-        let mut apps = tokio::time::timeout(APP_WAIT, response)
+        let mut apps = tokio::time::timeout(crate::session::APP_LIST_REQUEST_TIMEOUT, response)
             .await
             .map_err(|_| McpError::internal_error("app list request timed out", None))?
             .map_err(|_| McpError::internal_error("device session ended", None))?

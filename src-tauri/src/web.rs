@@ -1462,7 +1462,7 @@ async fn device_apps(
             "no active device session".into(),
         ));
     }
-    let apps = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+    let apps = tokio::time::timeout(crate::session::APP_LIST_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
             (

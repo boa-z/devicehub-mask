@@ -201,14 +201,20 @@ async fn fetch_core_device_icon(
             }
         },
         Ok(Err(error)) => {
-            source.failed(false);
-            Err(format!("unable to read CoreDevice app icon: {error:?}"))
+            let error = format!("{error:?}");
+            source.failed(is_unsupported_core_device_icon_error(&error));
+            Err(format!("unable to read CoreDevice app icon: {error}"))
         }
         Err(_) => {
             source.failed(true);
             Err("CoreDevice app icon request timed out".into())
         }
     }
+}
+
+fn is_unsupported_core_device_icon_error(error: &str) -> bool {
+    error.contains("com.apple.coredevice.feature.fetchappicons")
+        && (error.contains("is not implemented") || error.contains("CoreDevice.ActionError code 2"))
 }
 
 async fn fetch_springboard_icon(
@@ -352,6 +358,19 @@ mod tests {
         let mut permanent = CoreDeviceIconSource::default();
         permanent.failed(true);
         assert!(permanent.disabled);
+    }
+
+    #[test]
+    fn unsupported_core_device_icon_action_is_a_permanent_failure() {
+        assert!(is_unsupported_core_device_icon_error(
+            "CoreDevice.ActionError code 2: Action 'com.apple.coredevice.feature.fetchappicons' is not implemented."
+        ));
+        assert!(!is_unsupported_core_device_icon_error(
+            "CoreDevice.ActionError code 2: another action failed"
+        ));
+        assert!(!is_unsupported_core_device_icon_error(
+            "com.apple.coredevice.feature.fetchappicons transport closed"
+        ));
     }
 
     #[test]

@@ -102,6 +102,10 @@ const KEYFRAME_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(
 /// several consecutive samples so normal RTCP sender-report spacing is covered.
 const VIDEO_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 const VIDEO_TRANSPORT_SILENT_WINDOWS: u8 = 3;
+const APP_SERVICE_LIST_TIMEOUT: Duration = Duration::from_secs(6);
+const APP_METADATA_TIMEOUT: Duration = Duration::from_secs(4);
+const APP_CLIENT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+pub(crate) const APP_LIST_REQUEST_TIMEOUT: Duration = Duration::from_secs(24);
 /// How long the locked stream must go silent before we migrate to a different
 /// SSRC: long enough to ignore stray packets from a competing/leaked sender,
 /// short enough to pick up a real stream restart promptly.
@@ -2767,11 +2771,11 @@ impl DeviceManagement {
         let provider = self.provider.clone();
         let (app_service, installation_proxy) = tokio::join!(
             tokio::time::timeout(
-                Duration::from_secs(5),
+                APP_CLIENT_RECONNECT_TIMEOUT,
                 AppServiceClient::connect_rsd(&mut adapter, &mut handshake),
             ),
             tokio::time::timeout(
-                Duration::from_secs(5),
+                APP_CLIENT_RECONNECT_TIMEOUT,
                 InstallationProxyClient::connect(&*provider),
             ),
         );
@@ -2797,6 +2801,23 @@ impl DeviceManagement {
                 errors.join("; ")
             ))
         }
+    }
+
+    async fn reconnect_installation_proxy(&mut self) -> Result<(), String> {
+        self.installation_proxy.take();
+        let connection = tokio::time::timeout(
+            APP_CLIENT_RECONNECT_TIMEOUT,
+            InstallationProxyClient::connect(&*self.provider),
+        )
+        .await;
+        self.installation_proxy = match connection {
+            Ok(Ok(client)) => Some(client),
+            Ok(Err(error)) => {
+                return Err(format!("unable to reconnect InstallationProxy: {error:?}"));
+            }
+            Err(_) => return Err("InstallationProxy connection timed out".into()),
+        };
+        Ok(())
     }
 
     async fn ensure_app_service(&mut self) -> Result<(), String> {
@@ -3036,41 +3057,78 @@ impl DeviceManagement {
                 include_app_clips,
                 reply,
             } => {
-                let first = list_device_apps(
-                    self.app_service.as_mut(),
-                    self.installation_proxy.as_mut(),
-                    include_system,
-                    include_app_clips,
-                    false,
-                )
-                .await;
+                let started = Instant::now();
+                let mut recovered = false;
+                let extended_scope = extended_app_scope(include_system, include_app_clips);
+                let first = if extended_scope.is_none() {
+                    list_user_apps_via_installation_proxy(self.installation_proxy.as_mut()).await
+                } else {
+                    list_device_apps(
+                        self.app_service.as_mut(),
+                        self.installation_proxy.as_mut(),
+                        include_system,
+                        include_app_clips,
+                        false,
+                    )
+                    .await
+                };
                 let result = match first {
                     Ok(apps) => Ok(apps),
                     Err(first_error) => {
                         tracing::warn!(
                             error = %first_error,
-                            "app listing failed; reconnecting read-only services once"
+                            extended_scope,
+                            "app listing failed; reconnecting the required read-only service once"
                         );
-                        match self.reconnect_app_clients().await {
-                            Ok(()) => list_device_apps(
-                                self.app_service.as_mut(),
-                                self.installation_proxy.as_mut(),
-                                include_system,
-                                include_app_clips,
-                                true,
-                            )
-                            .await
-                            .map_err(|retry_error| {
-                                format!(
-                                    "{retry_error} (initial app listing failure: {first_error})"
-                                )
-                            }),
+                        let reconnect = if extended_scope.is_none() {
+                            self.reconnect_installation_proxy().await
+                        } else {
+                            self.reconnect_app_clients().await
+                        };
+                        match reconnect {
+                            Ok(()) => {
+                                recovered = true;
+                                let retry = if extended_scope.is_none() {
+                                    list_user_apps_via_installation_proxy(
+                                        self.installation_proxy.as_mut(),
+                                    )
+                                    .await
+                                } else {
+                                    list_device_apps(
+                                        self.app_service.as_mut(),
+                                        self.installation_proxy.as_mut(),
+                                        include_system,
+                                        include_app_clips,
+                                        true,
+                                    )
+                                    .await
+                                };
+                                retry.map_err(|retry_error| {
+                                    format!(
+                                        "{retry_error} (initial app listing failure: {first_error})"
+                                    )
+                                })
+                            }
                             Err(reconnect_error) => {
                                 Err(format!("{first_error}; {reconnect_error}"))
                             }
                         }
                     }
                 };
+                match &result {
+                    Ok(apps) => tracing::debug!(
+                        count = apps.len(),
+                        recovered,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "application list completed"
+                    ),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        recovered,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "application list failed"
+                    ),
+                }
                 let _ = reply.send(result);
                 None
             }
@@ -3690,28 +3748,49 @@ async fn list_device_apps(
     allow_fallback_after_app_service_error: bool,
 ) -> Result<Vec<DeviceApp>, String> {
     if let Some(client) = app_service {
-        match client
-            .list_apps(include_app_clips, true, false, false, include_system)
-            .await
-        {
+        let app_service_result = tokio::time::timeout(
+            APP_SERVICE_LIST_TIMEOUT,
+            client.list_apps(include_app_clips, true, false, false, include_system),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "CoreDevice AppService list timed out after {} seconds",
+                APP_SERVICE_LIST_TIMEOUT.as_secs()
+            )
+        })
+        .and_then(|result| {
+            result.map_err(|error| format!("CoreDevice AppService list failed: {error:?}"))
+        });
+        match app_service_result {
             Ok(entries) => {
                 let application_type = if include_system { "Any" } else { "User" };
                 let bundle_identifiers = entries
                     .iter()
                     .map(|entry| entry.bundle_identifier.clone())
                     .collect();
-                let installation_apps = if entries.is_empty() {
-                    std::collections::HashMap::new()
-                } else {
+                let metadata = async {
+                    if entries.is_empty() {
+                        return std::collections::HashMap::new();
+                    }
                     match installation_proxy.as_deref_mut() {
-                        Some(client) => match client
-                            .get_apps(Some(application_type), Some(bundle_identifiers))
-                            .await
+                        Some(client) => match tokio::time::timeout(
+                            APP_METADATA_TIMEOUT,
+                            client.get_apps(Some(application_type), Some(bundle_identifiers)),
+                        )
+                        .await
                         {
-                            Ok(apps) => apps,
-                            Err(error) => {
+                            Ok(Ok(apps)) => apps,
+                            Ok(Err(error)) => {
                                 tracing::warn!(
                                     "installation proxy app metadata unavailable: {error:?}"
+                                );
+                                std::collections::HashMap::new()
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    timeout_ms = APP_METADATA_TIMEOUT.as_millis() as u64,
+                                    "installation proxy app metadata timed out"
                                 );
                                 std::collections::HashMap::new()
                             }
@@ -3719,13 +3798,32 @@ async fn list_device_apps(
                         None => std::collections::HashMap::new(),
                     }
                 };
-                let processes = match client.list_processes().await {
-                    Ok(processes) => Some(processes),
-                    Err(error) => {
-                        tracing::warn!("CoreDevice process list unavailable: {error:?}");
-                        None
+                let process_list = async {
+                    match tokio::time::timeout(APP_METADATA_TIMEOUT, client.list_processes()).await
+                    {
+                        Ok(Ok(processes)) => Some(processes),
+                        Ok(Err(error)) => {
+                            tracing::warn!("CoreDevice process list unavailable: {error:?}");
+                            None
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                timeout_ms = APP_METADATA_TIMEOUT.as_millis() as u64,
+                                "CoreDevice process list timed out"
+                            );
+                            None
+                        }
                     }
                 };
+                let (installation_apps, processes) = tokio::join!(metadata, process_list);
+                if installation_apps.is_empty() && !entries.is_empty() {
+                    tracing::debug!(
+                        "application list is returning without InstallationProxy metadata"
+                    );
+                }
+                if processes.is_none() {
+                    tracing::debug!("application list is returning without running state");
+                }
                 return Ok(sort_device_apps(
                     entries
                         .into_iter()
@@ -3780,15 +3878,15 @@ async fn list_device_apps(
             }
             Err(error) => {
                 if !allow_fallback_after_app_service_error {
-                    return Err(format!("CoreDevice AppService list failed: {error:?}"));
+                    return Err(error);
                 }
                 if let Some(scope) = extended_app_scope(include_system, include_app_clips) {
                     return Err(format!(
-                        "{scope} listing requires CoreDevice AppService: {error:?}"
+                        "{scope} listing requires CoreDevice AppService: {error}"
                     ));
                 }
                 tracing::warn!(
-                    "CoreDevice AppService list failed; using installation proxy: {error:?}"
+                    "CoreDevice AppService list failed; using installation proxy: {error}"
                 );
             }
         }
@@ -3800,12 +3898,26 @@ async fn list_device_apps(
         ));
     }
 
-    let client =
-        installation_proxy.ok_or_else(|| "app listing services are unavailable".to_string())?;
-    let entries = client
-        .get_apps(Some("User"), None)
-        .await
-        .map_err(|error| format!("unable to list apps: {error:?}"))?;
+    list_user_apps_via_installation_proxy(installation_proxy).await
+}
+
+async fn list_user_apps_via_installation_proxy(
+    installation_proxy: Option<&mut InstallationProxyClient>,
+) -> Result<Vec<DeviceApp>, String> {
+    let client = installation_proxy
+        .ok_or_else(|| "InstallationProxy app listing service is unavailable".to_string())?;
+    let entries = tokio::time::timeout(
+        APP_SERVICE_LIST_TIMEOUT,
+        client.get_apps(Some("User"), None),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "InstallationProxy app list timed out after {} seconds",
+            APP_SERVICE_LIST_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|error| format!("unable to list apps: {error:?}"))?;
     Ok(sort_device_apps(
         entries
             .into_iter()
@@ -6279,6 +6391,18 @@ mod tests {
             video_watchdog_observation(previous, previous),
             VideoWatchdogObservation::Silent
         );
+    }
+
+    #[test]
+    fn app_list_outer_timeout_covers_one_bounded_recovery() {
+        let default_worst_case =
+            APP_SERVICE_LIST_TIMEOUT + APP_CLIENT_RECONNECT_TIMEOUT + APP_SERVICE_LIST_TIMEOUT;
+        let extended_worst_case = APP_SERVICE_LIST_TIMEOUT
+            + APP_CLIENT_RECONNECT_TIMEOUT
+            + APP_SERVICE_LIST_TIMEOUT
+            + APP_METADATA_TIMEOUT;
+        assert!(APP_LIST_REQUEST_TIMEOUT > default_worst_case);
+        assert!(APP_LIST_REQUEST_TIMEOUT > extended_worst_case);
     }
 
     #[tokio::test]
