@@ -75,12 +75,11 @@ by default and takes effect after reconnecting. When enabled, text and images co
 device replace the clipboard on the other side. A transient message identifies the direction and content
 type; text previews are whitespace-collapsed and limited to 48 characters.
 
-The Device Info tab can lock the device without toggling an already locked
-device awake. It also includes confirmed **Restart device** and **Shut down
-device** actions. Lock keeps the device connection active. Restart and shut
-down end the current control session; restart reconnects only after iOS and the
-USB services are available again, while a shut-down device must be turned on
-manually.
+The Device Info tab includes confirmed **Restart device** and **Shut down
+device** actions. Both end the current control session; restart reconnects only
+after iOS and the USB services are available again, while a shut-down device
+must be turned on manually. Lock screen remains available in the device-view
+toolbar and to agents through the one-way MCP `lock_device` tool.
 
 Local Device Backup in the Info tab creates a standard, unencrypted
 MobileBackup2 backup in a host directory selected through the native dialog.

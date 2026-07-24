@@ -72,6 +72,10 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-inspector { min-width: 0; min-height: 0; border-left: 1px solid #303638; background: #171b1c; padding: 12px; overflow: hidden; display: flex; flex-direction: column; gap: 12px; }
 .device-inspector-header { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; }
 .device-inspector-header .ant-btn { width: 32px; padding-inline: 0; }
+.device-inspector-tabs .ant-segmented-group { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.device-inspector-tabs .ant-segmented-item { min-width: 0; }
+.device-inspector-tabs .ant-segmented-item-label { min-height: 32px; padding-inline: 0; display: grid; place-items: center; font-size: 16px; }
+.device-inspector-tabs .ant-segmented-item-label > span { width: 100%; height: 32px; display: grid; place-items: center; }
 .device-inspector-loading { flex: 1; display: grid; place-items: center; }
 .device-info-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; }
 .developer-image-progress { padding: 10px 4px; display: flex; flex-direction: column; gap: 6px; }
@@ -117,9 +121,10 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-home-screen-alert .ant-alert-description { font-size: 11px; overflow-wrap: anywhere; }
 .device-home-screen-metrics { min-height: 24px; display: flex; align-items: center; gap: 6px; color: #7f8a89; }
 .device-home-screen-metrics .ant-typography { min-width: 0; margin: 0; font-size: 11px; overflow-wrap: anywhere; }
-.device-power-actions { padding-top: 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; }
-.device-power-actions > div { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.device-power-actions { padding-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 8px; }
+.device-power-actions > div { min-width: 0; grid-column: 1 / -1; display: flex; flex-direction: column; gap: 1px; }
 .device-power-actions > div .ant-typography { margin: 0; font-size: 11px; }
+.device-power-actions > .ant-btn { width: 100%; min-width: 0; }
 .device-apps-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .device-app-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 6px; }
 .device-app-toolbar .ant-btn { width: 32px; padding-inline: 0; }
@@ -360,10 +365,6 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .device-logs-count { grid-column: 3 / 6; }
   .device-log-row { grid-template-columns: 100px minmax(0, 1fr); gap: 1px 8px; }
   .device-log-context, .device-log-row pre { grid-column: 1 / -1; }
-  .device-power-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .device-power-actions > div { grid-column: 1 / -1; }
-  .device-power-actions > .ant-btn { width: 100%; }
-  .device-power-actions > .device-lock-action { grid-column: 1 / -1; }
   .performance-hud-items { grid-template-columns: minmax(0, 1fr); }
   .performance-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .performance-metric { border-bottom: 1px solid #303638; }

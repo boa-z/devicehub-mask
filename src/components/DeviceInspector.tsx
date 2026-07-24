@@ -11,7 +11,6 @@ import {
   FolderOpenOutlined,
   InfoCircleOutlined,
   LinkOutlined,
-  LockOutlined,
   MobileOutlined,
   PlayCircleOutlined,
   PoweroffOutlined,
@@ -135,7 +134,7 @@ export function DeviceInspector({
   const [exportingReport, setExportingReport] = useState<string | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
-  const [devicePowerAction, setDevicePowerAction] = useState<"lock" | "restart" | "shutdown" | null>(null);
+  const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
   const [backupStatus, setBackupStatus] = useState<DeviceBackupStatus | null>(null);
   const [backupFull, setBackupFull] = useState(false);
   const [backupAction, setBackupAction] = useState<"start" | "stop" | null>(null);
@@ -683,20 +682,6 @@ export function DeviceInspector({
     });
   };
 
-  const lockDevice = async () => {
-    if (devicePowerAction) return;
-    setDevicePowerAction("lock");
-    try {
-      const response = await request("/api/device/lock", { method: "PUT" });
-      if (!response.ok) throw new Error((await response.text()) || response.statusText);
-      void message.success(t("deviceInspector.lockRequested"));
-    } catch (powerError) {
-      void message.error(t("deviceInspector.powerActionFailed", { error: String(powerError) }));
-    } finally {
-      setDevicePowerAction(null);
-    }
-  };
-
   const normalizedDeviceName = normalizeDeviceNameInput(renameValue);
   const prepareDeveloperMode = async () => {
     if (developerModeBusy) return;
@@ -897,13 +882,14 @@ export function DeviceInspector({
     <aside className="device-inspector">
       <div className="device-inspector-header">
         <Segmented<DeviceInspectorTab>
+          className="device-inspector-tabs"
           block
           value={tab}
           options={[
-            { value: "info", label: t("deviceInspector.info"), icon: <InfoCircleOutlined /> },
-            { value: "apps", label: t("deviceInspector.apps"), icon: <AppstoreOutlined /> },
-            { value: "profiles", label: t("deviceInspector.profiles"), icon: <SafetyCertificateOutlined /> },
-            { value: "crashes", label: t("deviceInspector.crashes"), icon: <BugOutlined /> },
+            { value: "info", label: <Tooltip title={t("deviceInspector.info")}><span aria-label={t("deviceInspector.info")}><InfoCircleOutlined /></span></Tooltip> },
+            { value: "apps", label: <Tooltip title={t("deviceInspector.apps")}><span aria-label={t("deviceInspector.apps")}><AppstoreOutlined /></span></Tooltip> },
+            { value: "profiles", label: <Tooltip title={t("deviceInspector.profiles")}><span aria-label={t("deviceInspector.profiles")}><SafetyCertificateOutlined /></span></Tooltip> },
+            { value: "crashes", label: <Tooltip title={t("deviceInspector.crashes")}><span aria-label={t("deviceInspector.crashes")}><BugOutlined /></span></Tooltip> },
           ]}
           onChange={(next) => {
             setTab(next);
@@ -1174,13 +1160,6 @@ export function DeviceInspector({
               <Typography.Text strong>{t("deviceInspector.powerActions")}</Typography.Text>
               <Typography.Text type="secondary">{t("deviceInspector.powerActionsHint")}</Typography.Text>
             </div>
-            <Button
-              className="device-lock-action"
-              icon={<LockOutlined />}
-              loading={devicePowerAction === "lock"}
-              disabled={devicePowerAction !== null}
-              onClick={() => void lockDevice()}
-            >{t("deviceInspector.lockDevice")}</Button>
             <Button
               icon={<ReloadOutlined />}
               loading={devicePowerAction === "restart"}
