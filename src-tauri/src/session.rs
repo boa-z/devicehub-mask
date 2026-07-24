@@ -666,6 +666,7 @@ enum Next {
 
 #[derive(Debug, Clone, Copy)]
 enum DevicePowerAction {
+    Lock,
     Restart,
     Shutdown,
 }
@@ -2532,6 +2533,10 @@ impl DeviceManagement {
                 }
                 None
             }
+            InputCmd::LockDevice(reply) => {
+                self.start_power_action(DevicePowerAction::Lock, reply);
+                None
+            }
             InputCmd::RestartDevice(reply) => {
                 self.start_power_action(DevicePowerAction::Restart, reply);
                 None
@@ -2648,6 +2653,7 @@ fn spawn_device_power_action(
                 .await
                 .map_err(|error| format!("cannot connect diagnostics relay: {error:?}"))?;
             match action {
+                DevicePowerAction::Lock => diagnostics.sleep().await,
                 DevicePowerAction::Restart => diagnostics.restart().await,
                 DevicePowerAction::Shutdown => diagnostics.shutdown().await,
             }
@@ -3461,6 +3467,7 @@ async fn dispatch(
         | InputCmd::DeviceBackup(_)
         | InputCmd::DeviceCondition(_)
         | InputCmd::AppDocuments(_)
+        | InputCmd::LockDevice(_)
         | InputCmd::RestartDevice(_)
         | InputCmd::ShutdownDevice(_)
         | InputCmd::Provisioning(_)

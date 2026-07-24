@@ -326,6 +326,8 @@ pub enum InputCmd {
     DeviceCondition(crate::device_conditions::DeviceConditionCommand),
     /// Access one application's vended Documents root through House Arrest.
     AppDocuments(crate::app_documents::AppDocumentCommand),
+    /// Lock the active device through DiagnosticsRelay without toggling wake state.
+    LockDevice(oneshot::Sender<Result<(), String>>),
     /// Restart the active device through DiagnosticsRelay.
     RestartDevice(oneshot::Sender<Result<(), String>>),
     /// Shut down the active device through DiagnosticsRelay.

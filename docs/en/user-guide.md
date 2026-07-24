@@ -75,10 +75,12 @@ by default and takes effect after reconnecting. When enabled, text and images co
 device replace the clipboard on the other side. A transient message identifies the direction and content
 type; text previews are whitespace-collapsed and limited to 48 characters.
 
-The Device Info tab includes confirmed **Restart device** and **Shut down
-device** actions. Both end the current control session. Restart reconnects only
-after iOS and the USB services are available again; a shut-down device must be
-turned on manually.
+The Device Info tab can lock the device without toggling an already locked
+device awake. It also includes confirmed **Restart device** and **Shut down
+device** actions. Lock keeps the device connection active. Restart and shut
+down end the current control session; restart reconnects only after iOS and the
+USB services are available again, while a shut-down device must be turned on
+manually.
 
 Local Device Backup in the Info tab creates a standard, unencrypted
 MobileBackup2 backup in a host directory selected through the native dialog.
@@ -289,7 +291,9 @@ While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP
 endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
 swipes, simultaneous multi-touch, text and key input, hardware buttons, app
 discovery, launch/restart and stop, rotation, device selection and reconnection,
-virtual location, frame synchronization, crash diagnosis, and session status.
+one-way device locking, virtual location, frame synchronization, crash
+diagnosis, and session status. `lock_device` uses Diagnostics Relay sleep, so it
+does not wake an already locked device like a hardware-button toggle can.
 
 `device_details` refreshes the active device's product and OS versions, hardware
 model, storage, activation, Developer Mode, and battery diagnostics. UDID,

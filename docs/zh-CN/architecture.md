@@ -26,6 +26,8 @@ idevice：CoreDevice、Lockdown、Installation Proxy、Misagent、Universal HID
 Axum 是内部传输层，而不是独立部署的网页服务器。默认监听随机回环端口，没有浏览器
 入口，不负责提供前端文件，并要求使用通过 Tauri IPC 获取的每次启动独立 bearer
 token。没有活动会话时，设备管理路由返回 `503`。
+锁定、重启和关机命令共享 Diagnostics Relay 单任务租约。锁定映射到单向休眠请求并保留
+父控制会话；重启和关机则允许设备断开结束当前会话。
 
 WebSocket 传输 JPEG 帧和类型化控制消息。前端发送归一化触点，而不是原始 HID report。
 Rust 会在分发前验证触点身份、五触点上限、坐标范围和画面方向。

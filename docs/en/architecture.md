@@ -28,6 +28,9 @@ Axum is an internal transport, not a separately deployed web server. It binds a
 random loopback port by default, has no browser entry point, does not serve the
 frontend, and requires a per-launch bearer token obtained through Tauri IPC.
 Device-management routes return `503` when no session is active.
+Lock, restart, and shutdown commands share a single-flight Diagnostics Relay
+lease. Lock maps to the one-way sleep request and preserves the parent control
+session; restart and shutdown allow the device disconnect to end the session.
 
 The WebSocket carries JPEG frames and typed control messages. The frontend
 sends normalized contacts rather than raw HID reports. Rust validates contact

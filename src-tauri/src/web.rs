@@ -196,6 +196,7 @@ pub fn router(state: AppState, token: String) -> Router {
         )
         .route("/api/device/screenshot", get(device_screenshot))
         .route("/api/device/text/paste", put(paste_device_text))
+        .route("/api/device/lock", put(lock_device))
         .route("/api/device/restart", put(restart_device))
         .route("/api/device/shutdown", put(shutdown_device))
         .route(
@@ -937,27 +938,39 @@ async fn device_screenshot(
     ))
 }
 
+#[derive(Clone, Copy)]
+enum DevicePowerRequest {
+    Lock,
+    Restart,
+    Shutdown,
+}
+
+async fn lock_device(State(state): State<AppState>) -> Result<StatusCode, (StatusCode, String)> {
+    dispatch_device_power_command(&state, DevicePowerRequest::Lock).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn restart_device(State(state): State<AppState>) -> Result<StatusCode, (StatusCode, String)> {
-    dispatch_device_power_command(&state, true).await?;
+    dispatch_device_power_command(&state, DevicePowerRequest::Restart).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn shutdown_device(
     State(state): State<AppState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    dispatch_device_power_command(&state, false).await?;
+    dispatch_device_power_command(&state, DevicePowerRequest::Shutdown).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn dispatch_device_power_command(
     state: &AppState,
-    restart: bool,
+    action: DevicePowerRequest,
 ) -> Result<(), (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    let command = if restart {
-        InputCmd::RestartDevice(reply)
-    } else {
-        InputCmd::ShutdownDevice(reply)
+    let command = match action {
+        DevicePowerRequest::Lock => InputCmd::LockDevice(reply),
+        DevicePowerRequest::Restart => InputCmd::RestartDevice(reply),
+        DevicePowerRequest::Shutdown => InputCmd::ShutdownDevice(reply),
     };
     if !state.input.try_send(command) {
         return Err((
@@ -3699,6 +3712,10 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            lock_device(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             restart_device(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -3990,6 +4007,13 @@ mod tests {
     #[tokio::test]
     async fn device_power_endpoints_dispatch_only_fixed_commands() {
         let (state, mut input_rx) = test_state();
+        let lock = tokio::spawn(lock_device(State(state.clone())));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::LockDevice(reply) => reply.send(Ok(())).unwrap(),
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(lock.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
         let restart = tokio::spawn(restart_device(State(state.clone())));
         match input_rx.recv().await.unwrap() {
             InputCmd::RestartDevice(reply) => reply.send(Ok(())).unwrap(),

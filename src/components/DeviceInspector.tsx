@@ -11,6 +11,7 @@ import {
   FolderOpenOutlined,
   InfoCircleOutlined,
   LinkOutlined,
+  LockOutlined,
   MobileOutlined,
   PlayCircleOutlined,
   PoweroffOutlined,
@@ -134,7 +135,7 @@ export function DeviceInspector({
   const [exportingReport, setExportingReport] = useState<string | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
-  const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
+  const [devicePowerAction, setDevicePowerAction] = useState<"lock" | "restart" | "shutdown" | null>(null);
   const [backupStatus, setBackupStatus] = useState<DeviceBackupStatus | null>(null);
   const [backupFull, setBackupFull] = useState(false);
   const [backupAction, setBackupAction] = useState<"start" | "stop" | null>(null);
@@ -630,6 +631,20 @@ export function DeviceInspector({
     });
   };
 
+  const lockDevice = async () => {
+    if (devicePowerAction) return;
+    setDevicePowerAction("lock");
+    try {
+      const response = await request("/api/device/lock", { method: "PUT" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      void message.success(t("deviceInspector.lockRequested"));
+    } catch (powerError) {
+      void message.error(t("deviceInspector.powerActionFailed", { error: String(powerError) }));
+    } finally {
+      setDevicePowerAction(null);
+    }
+  };
+
   const normalizedDeviceName = normalizeDeviceNameInput(renameValue);
   const prepareDeveloperMode = async () => {
     if (developerModeBusy) return;
@@ -936,6 +951,13 @@ export function DeviceInspector({
               <Typography.Text strong>{t("deviceInspector.powerActions")}</Typography.Text>
               <Typography.Text type="secondary">{t("deviceInspector.powerActionsHint")}</Typography.Text>
             </div>
+            <Button
+              className="device-lock-action"
+              icon={<LockOutlined />}
+              loading={devicePowerAction === "lock"}
+              disabled={devicePowerAction !== null}
+              onClick={() => void lockDevice()}
+            >{t("deviceInspector.lockDevice")}</Button>
             <Button
               icon={<ReloadOutlined />}
               loading={devicePowerAction === "restart"}

@@ -22,7 +22,7 @@ exposed as a browser application.
 - Editable device identity, metadata and activation readiness, application browsing, running-state detection, launch,
   restart and stop controls, native app icons, IPA installation, safe app
   removal, sandboxed App Documents browsing and transfer, confirmed device
-  restart and shutdown, and
+  lock, restart and shutdown, and
   provisioning profile inspection, validated installation and confirmed removal,
   plus bounded crash-report browsing and export
 - One-shot Unicode text paste and optional bidirectional text/image clipboard

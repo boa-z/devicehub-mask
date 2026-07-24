@@ -1043,6 +1043,20 @@ impl DeviceHub {
         ok_text(format!("Pressed {button}."))
     }
 
+    #[tool(
+        description = "Lock the connected iPhone through Diagnostics Relay. Unlike press_button with lock, this is a one-way sleep request and will not wake an already locked device."
+    )]
+    async fn lock_device(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::LockDevice(reply))?;
+        tokio::time::timeout(DEVICE_DETAILS_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("device lock request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(json!({ "lock_requested": true }).to_string())
+    }
+
     #[tool(description = "Rotate the device 90 degrees left or right.")]
     async fn rotate(
         &self,
@@ -1892,7 +1906,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -2010,6 +2024,7 @@ mod tests {
             "paste_text",
             "press_key",
             "press_button",
+            "lock_device",
             "rotate",
             "list_apps",
             "list_companion_devices",
@@ -2147,6 +2162,38 @@ mod tests {
             .unwrap();
         assert!(text.contains("Test Watch"));
         assert!(text.contains(r#""count":1"#));
+    }
+
+    #[tokio::test]
+    async fn lock_device_tool_dispatches_one_way_power_command() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+        let task = tokio::spawn(async move { hub.lock_device().await.unwrap() });
+        let InputCmd::LockDevice(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected device lock command");
+        };
+        reply.send(Ok(())).unwrap();
+        let result = task.await.unwrap();
+        assert!(result.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""lock_requested":true"#))
+        }));
     }
 
     #[tokio::test]
