@@ -34,7 +34,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceInspector } from "./components/DeviceInspector";
@@ -1474,6 +1474,13 @@ export default function App() {
       finish();
     }
   };
+  const handleDeviceContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (mappingEditing) return;
+    event.preventDefault();
+    if (page === "device" && connected && status.active_udid) {
+      command({ type: "button", name: "home" });
+    }
+  };
   const controlOverlayVisible = deviceViewPreferences.controlOverlayVisible;
   const selectedDevice = selectedDeviceId ?? undefined;
   const displayedMappings = page === "mappings" ? profile.mappings : controlProfile.mappings;
@@ -1822,7 +1829,7 @@ export default function App() {
                       onPointerUp={handlePointerUp}
                       onPointerCancel={handlePointerUp}
                       onLostPointerCapture={handlePointerUp}
-                      onContextMenu={(event) => !mappingEditing && event.preventDefault()}
+                      onContextMenu={handleDeviceContextMenu}
                     >
                       <canvas ref={bindCanvas} />
                       {page === "device" && performanceHud.enabled && (

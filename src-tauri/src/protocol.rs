@@ -303,6 +303,8 @@ pub enum InputCmd {
     ListCompanionDevices(
         oneshot::Sender<Result<Vec<crate::companion_devices::CompanionDevice>, String>>,
     ),
+    /// Read normalized, ordinal home-screen app locations through SpringBoardServices.
+    GetHomeScreenLayout(oneshot::Sender<Result<crate::home_screen::HomeScreenLayout, String>>),
     /// Read one validated PNG application icon through SpringBoardServices.
     GetAppIcon {
         bundle_id: String,

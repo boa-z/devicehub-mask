@@ -13,6 +13,7 @@ mod device_logs;
 mod diagnostics;
 mod heartbeat;
 mod hid;
+mod home_screen;
 mod location;
 mod mcp;
 mod netmuxd;

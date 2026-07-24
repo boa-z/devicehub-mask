@@ -97,6 +97,11 @@ CoreDevice AppService，避免每次操作创建新的 RSD tunnel。只有可执
 App 图标通过独立、按请求工作的 SpringBoardServices RSD channel 获取，因此不会占用 HID
 分发循环。worker 会校验 PNG header 与尺寸，限制单张 4 MiB，并使用 256 项、32 MiB 的
 FIFO 缓存；前端只请求接近可视区域的 App 行。
+主屏幕位置使用另一条按请求工作的 SpringBoardServices channel，布局读取不会延迟图标或 HID。
+解析器最多接收 32 个列表、每列表 256 项、四层文件夹和 1,024 个唯一 Bundle ID，只返回
+App 名称、Bundle ID 以及从 1 开始的 Dock、页面和文件夹顺序路径。Widget、Smart Stack
+配置、Web Clip URL 与原始 plist 都不会越过私有 API 或 MCP 边界；请求失败后会丢弃 client
+再重试。
 原生截图使用独立、有界的 CoreDevice ScreenCaptureService channel。worker 只接受一条
 排队请求，校验 PNG 与尺寸并把响应限制在 32 MiB；截图不会占用 HID 分发循环。
 

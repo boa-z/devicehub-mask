@@ -165,6 +165,24 @@ export type DeviceApp = {
   documents_available: boolean;
   is_running: boolean | null;
 };
+export type HomeScreenFolderStep = {
+  name: string | null;
+  page: number;
+  position: number;
+};
+export type HomeScreenAppLocation = {
+  bundle_id: string;
+  name: string | null;
+  container: "dock" | "page";
+  page: number | null;
+  position: number;
+  folders: HomeScreenFolderStep[];
+};
+export type HomeScreenLayout = {
+  apps: HomeScreenAppLocation[];
+  page_count: number;
+  truncated: boolean;
+};
 export type AppDocumentEntry = {
   name: string;
   path: string;

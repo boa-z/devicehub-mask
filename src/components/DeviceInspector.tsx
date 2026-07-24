@@ -26,7 +26,7 @@ import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ProvisioningProfile } from "../types";
+import type { AppOperation, CompanionDevice, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -117,6 +117,9 @@ export function DeviceInspector({
   const [companionError, setCompanionError] = useState<string | null>(null);
   const [companionLoading, setCompanionLoading] = useState(false);
   const [apps, setApps] = useState<DeviceApp[]>([]);
+  const [homeScreenLayout, setHomeScreenLayout] = useState<HomeScreenLayout | null>(null);
+  const [homeScreenError, setHomeScreenError] = useState<string | null>(null);
+  const [homeScreenLoading, setHomeScreenLoading] = useState(false);
   const [profiles, setProfiles] = useState<ProvisioningProfile[]>([]);
   const [crashReports, setCrashReports] = useState<DeviceCrashReport[]>([]);
   const [crashReportsTruncated, setCrashReportsTruncated] = useState(false);
@@ -137,6 +140,24 @@ export function DeviceInspector({
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
+  const homeScreenRequest = useRef(0);
+
+  const loadHomeScreen = useCallback(async () => {
+    const requestId = ++homeScreenRequest.current;
+    setHomeScreenLoading(true);
+    setHomeScreenError(null);
+    try {
+      const layout = await readJson<HomeScreenLayout>(await request("/api/device/home-screen"));
+      if (homeScreenRequest.current === requestId) setHomeScreenLayout(layout);
+    } catch (layoutError) {
+      if (homeScreenRequest.current === requestId) {
+        setHomeScreenLayout(null);
+        setHomeScreenError(String(layoutError));
+      }
+    } finally {
+      if (homeScreenRequest.current === requestId) setHomeScreenLoading(false);
+    }
+  }, [request]);
 
   const loadApps = useCallback(async () => {
     setApps(await readJson<DeviceApp[]>(await request("/api/device/apps")));
@@ -163,7 +184,7 @@ export function DeviceInspector({
           }
         }
       } else if (tab === "apps") {
-        await loadApps();
+        await Promise.all([loadApps(), loadHomeScreen()]);
       } else if (tab === "profiles") {
         setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
       } else {
@@ -176,14 +197,18 @@ export function DeviceInspector({
     } finally {
       setLoading(false);
     }
-  }, [activeUdid, loadApps, request, tab]);
+  }, [activeUdid, loadApps, loadHomeScreen, request, tab]);
 
   useEffect(() => {
+    homeScreenRequest.current += 1;
     setDetails(null);
     setCompanions([]);
     setCompanionError(null);
     setCompanionLoading(false);
     setApps([]);
+    setHomeScreenLayout(null);
+    setHomeScreenError(null);
+    setHomeScreenLoading(false);
     setProfiles([]);
     setCrashReports([]);
     setCrashReportsTruncated(false);
@@ -247,15 +272,19 @@ export function DeviceInspector({
     handledOperation.current = appOperation.id;
     if (appOperation.state === "succeeded") {
       void message.success(t(`deviceInspector.appOperationResult.${appOperation.kind ?? "install"}`));
-      if (tab === "apps") void loadApps();
+      if (tab === "apps") void load();
     } else if (appOperation.state === "failed") {
       void message.error(t("deviceInspector.appOperationFailed", { error: appOperation.error ?? "" }));
     } else {
       void message.info(t("deviceInspector.appOperationCancelled"));
     }
-  }, [appOperation, loadApps, t, tab]);
+  }, [appOperation, load, t, tab]);
 
   const visibleApps = useMemo(() => filterDeviceApps(apps, query), [apps, query]);
+  const homeScreenLocations = useMemo(
+    () => new Map(homeScreenLayout?.apps.map((location) => [location.bundle_id, location]) ?? []),
+    [homeScreenLayout],
+  );
   const visibleProfiles = useMemo(
     () => filterProvisioningProfiles(profiles, query, profileStatus),
     [profileStatus, profiles, query],
@@ -733,9 +762,55 @@ export function DeviceInspector({
               )}
             </div>
           )}
+          {homeScreenLoading && (
+            <div className="device-home-screen-status">
+              <Spin size="small" />
+              <Typography.Text type="secondary">{t("deviceInspector.homeScreenLoading")}</Typography.Text>
+            </div>
+          )}
+          {homeScreenError && (
+            <Alert
+              className="device-home-screen-alert"
+              type="warning"
+              showIcon
+              message={t("deviceInspector.homeScreenUnavailable")}
+              description={homeScreenError}
+            />
+          )}
+          {homeScreenLayout?.truncated && (
+            <Alert
+              className="device-home-screen-alert"
+              type="warning"
+              showIcon
+              message={t("deviceInspector.homeScreenTruncated")}
+            />
+          )}
           <div className="device-app-count">{t("deviceInspector.appCount", { count: visibleApps.length })}</div>
           <div className="device-app-list">
             {visibleApps.map((app) => {
+              const location = homeScreenLocations.get(app.bundle_id);
+              const folder = location?.folders.at(-1);
+              const locationLabel = folder
+                ? t("deviceInspector.homeScreenFolder", { name: folder.name ?? t("deviceInspector.homeScreenUnnamedFolder") })
+                : location?.container === "dock"
+                  ? t("deviceInspector.homeScreenDock")
+                  : location?.page
+                    ? t("deviceInspector.homeScreenPage", { page: location.page })
+                    : null;
+              const rootPosition = location
+                ? t("deviceInspector.homeScreenPosition", {
+                    page: location.page ?? t("deviceInspector.homeScreenDock"),
+                    position: location.position,
+                  })
+                : null;
+              const folderRoute = location?.folders.map((step) => t("deviceInspector.homeScreenFolderStep", {
+                name: step.name ?? t("deviceInspector.homeScreenUnnamedFolder"),
+                page: step.page,
+                position: step.position,
+              })) ?? [];
+              const locationTooltip = location
+                ? [rootPosition, ...folderRoute].join(" > ")
+                : undefined;
               const bindingState = appProfileBindingState(app.bundle_id, activeProfile, appProfileBindings, bindingConflicts);
               const boundProfile = appProfileBindings[app.bundle_id];
               const bindingTooltip = bindingState === "conflict"
@@ -750,6 +825,7 @@ export function DeviceInspector({
                   <Typography.Text type="secondary" ellipsis={{ tooltip: app.bundle_id }}>{app.bundle_id}</Typography.Text>
                   <div className="device-app-tags">
                     {app.version && <Tag>{app.version}</Tag>}
+                    {locationLabel && <Tooltip title={locationTooltip}><Tag color="cyan">{locationLabel}</Tag></Tooltip>}
                     {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
                     {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}
                     {bindingState === "conflict"

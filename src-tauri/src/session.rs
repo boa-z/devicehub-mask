@@ -1526,6 +1526,14 @@ async fn run(
         supervisor.reporter("device.companions"),
         supervisor.shutdown_receiver(),
     ));
+    let (home_screen_sender, home_screen_receiver) = tokio::sync::mpsc::channel(2);
+    supervisor.spawn(crate::home_screen::serve(
+        adapter.clone(),
+        handshake.clone(),
+        home_screen_receiver,
+        supervisor.reporter("device.home_screen"),
+        supervisor.shutdown_receiver(),
+    ));
     let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
     supervisor.spawn(crate::app_documents::serve(
         adapter.clone(),
@@ -1569,6 +1577,7 @@ async fn run(
     let device_management_services = DeviceManagementServices {
         icons: app_icon_sender,
         companions: companion_sender,
+        home_screen: home_screen_sender,
         documents: app_documents_sender,
         screen_capture: screen_capture_sender,
         network_capture: network_capture_sender,
@@ -1954,6 +1963,7 @@ struct LocationBridge {
 struct DeviceManagementServices {
     icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
     companions: tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
+    home_screen: tokio::sync::mpsc::Sender<crate::home_screen::HomeScreenCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
@@ -2278,6 +2288,22 @@ impl DeviceManagement {
                             let _ = reply.send(Err(reason.into()));
                         }
                     }
+                }
+                None
+            }
+            InputCmd::GetHomeScreenLayout(reply) => {
+                let command = crate::home_screen::HomeScreenCommand::Get { reply };
+                if let Err(error) = self.services.home_screen.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("home screen service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("home screen service is unavailable", command)
+                        }
+                    };
+                    let crate::home_screen::HomeScreenCommand::Get { reply } = command;
+                    let _ = reply.send(Err(reason.into()));
                 }
                 None
             }
@@ -3272,6 +3298,7 @@ async fn dispatch(
         | InputCmd::DeveloperMode(_)
         | InputCmd::ListApps(_)
         | InputCmd::ListCompanionDevices(_)
+        | InputCmd::GetHomeScreenLayout(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
         | InputCmd::NetworkCapture(_)

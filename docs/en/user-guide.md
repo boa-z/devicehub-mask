@@ -41,6 +41,8 @@ The stage toolbar always exposes Home, Lock, Volume Up, Volume Down, Mute, Siri,
 and Action. Always-on-top, inspector visibility, and fullscreen controls are in
 the title toolbar. Hiding the inspector gives the device view more room without
 stretching it. Page and fullscreen transitions release all active input.
+Right-clicking the device picture in the Device workspace sends Home. The
+Mapping workspace does not bind right-click to Home.
 The screenshot button requests a lossless PNG directly from CoreDevice, so it
 still works before the video canvas has recovered. If native capture is
 temporarily unavailable, the current decoded canvas is saved instead.
@@ -118,8 +120,8 @@ Sampling starts only while the Performance workspace is open and stops when it
 is left, so monitoring does not add permanent device load. The service-health
 section reports whether device heartbeat, virtual location, device conditions,
 device notifications, system monitoring, graphics monitoring, network
-monitoring, energy monitoring, paired Apple Watch discovery, and packet capture
-are connecting, ready, recovering, unavailable, or stopped.
+monitoring, energy monitoring, paired Apple Watch discovery, home-screen layout
+reads, and packet capture are connecting, ready, recovering, unavailable, or stopped.
 The heartbeat responds to the device's Lockdown keep-alive requests throughout
 the active session; sleep, timeout, or transport failures are recovered under
 the same bounded supervisor. A service reconnect does not tear down video or
@@ -187,6 +189,11 @@ remove confirmed removable user apps.
 App icons are read on demand from SpringBoardServices as their rows approach the
 visible area. If an icon is unavailable, the list keeps its letter fallback and
 all management actions remain usable.
+The same tab reads a bounded, normalized SpringBoard icon state and labels apps
+in the Dock, on a numbered home-screen page, or inside a named folder. Folder and
+page positions are 1-based ordinal positions, not screen coordinates. Widget
+configuration, Web Clip URLs, and private SpringBoard identifiers are omitted;
+failure of this optional query does not disable app management.
 
 The folder button on an application opens its **App Documents** workspace when
 the application exposes Documents through iOS File Sharing. You can browse
@@ -278,6 +285,12 @@ query as the Info tab and returns available metadata for Apple Watch devices
 paired with the active iPhone. An empty result is valid; the tool does not expose
 Watch control, service startup, or port forwarding. Companion identifiers should
 be handled as sensitive device metadata.
+
+`home_screen_layout` returns the same normalized Dock, page, and folder routes
+shown in the Apps tab. Its positions are ordinal context for finding an app, not
+pixel coordinates for `tap`; agents must use `screenshot` for visual targeting.
+The tool never returns raw icon-state plist, Widget configuration, Web Clip URLs,
+or private SpringBoard UUIDs.
 
 `performance_snapshot` temporarily enables the existing DVT performance
 services and returns CPU, top-process, energy, graphics, GPU-memory, and network

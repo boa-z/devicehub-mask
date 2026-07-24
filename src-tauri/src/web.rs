@@ -169,6 +169,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
         .route("/api/device/companions", get(device_companions))
+        .route("/api/device/home-screen", get(device_home_screen))
         .route("/api/device/name", put(rename_device))
         .route(
             "/api/device/developer-mode/reveal",
@@ -865,6 +866,34 @@ async fn device_companions(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(devices))
+}
+
+async fn device_home_screen(
+    State(state): State<AppState>,
+) -> Result<Json<crate::home_screen::HomeScreenLayout>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::GetHomeScreenLayout(reply)) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let layout = tokio::time::timeout(Duration::from_secs(12), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "home screen layout request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(layout))
 }
 
 async fn device_app_icon(
@@ -3127,6 +3156,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn home_screen_endpoint_dispatches_a_normalized_read_only_query() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(device_home_screen(State(state)));
+        let InputCmd::GetHomeScreenLayout(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected home screen layout query");
+        };
+        reply
+            .send(Ok(crate::home_screen::HomeScreenLayout {
+                apps: vec![crate::home_screen::HomeScreenAppLocation {
+                    bundle_id: "com.example.game".into(),
+                    name: Some("Game".into()),
+                    container: crate::home_screen::HomeScreenContainer::Page,
+                    page: Some(2),
+                    position: 3,
+                    folders: Vec::new(),
+                }],
+                page_count: 2,
+                truncated: false,
+            }))
+            .unwrap();
+        let response = request.await.unwrap().unwrap();
+        assert_eq!(response.0.apps[0].bundle_id, "com.example.game");
+        assert_eq!(response.0.apps[0].page, Some(2));
+    }
+
+    #[tokio::test]
     async fn device_queries_require_an_active_session() {
         let (state, _input_rx) = test_state();
         state.input.set(None);
@@ -3155,6 +3210,10 @@ mod tests {
         ));
         assert!(matches!(
             device_companions(State(state.clone())).await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            device_home_screen(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(

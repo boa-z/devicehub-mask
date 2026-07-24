@@ -1086,6 +1086,25 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Read the connected device's home-screen application locations. Positions are 1-based ordinal positions, not pixel or tap coordinates. Returns Dock/page placement and folder routes while omitting widgets, private UUIDs, Web Clip URLs, and raw SpringBoard configuration."
+    )]
+    async fn home_screen_layout(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::GetHomeScreenLayout(reply))?;
+        let layout = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("home screen layout request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&layout).map_err(|error| {
+            McpError::internal_error(
+                format!("unable to serialize home screen layout: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
         description = "Launch an installed app by bundle ID, or restart it when already running, and optionally wait for its screen to become stable. Use list_apps to discover bundle IDs and running state."
     )]
     async fn launch_app(
@@ -1628,7 +1647,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -1749,6 +1768,7 @@ mod tests {
             "rotate",
             "list_apps",
             "list_companion_devices",
+            "home_screen_layout",
             "launch_app",
             "stop_app",
             "list_crash_reports",
@@ -1875,6 +1895,54 @@ mod tests {
             .unwrap();
         assert!(text.contains("Test Watch"));
         assert!(text.contains(r#""count":1"#));
+    }
+
+    #[tokio::test]
+    async fn home_screen_tool_returns_ordinal_locations() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+        let task = tokio::spawn(async move { hub.home_screen_layout().await.unwrap() });
+        let InputCmd::GetHomeScreenLayout(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected home screen command");
+        };
+        reply
+            .send(Ok(crate::home_screen::HomeScreenLayout {
+                apps: vec![crate::home_screen::HomeScreenAppLocation {
+                    bundle_id: "com.example.game".into(),
+                    name: Some("Game".into()),
+                    container: crate::home_screen::HomeScreenContainer::Dock,
+                    page: None,
+                    position: 2,
+                    folders: Vec::new(),
+                }],
+                page_count: 3,
+                truncated: false,
+            }))
+            .unwrap();
+        let result = task.await.unwrap();
+        let text = result
+            .content
+            .iter()
+            .find_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .unwrap();
+        assert!(text.contains("com.example.game"));
+        assert!(text.contains(r#""container":"dock""#));
+        assert!(text.contains(r#""position":2"#));
     }
 
     #[tokio::test]

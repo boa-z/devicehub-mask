@@ -137,6 +137,12 @@ App icons are fetched through a separate request-driven SpringBoardServices RSD
 channel, so icon reads never occupy the HID dispatch loop. The worker validates
 PNG headers and dimensions, limits each response to 4 MiB, and uses a 256-entry,
 32 MiB FIFO cache. The frontend requests only rows near the visible viewport.
+Home-screen locations use another request-driven SpringBoardServices channel so
+layout reads cannot delay icon fetches or HID. The parser accepts at most 32
+lists, 256 items per list, four folder levels, and 1,024 unique bundle IDs. It
+returns only app names, bundle IDs, and 1-based ordinal Dock/page/folder routes;
+widgets, smart-stack configuration, Web Clip URLs, and raw plist never cross the
+private API or MCP boundary. A failed request discards the client before retry.
 Native screenshots use a separate bounded CoreDevice ScreenCaptureService
 channel. The worker accepts one queued request, validates the PNG and dimensions,
 and caps the response at 32 MiB; capture never occupies the HID dispatch loop.
