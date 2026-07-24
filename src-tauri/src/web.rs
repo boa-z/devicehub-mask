@@ -321,6 +321,10 @@ pub fn router(state: AppState, token: String) -> Router {
             "/api/device/crash-reports",
             get(device_crash_reports).delete(delete_crash_report),
         )
+        .route(
+            "/api/device/crash-reports/summary",
+            get(crash_report_summary),
+        )
         .route("/api/device/crash-reports/export", put(export_crash_report))
         .route(
             "/api/device/provisioning-profiles",
@@ -2632,6 +2636,46 @@ async fn device_crash_reports(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(reports))
+}
+
+#[derive(Deserialize)]
+struct CrashReportSummaryQuery {
+    device_path: String,
+}
+
+async fn crash_report_summary(
+    State(state): State<AppState>,
+    Query(query): Query<CrashReportSummaryQuery>,
+) -> Result<Json<crate::protocol::DeviceCrashReportSummary>, (StatusCode, String)> {
+    crate::crash_reports::validate_device_path(&query.device_path)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::ReadCrashReport {
+        device_path: query.device_path,
+        max_bytes: crate::crash_reports::MAX_READ_BYTES,
+        reply,
+    }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let report = tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "crash report summary request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(report.summary))
 }
 
 #[derive(Deserialize)]
@@ -5947,6 +5991,69 @@ mod tests {
         }
         let Json(result) = delete_request.await.unwrap().unwrap();
         assert_eq!(result, serde_json::json!({ "deleted": true }));
+    }
+
+    #[tokio::test]
+    async fn crash_report_summary_is_validated_bounded_and_summary_only() {
+        let (state, mut input_rx) = test_state();
+        let invalid = crash_report_summary(
+            State(state.clone()),
+            Query(CrashReportSummaryQuery {
+                device_path: "/../private/report.ips".into(),
+            }),
+        )
+        .await;
+        assert!(matches!(invalid, Err((StatusCode::BAD_REQUEST, _))));
+        assert!(input_rx.try_recv().is_err());
+
+        let request = tokio::spawn(crash_report_summary(
+            State(state),
+            Query(CrashReportSummaryQuery {
+                device_path: "/Report.ips".into(),
+            }),
+        ));
+        let InputCmd::ReadCrashReport {
+            device_path,
+            max_bytes,
+            reply,
+        } = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected crash report read command");
+        };
+        assert_eq!(device_path, "/Report.ips");
+        assert_eq!(max_bytes, crate::crash_reports::MAX_READ_BYTES);
+        reply
+            .send(Ok(crate::protocol::DeviceCrashReportContent {
+                device_path,
+                size_bytes: 4_096,
+                bytes_read: 128,
+                truncated: false,
+                lossy_utf8: false,
+                summary: crate::protocol::DeviceCrashReportSummary {
+                    format: crate::protocol::CrashReportFormat::IpsJson,
+                    kind: crate::protocol::CrashReportKind::AppCrash,
+                    process_name: Some("Game".into()),
+                    bundle_id: Some("com.example.game".into()),
+                    app_version: None,
+                    build_version: None,
+                    os_version: None,
+                    timestamp: None,
+                    bug_type: Some("309".into()),
+                    exception_type: None,
+                    exception_signal: None,
+                    termination_namespace: None,
+                    termination_code: None,
+                    faulting_thread: None,
+                    details_parsed: true,
+                    source_truncated: false,
+                },
+                content: "PRIVATE RAW CRASH CONTENT".into(),
+            }))
+            .unwrap();
+        let Json(summary) = request.await.unwrap().unwrap();
+        let serialized = serde_json::to_string(&summary).unwrap();
+        assert!(serialized.contains("com.example.game"));
+        assert!(!serialized.contains("PRIVATE RAW CRASH CONTENT"));
     }
 
     #[tokio::test]

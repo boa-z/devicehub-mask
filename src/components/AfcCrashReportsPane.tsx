@@ -1,10 +1,11 @@
-import { DeleteOutlined, DownloadOutlined, FileTextOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { DeleteOutlined, DownloadOutlined, FileTextOutlined, InfoCircleOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { filterCrashReports, formatFileSize, formatReportDate } from "../deviceInspector";
 import type { DeviceCrashReport, DeviceCrashReportList } from "../types";
+import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -28,6 +29,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [summaryReport, setSummaryReport] = useState<DeviceCrashReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const version = useRef(0);
 
@@ -63,6 +65,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
     setLoading(false);
     setExporting(null);
     setDeleting(null);
+    setSummaryReport(null);
   }, [deviceId]);
 
   useEffect(() => {
@@ -152,6 +155,15 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
                 {formatReportDate(report.modified, i18n.resolvedLanguage ?? i18n.language)}
               </Typography.Text>
               <div className="app-document-actions">
+                <Tooltip title={t("crashSummary.open")}>
+                  <Button
+                    size="small"
+                    icon={<InfoCircleOutlined />}
+                    aria-label={t("crashSummary.open")}
+                    disabled={exporting !== null || deleting !== null}
+                    onClick={() => setSummaryReport(report)}
+                  />
+                </Tooltip>
                 <Tooltip title={t("afc.exportCrashReport")}>
                   <Button
                     size="small"
@@ -181,6 +193,13 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("afc.noCrashReports")} />
       )}
       {truncated && <Alert type="warning" showIcon message={t("afc.crashReportsTruncated")} />}
+      <CrashReportSummaryModal
+        open={summaryReport !== null}
+        devicePath={summaryReport?.path ?? null}
+        reportName={summaryReport?.name ?? null}
+        request={request}
+        onClose={() => setSummaryReport(null)}
+      />
     </div>
   );
 }

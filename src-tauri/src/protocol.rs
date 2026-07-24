@@ -708,7 +708,47 @@ pub struct DeviceCrashReportContent {
     pub bytes_read: usize,
     pub truncated: bool,
     pub lossy_utf8: bool,
+    pub summary: DeviceCrashReportSummary,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrashReportFormat {
+    IpsJson,
+    LegacyText,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CrashReportKind {
+    AppCrash,
+    Jetsam,
+    Watchdog,
+    Panic,
+    Other,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceCrashReportSummary {
+    pub format: CrashReportFormat,
+    pub kind: CrashReportKind,
+    pub process_name: Option<String>,
+    pub bundle_id: Option<String>,
+    pub app_version: Option<String>,
+    pub build_version: Option<String>,
+    pub os_version: Option<String>,
+    pub timestamp: Option<String>,
+    pub bug_type: Option<String>,
+    pub exception_type: Option<String>,
+    pub exception_signal: Option<String>,
+    pub termination_namespace: Option<String>,
+    pub termination_code: Option<String>,
+    pub faulting_thread: Option<u32>,
+    pub details_parsed: bool,
+    pub source_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

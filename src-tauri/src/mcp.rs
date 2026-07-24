@@ -1533,7 +1533,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Read a size-bounded device crash report for diagnosis. device_path must be an exact absolute path returned by list_crash_reports. The default limit is 256 KiB and the hard limit is 1 MiB."
+        description = "Read a size-bounded device crash report for diagnosis together with a normalized summary. device_path must be an exact absolute path returned by list_crash_reports. The default limit is 256 KiB and the hard limit is 1 MiB."
     )]
     async fn read_crash_report(
         &self,
@@ -3028,14 +3028,34 @@ mod tests {
                 bytes_read: 24,
                 truncated: true,
                 lossy_utf8: false,
+                summary: crate::protocol::DeviceCrashReportSummary {
+                    format: crate::protocol::CrashReportFormat::LegacyText,
+                    kind: crate::protocol::CrashReportKind::AppCrash,
+                    process_name: Some("Game".into()),
+                    bundle_id: Some("com.example.game".into()),
+                    app_version: None,
+                    build_version: None,
+                    os_version: None,
+                    timestamp: None,
+                    bug_type: None,
+                    exception_type: Some("SIGABRT".into()),
+                    exception_signal: None,
+                    termination_namespace: None,
+                    termination_code: None,
+                    faulting_thread: None,
+                    details_parsed: true,
+                    source_truncated: true,
+                },
                 content: "Exception Type: SIGABRT".into(),
             }))
             .unwrap();
         let read_result = read_task.await.unwrap();
         assert!(read_result.content.iter().any(|content| {
-            content
-                .as_text()
-                .is_some_and(|text| text.text.contains("Exception Type: SIGABRT"))
+            content.as_text().is_some_and(|text| {
+                text.text.contains("Exception Type: SIGABRT")
+                    && text.text.contains("com.example.game")
+                    && text.text.contains("source_truncated")
+            })
         }));
 
         assert!(

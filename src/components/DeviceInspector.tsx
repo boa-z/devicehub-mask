@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
+import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
@@ -159,6 +160,7 @@ export function DeviceInspector({
   const [wdaRunnerAction, setWdaRunnerAction] = useState<string | null>(null);
   const [exportingReport, setExportingReport] = useState<string | null>(null);
   const [deletingReport, setDeletingReport] = useState<string | null>(null);
+  const [summaryReport, setSummaryReport] = useState<DeviceCrashReport | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const [ipaPreflightBusy, setIpaPreflightBusy] = useState(false);
@@ -302,6 +304,7 @@ export function DeviceInspector({
     setCrashReportsTruncated(false);
     setExportingReport(null);
     setDeletingReport(null);
+    setSummaryReport(null);
     setAppOperation(null);
     setIpaPreflightBusy(false);
     setProfileMutation(null);
@@ -1963,6 +1966,15 @@ export function DeviceInspector({
                   </div>
                 </div>
                 <div className="device-crash-actions">
+                  <Tooltip title={t("crashSummary.open")}>
+                    <Button
+                      size="small"
+                      icon={<InfoCircleOutlined />}
+                      aria-label={t("crashSummary.open")}
+                      disabled={exportingReport !== null || deletingReport !== null}
+                      onClick={() => setSummaryReport(report)}
+                    />
+                  </Tooltip>
                   <Tooltip title={t("deviceInspector.exportCrashReport")}>
                     <Button
                       size="small"
@@ -1990,6 +2002,13 @@ export function DeviceInspector({
         </div>
       )}
     </aside>
+    <CrashReportSummaryModal
+      open={summaryReport !== null}
+      devicePath={summaryReport?.path ?? null}
+      reportName={summaryReport?.name ?? null}
+      request={request}
+      onClose={() => setSummaryReport(null)}
+    />
     <Modal
       title={t("deviceInspector.renameDevice")}
       open={renameOpen}

@@ -3,7 +3,7 @@ import type { enUS } from "./en-US";
 type LocaleShape<T> = { [Key in keyof T]: T[Key] extends string ? string : LocaleShape<T[Key]> };
 
 export const zhCN = {
-  common: { confirm: "确认", cancel: "取消", create: "新建", rename: "重命名", delete: "删除", back: "返回" },
+  common: { confirm: "确认", cancel: "取消", create: "新建", rename: "重命名", delete: "删除", back: "返回", close: "关闭" },
   brand: { subtitle: "iOS 游戏控制" },
   navigation: { label: "主导航", device: "设备", mappings: "键盘映射", afc: "AFC 文件", performance: "性能", logs: "设备日志", location: "虚拟定位", settings: "应用设置" },
   afc: {
@@ -36,6 +36,32 @@ export const zhCN = {
     deleteCrashReportConfirm: "要从设备永久删除 {{name}} 吗？",
     crashReportDeleted: "已删除崩溃报告。",
     crashReportDeleteFailed: "无法删除崩溃报告：{{error}}",
+  },
+  crashSummary: {
+    open: "查看报告摘要",
+    title: "崩溃报告摘要",
+    titleWithName: "崩溃报告摘要：{{name}}",
+    loadFailed: "无法读取崩溃报告摘要",
+    partialDetails: "仅解析到报告中当前可用的头部信息。",
+    sourceTruncated: "报告超过读取上限，当前摘要可能不完整。",
+    noDetails: "未找到支持的摘要字段。",
+    kinds: { app_crash: "App 崩溃", jetsam: "内存终止", watchdog: "Watchdog 终止", panic: "系统 Panic", other: "其他报告", unknown: "未知" },
+    formats: { ips_json: "现代 IPS", legacy_text: "旧版崩溃报告", unknown: "未知" },
+    fields: {
+      kind: "报告类型",
+      format: "格式",
+      process: "进程",
+      bundle: "Bundle 标识符",
+      version: "App 版本",
+      os: "系统版本",
+      timestamp: "时间",
+      bugType: "Bug 类型",
+      exception: "异常",
+      signal: "信号",
+      terminationNamespace: "终止命名空间",
+      terminationCode: "终止代码",
+      faultingThread: "故障线程",
+    },
   },
   performance: {
     title: "性能工作台",

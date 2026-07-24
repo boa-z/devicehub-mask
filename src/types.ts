@@ -378,6 +378,26 @@ export type DeviceCrashReportList = {
   reports: DeviceCrashReport[];
   truncated: boolean;
 };
+export type CrashReportFormat = "ips_json" | "legacy_text" | "unknown";
+export type CrashReportKind = "app_crash" | "jetsam" | "watchdog" | "panic" | "other" | "unknown";
+export type DeviceCrashReportSummary = {
+  format: CrashReportFormat;
+  kind: CrashReportKind;
+  process_name: string | null;
+  bundle_id: string | null;
+  app_version: string | null;
+  build_version: string | null;
+  os_version: string | null;
+  timestamp: string | null;
+  bug_type: string | null;
+  exception_type: string | null;
+  exception_signal: string | null;
+  termination_namespace: string | null;
+  termination_code: string | null;
+  faulting_thread: number | null;
+  details_parsed: boolean;
+  source_truncated: boolean;
+};
 export type DeviceLogEntry = {
   sequence: number;
   received_at_ms: number;

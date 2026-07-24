@@ -84,7 +84,7 @@
 | Watch 元数据 | CompanionProxy |
 | App 图标 | CoreDevice AppService，回退 SpringBoardServices |
 | 主屏幕布局 | SpringBoardServices |
-| 崩溃报告 | CrashReportCopyMobile |
+| 崩溃报告与归一化摘要 | CrashReportCopyMobile |
 | 语义自动化 | WebDriverAgent 和 XCTest runner 服务 |
 
 ## MCP 工具覆盖
@@ -93,7 +93,7 @@
 
 - 画面与输入：`screenshot`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、 `type_text`、`paste_text`、`press_key`、`press_button`、`rotate`。
 - 设备与会话：`status`、`device_details`、`list_devices`、`connect_device`、 `reconnect_device`、`lock_device`、`wait_for_device_event`、 `list_companion_devices`、`home_screen_layout`。
-- App 与诊断：`list_apps`、`launch_app`、`stop_app`、`list_processes`、`list_crash_reports`、`read_crash_report`、`performance_snapshot`、`recent_device_logs`。
+- App 与诊断：`list_apps`、`launch_app`、`stop_app`、`list_processes`、`list_crash_reports`、带归一化摘要的 `read_crash_report`、`performance_snapshot`、`recent_device_logs`。
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。
 - WDA：`wda_runner_status`、`wda_start`、`wda_stop`、`wda_status`、 `wda_ui_tree`、`wda_find_elements`、`wda_click`。
 

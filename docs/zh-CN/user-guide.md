@@ -8,7 +8,7 @@
 
 信息标签页会显示经过规范化的语言、地区格式、时区和 12/24 小时制，便于多语言及时间相关测试确认当前设备环境。每个值都会经过长度与字符校验，原始 Lockdown 字典会被丢弃。
 
-设备页包含设备选择、保持比例的实时画面、控制模式、旋转、鼠标直接触控、硬件按键和设备检查器。检查器提供 Lockdown 设备信息、已安装应用、IPA 安装、升级与卸载，以及描述文件列表。
+设备页包含设备选择、保持比例的实时画面、控制模式、旋转、鼠标直接触控、硬件按键和设备检查器。检查器提供 Lockdown 设备信息、已安装应用、IPA 安装、升级与卸载、描述文件列表和崩溃报告。只有用户点击摘要操作时才会读取对应报告，并显示归一化的进程、App、系统、异常、终止及分类字段；支持现代 IPS JSON 和旧版 crash 头部。路径、incident 标识符、crash key、线程栈、二进制镜像和原始终止文本会在响应进入 WebView 前丢弃。AFC 的“崩溃报告”范围复用同一摘要视图。
 
 缺少电脑配对记录的 USB 设备仍会显示在选择器中，并标记为“需要信任”；选择它不会启动必然失败的 CoreDevice 会话。点击“信任设备”，保持 iPhone 或 iPad 解锁，并在设备上确认“信任此电脑”。DeviceHub Mask 会等待这次显式确认，使用安全 Lockdown session 验证生成的记录，通过发现该设备的同一 usbmuxd 或内置 netmuxd 后端保存记录，然后刷新并连接设备。拒绝、设备锁定、断开或 90 秒超时都会明确报告，应用不会自动重复弹出请求。这里的电脑信任记录不同于后续 Wi-Fi CoreDevice 传输使用的 iOS 17+ RemotePairing 凭据。
 
@@ -145,7 +145,7 @@ DeviceHub Mask 运行期间，MCP 客户端可以连接 Streamable HTTP 端点 `
 
 `performance_snapshot` 会在调用期间临时启用现有 DVT 性能服务，返回 CPU、高负载进程、 能耗、图形、GPU 内存和网络指标。默认最多等待 2.5 秒获取新样本；将 `wait_ms` 设为 `0` 可立即读取缓存快照。`recent_device_logs` 会临时启用设备日志服务，每次最多返回 500 条； 使用 `after` 序列游标可增量读取，也可按 `level` 或不区分大小写的 `query` 筛选。MCP 的 临时需求不会关闭桌面界面已经启用的性能采样或日志流。
 
-App 意外退出后，可调用 `list_crash_reports` 获取按时间倒序的元数据，并按报告名称或设备 路径筛选。将其返回的准确 `device_path` 传给 `read_crash_report`；默认返回 256 KiB， 硬上限为 1 MiB，并携带 `truncated` 和 `lossy_utf8` 标记。该工具只读，并拒绝相对路径、 路径穿越、目录和超限请求。
+App 意外退出后，可调用 `list_crash_reports` 获取按时间倒序的元数据，并按报告名称或设备路径筛选。将其返回的准确 `device_path` 传给 `read_crash_report`；工具会同时返回归一化摘要与默认 256 KiB 的报告正文，正文硬上限为 1 MiB，并携带 `truncated` 和 `lossy_utf8` 标记。摘要会排除路径、incident 标识符、crash key、线程栈、二进制镜像和原始终止文本。该工具只读，并拒绝相对路径、路径穿越、目录和超限请求。
 
 当 WebDriverAgent 已在活动设备上完成安装、签名并运行时，`wda_status` 可探测设备端口 8100。如果已安装开发者 App 的 Bundle ID 以 `.xctrunner` 结尾，可通过 App 列表行上的 WDA 按钮或 MCP `wda_start` 显式使用 XCTest 启动，启动等待上限为 30 秒。 设备必须已启用开发者模式并挂载匹配的开发者磁盘镜像，“设备信息”会显示当前镜像状态。 未挂载时可点击“挂载镜像”并按原生文件选择器依次选择本地文件。iOS 16 及以前需要 `DeveloperDiskImage.dmg` 和对应 `.signature`；iOS 17 及以后需要来自同一兼容镜像集的 DMG、`.trustcache` 与 `BuildManifest.plist`。只能使用与当前 iOS build 匹配的可信文件； 个性化挂载会在确认后连接 Apple 签名服务。应用不会自动查找或下载镜像，取消上传后可能 需要从头重试完整挂载。 `wda_runner_status` 只报告由 DeviceHub Mask 监督的 Runner，`wda_stop` 也只停止该 Runner， 不会终止外部启动的 WDA。设备会话结束时会自动清理 Runner。DeviceHub Mask 不负责安装、 签名或静默自动启动 WDA。
 

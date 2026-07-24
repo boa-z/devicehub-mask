@@ -84,7 +84,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Watch metadata | CompanionProxy |
 | App icons | CoreDevice AppService with SpringBoardServices fallback |
 | Home-screen layout | SpringBoardServices |
-| Crash reports | CrashReportCopyMobile |
+| Crash reports and normalized summaries | CrashReportCopyMobile |
 | Semantic automation | WebDriverAgent and XCTest runner services |
 
 ## MCP Tool Coverage
@@ -93,7 +93,7 @@ The Streamable HTTP MCP endpoint exposes the following tools while the desktop a
 
 - Screen and input: `screenshot`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, and `rotate`.
 - Device/session: `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `lock_device`, `wait_for_device_event`, `list_companion_devices`, and `home_screen_layout`.
-- Apps and diagnosis: `list_apps`, `launch_app`, `stop_app`, `list_processes`, `list_crash_reports`, `read_crash_report`, `performance_snapshot`, and `recent_device_logs`.
+- Apps and diagnosis: `list_apps`, `launch_app`, `stop_app`, `list_processes`, `list_crash_reports`, `read_crash_report` with a normalized summary, `performance_snapshot`, and `recent_device_logs`.
 - Location and conditions: `set_location`, `clear_location`, `list_device_conditions`, `apply_device_condition`, and `clear_device_condition`.
 - WDA: `wda_runner_status`, `wda_start`, `wda_stop`, `wda_status`, `wda_ui_tree`, `wda_find_elements`, and `wda_click`.
 
