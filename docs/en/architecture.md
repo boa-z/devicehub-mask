@@ -210,6 +210,16 @@ halving decoded frame bandwidth. A `watch` channel publishes only the latest
 frame and wakes WebSocket consumers without a fixed-rate polling loop; lagging
 consumers drop stale decoded frames by construction.
 
+The experimental Browser / WebCodecs backend branches after the same bounded
+access-unit queue. Rust publishes versioned Annex-B HEVC access units over the
+authenticated WebSocket and the WebView decodes them with `VideoDecoder` before
+drawing `VideoFrame` objects to the existing canvas. Broadcast lag, decoder
+backlog, and configuration changes discard dependent frames and request a new
+IRAP through PLI/FIR. Repeated capability or runtime failures reconnect the
+session with the native backend. MCP screenshots remain available through the
+on-demand CoreDevice ScreenCaptureService and frame synchronization observes
+both native and browser frame versions.
+
 Axum JPEG-encodes the latest frame with a thread-local reusable TurboJPEG
 compressor. At most two frames are allowed in flight per WebView, so backend JPEG
 encoding can overlap WebView JPEG decoding without forming an unbounded queue.
@@ -221,6 +231,11 @@ Windows limits the decoded long edge to 1920 pixels by default. FFmpeg preserves
 aspect ratio, never upscales, and emits even dimensions. Set
 `DEVICEHUB_VIDEO_MAX_DIMENSION=0` for native resolution or choose a lower value
 on slower systems.
+
+The browser backend does not apply the FFmpeg dimension limit. Support depends
+on the platform WebView exposing HEVC through WebCodecs; Windows commonly also
+requires the system HEVC Video Extensions. The app probes the exact decoder
+configuration at runtime instead of assuming that WebCodecs implies HEVC.
 
 The canvas contain-fits the rotated source with one shared scale. Pointer
 coordinates are normalized in the exact displayed rectangle, which prevents

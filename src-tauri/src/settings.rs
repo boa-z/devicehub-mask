@@ -7,10 +7,20 @@ use crate::protocol::FrameFormat;
 
 const DEFAULT_AUDIO_VOLUME: f32 = 0.8;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoDecoderBackend {
+    #[default]
+    Native,
+    Browser,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct PersistedSettings {
     #[serde(default)]
     video_pixel_format: FrameFormat,
+    #[serde(default)]
+    video_decoder_backend: VideoDecoderBackend,
     #[serde(default)]
     audio_enabled: bool,
     #[serde(default)]
@@ -25,6 +35,7 @@ impl Default for PersistedSettings {
     fn default() -> Self {
         Self {
             video_pixel_format: FrameFormat::default(),
+            video_decoder_backend: VideoDecoderBackend::default(),
             audio_enabled: false,
             audio_muted: false,
             audio_volume: DEFAULT_AUDIO_VOLUME,
@@ -40,6 +51,8 @@ fn default_audio_volume() -> f32 {
 #[derive(Debug, Serialize)]
 pub struct VideoSettingsStatus {
     pub video_pixel_format: FrameFormat,
+    pub video_decoder_backend: VideoDecoderBackend,
+    pub browser_decoder_fallback: Option<String>,
     pub environment_override: bool,
     pub audio_enabled: bool,
     pub audio_muted: bool,
@@ -51,6 +64,7 @@ pub struct AppSettings {
     path: PathBuf,
     persisted: RwLock<PersistedSettings>,
     environment_override: Option<FrameFormat>,
+    browser_decoder_fallback: RwLock<Option<String>>,
 }
 
 impl AppSettings {
@@ -78,10 +92,12 @@ impl AppSettings {
             path,
             persisted: RwLock::new(persisted),
             environment_override,
+            browser_decoder_fallback: RwLock::new(None),
         };
         let status = settings.status();
         tracing::info!(
             video_pixel_format = ?status.video_pixel_format,
+            video_decoder_backend = ?status.video_decoder_backend,
             environment_override = status.environment_override,
             audio_enabled = status.audio_enabled,
             audio_muted = status.audio_muted,
@@ -101,6 +117,25 @@ impl AppSettings {
         })
     }
 
+    pub fn video_decoder_backend(&self) -> VideoDecoderBackend {
+        let requested = self
+            .persisted
+            .read()
+            .expect("application settings lock poisoned")
+            .video_decoder_backend;
+        if requested == VideoDecoderBackend::Browser
+            && self
+                .browser_decoder_fallback
+                .read()
+                .expect("application settings lock poisoned")
+                .is_some()
+        {
+            VideoDecoderBackend::Native
+        } else {
+            requested
+        }
+    }
+
     pub fn status(&self) -> VideoSettingsStatus {
         let persisted = self
             .persisted
@@ -110,6 +145,12 @@ impl AppSettings {
             video_pixel_format: self
                 .environment_override
                 .unwrap_or(persisted.video_pixel_format),
+            video_decoder_backend: persisted.video_decoder_backend,
+            browser_decoder_fallback: self
+                .browser_decoder_fallback
+                .read()
+                .expect("application settings lock poisoned")
+                .clone(),
             environment_override: self.environment_override.is_some(),
             audio_enabled: persisted.audio_enabled,
             audio_muted: persisted.audio_muted,
@@ -145,6 +186,7 @@ impl AppSettings {
             .map_err(|_| "application settings lock poisoned".to_owned())?;
         let next = PersistedSettings {
             video_pixel_format,
+            video_decoder_backend: persisted.video_decoder_backend,
             audio_enabled: persisted.audio_enabled,
             audio_muted: persisted.audio_muted,
             audio_volume: persisted.audio_volume,
@@ -159,6 +201,56 @@ impl AppSettings {
         Ok(self.status())
     }
 
+    pub fn set_video_decoder_backend(
+        &self,
+        video_decoder_backend: VideoDecoderBackend,
+    ) -> Result<VideoSettingsStatus, String> {
+        let mut persisted = self
+            .persisted
+            .write()
+            .map_err(|_| "application settings lock poisoned".to_owned())?;
+        let next = PersistedSettings {
+            video_pixel_format: persisted.video_pixel_format,
+            video_decoder_backend,
+            audio_enabled: persisted.audio_enabled,
+            audio_muted: persisted.audio_muted,
+            audio_volume: persisted.audio_volume,
+            clipboard_sync_enabled: persisted.clipboard_sync_enabled,
+        };
+        self.save_locked(&mut persisted, next)?;
+        *self
+            .browser_decoder_fallback
+            .write()
+            .map_err(|_| "application settings lock poisoned".to_owned())? = None;
+        tracing::info!(
+            ?video_decoder_backend,
+            "video decoder backend changed; applies to next session"
+        );
+        Ok(self.status())
+    }
+
+    pub fn report_browser_decoder_failure(&self, error: String) -> bool {
+        if self
+            .persisted
+            .read()
+            .expect("application settings lock poisoned")
+            .video_decoder_backend
+            != VideoDecoderBackend::Browser
+        {
+            return false;
+        }
+        let mut fallback = self
+            .browser_decoder_fallback
+            .write()
+            .expect("application settings lock poisoned");
+        if fallback.is_some() {
+            return false;
+        }
+        tracing::warn!(%error, "browser HEVC decoder unavailable; falling back to native decoder");
+        *fallback = Some(error);
+        true
+    }
+
     pub fn set_audio_enabled(&self, audio_enabled: bool) -> Result<VideoSettingsStatus, String> {
         let mut persisted = self
             .persisted
@@ -166,6 +258,7 @@ impl AppSettings {
             .map_err(|_| "application settings lock poisoned".to_owned())?;
         let next = PersistedSettings {
             video_pixel_format: persisted.video_pixel_format,
+            video_decoder_backend: persisted.video_decoder_backend,
             audio_enabled,
             audio_muted: persisted.audio_muted,
             audio_volume: persisted.audio_volume,
@@ -194,6 +287,7 @@ impl AppSettings {
             .map_err(|_| "application settings lock poisoned".to_owned())?;
         let next = PersistedSettings {
             video_pixel_format: persisted.video_pixel_format,
+            video_decoder_backend: persisted.video_decoder_backend,
             audio_enabled: persisted.audio_enabled,
             audio_muted,
             audio_volume,
@@ -219,6 +313,7 @@ impl AppSettings {
             .map_err(|_| "application settings lock poisoned".to_owned())?;
         let next = PersistedSettings {
             video_pixel_format: persisted.video_pixel_format,
+            video_decoder_backend: persisted.video_decoder_backend,
             audio_enabled: persisted.audio_enabled,
             audio_muted: persisted.audio_muted,
             audio_volume: persisted.audio_volume,
@@ -300,6 +395,7 @@ mod tests {
             path: path.clone(),
             persisted: RwLock::new(PersistedSettings::default()),
             environment_override: None,
+            browser_decoder_fallback: RwLock::new(None),
         };
 
         let status = settings

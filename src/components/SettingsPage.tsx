@@ -14,7 +14,9 @@ import {
   readVideoSettings,
   setAudioEnabled,
   setClipboardSyncEnabled,
+  setVideoDecoderBackend,
   setVideoPixelFormat,
+  type VideoDecoderBackend,
   type VideoPixelFormat,
   type VideoSettingsStatus,
 } from "../videoSettings";
@@ -80,6 +82,18 @@ export function SettingsPage({
     try {
       setVideoSettings(await setVideoPixelFormat(videoPixelFormat));
       message.success(t("settings.videoPixelFormatChanged"));
+    } catch (error) {
+      message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+    } finally {
+      setVideoSettingsBusy(false);
+    }
+  };
+
+  const changeVideoDecoderBackend = async (videoDecoderBackend: VideoDecoderBackend) => {
+    setVideoSettingsBusy(true);
+    try {
+      setVideoSettings(await setVideoDecoderBackend(videoDecoderBackend));
+      message.success(t("settings.videoDecoderChanged"));
     } catch (error) {
       message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
     } finally {
@@ -193,6 +207,28 @@ export function SettingsPage({
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.video")}</Typography.Title>
+        <label>
+          <Space size={8} wrap>
+            <span>{t("settings.videoDecoder")}</span>
+            <Tag color="warning">{t("settings.experimental")}</Tag>
+          </Space>
+          <Select<VideoDecoderBackend>
+            className="video-format-select"
+            value={videoSettings?.video_decoder_backend}
+            disabled={!videoSettings}
+            loading={videoSettingsBusy}
+            options={[
+              { value: "native", label: t("settings.videoDecoders.native") },
+              { value: "browser", label: t("settings.videoDecoders.browser") },
+            ]}
+            onChange={(value) => void changeVideoDecoderBackend(value)}
+          />
+        </label>
+        <Typography.Text type={videoSettings?.browser_decoder_fallback ? "warning" : "secondary"}>
+          {videoSettings?.browser_decoder_fallback
+            ? t("settings.videoDecoderFallback", { error: videoSettings.browser_decoder_fallback })
+            : t("settings.videoDecoderHint")}
+        </Typography.Text>
         <label>
           <Space size={8} wrap>
             <span>{t("settings.videoPixelFormat")}</span>

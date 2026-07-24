@@ -33,6 +33,10 @@ Tools with **Desktop development with C++**, CMake, NASM, FFmpeg, and Apple
 Mobile Device Service. The desktop iTunes package provides the Apple service and
 the usbmuxd endpoint at `127.0.0.1:27015`.
 
+The optional experimental Browser / WebCodecs video decoder may also require
+Microsoft's HEVC Video Extensions. This is not required for the default native
+decoder; the app probes support and falls back automatically.
+
 ```powershell
 winget install --id Rustlang.Rustup --exact
 winget install --id OpenJS.NodeJS.LTS --exact

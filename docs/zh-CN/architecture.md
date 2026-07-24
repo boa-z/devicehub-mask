@@ -150,6 +150,12 @@ CoreDevice displayservice 输出 RTP/HEVC。后端先组装完整 HEVC Access Un
 最新帧通过 `watch` 通道按事件通知 WebSocket，取消固定频率轮询；慢消费者只会看到最新帧，
 不会积压陈旧画面。
 
+实验性的“浏览器 / WebCodecs”后端在同一个有界 Access Unit 队列后分流。Rust 通过已鉴权
+WebSocket 发布带版本头的 Annex-B HEVC Access Unit，WebView 使用 `VideoDecoder` 解码，
+再把 `VideoFrame` 绘制到现有 Canvas。广播落后、解码队列积压或配置变化时会丢弃依赖帧，
+并通过 PLI/FIR 请求新的 IRAP。能力检测或运行时连续失败会自动重连并回退原生后端。MCP
+截图继续使用按需 CoreDevice ScreenCaptureService，帧同步同时观察原生与浏览器帧版本。
+
 Axum 使用线程本地复用的 TurboJPEG compressor 编码最新帧。每个 WebView 最多允许两帧
 在途，使后端 JPEG 编码与 WebView JPEG 解码可以重叠，同时不会形成无限队列。前端会对
 已解码呈现或主动替换的帧发送确认；500ms credit 租约避免确认丢失时永久停帧。
@@ -157,6 +163,10 @@ Axum 使用线程本地复用的 TurboJPEG compressor 编码最新帧。每个 W
 Windows 默认将解码长边限制在 1920 像素。FFmpeg 始终保持比例、不放大，并输出偶数
 尺寸。设置 `DEVICEHUB_VIDEO_MAX_DIMENSION=0` 可使用原始分辨率，低性能设备可设置
 更小值。
+
+浏览器后端不应用 FFmpeg 尺寸上限。它要求平台 WebView 通过 WebCodecs 暴露 HEVC；Windows
+通常还需要系统 HEVC Video Extensions。应用会在运行时探测准确的解码配置，不会仅凭
+WebCodecs 存在就假定 HEVC 可用。
 
 Canvas 使用同一个比例 contain-fit 旋转后的源画面。鼠标坐标只在准确显示矩形内归一化，
 避免横屏拉伸和触控偏移。

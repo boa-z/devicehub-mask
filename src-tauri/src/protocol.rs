@@ -106,6 +106,10 @@ impl FrameSlot {
         self.0.frame.subscribe()
     }
 
+    pub fn reset(&self) {
+        self.0.frame.send_replace(None);
+    }
+
     pub fn latest(&self) -> Option<(u64, Arc<Frame>)> {
         self.0
             .frame

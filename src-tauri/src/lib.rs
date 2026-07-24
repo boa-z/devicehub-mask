@@ -1,6 +1,7 @@
 mod app_documents;
 mod app_icons;
 mod audio_output;
+mod browser_video;
 mod crash_reports;
 mod decode;
 mod demand;
@@ -106,6 +107,14 @@ fn set_video_pixel_format(
 }
 
 #[tauri::command]
+fn set_video_decoder_backend(
+    video_decoder_backend: settings::VideoDecoderBackend,
+    state: tauri::State<'_, Arc<settings::AppSettings>>,
+) -> Result<settings::VideoSettingsStatus, String> {
+    state.set_video_decoder_backend(video_decoder_backend)
+}
+
+#[tauri::command]
 fn set_audio_enabled(
     enabled: bool,
     state: tauri::State<'_, Arc<settings::AppSettings>>,
@@ -182,6 +191,7 @@ fn spawn_backend(
             let device_tasks = tokio::task::LocalSet::new();
             runtime.block_on(device_tasks.run_until(async move {
                 let frames = FrameSlot::default();
+                let browser_frames = browser_video::BrowserVideoSlot::default();
                 let video_counters = VideoCounters::default();
                 let status = StatusSlot::default();
                 let clipboard = ClipboardSlot::default();
@@ -203,6 +213,7 @@ fn spawn_backend(
 
                 tokio::spawn(mcp::serve(
                     frames.clone(),
+                    browser_frames.clone(),
                     input.clone(),
                     orientation.clone(),
                     devices.clone(),
@@ -222,10 +233,11 @@ fn spawn_backend(
                     initial_udid,
                     pairing_dir,
                     resource_dir,
-                    settings,
+                    settings.clone(),
                     video_counters.clone(),
                     || {},
                     frames.clone(),
+                    browser_frames.clone(),
                     audio.clone(),
                     status.clone(),
                     clipboard.clone(),
@@ -249,6 +261,7 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         frames,
+                        browser_frames,
                         clipboard,
                         device_events,
                         network_capture,
@@ -269,6 +282,7 @@ fn spawn_backend(
                         input,
                         control: thread_control.clone(),
                         profile_dir: Arc::new(profile_dir),
+                        settings,
                     },
                     server_token,
                 );
@@ -351,6 +365,7 @@ pub fn run() {
             frontend_log,
             video_settings_status,
             set_video_pixel_format,
+            set_video_decoder_backend,
             set_audio_enabled,
             set_audio_playback,
             audio_output_status,

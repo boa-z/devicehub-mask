@@ -35,6 +35,7 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub frames: FrameSlot,
+    pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
     pub device_events: crate::device_events::DeviceEventSlot,
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
@@ -55,6 +56,7 @@ pub struct AppState {
     pub input: InputSink,
     pub control: UnboundedSender<ControlCmd>,
     pub profile_dir: Arc<PathBuf>,
+    pub settings: Arc<crate::settings::AppSettings>,
 }
 
 #[derive(Serialize)]
@@ -1747,6 +1749,10 @@ enum ClientMessage {
         direction: RotateRequest,
     },
     FramePresented,
+    BrowserVideoKeyframe,
+    BrowserDecoderError {
+        message: String,
+    },
     FrontendMetrics {
         window_ms: f64,
         received_frames: u64,
@@ -1785,6 +1791,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
     let send_task = tokio::spawn(async move {
         let mut last_status = String::new();
         let mut frame_rx = send_state.frames.subscribe();
+        let mut browser_frame_rx = send_state.browser_frames.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
         let mut device_event_rx = send_state.device_events.subscribe();
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
@@ -1794,6 +1801,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
         let mut metrics_started = Instant::now();
         let mut metrics_counters = send_state.video_counters.snapshot();
         let mut metrics_frame_version = send_state.frames.version();
+        let mut metrics_browser_frame_version = send_state.browser_frames.version();
         let mut sent_frames = 0_u64;
         let mut sent_bytes = 0_u64;
         let mut encoded_frames = 0_u64;
@@ -1846,6 +1854,25 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     }
                     websocket_send_time += send_started.elapsed();
                 }
+                browser_frame = browser_frame_rx.recv() => {
+                    match browser_frame {
+                        Ok(frame) => {
+                            let packet = crate::browser_video::encode_packet(&frame);
+                            sent_frames += 1;
+                            sent_bytes += packet.len() as u64;
+                            let send_started = Instant::now();
+                            if sender.send(Message::Binary(packet.into())).await.is_err() {
+                                break;
+                            }
+                            websocket_send_time += send_started.elapsed();
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(skipped, "browser video client lagged; requesting keyframe");
+                            send_state.browser_frames.request_keyframe();
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
                 clipboard = clipboard_rx.recv() => {
                     match clipboard {
                         Ok(event) => {
@@ -1886,9 +1913,12 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     let elapsed = metrics_started.elapsed().as_secs_f64().max(f64::EPSILON);
                     let counters = send_state.video_counters.snapshot();
                     let version = send_state.frames.version();
+                    let browser_version = send_state.browser_frames.version();
                     let source_frames = counters.source_frames.wrapping_sub(metrics_counters.source_frames);
                     let decoded_frames = counters.decoded_frames.wrapping_sub(metrics_counters.decoded_frames);
-                    let published_frames = version.wrapping_sub(metrics_frame_version);
+                    let published_frames = version
+                        .wrapping_sub(metrics_frame_version)
+                        .saturating_add(browser_version.wrapping_sub(metrics_browser_frame_version));
                     let pacer = send_pacer.take_metrics();
                     let metrics = StreamMetricsView {
                         source_fps: source_frames as f64 / elapsed,
@@ -1939,6 +1969,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     metrics_started = Instant::now();
                     metrics_counters = counters;
                     metrics_frame_version = version;
+                    metrics_browser_frame_version = browser_version;
                     sent_frames = 0;
                     sent_bytes = 0;
                     encoded_frames = 0;
@@ -2117,6 +2148,17 @@ fn handle_client_message(
     };
     match message {
         ClientMessage::FramePresented => return true,
+        ClientMessage::BrowserVideoKeyframe => {
+            state.browser_frames.request_keyframe();
+        }
+        ClientMessage::BrowserDecoderError { message } => {
+            let message = message.chars().take(256).collect::<String>();
+            if state.settings.report_browser_decoder_failure(message)
+                && let Some(selection_id) = state.active.selection_id()
+            {
+                let _ = state.control.send(ControlCmd::Reconnect(selection_id));
+            }
+        }
         ClientMessage::FrontendMetrics {
             window_ms,
             received_frames,
@@ -2308,6 +2350,7 @@ mod tests {
         (
             AppState {
                 frames: FrameSlot::default(),
+                browser_frames: crate::browser_video::BrowserVideoSlot::default(),
                 clipboard: ClipboardSlot::default(),
                 device_events: crate::device_events::DeviceEventSlot::default(),
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),
@@ -2328,6 +2371,12 @@ mod tests {
                 input,
                 control,
                 profile_dir: Arc::new(PathBuf::new()),
+                settings: Arc::new(crate::settings::AppSettings::load(
+                    std::env::temp_dir().join(format!(
+                        "devicehub-mask-web-test-{}.json",
+                        uuid::Uuid::new_v4().simple()
+                    )),
+                )),
             },
             input_rx,
             control_rx,

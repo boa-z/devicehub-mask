@@ -49,6 +49,7 @@ const APP_WAIT: Duration = Duration::from_secs(15);
 const CRASH_REPORT_WAIT: Duration = Duration::from_secs(20);
 const DEFAULT_CRASH_REPORT_BYTES: usize = 256 * 1024;
 const OBSERVABILITY_WAIT_MAX: Duration = Duration::from_secs(10);
+const SCREENSHOT_WAIT: Duration = Duration::from_secs(18);
 const PERFORMANCE_WAIT_DEFAULT: Duration = Duration::from_millis(2500);
 const DEVICE_LOG_WAIT_DEFAULT: Duration = Duration::from_millis(1000);
 
@@ -64,6 +65,7 @@ struct McpObservability {
 #[derive(Clone)]
 struct DeviceHub {
     frames: FrameSlot,
+    browser_frames: crate::browser_video::BrowserVideoSlot,
     input: InputSink,
     orientation: OrientationSlot,
     devices: DeviceListSlot,
@@ -605,6 +607,7 @@ impl DeviceHub {
     #[allow(clippy::too_many_arguments)]
     fn new(
         frames: FrameSlot,
+        browser_frames: crate::browser_video::BrowserVideoSlot,
         input: InputSink,
         orientation: OrientationSlot,
         devices: DeviceListSlot,
@@ -617,6 +620,7 @@ impl DeviceHub {
     ) -> Self {
         Self {
             frames,
+            browser_frames,
             input,
             orientation,
             devices,
@@ -633,11 +637,23 @@ impl DeviceHub {
     }
 
     fn to_device(&self, x: f32, y: f32, size: Option<(u32, u32)>) -> Option<(u16, u16)> {
-        let (_, frame) = self.frames.latest()?;
         let turns = self.orientation.get().quarter_turns_cw();
         let (width, height) = size
             .or_else(|| *self.last_image.lock().unwrap())
-            .unwrap_or_else(|| display_dims(&frame, turns));
+            .or_else(|| {
+                self.frames
+                    .latest()
+                    .map(|(_, frame)| display_dims(&frame, turns))
+            })
+            .or_else(|| {
+                self.browser_frames.dimensions().map(|(width, height)| {
+                    if turns.is_multiple_of(2) {
+                        (width, height)
+                    } else {
+                        (height, width)
+                    }
+                })
+            })?;
         let dx = ((x + 0.5) / width as f32).clamp(0.0, 1.0);
         let dy = ((y + 0.5) / height as f32).clamp(0.0, 1.0);
         let (nx, ny) = unrotate_norm(dx, dy, turns);
@@ -651,8 +667,34 @@ impl DeviceHub {
             .ok_or_else(|| McpError::internal_error("no active device session", None))
     }
 
+    fn frame_version(&self) -> u64 {
+        self.frames
+            .version()
+            .saturating_add(self.browser_frames.version())
+    }
+
+    async fn native_screenshot(&self) -> Result<(u32, u32, Vec<u8>), McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::TakeScreenshot(reply))?;
+        let png = tokio::time::timeout(SCREENSHOT_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("device screenshot timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        let image = image::load_from_memory(&png)
+            .map_err(|error| {
+                McpError::internal_error(format!("device screenshot decode failed: {error}"), None)
+            })?
+            .to_rgb8();
+        let (width, height) = image.dimensions();
+        Ok((width, height, image.into_raw()))
+    }
+
     async fn settle(&self) {
         tokio::time::sleep(SETTLE_MIN).await;
+        if self.frames.latest().is_none() {
+            return;
+        }
         let started = Instant::now();
         let mut previous = self
             .frames
@@ -685,11 +727,12 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> Result<CallToolResult, McpError> {
-        let Some((frame_version, frame)) = self.frames.latest() else {
-            return ok_text("No frame available. Connect a device and wait for streaming.");
+        let frame_version = self.frame_version();
+        let (width, height, rgb) = if let Some((_, frame)) = self.frames.latest() {
+            render_upright(&frame, self.orientation.get().quarter_turns_cw())
+        } else {
+            self.native_screenshot().await?
         };
-        let (width, height, rgb) =
-            render_upright(&frame, self.orientation.get().quarter_turns_cw());
         if rgb.is_empty() {
             return Err(McpError::internal_error("current frame is empty", None));
         }
@@ -743,7 +786,7 @@ impl DeviceHub {
             .clamp(TAP_SAMPLE_MS, 5000);
         let samples = (hold_ms / TAP_SAMPLE_MS).clamp(1, 200);
         let interval = Duration::from_millis((hold_ms / samples).max(1));
-        let frame_version = self.frames.version();
+        let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::TouchDown { x, y })?;
         for _ in 0..samples {
@@ -754,7 +797,7 @@ impl DeviceHub {
         if params.wait_for_settle.unwrap_or(true) {
             self.settle().await;
         }
-        let frame_version_after = self.frames.version();
+        let frame_version_after = self.frame_version();
         ok_text(
             json!({
                 "action": "tap",
@@ -784,7 +827,7 @@ impl DeviceHub {
         };
         let duration = params.duration_ms.unwrap_or(300).clamp(50, 5000);
         let steps = (duration / 16).clamp(2, 150);
-        let frame_version = self.frames.version();
+        let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::TouchDown {
             x: start_x,
@@ -801,7 +844,7 @@ impl DeviceHub {
         if params.wait_for_settle.unwrap_or(true) {
             self.settle().await;
         }
-        let frame_version_after = self.frames.version();
+        let frame_version_after = self.frame_version();
         ok_text(
             json!({
                 "action": "swipe",
@@ -850,7 +893,7 @@ impl DeviceHub {
                 })
                 .collect::<Vec<_>>()
         };
-        let frame_version = self.frames.version();
+        let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::MultiTouchFrame(contacts_at(0.0, true)))?;
         for step in 1..=steps {
@@ -862,7 +905,7 @@ impl DeviceHub {
         if params.wait_for_settle.unwrap_or(false) {
             self.settle().await;
         }
-        let frame_version_after = self.frames.version();
+        let frame_version_after = self.frame_version();
         ok_text(
             json!({
                 "action": "multi_touch",
@@ -882,19 +925,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WaitFrameParams>,
     ) -> Result<CallToolResult, McpError> {
-        let after = params
-            .after_version
-            .unwrap_or_else(|| self.frames.version());
+        let after = params.after_version.unwrap_or_else(|| self.frame_version());
         let timeout = Duration::from_millis(params.timeout_ms.unwrap_or(2000).clamp(1, 10_000));
-        let mut receiver = self.frames.subscribe();
         let changed = tokio::time::timeout(timeout, async {
             loop {
-                if self.frames.version() > after && receiver.borrow().is_some() {
+                if self.frame_version() > after {
                     break true;
                 }
-                if receiver.changed().await.is_err() {
-                    break false;
-                }
+                tokio::time::sleep(Duration::from_millis(8)).await;
             }
         })
         .await
@@ -902,7 +940,7 @@ impl DeviceHub {
         ok_text(
             json!({
                 "changed": changed,
-                "frame_version": self.frames.version(),
+                "frame_version": self.frame_version(),
             })
             .to_string(),
         )
@@ -1036,7 +1074,7 @@ impl DeviceHub {
         if !valid_bundle_identifier(&params.bundle_id) {
             return Err(McpError::invalid_params("invalid bundle identifier", None));
         }
-        let frame_version = self.frames.version();
+        let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::LaunchApp {
@@ -1051,7 +1089,7 @@ impl DeviceHub {
         if params.wait_for_settle.unwrap_or(true) {
             self.settle().await;
         }
-        let frame_version_after = self.frames.version();
+        let frame_version_after = self.frame_version();
         ok_text(
             json!({
                 "launched": params.bundle_id,
@@ -1072,7 +1110,7 @@ impl DeviceHub {
         if !valid_bundle_identifier(&params.bundle_id) {
             return Err(McpError::invalid_params("invalid bundle identifier", None));
         }
-        let frame_version = self.frames.version();
+        let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::StopApp {
@@ -1092,7 +1130,7 @@ impl DeviceHub {
                 "stopped": params.bundle_id,
                 "was_running": was_running,
                 "frame_version_before": frame_version,
-                "frame_version_after": self.frames.version(),
+                "frame_version_after": self.frame_version(),
             })
             .to_string(),
         )
@@ -1316,7 +1354,7 @@ impl DeviceHub {
         {
             return ok_text(format!("Already connected to {udid}; screen is streaming."));
         }
-        let previous_version = self.frames.version();
+        let previous_version = self.frame_version();
         let previous_error = self.error.get();
         let mut error_was_cleared = previous_error.is_none();
         let command = if reconnect {
@@ -1330,7 +1368,7 @@ impl DeviceHub {
         let started = Instant::now();
         while started.elapsed() < DEVICE_WAIT {
             if self.active.get().as_deref() == Some(udid.as_str())
-                && self.frames.version() > previous_version
+                && self.frame_version() > previous_version
             {
                 return ok_text(format!("Connected to {udid}; screen is streaming."));
             }
@@ -1531,6 +1569,17 @@ impl DeviceHub {
                     display_dims(&frame, self.orientation.get().quarter_turns_cw());
                 json!([width, height])
             })
+            .or_else(|| {
+                let turns = self.orientation.get().quarter_turns_cw();
+                self.browser_frames.dimensions().map(|(width, height)| {
+                    let (width, height) = if turns.is_multiple_of(2) {
+                        (width, height)
+                    } else {
+                        (height, width)
+                    };
+                    json!([width, height])
+                })
+            })
             .unwrap_or(json!(null));
         let orientation = match self.orientation.get() {
             Orientation::Portrait => "portrait",
@@ -1543,7 +1592,7 @@ impl DeviceHub {
                 "active_udid": self.active.get(),
                 "status": self.status.get(),
                 "error": self.error.get(),
-                "streaming": self.frames.latest().is_some(),
+                "streaming": self.frames.latest().is_some() || self.browser_frames.dimensions().is_some(),
                 "screen_size": screen_size,
                 "orientation": orientation,
                 "location": self.location.get(),
@@ -1565,6 +1614,7 @@ impl ServerHandler for DeviceHub {
 #[allow(clippy::too_many_arguments)]
 pub async fn serve(
     frames: FrameSlot,
+    browser_frames: crate::browser_video::BrowserVideoSlot,
     input: InputSink,
     orientation: OrientationSlot,
     devices: DeviceListSlot,
@@ -1591,6 +1641,7 @@ pub async fn serve(
     }
     let hub = DeviceHub::new(
         frames,
+        browser_frames,
         input,
         orientation,
         devices,
@@ -1724,6 +1775,7 @@ mod tests {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
             DeviceListSlot::default(),
@@ -1770,6 +1822,7 @@ mod tests {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),
             DeviceListSlot::default(),
@@ -1841,6 +1894,7 @@ mod tests {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),
             DeviceListSlot::default(),
@@ -1891,6 +1945,7 @@ mod tests {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
             DeviceListSlot::default(),
@@ -2017,6 +2072,7 @@ mod tests {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             frames,
+            crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
             DeviceListSlot::default(),
@@ -2068,6 +2124,7 @@ mod tests {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             frames.clone(),
+            crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),
             DeviceListSlot::default(),
@@ -2095,6 +2152,41 @@ mod tests {
             decoded_at: Instant::now(),
             jpeg: std::sync::OnceLock::new(),
         }));
+        let result = waiter.await.unwrap();
+        assert!(result.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""changed":true"#))
+        }));
+    }
+
+    #[tokio::test]
+    async fn wait_for_frame_observes_browser_video_without_native_decode() {
+        let browser_frames = crate::browser_video::BrowserVideoSlot::default();
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            browser_frames.clone(),
+            InputSink::default(),
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+        let waiter = tokio::spawn(async move {
+            hub.wait_for_frame(Parameters(WaitFrameParams {
+                after_version: Some(0),
+                timeout_ms: Some(500),
+            }))
+            .await
+            .unwrap()
+        });
+        tokio::task::yield_now().await;
+        browser_frames.publish(0, true, 100, 200, vec![0, 0, 0, 1, 0x26]);
         let result = waiter.await.unwrap();
         assert!(result.content.iter().any(|content| {
             content
@@ -2138,6 +2230,7 @@ mod tests {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),
             DeviceListSlot::default(),

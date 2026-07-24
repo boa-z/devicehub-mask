@@ -710,8 +710,10 @@ struct SessionViews {
 #[derive(Clone)]
 struct SessionVideo {
     frame_format: FrameFormat,
+    decoder_backend: crate::settings::VideoDecoderBackend,
     counters: VideoCounters,
     frames: FrameSlot,
+    browser_frames: crate::browser_video::BrowserVideoSlot,
     audio_enabled: bool,
     clipboard_sync_enabled: bool,
     audio: AudioOutput,
@@ -756,6 +758,7 @@ pub async fn manage(
     video_counters: VideoCounters,
     repaint: impl Fn() + Send + Clone + 'static,
     frames: FrameSlot,
+    browser_frames: crate::browser_video::BrowserVideoSlot,
     audio: AudioOutput,
     status: StatusSlot,
     clipboard: ClipboardSlot,
@@ -867,8 +870,10 @@ pub async fn manage(
             pairing_dir.clone(),
             SessionVideo {
                 frame_format: settings.video_pixel_format(),
+                decoder_backend: settings.video_decoder_backend(),
                 counters: video_counters.clone(),
                 frames: frames.clone(),
+                browser_frames: browser_frames.clone(),
                 audio_enabled: settings.audio_enabled(),
                 clipboard_sync_enabled: settings.clipboard_sync_enabled(),
                 audio: audio.clone(),
@@ -1670,10 +1675,11 @@ async fn run(
         }
     };
 
-    // video UDP -> depacketize -> ffmpeg stdin ; ffmpeg stdout -> frames.
     let frame_format = video.frame_format;
-    let (mut child, ffmpeg_in, ffmpeg_out, ffmpeg_err) =
-        decode::spawn_ffmpeg(frame_format).map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+    let decoder_backend = video.decoder_backend;
+    video.frames.reset();
+    video.browser_frames.reset_dimensions();
+    tracing::info!(?decoder_backend, "selected video decoder backend");
 
     views.status.set("connected");
 
@@ -1715,6 +1721,50 @@ async fn run(
     };
     let (clipboard_commands, clipboard_command_rx) = tokio::sync::mpsc::channel(4);
     let clipboard_bridge = ClipboardBridge(clipboard_commands);
+    let decode_corruption = corruption.clone();
+    let decode_frame_beat = frame_beat.clone();
+    let decode_queue = hevc_queue.clone();
+    let decode_counters = video.counters.clone();
+    let browser_keyframes = video.browser_frames.clone();
+    let browser_lifecycle = video.browser_frames.clone();
+    let decode_pipeline = async move {
+        match decoder_backend {
+            crate::settings::VideoDecoderBackend::Native => {
+                let (_child, ffmpeg_in, ffmpeg_out, ffmpeg_err) =
+                    decode::spawn_ffmpeg(frame_format)
+                        .map_err(|error| format!("failed to spawn ffmpeg: {error}"))?;
+                tokio::select! {
+                    _ = ffmpeg_writer(ffmpeg_in, decode_queue) => {
+                        tracing::warn!("ffmpeg writer ended");
+                    }
+                    _ = decode::read_frames(
+                        ffmpeg_out,
+                        frame_format,
+                        video.frames,
+                        decode_counters,
+                        decode_frame_beat,
+                        repaint,
+                    ) => {
+                        tracing::warn!("decode task ended early");
+                    }
+                    _ = watch_decode_errors(ffmpeg_err, decode_corruption) => {
+                        tracing::warn!("ffmpeg stderr watcher ended");
+                    }
+                }
+            }
+            crate::settings::VideoDecoderBackend::Browser => {
+                browser_video_writer(
+                    decode_queue,
+                    video.browser_frames,
+                    decode_counters,
+                    decode_frame_beat,
+                    decode_corruption,
+                )
+                .await;
+            }
+        }
+        Ok::<(), String>(())
+    };
 
     tokio::select! {
         _ = video_task(
@@ -1730,23 +1780,13 @@ async fn run(
         _ = audio_task(media.audio_udp, video.audio, video.audio_enabled) => {
             tracing::warn!("audio task ended early");
         }
-        _ = ffmpeg_writer(ffmpeg_in, hevc_queue) => {
-            tracing::warn!("ffmpeg writer ended");
-        }
-        _ = decode::read_frames(
-            ffmpeg_out,
-            frame_format,
-            video.frames,
-            video.counters,
-            frame_beat.clone(),
-            repaint,
-        ) => {
-            tracing::warn!("decode task ended early");
-        }
-        _ = watch_decode_errors(ffmpeg_err, corruption.clone()) => {
-            tracing::warn!("ffmpeg stderr watcher ended");
+        result = decode_pipeline => {
+            if let Err(error) = result {
+                tracing::warn!(%error, "video decoder pipeline ended");
+            }
         }
         _ = stall_watchdog(frame_beat, &corruption) => {}
+        _ = forward_browser_keyframes(browser_keyframes, corruption.clone()) => {}
         _ = rtcp_recv_task(rtcp_udp.clone(), rtcp.clone()) => {}
         _ = rtcp_send_task(
             video_udp, rtcp_udp, rtcp, our_ssrc, cname, &corruption,
@@ -1783,9 +1823,9 @@ async fn run(
 
     drop(location);
     supervisor.shutdown().await;
+    browser_lifecycle.reset_dimensions();
     views.status.set("stopping...");
     display.stop_media_stream().await.ok();
-    child.start_kill().ok();
     // `proxy`, `adapter`, `handshake` drop here, tearing down the tunnel.
     Ok(())
 }
@@ -3532,6 +3572,49 @@ async fn ffmpeg_writer(mut ffmpeg_in: ChildStdin, hevc_queue: Arc<HevcQueue>) {
             tracing::info!("ffmpeg stdin closed; ending writer");
             break;
         }
+    }
+}
+
+async fn browser_video_writer(
+    hevc_queue: Arc<HevcQueue>,
+    frames: crate::browser_video::BrowserVideoSlot,
+    counters: VideoCounters,
+    frame_beat: Arc<Notify>,
+    corruption: Arc<Notify>,
+) {
+    let mut dimensions = None;
+    let mut timestamp_us = 0_u64;
+    while let Some(access_unit) = hevc_queue.pop().await {
+        if let Some(parsed) = crate::browser_video::hevc_dimensions(&access_unit.bytes) {
+            dimensions = Some(parsed);
+        }
+        let Some((width, height)) = dimensions else {
+            if access_unit.is_irap {
+                tracing::warn!("browser video keyframe did not contain a readable HEVC SPS");
+                corruption.notify_one();
+            }
+            continue;
+        };
+        counters.note_decoded_frame();
+        frame_beat.notify_one();
+        frames.publish(
+            timestamp_us,
+            access_unit.is_irap,
+            width,
+            height,
+            access_unit.bytes,
+        );
+        timestamp_us = timestamp_us.saturating_add(16_667);
+    }
+}
+
+async fn forward_browser_keyframes(
+    frames: crate::browser_video::BrowserVideoSlot,
+    corruption: Arc<Notify>,
+) {
+    loop {
+        frames.keyframe_requested().await;
+        corruption.notify_one();
     }
 }
 

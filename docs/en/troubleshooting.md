@@ -96,6 +96,13 @@ display resolution, orientation, and a screenshot.
 
 ## Windows CPU Usage Is High
 
+For a cross-platform comparison, try the experimental Browser / WebCodecs
+decoder in Settings > Video. It removes FFmpeg and JPEG from the live path when
+the platform WebView supports HEVC. On Windows, install the HEVC Video Extensions
+if the setting immediately reports a capability fallback. Native / FFmpeg is
+still the compatibility default, and runtime decoder failures reconnect with it
+automatically.
+
 Use the live Decode / Send / Display FPS and JPEG latency metrics:
 
 - Source FPS reports complete RTP frame markers; Decode and Published FPS separate

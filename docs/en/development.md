@@ -74,6 +74,13 @@ the default. The selection is persisted in the platform application config
 directory and applies on the next device connection. An explicit
 `DEVICEHUB_VIDEO_PIXEL_FORMAT` value makes the setting read-only for that run.
 
+The same section exposes an experimental Browser / WebCodecs decoder. It sends
+complete Annex-B HEVC access units directly to the WebView and removes FFmpeg,
+raw-frame transport, and JPEG encoding from the live video path. Native / FFmpeg
+remains the default. A WebCodecs capability or runtime failure is reported in
+Settings and automatically reconnects the current device with the native decoder
+for the rest of the run.
+
 ## Validation
 
 Run the source gates before committing:

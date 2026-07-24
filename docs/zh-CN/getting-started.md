@@ -33,6 +33,9 @@ with C++** 工作负载的 Visual Studio Build Tools、CMake、NASM、FFmpeg 和
 Apple Mobile Device Service。桌面版 iTunes 会安装 Apple 服务，并在
 `127.0.0.1:27015` 提供 usbmuxd 端点。
 
+可选的实验性“浏览器 / WebCodecs”视频解码器可能还需要 Microsoft HEVC Video
+Extensions。默认原生解码器不依赖它；应用会探测支持情况并自动回退。
+
 ```powershell
 winget install --id Rustlang.Rustup --exact
 winget install --id OpenJS.NodeJS.LTS --exact

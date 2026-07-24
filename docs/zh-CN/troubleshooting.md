@@ -83,6 +83,11 @@ audio media session 同时建立视频和 Universal HID 控制授权。
 
 ## Windows CPU 占用较高
 
+跨平台对比时可在“设置 > 视频”尝试实验性的“浏览器 / WebCodecs”解码器。平台 WebView
+支持 HEVC 时，该路径会移除实时链路中的 FFmpeg 和 JPEG。Windows 若立即显示能力回退，
+请安装 HEVC Video Extensions。“原生 / FFmpeg”仍是兼容性默认值，浏览器解码运行失败后
+也会自动重连并使用它。
+
 观察界面的解码 / 发送 / 显示 FPS 和 JPEG 延迟：
 
 - 源 FPS 来自完整 RTP 帧 marker；解码与发布 FPS 会区分 FFmpeg 输出和重复帧抑制。

@@ -55,6 +55,7 @@ import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPrefere
 import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { hasDecodedVideoActivity, isVideoStreamStalled } from "./streamHealth";
+import { BrowserVideoDecoder, parseBrowserVideoPacket } from "./browserVideo";
 import { createMapping, defaultHardwareBindings, defaultProfile, hardwareButtons, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type Orientation, type PerformanceView, type Profile, type ScrcpyMappingType, type StreamMetrics } from "./types";
 import { readAudioOutputStatus, readVideoSettings, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./videoSettings";
 
@@ -88,10 +89,17 @@ function wsUrl(connection: BackendConnection) {
   return `${connection.origin.replace(/^http/, "ws")}/api/ws`;
 }
 
-function drawFrame(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, bitmap: ImageBitmap, orientation: Orientation) {
+function drawFrame(
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  orientation: Orientation,
+) {
   const landscape = orientation === "landscape_left" || orientation === "landscape_right";
-  const width = landscape ? bitmap.height : bitmap.width;
-  const height = landscape ? bitmap.width : bitmap.height;
+  const width = landscape ? sourceHeight : sourceWidth;
+  const height = landscape ? sourceWidth : sourceHeight;
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -107,7 +115,7 @@ function drawFrame(canvas: HTMLCanvasElement, context: CanvasRenderingContext2D,
     context.translate(canvas.width, canvas.height);
     context.rotate(Math.PI);
   }
-  context.drawImage(bitmap, 0, 0);
+  context.drawImage(source, 0, 0);
   context.restore();
   return { width: canvas.width, height: canvas.height };
 }
@@ -637,6 +645,65 @@ export default function App() {
         canvasDrawMs: 0,
         decodeErrors: 0,
       };
+      const presentFrame = (
+        source: CanvasImageSource,
+        sourceWidth: number,
+        sourceHeight: number,
+      ) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const cachedContext = canvasContextRef.current;
+        const context = cachedContext?.canvas === canvas
+          ? cachedContext
+          : canvas.getContext("2d", { alpha: false });
+        if (!context) return;
+        canvasContextRef.current = context;
+        const drawStarted = performance.now();
+        const size = drawFrame(
+          canvas,
+          context,
+          source,
+          sourceWidth,
+          sourceHeight,
+          orientationRef.current,
+        );
+        frontendMetrics.canvasDrawMs += performance.now() - drawStarted;
+        frontendMetrics.presentedFrames += 1;
+        renderedFramesRef.current += 1;
+        lastVideoActivityAtRef.current = performance.now();
+        setStreamStalled(false);
+        if (!canvasReadyRef.current) {
+          canvasReadyRef.current = true;
+          setCanvasReady(true);
+        }
+        if (!hasFrameRef.current) {
+          hasFrameRef.current = true;
+          setHasFrame(true);
+        }
+        setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
+      };
+      const browserDecoder = new BrowserVideoDecoder({
+        output: (frame, decodeMs) => {
+          try {
+            frontendMetrics.jpegDecodeMs += decodeMs;
+            presentFrame(frame, frame.codedWidth, frame.codedHeight);
+          } finally {
+            frame.close();
+          }
+        },
+        requestKeyframe: () => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "browser_video_keyframe" }));
+          }
+        },
+        fatal: (error) => {
+          frontendMetrics.decodeErrors += 1;
+          logFrontend("warn", "video", "browser_decoder", error);
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "browser_decoder_error", message: String(error) }));
+          }
+        },
+      });
       const flushFrontendMetrics = () => {
         const now = performance.now();
         if (socket.readyState === WebSocket.OPEN) {
@@ -680,6 +747,7 @@ export default function App() {
         socketClosed = true;
         if (metricsTimer !== undefined) window.clearInterval(metricsTimer);
         pendingFrame = null;
+        browserDecoder.close();
         lastSentTouchFrameRef.current = null;
         activeIdsRef.current = new Set();
         setActiveIds(new Set());
@@ -705,30 +773,7 @@ export default function App() {
               bitmap = await createImageBitmap(blob);
               frontendMetrics.jpegDecodeMs += performance.now() - decodeStarted;
               if (disposed || socketClosed) continue;
-              const canvas = canvasRef.current;
-              if (!canvas) continue;
-              const cachedContext = canvasContextRef.current;
-              const context = cachedContext?.canvas === canvas
-                ? cachedContext
-                : canvas.getContext("2d", { alpha: false });
-              if (!context) continue;
-              canvasContextRef.current = context;
-              const drawStarted = performance.now();
-              const size = drawFrame(canvas, context, bitmap, orientationRef.current);
-              frontendMetrics.canvasDrawMs += performance.now() - drawStarted;
-              frontendMetrics.presentedFrames += 1;
-              renderedFramesRef.current += 1;
-              lastVideoActivityAtRef.current = performance.now();
-              setStreamStalled(false);
-              if (!canvasReadyRef.current) {
-                canvasReadyRef.current = true;
-                setCanvasReady(true);
-              }
-              if (!hasFrameRef.current) {
-                hasFrameRef.current = true;
-                setHasFrame(true);
-              }
-              setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
+              presentFrame(bitmap, bitmap.width, bitmap.height);
             } catch (error) {
               frontendMetrics.decodeErrors += 1;
               logFrontend("warn", "video", "decode_frame", error);
@@ -764,6 +809,18 @@ export default function App() {
         frontendMetrics.receivedFrames += 1;
         lastVideoActivityAtRef.current = performance.now();
         setStreamStalled(false);
+        let browserPacket: ReturnType<typeof parseBrowserVideoPacket>;
+        try {
+          browserPacket = parseBrowserVideoPacket(buffer);
+        } catch (error) {
+          frontendMetrics.decodeErrors += 1;
+          logFrontend("warn", "video", "browser_packet", error);
+          return;
+        }
+        if (browserPacket) {
+          browserDecoder.enqueue(browserPacket);
+          return;
+        }
         if (pendingFrame) {
           frontendMetrics.replacedFrames += 1;
           if (socket.readyState === WebSocket.OPEN) {
