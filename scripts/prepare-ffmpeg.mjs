@@ -24,7 +24,10 @@ const licenseFiles = [
 const requested = valueAfter("--target") ?? hostTarget();
 const resourceDir = join(process.cwd(), "src-tauri", "resources");
 const output = join(resourceDir, requested.includes("windows") ? "ffmpeg.exe" : "ffmpeg");
+const incompatibleOutput = join(resourceDir, requested.includes("windows") ? "ffmpeg" : "ffmpeg.exe");
 const licenseOutput = join(resourceDir, "ffmpeg-LICENSE.txt");
+await mkdir(resourceDir, { recursive: true });
+await rm(incompatibleOutput, { force: true });
 if (process.argv.includes("--verify-only")) {
   if (!canRunTarget(requested)) throw new Error(`Cannot execute FFmpeg target ${requested} on this host`);
   verifyBinary(output, requested);
@@ -43,7 +46,6 @@ if (!process.argv.includes("--force") && canRunTarget(requested) && await filesE
 const work = await mkdtemp(join(tmpdir(), "devicehub-ffmpeg-"));
 
 try {
-  await mkdir(resourceDir, { recursive: true });
   if (requested.endsWith("apple-darwin")) {
     await prepareDarwin(requested, output);
   } else {

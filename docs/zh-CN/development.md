@@ -122,10 +122,10 @@ npm run tauri:build
 测试时仍可用 `DEVICEHUB_FFMPEG` 显式覆盖。已有 FFmpeg 只有在目标架构和必需能力均通过
 校验后才会复用；需要明确重建时使用 `npm run ffmpeg:prepare -- --force`。
 
-需要额外参数时可直接传给 Tauri：
+需要额外构建参数时，可在 `--` 后传给统一构建脚本：
 
 ```sh
-npm run tauri -- build --bundles app
+npm run tauri:build -- --bundles app
 ```
 
 典型 macOS 产物包括 `src-tauri/target/release` 下的可执行文件、`.app` 和 DMG。实际
@@ -145,7 +145,7 @@ NSIS 和 MSI 位于 `src-tauri/target/release/bundle/nsis` 与 `bundle/msi`。FF
 安装[快速开始](getting-started.md)列出的依赖后运行：
 
 ```sh
-npm run tauri -- build --bundles appimage,deb
+npm run tauri:build -- --bundles appimage,deb
 ```
 
 产物位于 `bundle/appimage` 和 `bundle/deb`。
@@ -154,14 +154,13 @@ npm run tauri -- build --bundles appimage,deb
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm run ffmpeg:prepare -- --target universal-apple-darwin
-npm run netmuxd:prepare -- --target universal-apple-darwin
-npm run tauri -- build --target universal-apple-darwin --bundles app
+npm run tauri:build -- --target universal-apple-darwin --bundles app
 ```
 
-FFmpeg 准备步骤会从固定校验和的上游源码构建仅启用 LGPL 组件的 universal 可执行文件；
-Windows 与 Linux 使用固定版本并校验 SHA-256 的 LGPL 静态构建。安装包同时包含
-`THIRD_PARTY_NOTICES.txt` 和完整 FFmpeg 许可证。
+统一构建脚本会从 `--target` 推导 sidecar 平台，并从固定校验和的上游源码构建仅启用
+LGPL 组件的 universal FFmpeg 可执行文件；Windows 与 Linux 使用固定版本并校验
+SHA-256 的 LGPL 静态构建。安装包同时包含 `THIRD_PARTY_NOTICES.txt` 和完整 FFmpeg
+许可证。
 
 产物位于 `src-tauri/target/universal-apple-darwin/release/bundle/macos`。
 

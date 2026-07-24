@@ -19,11 +19,13 @@ const assets = {
 
 const requested = valueAfter("--target") ?? hostTarget();
 const resourceDir = join(process.cwd(), "src-tauri", "resources");
-const output = join(resourceDir, process.platform === "win32" ? "netmuxd.exe" : "netmuxd");
+const output = join(resourceDir, requested.includes("windows") ? "netmuxd.exe" : "netmuxd");
+const incompatibleOutput = join(resourceDir, requested.includes("windows") ? "netmuxd" : "netmuxd.exe");
 const work = await mkdtemp(join(tmpdir(), "devicehub-netmuxd-"));
 
 try {
   await mkdir(resourceDir, { recursive: true });
+  await rm(incompatibleOutput, { force: true });
   if (requested === "universal-apple-darwin") {
     const arm = await fetchBinary("aarch64-apple-darwin", join(work, "arm64"));
     const intel = await fetchBinary("x86_64-apple-darwin", join(work, "x86_64"));
@@ -32,7 +34,7 @@ try {
     const binary = await fetchBinary(requested, join(work, requested));
     await cp(binary, output);
   }
-  if (process.platform !== "win32") await chmod(output, 0o755);
+  if (!requested.includes("windows")) await chmod(output, 0o755);
 
   const license = await download(licenseUrl, licenseSha256);
   await writeFile(join(resourceDir, "netmuxd-LICENSE.txt"), license);

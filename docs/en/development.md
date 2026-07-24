@@ -137,10 +137,10 @@ the bundled FFmpeg; `DEVICEHUB_FFMPEG` remains an explicit override for testing.
 An existing FFmpeg is reused only after its architecture and required capabilities
 pass validation; use `npm run ffmpeg:prepare -- --force` to rebuild it explicitly.
 
-Pass explicit Tauri flags when needed:
+Pass explicit Tauri build flags after `--` when needed:
 
 ```sh
-npm run tauri -- build --bundles app
+npm run tauri:build -- --bundles app
 ```
 
 Typical macOS outputs are the release executable, `.app`, and DMG below
@@ -162,7 +162,7 @@ prerequisite.
 After installing the packages from [Getting Started](getting-started.md):
 
 ```sh
-npm run tauri -- build --bundles appimage,deb
+npm run tauri:build -- --bundles appimage,deb
 ```
 
 Outputs are under `bundle/appimage` and `bundle/deb`.
@@ -171,15 +171,14 @@ Outputs are under `bundle/appimage` and `bundle/deb`.
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm run ffmpeg:prepare -- --target universal-apple-darwin
-npm run netmuxd:prepare -- --target universal-apple-darwin
-npm run tauri -- build --target universal-apple-darwin --bundles app
+npm run tauri:build -- --target universal-apple-darwin --bundles app
 ```
 
-The FFmpeg preparation step builds an LGPL-only universal executable from the
-checksum-pinned upstream source. Windows and Linux preparation downloads pinned
-LGPL static builds and verifies their SHA-256 hashes. `THIRD_PARTY_NOTICES.txt`
-and the complete FFmpeg license are included beside the binary.
+The build wrapper derives the sidecar platform from `--target` and builds an
+LGPL-only universal FFmpeg executable from the checksum-pinned upstream source.
+Windows and Linux preparation downloads pinned LGPL static builds and verifies
+their SHA-256 hashes. `THIRD_PARTY_NOTICES.txt` and the complete FFmpeg license
+are included beside the binary.
 
 Artifacts are written under
 `src-tauri/target/universal-apple-darwin/release/bundle/macos`.

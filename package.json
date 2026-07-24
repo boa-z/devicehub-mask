@@ -16,7 +16,7 @@
     "verify:full": "node scripts/verify.mjs --full",
     "tauri": "tauri",
     "tauri:dev": "cross-env CARGO_TARGET_DIR=target/tauri-dev tauri dev",
-    "tauri:build": "npm run sidecars:prepare && tauri build",
+    "tauri:build": "node scripts/build-desktop.mjs",
     "tauri:build:debug": "tauri build --debug --no-bundle"
   },
   "dependencies": {
