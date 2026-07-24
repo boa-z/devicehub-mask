@@ -13,6 +13,7 @@ export type ForgetDeviceResult = {
 export type LocationStatus = {
   available: boolean;
   active: boolean;
+  backend: "dvt" | "legacy" | null;
   latitude: number | null;
   longitude: number | null;
   error: string | null;

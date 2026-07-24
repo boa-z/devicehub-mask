@@ -72,7 +72,7 @@ const emptyStatus: DeviceStatus = {
   error: null,
   orientation: "portrait",
   devices: [],
-  location: { available: false, active: false, latitude: null, longitude: null, error: null },
+  location: { available: false, active: false, backend: null, latitude: null, longitude: null, error: null },
 };
 type ProfileList = { profiles: string[]; active: string; app_bindings: Record<string, string>; binding_conflicts: string[] };
 type CapturedScreenshot = { blob: Blob; url: string; width: number; height: number };

@@ -1784,7 +1784,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Set a fixed simulated GPS location through the active iOS 17+ DVT session."
+        description = "Set a fixed simulated GPS location through the active device's DVT or legacy location service."
     )]
     async fn set_location(
         &self,

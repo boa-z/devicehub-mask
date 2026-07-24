@@ -52,6 +52,8 @@ The Running Processes section performs one on-demand DVT DeviceInfo query when t
 
 Sampling starts only while the Performance workspace is open and stops when it is left, so monitoring does not add permanent device load. The service-health section reports whether device heartbeat, virtual location, device conditions, device notifications, system monitoring, graphics monitoring, network monitoring, energy monitoring, process inventory, paired Apple Watch discovery, home-screen layout reads, app activity monitoring, packet capture, Bluetooth HCI capture, and system diagnostics are connecting, ready, recovering, unavailable, or stopped. The heartbeat responds to the device's Lockdown keep-alive requests throughout the active session; sleep, timeout, or transport failures are recovered under the same bounded supervisor. A service reconnect does not tear down video or input.
 
+Virtual Location automatically prefers the DVT backend and displays the selected backend beside its state. If DVT is unavailable, it tries Apple's legacy location service for devices using the older Developer Disk Image workflow. The legacy service requires a compatible image to be mounted. Coordinates remain active across a location-channel recovery, while **Stop simulation** and session shutdown explicitly restore the real device location.
+
 ## Control Modes
 
 Use the **Mapping / Keyboard passthrough** segmented control above the device view.

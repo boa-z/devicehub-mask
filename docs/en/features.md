@@ -13,7 +13,7 @@ This page is the concise inventory of functionality already implemented in Devic
 | **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and read-only crash-report export |
 | **Performance** | iPhone CPU/process/memory/energy data, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, network PCAP, and Bluetooth HCI PCAP |
 | **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, and recovery state |
-| **Location** | DVT virtual-location set, numeric coordinate entry, built-in location presets, current state, and explicit restoration of the real device location |
+| **Location** | DVT-first virtual location with legacy service fallback, numeric coordinate entry, built-in presets, backend status, and explicit restoration of the real device location |
 | **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, rotation-control lock, device-fullscreen toolbar behavior, decoder and pixel format, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
 
 System fullscreen and device fullscreen are different. System fullscreen changes the desktop window. Device fullscreen hides navigation and the inspector to give the phone picture and essential controls the available window area.
@@ -77,7 +77,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Sysdiagnose | CoreDevice DiagnosticsService |
 | Device logs | OsTraceRelay / SyslogRelay |
 | Performance, processes, and conditions | DVT DeviceInfo, Sysmontap, Graphics, Energy, Network Monitor, Notifications, and Condition Inducer |
-| Virtual location | DVT Location Simulation |
+| Virtual location | DVT Location Simulation with `com.apple.dt.simulatelocation` fallback |
 | Network/Bluetooth capture | pcapd and BTPacketLogger |
 | Watch metadata | CompanionProxy |
 | App icons | CoreDevice AppService with SpringBoardServices fallback |

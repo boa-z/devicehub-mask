@@ -330,7 +330,7 @@ export const zhCN = {
   },
   location: {
     title: "虚拟定位",
-    subtitle: "在已连接的 iOS 17 或更高版本设备上模拟固定 GPS 位置。",
+    subtitle: "通过已连接设备当前可用的最佳后端模拟固定 GPS 位置。",
     disconnected: "未连接设备",
     unavailable: "不可用",
     ready: "可用",
@@ -344,6 +344,10 @@ export const zhCN = {
     invalidCoordinates: "纬度应为 -90 至 90，经度应为 -180 至 180。",
     applied: "虚拟位置已应用",
     cleared: "虚拟定位已停止",
+    backends: {
+      dvt: "DVT",
+      legacy: "传统服务",
+    },
     presetNames: {
       cupertino: "库比蒂诺",
       taipei: "台北",

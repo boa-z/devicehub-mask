@@ -1879,6 +1879,7 @@ async fn run(
     supervisor.spawn(location::supervise(
         adapter.clone(),
         handshake.clone(),
+        provider.clone(),
         location_receiver,
         views.location.clone(),
         supervisor.reporter("location"),

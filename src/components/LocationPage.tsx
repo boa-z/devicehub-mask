@@ -89,7 +89,10 @@ export function LocationPage({ activeUdid, status, request }: Props) {
           <Typography.Title level={3}><EnvironmentOutlined /> {t("location.title")}</Typography.Title>
           <Typography.Text type="secondary">{t("location.subtitle")}</Typography.Text>
         </div>
-        {stateTag}
+        <Space>
+          {status.backend && <Tag>{t(`location.backends.${status.backend}`)}</Tag>}
+          {stateTag}
+        </Space>
       </header>
 
       {(error || status.error) && <Alert type="error" showIcon message={error ?? status.error} />}

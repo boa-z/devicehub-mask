@@ -342,7 +342,7 @@ export const enUS = {
   },
   location: {
     title: "Virtual location",
-    subtitle: "Simulate a fixed GPS location on the connected iOS 17 or later device.",
+    subtitle: "Simulate a fixed GPS location through the best backend available on the connected device.",
     disconnected: "No device",
     unavailable: "Unavailable",
     ready: "Ready",
@@ -356,6 +356,10 @@ export const enUS = {
     invalidCoordinates: "Enter a latitude from -90 to 90 and a longitude from -180 to 180.",
     applied: "Simulated location applied",
     cleared: "Location simulation stopped",
+    backends: {
+      dvt: "DVT",
+      legacy: "Legacy service",
+    },
     presetNames: {
       cupertino: "Cupertino",
       taipei: "Taipei",
