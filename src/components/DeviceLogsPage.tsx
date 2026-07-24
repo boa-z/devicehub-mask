@@ -2,15 +2,19 @@ import {
   CaretRightOutlined,
   ClearOutlined,
   CopyOutlined,
+  DownloadOutlined,
   FileTextOutlined,
   PauseOutlined,
   SearchOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Empty, Input, Select, Switch, Tag, Tooltip, Typography, message } from "antd";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { Alert, Button, Empty, Input, Modal, Select, Switch, Tag, Tooltip, Typography, message } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { formatElapsed, formatFileSize } from "../deviceInspector";
 import { deviceLogContext, filterDeviceLogs, formatDeviceLogLine, type DeviceLogLevelFilter } from "../deviceLogs";
-import type { DeviceLogEntry, DeviceLogsView } from "../types";
+import type { DeviceLogEntry, DeviceLogsView, LogArchiveStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -31,6 +35,10 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
   const [view, setView] = useState<DeviceLogsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gapDetected, setGapDetected] = useState(false);
+  const [archive, setArchive] = useState<LogArchiveStatus | null>(null);
+  const [archiveModalOpen, setArchiveModalOpen] = useState(false);
+  const [archiveAgeHours, setArchiveAgeHours] = useState(1);
+  const [archiveAction, setArchiveAction] = useState<"start" | "stop" | null>(null);
   const cursor = useRef<number | null>(null);
   const pollingGeneration = useRef(0);
   const viewport = useRef<HTMLDivElement>(null);
@@ -51,7 +59,33 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
     setError(null);
     setGapDetected(false);
     cursor.current = null;
+    setArchive(null);
   }, [activeUdid]);
+
+  const loadArchiveStatus = useCallback(async () => {
+    const response = await request("/api/device/log-archive");
+    if (!response.ok) throw new Error((await response.text()) || response.statusText);
+    const next = await response.json() as LogArchiveStatus;
+    setArchive(next);
+    return next;
+  }, [request]);
+
+  useEffect(() => {
+    if (!activeUdid) return;
+    let disposed = false;
+    void loadArchiveStatus().catch((archiveError) => {
+      if (!disposed) setError(String(archiveError));
+    });
+    return () => { disposed = true; };
+  }, [activeUdid, loadArchiveStatus]);
+
+  useEffect(() => {
+    if (!activeUdid || (archive?.state !== "starting" && archive?.state !== "exporting")) return;
+    const timer = window.setInterval(() => {
+      void loadArchiveStatus().catch((archiveError) => setError(String(archiveError)));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [activeUdid, archive?.state, loadArchiveStatus]);
 
   useEffect(() => {
     if (!activeUdid || paused) return;
@@ -140,6 +174,45 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
     }
   };
 
+  const startArchive = async () => {
+    const destination = await save({
+      title: t("deviceLogs.archiveSelectDestination"),
+      defaultPath: "device-logs.tar",
+      filters: [{ name: t("deviceLogs.archiveTar"), extensions: ["tar"] }],
+    });
+    if (!destination) return;
+    setArchiveAction("start");
+    try {
+      const response = await request("/api/device/log-archive", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destination, age_limit_hours: archiveAgeHours }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadArchiveStatus();
+      setArchiveModalOpen(false);
+      void message.success(t("deviceLogs.archiveStarted"));
+    } catch (archiveError) {
+      void message.error(t("deviceLogs.archiveStartFailed", { error: String(archiveError) }));
+    } finally {
+      setArchiveAction(null);
+    }
+  };
+
+  const stopArchive = async () => {
+    setArchiveAction("stop");
+    try {
+      const response = await request("/api/device/log-archive", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadArchiveStatus();
+      void message.info(t("deviceLogs.archiveCancelled"));
+    } catch (archiveError) {
+      void message.error(t("deviceLogs.archiveStopFailed", { error: String(archiveError) }));
+    } finally {
+      setArchiveAction(null);
+    }
+  };
+
   const phase = view?.service?.phase;
   const statusColor = phase === "ready" ? "success"
     : phase === "connecting" || phase === "recovering" ? "processing"
@@ -147,6 +220,10 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
   const statusLabel = paused ? t("deviceLogs.paused")
     : phase ? t(`performance.phases.${phase}`)
       : activeUdid ? t("deviceLogs.waiting") : t("deviceLogs.disconnected");
+  const archiveActive = archive?.state === "starting" || archive?.state === "exporting";
+  const archiveAlertType = archive?.state === "failed" ? "error"
+    : archive?.state === "completed" ? "success"
+      : archive?.state === "cancelled" ? "info" : "info";
 
   return (
     <main className="device-logs-page">
@@ -165,6 +242,28 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
       {error && <Alert type="warning" showIcon message={t("deviceLogs.loadFailed")} description={error} />}
       {view?.service?.last_error && <Alert type="warning" showIcon message={t("deviceLogs.serviceUnavailable")} description={view.service.last_error} />}
       {gapDetected && <Alert type="warning" showIcon closable message={t("deviceLogs.truncated")} onClose={() => setGapDetected(false)} />}
+      {archive && archive.state !== "idle" && (
+        <Alert
+          className="device-log-archive-status"
+          type={archiveAlertType}
+          showIcon
+          message={t(`deviceLogs.archiveStates.${archive.state}`)}
+          description={(
+            <div className="device-log-archive-details">
+              <span>{archive.destination_name ?? "-"}</span>
+              {archive.age_limit_hours !== null && <span>{t("deviceLogs.archiveRange", { hours: archive.age_limit_hours })}</span>}
+              <span>{formatFileSize(archive.bytes_written)}</span>
+              <span>{formatElapsed(archive.elapsed_ms)}</span>
+              {archive.error && archive.state === "failed" && <span>{archive.error}</span>}
+            </div>
+          )}
+          action={archiveActive ? (
+            <Button size="small" danger icon={<StopOutlined />} loading={archiveAction === "stop"} onClick={() => void stopArchive()}>
+              {t("deviceLogs.archiveCancel")}
+            </Button>
+          ) : undefined}
+        />
+      )}
 
       <section className="device-logs-console">
         <div className="device-logs-toolbar">
@@ -198,6 +297,14 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
           <Tooltip title={t("deviceLogs.clear")}>
             <Button aria-label={t("deviceLogs.clear")} icon={<ClearOutlined />} disabled={entries.length === 0} onClick={() => void clear()} />
           </Tooltip>
+          <Tooltip title={t("deviceLogs.archiveCreate")}>
+            <Button
+              aria-label={t("deviceLogs.archiveCreate")}
+              icon={<DownloadOutlined />}
+              disabled={!activeUdid || archiveActive}
+              onClick={() => setArchiveModalOpen(true)}
+            />
+          </Tooltip>
           <label className="device-logs-autoscroll">
             <span>{t("deviceLogs.autoScroll")}</span>
             <Switch size="small" checked={autoScroll} onChange={setAutoScroll} />
@@ -220,6 +327,26 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
           {visibleEntries.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceLogs.empty")} />}
         </div>
       </section>
+      <Modal
+        open={archiveModalOpen}
+        title={t("deviceLogs.archiveConfirmTitle")}
+        okText={t("deviceLogs.archiveCreate")}
+        cancelText={t("common.cancel")}
+        okButtonProps={{ danger: true }}
+        confirmLoading={archiveAction === "start"}
+        onOk={() => void startArchive()}
+        onCancel={() => { if (!archiveAction) setArchiveModalOpen(false); }}
+      >
+        <Typography.Paragraph>{t("deviceLogs.archiveConfirm")}</Typography.Paragraph>
+        <label className="device-log-archive-range">
+          <span>{t("deviceLogs.archiveAge")}</span>
+          <Select
+            value={archiveAgeHours}
+            options={[1, 6, 24].map((hours) => ({ value: hours, label: t("deviceLogs.archiveHours", { hours }) }))}
+            onChange={setArchiveAgeHours}
+          />
+        </label>
+      </Modal>
     </main>
   );
 }

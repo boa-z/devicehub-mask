@@ -12,7 +12,7 @@
 | **键盘映射** | 可视化放置与编辑、实时或冻结截图背景、配置创建/复制/重命名/导入/导出、scrcpy-mask `0.0.1` 兼容、PlayCover `2.0.0` 导入、App 与配置关联、硬件按键快捷键 |
 | **AFC** | 统一的公共 AFC、App Documents、App Container 与崩溃报告工作台；可搜索 App 选择、有界浏览与传输、新建、重命名、确认式递归删除、进度、取消及确认式崩溃报告删除 |
 | **性能** | iPhone CPU/进程/内存/能耗、可搜索的按需运行进程清单、Core Animation FPS、GPU 内存、网络速率、App 活动、视频管线指标、服务健康、DVT 网络/热状态、网络 PCAP 和蓝牙 HCI PCAP |
-| **设备日志** | 按需结构化统一日志、SyslogRelay 回退、搜索、级别筛选、暂停、自动滚动、复制、清空、有界缓冲和恢复状态 |
+| **设备日志** | 按需结构化统一日志、SyslogRelay 回退、搜索、级别筛选、暂停、自动滚动、复制、清空、有界缓冲、恢复状态，以及经确认导出最近 1/6/24 小时的离线统一日志归档 |
 | **虚拟定位** | DVT 优先并回退传统服务的定位设置、经纬度输入、内置地点预设、后端状态和显式恢复真实定位 |
 | **设置** | 语言、窗口置顶、系统全屏、检查器显示、画面比例、映射覆盖层、旋转控制锁定、设备全屏工具栏行为、解码器与像素格式、音频、剪贴板同步、可配置性能 HUD、更新、Debug 日志和日志目录 |
 
@@ -75,7 +75,7 @@
 | 描述文件 | Misagent |
 | 备份 | MobileBackup2 |
 | sysdiagnose | CoreDevice DiagnosticsService |
-| 设备日志 | OsTraceRelay / SyslogRelay |
+| 设备日志与离线归档 | OsTraceRelay / SyslogRelay |
 | 性能、进程与设备状态模拟 | DVT DeviceInfo、Sysmontap、Graphics、Energy、Network Monitor、Notifications、Condition Inducer |
 | 虚拟定位 | DVT Location Simulation，并回退 `com.apple.dt.simulatelocation` |
 | 网络/蓝牙抓包 | pcapd 和 BTPacketLogger |
@@ -95,7 +95,7 @@
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。
 - WDA：`wda_runner_status`、`wda_start`、`wda_stop`、`wda_status`、 `wda_ui_tree`、`wda_find_elements`、`wda_click`。
 
-MCP 当前开放单向锁屏，但不开放设备重启或关机。重启与关机已经在桌面“设备信息”页实现， 并要求交互式确认。MCP 也不开放 AFC 修改、备份、sysdiagnose、描述文件修改、抓包或开发者 磁盘镜像修改。
+MCP 当前开放单向锁屏，但不开放设备重启或关机。重启与关机已经在桌面“设备信息”页实现， 并要求交互式确认。MCP 也不开放 AFC 修改、备份、sysdiagnose、统一日志归档导出、描述文件修改、抓包或开发者磁盘镜像修改。
 
 ## 有意保留的边界
 

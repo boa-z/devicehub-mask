@@ -44,6 +44,7 @@ pub struct AppState {
     pub bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     pub device_backup: crate::device_backup::DeviceBackupSlot,
     pub sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
+    pub log_archive: crate::log_archive::LogArchiveSlot,
     pub developer_image: crate::developer_image::DeveloperImageMountSlot,
     pub device_conditions: crate::device_conditions::DeviceConditionSlot,
     pub video_counters: VideoCounters,
@@ -199,6 +200,12 @@ pub fn router(state: AppState, token: String) -> Router {
             get(sysdiagnose_status)
                 .put(start_sysdiagnose)
                 .delete(stop_sysdiagnose),
+        )
+        .route(
+            "/api/device/log-archive",
+            get(log_archive_status)
+                .put(start_log_archive)
+                .delete(stop_log_archive),
         )
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
@@ -765,6 +772,88 @@ async fn await_sysdiagnose_command(
         })?;
     result.map_err(|error| {
         let status = if error.contains("already running") || error.contains("no sysdiagnose") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
+        (status, error)
+    })
+}
+
+async fn log_archive_status(
+    State(state): State<AppState>,
+) -> Json<crate::log_archive::LogArchiveStatus> {
+    Json(state.log_archive.get())
+}
+
+#[derive(Deserialize)]
+struct StartLogArchiveRequest {
+    destination: PathBuf,
+    age_limit_hours: u16,
+}
+
+async fn start_log_archive(
+    State(state): State<AppState>,
+    Json(request): Json<StartLogArchiveRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let destination = crate::log_archive::prepare_destination(&request.destination)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let age_limit_hours = crate::log_archive::validate_age_limit_hours(request.age_limit_hours)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::LogArchive(
+        crate::log_archive::LogArchiveCommand::Start {
+            destination,
+            age_limit_hours,
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_log_archive_command(response, "start log archive export").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn stop_log_archive(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::LogArchive(
+        crate::log_archive::LogArchiveCommand::Stop { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_log_archive_command(response, "stop log archive export").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn await_log_archive_command(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    let result = tokio::time::timeout(Duration::from_secs(10), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?;
+    result.map_err(|error| {
+        let status = if error.contains("already running") || error.contains("no log archive") {
             StatusCode::CONFLICT
         } else {
             StatusCode::SERVICE_UNAVAILABLE
@@ -3428,6 +3517,7 @@ mod tests {
                 bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot::default(),
                 device_backup: crate::device_backup::DeviceBackupSlot::default(),
                 sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot::default(),
+                log_archive: crate::log_archive::LogArchiveSlot::default(),
                 developer_image: crate::developer_image::DeveloperImageMountSlot::default(),
                 device_conditions: crate::device_conditions::DeviceConditionSlot::default(),
                 video_counters: VideoCounters::default(),
@@ -3906,6 +3996,75 @@ mod tests {
         let stop = tokio::spawn(stop_sysdiagnose(State(state)));
         match input_rx.recv().await.unwrap() {
             InputCmd::Sysdiagnose(crate::sysdiagnose::SysdiagnoseCommand::Stop { reply }) => {
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn log_archive_endpoints_validate_and_dispatch_commands() {
+        let (state, mut input_rx) = test_state();
+        let invalid = start_log_archive(
+            State(state.clone()),
+            Json(StartLogArchiveRequest {
+                destination: PathBuf::from("relative.tar"),
+                age_limit_hours: 2,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+
+        let destination = std::env::temp_dir().join(format!(
+            "devicehub-mask-web-log-archive-{}.tar",
+            uuid::Uuid::new_v4()
+        ));
+        let invalid_age = start_log_archive(
+            State(state.clone()),
+            Json(StartLogArchiveRequest {
+                destination: destination.clone(),
+                age_limit_hours: 2,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid_age.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+
+        let expected = crate::log_archive::prepare_destination(&destination)
+            .await
+            .unwrap();
+        let start = tokio::spawn(start_log_archive(
+            State(state.clone()),
+            Json(StartLogArchiveRequest {
+                destination,
+                age_limit_hours: 6,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::LogArchive(crate::log_archive::LogArchiveCommand::Start {
+                destination,
+                age_limit_hours,
+                reply,
+            }) => {
+                assert_eq!(destination, expected);
+                assert_eq!(age_limit_hours, 6);
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            log_archive_status(State(state.clone())).await.0.state,
+            crate::log_archive::LogArchiveState::Idle
+        );
+
+        let stop = tokio::spawn(stop_log_archive(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::LogArchive(crate::log_archive::LogArchiveCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
             }
             _ => panic!("unexpected command"),

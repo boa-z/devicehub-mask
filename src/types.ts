@@ -145,6 +145,15 @@ export type SysdiagnoseStatus = {
   destination_name: string | null;
   error: string | null;
 };
+export type LogArchiveState = "idle" | "starting" | "exporting" | "completed" | "cancelled" | "failed";
+export type LogArchiveStatus = {
+  state: LogArchiveState;
+  bytes_written: number;
+  elapsed_ms: number;
+  destination_name: string | null;
+  age_limit_hours: number | null;
+  error: string | null;
+};
 export type DeveloperImageMountState = "idle" | "validating" | "personalizing" | "uploading" | "mounting" | "unmounting" | "mounted" | "unmounted" | "cancelled" | "failed";
 export type DeveloperImageMountStatus = {
   state: DeveloperImageMountState;

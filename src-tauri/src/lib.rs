@@ -20,6 +20,7 @@ mod heartbeat;
 mod hid;
 mod home_screen;
 mod location;
+mod log_archive;
 mod mcp;
 mod netmuxd;
 mod network_capture;
@@ -211,6 +212,7 @@ fn spawn_backend(
                 let bluetooth_capture = bluetooth_capture::BluetoothCaptureSlot::default();
                 let device_backup = device_backup::DeviceBackupSlot::default();
                 let sysdiagnose = sysdiagnose::SysdiagnoseSlot::default();
+                let log_archive = log_archive::LogArchiveSlot::default();
                 let developer_image = developer_image::DeveloperImageMountSlot::default();
                 let device_conditions = device_conditions::DeviceConditionSlot::default();
                 let orientation = OrientationSlot::default();
@@ -267,6 +269,7 @@ fn spawn_backend(
                     bluetooth_capture.clone(),
                     device_backup.clone(),
                     sysdiagnose.clone(),
+                    log_archive.clone(),
                     developer_image.clone(),
                     device_conditions.clone(),
                     orientation.clone(),
@@ -296,6 +299,7 @@ fn spawn_backend(
                         bluetooth_capture,
                         device_backup,
                         sysdiagnose,
+                        log_archive,
                         developer_image,
                         device_conditions,
                         video_counters,

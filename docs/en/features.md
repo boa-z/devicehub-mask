@@ -12,7 +12,7 @@ This page is the concise inventory of functionality already implemented in Devic
 | **Key Mapping** | Visual placement and editing, live or frozen screenshot background, profile create/duplicate/rename/import/export, scrcpy-mask `0.0.1` compatibility, PlayCover `2.0.0` import, app-profile associations, and hardware-button shortcuts |
 | **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and confirmed crash-report deletion |
 | **Performance** | iPhone CPU/process/memory/energy data, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, network PCAP, and Bluetooth HCI PCAP |
-| **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, and recovery state |
+| **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, recovery state, and confirmed 1/6/24-hour offline Unified Log archive export |
 | **Location** | DVT-first virtual location with legacy service fallback, numeric coordinate entry, built-in presets, backend status, and explicit restoration of the real device location |
 | **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, rotation-control lock, device-fullscreen toolbar behavior, decoder and pixel format, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
 
@@ -75,7 +75,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Provisioning profiles | Misagent |
 | Backup | MobileBackup2 |
 | Sysdiagnose | CoreDevice DiagnosticsService |
-| Device logs | OsTraceRelay / SyslogRelay |
+| Device logs and offline archive | OsTraceRelay / SyslogRelay |
 | Performance, processes, and conditions | DVT DeviceInfo, Sysmontap, Graphics, Energy, Network Monitor, Notifications, and Condition Inducer |
 | Virtual location | DVT Location Simulation with `com.apple.dt.simulatelocation` fallback |
 | Network/Bluetooth capture | pcapd and BTPacketLogger |
@@ -95,7 +95,7 @@ The Streamable HTTP MCP endpoint exposes the following tools while the desktop a
 - Location and conditions: `set_location`, `clear_location`, `list_device_conditions`, `apply_device_condition`, and `clear_device_condition`.
 - WDA: `wda_runner_status`, `wda_start`, `wda_stop`, `wda_status`, `wda_ui_tree`, `wda_find_elements`, and `wda_click`.
 
-MCP currently exposes one-way device locking, but not device restart or shutdown. Restart and shutdown are available in the desktop Device Info tab and require an interactive confirmation. MCP also does not expose AFC mutation, backup, sysdiagnose, provisioning-profile mutation, packet capture, or Developer Disk Image mutation.
+MCP currently exposes one-way device locking, but not device restart or shutdown. Restart and shutdown are available in the desktop Device Info tab and require an interactive confirmation. MCP also does not expose AFC mutation, backup, sysdiagnose, Unified Log archive export, provisioning-profile mutation, packet capture, or Developer Disk Image mutation.
 
 ## Intentional Boundaries
 
