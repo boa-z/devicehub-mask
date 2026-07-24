@@ -262,6 +262,12 @@ Writes reject name collisions, root mutation, and unsupported local entry types;
 recursive deletion requires an explicit frontend confirmation. No AFC2 path or
 MCP mutation crosses this boundary.
 
+The standard AFC browser is a persistent Device Inspector tab rather than a
+modal. It stays mounted across tab changes so navigation and sort state survive,
+but resets when the selected device changes. Direct path input mirrors the
+backend's UTF-8 byte and component limits before issuing a request; the backend
+remains the authoritative confinement boundary.
+
 Clipboard synchronization connects CoreDevice Pasteboard Service only when its
 persisted opt-in setting is enabled for a newly connected session. Device changes
 are push-driven when available, while host changes use a bounded-rate poll with

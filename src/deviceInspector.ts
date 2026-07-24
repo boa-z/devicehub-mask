@@ -2,7 +2,7 @@ import type { DeviceApp, DeviceCrashReport, DeviceEvent, ProvisioningProfile } f
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
-export type DeviceInspectorTab = "info" | "apps" | "profiles" | "crashes";
+export type DeviceInspectorTab = "info" | "apps" | "files" | "profiles" | "crashes";
 
 export function normalizeDeviceNameInput(name: string): string | null {
   const normalized = name.trim();

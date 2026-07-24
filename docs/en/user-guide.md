@@ -249,8 +249,12 @@ counter because their total is not scanned twice before transfer.
 
 App storage and Device public files are separate boundaries. App storage uses
 House Arrest for one selected application's vended Documents or container root.
-Device public files uses the device-wide standard AFC media container; available
-content and write permissions for both boundaries remain controlled by iOS.
+The dedicated **AFC** tab uses the device-wide standard AFC media container;
+available content and write permissions for both boundaries remain controlled
+by iOS. Its path bar accepts a direct absolute or root-relative path, and the
+sort menu keeps directories first while sorting each entry type by name, size,
+or modification time. Tab changes preserve the current AFC path and sort order;
+switching devices resets the workspace to the root.
 
 Uninstall authorization is checked again on the backend against current device
 metadata. Switching devices or ending the session cancels an active install or

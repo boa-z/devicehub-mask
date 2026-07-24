@@ -1,5 +1,6 @@
 import {
   ArrowLeftOutlined,
+  CheckOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
@@ -10,21 +11,26 @@ import {
   FolderOutlined,
   HomeOutlined,
   ReloadOutlined,
+  SortAscendingOutlined,
+  SortDescendingOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { normalizeAfcPath, sortAfcEntries } from "../afcBrowser";
+import type { AfcSortDirection, AfcSortField } from "../afcBrowser";
 import { formatFileSize } from "../deviceInspector";
 import type { DeviceFileEntry, DeviceFileList } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
 type Props = {
-  open: boolean;
+  active: boolean;
+  deviceId: string | null;
+  refreshToken: number;
   request: Request;
-  onClose: () => void;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -38,16 +44,20 @@ function parentPath(path: string) {
   return parts.length ? `/${parts.join("/")}` : "/";
 }
 
-export function DeviceFilesModal({ open, request, onClose }: Props) {
+export function DeviceFilesPane({ active, deviceId, refreshToken, request }: Props) {
   const { t, i18n } = useTranslation();
   const [path, setPath] = useState("/");
   const [listing, setListing] = useState<DeviceFileList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [editingPath, setEditingPath] = useState(false);
+  const [pathDraft, setPathDraft] = useState("/");
+  const [sortField, setSortField] = useState<AfcSortField>("name");
+  const [sortDirection, setSortDirection] = useState<AfcSortDirection>("ascending");
   const requestVersion = useRef(0);
 
   const load = useCallback(async () => {
-    if (!open) return;
+    if (!active || !deviceId) return;
     const version = ++requestVersion.current;
     setBusy("list");
     setError(null);
@@ -63,21 +73,21 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
     } finally {
       if (requestVersion.current === version) setBusy(null);
     }
-  }, [open, path, request]);
+  }, [active, deviceId, path, request]);
 
   useEffect(() => {
-    if (!open) {
-      requestVersion.current += 1;
-      setPath("/");
-      setListing(null);
-      setError(null);
-      setBusy(null);
-    }
-  }, [open]);
+    requestVersion.current += 1;
+    setPath("/");
+    setPathDraft("/");
+    setEditingPath(false);
+    setListing(null);
+    setError(null);
+    setBusy(null);
+  }, [deviceId]);
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshToken]);
 
   const breadcrumbs = useMemo(() => {
     const parts = path.split("/").filter(Boolean);
@@ -90,6 +100,37 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
       })),
     ];
   }, [busy, path, t]);
+
+  const visibleEntries = useMemo(
+    () => sortAfcEntries(
+      listing?.entries ?? [],
+      sortField,
+      sortDirection,
+      i18n.resolvedLanguage ?? i18n.language,
+    ),
+    [i18n.language, i18n.resolvedLanguage, listing?.entries, sortDirection, sortField],
+  );
+
+  const startEditingPath = () => {
+    setPathDraft(path);
+    setEditingPath(true);
+  };
+
+  const cancelEditingPath = () => {
+    setPathDraft(path);
+    setEditingPath(false);
+  };
+
+  const commitPath = () => {
+    const normalized = normalizeAfcPath(pathDraft);
+    if (!normalized) {
+      void message.error(t("deviceInspector.deviceFilePathInvalid"));
+      return;
+    }
+    setPath(normalized);
+    setPathDraft(normalized);
+    setEditingPath(false);
+  };
 
   const mutate = async (operation: string, call: () => Promise<Response>, success: string, refresh = true) => {
     const version = ++requestVersion.current;
@@ -221,23 +262,59 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
   };
 
   return (
-    <Modal
-      className="app-documents-modal"
-      open={open}
-      width={760}
-      title={t("deviceInspector.deviceFilesTitle")}
-      footer={null}
-      destroyOnHidden
-      closable={busy === null}
-      keyboard={busy === null}
-      maskClosable={busy === null}
-      onCancel={() => { if (busy === null) onClose(); }}
-    >
+    <div className="device-files-pane" hidden={!active}>
+      <div className="device-files-pane-heading">
+        <Typography.Text strong>{t("deviceInspector.deviceFilesTitle")}</Typography.Text>
+        <Typography.Text type="secondary">{t("deviceInspector.deviceFilesHint")}</Typography.Text>
+      </div>
       <div className="app-documents-toolbar device-files-toolbar">
         <Tooltip title={t("common.back")}>
           <Button icon={<ArrowLeftOutlined />} aria-label={t("common.back")} disabled={path === "/" || busy !== null} onClick={() => setPath(parentPath(path))} />
         </Tooltip>
-        <Breadcrumb items={breadcrumbs} />
+        {editingPath ? (
+          <Input
+            autoFocus
+            className="device-files-path-input"
+            value={pathDraft}
+            aria-label={t("deviceInspector.deviceFilePath")}
+            disabled={busy !== null}
+            onChange={(event) => setPathDraft(event.target.value)}
+            onPressEnter={commitPath}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") cancelEditingPath();
+            }}
+          />
+        ) : <Breadcrumb items={breadcrumbs} />}
+        <Tooltip title={t(editingPath ? "deviceInspector.openDeviceFilePath" : "deviceInspector.editDeviceFilePath")}>
+          <Button
+            icon={editingPath ? <CheckOutlined /> : <EditOutlined />}
+            aria-label={t(editingPath ? "deviceInspector.openDeviceFilePath" : "deviceInspector.editDeviceFilePath")}
+            disabled={busy !== null}
+            onClick={editingPath ? commitPath : startEditingPath}
+          />
+        </Tooltip>
+        <Dropdown
+          disabled={busy !== null || visibleEntries.length === 0}
+          menu={{
+            items: [
+              { key: "field:name", icon: sortField === "name" ? <CheckOutlined /> : null, label: t("deviceInspector.sortByName") },
+              { key: "field:size", icon: sortField === "size" ? <CheckOutlined /> : null, label: t("deviceInspector.sortBySize") },
+              { key: "field:modified", icon: sortField === "modified" ? <CheckOutlined /> : null, label: t("deviceInspector.sortByModified") },
+              { type: "divider" },
+              { key: "direction:ascending", icon: sortDirection === "ascending" ? <CheckOutlined /> : null, label: t("deviceInspector.sortAscending") },
+              { key: "direction:descending", icon: sortDirection === "descending" ? <CheckOutlined /> : null, label: t("deviceInspector.sortDescending") },
+            ],
+            onClick: ({ key }) => {
+              if (key.startsWith("field:")) setSortField(key.slice(6) as AfcSortField);
+              else setSortDirection(key.slice(10) as AfcSortDirection);
+            },
+          }}
+        >
+          <Button
+            icon={sortDirection === "ascending" ? <SortAscendingOutlined /> : <SortDescendingOutlined />}
+            aria-label={t("deviceInspector.sortDeviceFiles")}
+          />
+        </Dropdown>
         <Tooltip title={t("deviceInspector.createDeviceDirectory")}>
           <Button icon={<FolderAddOutlined />} aria-label={t("deviceInspector.createDeviceDirectory")} disabled={busy !== null} onClick={createDirectory} />
         </Tooltip>
@@ -261,9 +338,9 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
         <Alert type="error" showIcon message={t("deviceInspector.deviceFilesUnavailable")} description={error} />
       ) : busy === "list" && !listing ? (
         <div className="app-documents-loading"><Spin /></div>
-      ) : listing?.entries.length ? (
+      ) : visibleEntries.length ? (
         <div className="app-document-list" aria-busy={busy !== null}>
-          {listing.entries.map((entry) => (
+          {visibleEntries.map((entry) => (
             <div className="app-document-row" key={entry.path}>
               <span className="app-document-kind">{entry.kind === "directory" ? <FolderOutlined /> : <FileOutlined />}</span>
               <button className="app-document-name" disabled={entry.kind !== "directory" || busy !== null} onClick={() => setPath(entry.path)}>
@@ -290,6 +367,6 @@ export function DeviceFilesModal({ open, request, onClose }: Props) {
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noDeviceFiles")} />
       )}
       {listing?.truncated && <Alert type="warning" showIcon message={t("deviceInspector.deviceFilesTruncated")} />}
-    </Modal>
+    </div>
   );
 }

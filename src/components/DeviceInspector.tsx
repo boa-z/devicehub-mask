@@ -26,7 +26,7 @@ import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Switch, 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { DeviceFilesModal } from "./DeviceFilesModal";
+import { DeviceFilesPane } from "./DeviceFilesPane";
 import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
@@ -148,7 +148,7 @@ export function DeviceInspector({
   const [developerImageAction, setDeveloperImageAction] = useState<"start" | "stop" | "unmount" | null>(null);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
-  const [deviceFilesOpen, setDeviceFilesOpen] = useState(false);
+  const [deviceFilesRefresh, setDeviceFilesRefresh] = useState(0);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
   const handledDeveloperImageState = useRef<string>("");
@@ -196,7 +196,7 @@ export function DeviceInspector({
   }, [request]);
 
   const load = useCallback(async () => {
-    if (!activeUdid) return;
+    if (!activeUdid || tab === "files") return;
     setLoading(true);
     setError(null);
     try {
@@ -219,7 +219,7 @@ export function DeviceInspector({
         await Promise.all([loadApps(), loadHomeScreen(), loadWdaRunnerStatus()]);
       } else if (tab === "profiles") {
         setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
-      } else {
+      } else if (tab === "crashes") {
         const result = await readJson<DeviceCrashReportList>(await request("/api/device/crash-reports"));
         setCrashReports(result.reports);
         setCrashReportsTruncated(result.truncated);
@@ -258,7 +258,6 @@ export function DeviceInspector({
     handledDeveloperImageState.current = "";
     setBackupStatus(null);
     setBackupAction(null);
-    setDeviceFilesOpen(false);
     setError(null);
   }, [activeUdid]);
 
@@ -905,6 +904,7 @@ export function DeviceInspector({
           options={[
             { value: "info", label: t("deviceInspector.info"), icon: <InfoCircleOutlined /> },
             { value: "apps", label: t("deviceInspector.apps"), icon: <AppstoreOutlined /> },
+            { value: "files", label: t("deviceInspector.afc"), icon: <FolderOpenOutlined /> },
             { value: "profiles", label: t("deviceInspector.profiles"), icon: <SafetyCertificateOutlined /> },
             { value: "crashes", label: t("deviceInspector.crashes"), icon: <BugOutlined /> },
           ]}
@@ -914,11 +914,26 @@ export function DeviceInspector({
           }}
         />
         <Tooltip title={t("deviceInspector.refresh")}>
-          <Button icon={<ReloadOutlined />} loading={loading} disabled={!activeUdid} onClick={() => void load()} />
+          <Button
+            icon={<ReloadOutlined />}
+            loading={tab !== "files" && loading}
+            disabled={!activeUdid}
+            onClick={() => {
+              if (tab === "files") setDeviceFilesRefresh((value) => value + 1);
+              else void load();
+            }}
+          />
         </Tooltip>
       </div>
 
-      {!activeUdid ? (
+      <DeviceFilesPane
+        active={tab === "files" && activeUdid !== null}
+        deviceId={activeUdid}
+        refreshToken={deviceFilesRefresh}
+        request={request}
+      />
+
+      {tab === "files" && activeUdid ? null : !activeUdid ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noDevice")} />
       ) : error ? (
         <Alert type="error" showIcon message={t("deviceInspector.loadFailed")} description={error} />
@@ -1098,15 +1113,6 @@ export function DeviceInspector({
                 </div>
               )}
             </div>}
-            <section className="device-files-section">
-              <div>
-                <Typography.Text strong>{t("deviceInspector.deviceFilesTitle")}</Typography.Text>
-                <Typography.Text type="secondary">{t("deviceInspector.deviceFilesHint")}</Typography.Text>
-              </div>
-              <Button icon={<FolderOpenOutlined />} onClick={() => setDeviceFilesOpen(true)}>
-                {t("deviceInspector.browseDeviceFiles")}
-              </Button>
-            </section>
             <section className="device-backup-section">
               <div className="device-backup-heading">
                 <div>
@@ -1538,7 +1544,6 @@ export function DeviceInspector({
         }}
       />
     </Modal>
-    <DeviceFilesModal open={deviceFilesOpen} request={request} onClose={() => setDeviceFilesOpen(false)} />
     <AppDocumentsModal app={documentsApp} request={request} onClose={() => setDocumentsApp(null)} />
     </>
   );
