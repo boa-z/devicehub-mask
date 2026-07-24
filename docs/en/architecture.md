@@ -36,9 +36,12 @@ dispatch.
 
 The MCP service is a separate Streamable HTTP endpoint on
 `127.0.0.1:8009/mcp` by default. It shares the manager's latest-frame slot,
-input sink, device state, and control channel, so automation and the WebView use
-one CoreDevice session. Coordinate tools include the screenshot dimensions and
-are transformed through the same orientation model as direct touch. Game
+input sink, device state, control channel, performance snapshot, and bounded
+device-log buffer, so automation and the WebView use one CoreDevice session.
+Performance and log calls acquire temporary demand leases that compose with the
+WebView's explicit demand instead of changing its state. Coordinate tools
+include the screenshot dimensions and are transformed through the same
+orientation model as direct touch. Game
 gestures serialize one-to-five-contact HID frames through the shared input
 queue. Screenshot and action results expose frame versions so an agent can skip
 the visual-stability delay and explicitly wait for the next decoded frame. MCP
@@ -270,7 +273,9 @@ Replace this pin after equivalent fixes are merged and released upstream.
 ## Security Boundaries
 
 - The private API remains loopback-only and token-authenticated.
-- MCP is loopback-only by default, is unauthenticated, and warns on non-loopback binds.
+- MCP is loopback-only by default, is unauthenticated, exposes potentially
+  sensitive screenshots, process names, and device logs, and warns on
+  non-loopback binds.
 - Frontend app metadata is never accepted as uninstall authorization.
 - HID reports are built only after backend validation.
 - Updater artifacts require a Tauri signature before installation.

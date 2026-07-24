@@ -18,7 +18,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
+use crate::device_logs::{DeviceLogDemand, DeviceLogEntry, DeviceLogLevel, DeviceLogSlot};
 use crate::hid::TouchContact;
+use crate::performance::{PerformanceDemand, PerformanceSlot};
 use crate::protocol::{
     ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat, FrameSlot, InputCmd,
     InputSink, LocationStatusSlot, Orientation, OrientationSlot, RotateDir, StatusSlot, norm,
@@ -41,6 +43,17 @@ const DEVICE_WAIT: Duration = Duration::from_secs(20);
 const LOCATION_WAIT: Duration = Duration::from_secs(10);
 const CLIPBOARD_WAIT: Duration = Duration::from_secs(10);
 const APP_WAIT: Duration = Duration::from_secs(15);
+const OBSERVABILITY_WAIT_MAX: Duration = Duration::from_secs(10);
+const PERFORMANCE_WAIT_DEFAULT: Duration = Duration::from_millis(2500);
+const DEVICE_LOG_WAIT_DEFAULT: Duration = Duration::from_millis(1000);
+
+#[derive(Clone, Default)]
+struct McpObservability {
+    performance: PerformanceSlot,
+    performance_demand: PerformanceDemand,
+    device_logs: DeviceLogSlot,
+    device_log_demand: DeviceLogDemand,
+}
 
 #[derive(Clone)]
 struct DeviceHub {
@@ -52,6 +65,7 @@ struct DeviceHub {
     error: ErrorSlot,
     status: StatusSlot,
     location: LocationStatusSlot,
+    observability: McpObservability,
     control: UnboundedSender<ControlCmd>,
     last_image: Arc<Mutex<Option<(u32, u32)>>>,
     gesture_lock: Arc<tokio::sync::Mutex<()>>,
@@ -180,6 +194,26 @@ struct StopAppParams {
     bundle_id: String,
     /// Wait for the screen after the app stops to become stable. Defaults to true.
     wait_for_settle: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct PerformanceSnapshotParams {
+    /// Wait for a fresh DVT sample in milliseconds. Defaults to 2500; 0 returns immediately.
+    wait_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeviceLogParams {
+    /// Return entries with sequence numbers greater than this cursor.
+    after: Option<u64>,
+    /// Maximum matching entries. Defaults to 100 and is clamped to 1..500.
+    limit: Option<usize>,
+    /// Wait for a matching entry in milliseconds. Defaults to 1000; 0 returns immediately.
+    wait_ms: Option<u64>,
+    /// Optional level filter: notice, info, debug, error, or fault.
+    level: Option<String>,
+    /// Optional case-insensitive text filter across message and metadata.
+    query: Option<String>,
 }
 
 fn ok_text(value: impl Into<String>) -> Result<CallToolResult, McpError> {
@@ -482,6 +516,53 @@ fn button_label(name: &str) -> Option<&'static str> {
     })
 }
 
+fn parse_log_level(level: Option<&str>) -> Result<Option<DeviceLogLevel>, McpError> {
+    let Some(level) = level else {
+        return Ok(None);
+    };
+    let level = match level.trim().to_ascii_lowercase().as_str() {
+        "notice" => DeviceLogLevel::Notice,
+        "info" => DeviceLogLevel::Info,
+        "debug" => DeviceLogLevel::Debug,
+        "error" => DeviceLogLevel::Error,
+        "fault" => DeviceLogLevel::Fault,
+        _ => {
+            return Err(McpError::invalid_params(
+                "level must be notice, info, debug, error, or fault",
+                None,
+            ));
+        }
+    };
+    Ok(Some(level))
+}
+
+fn log_entry_matches(
+    entry: &DeviceLogEntry,
+    level: Option<DeviceLogLevel>,
+    query: Option<&str>,
+) -> bool {
+    if level.is_some_and(|level| entry.level != Some(level)) {
+        return false;
+    }
+    let Some(query) = query else {
+        return true;
+    };
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    [
+        Some(entry.message.as_str()),
+        entry.process.as_deref(),
+        entry.subsystem.as_deref(),
+        entry.category.as_deref(),
+        entry.filename.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| field.to_ascii_lowercase().contains(&query))
+}
+
 #[tool_router]
 impl DeviceHub {
     #[allow(clippy::too_many_arguments)]
@@ -494,6 +575,7 @@ impl DeviceHub {
         error: ErrorSlot,
         status: StatusSlot,
         location: LocationStatusSlot,
+        observability: McpObservability,
         control: UnboundedSender<ControlCmd>,
     ) -> Self {
         Self {
@@ -505,6 +587,7 @@ impl DeviceHub {
             error,
             status,
             location,
+            observability,
             control,
             last_image: Arc::new(Mutex::new(None)),
             gesture_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -1106,6 +1189,114 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Collect a bounded DVT performance snapshot from the active device, including CPU, top processes, graphics, GPU, energy, and network rates. Sampling is enabled only for this call unless the desktop performance workspace is already active."
+    )]
+    async fn performance_snapshot(
+        &self,
+        Parameters(params): Parameters<PerformanceSnapshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let sampling_continues = self.observability.performance_demand.enabled();
+        let baseline = self.observability.performance.get().captured_at_ms;
+        let wait = Duration::from_millis(
+            params
+                .wait_ms
+                .unwrap_or(PERFORMANCE_WAIT_DEFAULT.as_millis() as u64),
+        )
+        .min(OBSERVABILITY_WAIT_MAX);
+        let _lease = self.observability.performance_demand.acquire();
+        let deadline = Instant::now() + wait;
+        let sample = loop {
+            let sample = self.observability.performance.get();
+            if wait.is_zero()
+                || (sample.captured_at_ms != 0 && sample.captured_at_ms > baseline)
+                || Instant::now() >= deadline
+            {
+                break sample;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let fresh = sample.captured_at_ms != 0 && sample.captured_at_ms > baseline;
+        ok_text(
+            json!({
+                "available": sample.captured_at_ms != 0,
+                "fresh": fresh,
+                "sampling_continues": sampling_continues,
+                "sample": sample,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Return bounded recent logs from the active device. Supports sequence cursors, level filtering, case-insensitive text search, and a short wait for new matching entries. Collection is enabled only for this call unless Device Logs is already active in the desktop app."
+    )]
+    async fn recent_device_logs(
+        &self,
+        Parameters(params): Parameters<DeviceLogParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let level = parse_log_level(params.level.as_deref())?;
+        let query = params
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty());
+        let limit = params
+            .limit
+            .unwrap_or(100)
+            .clamp(1, crate::device_logs::MAX_BATCH_ENTRIES);
+        let wait = Duration::from_millis(
+            params
+                .wait_ms
+                .unwrap_or(DEVICE_LOG_WAIT_DEFAULT.as_millis() as u64),
+        )
+        .min(OBSERVABILITY_WAIT_MAX);
+        let streaming_continues = self.observability.device_log_demand.enabled();
+        let _lease = self.observability.device_log_demand.acquire();
+        let deadline = Instant::now() + wait;
+        let (batch, mut entries) = loop {
+            let batch = self.observability.device_logs.snapshot(
+                params.after,
+                crate::device_logs::MAX_BATCH_ENTRIES,
+                true,
+            );
+            let entries = batch
+                .entries
+                .iter()
+                .filter(|entry| log_entry_matches(entry, level, query))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !entries.is_empty() || wait.is_zero() || Instant::now() >= deadline {
+                break (batch, entries);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let has_more = batch.has_more || entries.len() > limit;
+        if entries.len() > limit {
+            if params.after.is_none() {
+                entries.drain(..entries.len() - limit);
+            } else {
+                entries.truncate(limit);
+            }
+        }
+        ok_text(
+            json!({
+                "entries": entries,
+                "oldest_sequence": batch.oldest_sequence,
+                "latest_sequence": batch.latest_sequence,
+                "cursor_lagged": batch.cursor_lagged,
+                "has_more": has_more,
+                "source": batch.source,
+                "streaming_continues": streaming_continues,
+                "filters": {
+                    "level": params.level,
+                    "query": params.query,
+                },
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
         description = "Report active device, stream state, screen size, orientation and virtual-location state."
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
@@ -1144,7 +1335,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use performance_snapshot and recent_device_logs to diagnose device-side behavior without opening another device connection.")
     }
 }
 
@@ -1158,6 +1349,10 @@ pub async fn serve(
     error: ErrorSlot,
     status: StatusSlot,
     location: LocationStatusSlot,
+    performance: PerformanceSlot,
+    performance_demand: PerformanceDemand,
+    device_logs: DeviceLogSlot,
+    device_log_demand: DeviceLogDemand,
     control: UnboundedSender<ControlCmd>,
 ) {
     let address = std::env::var("DEVICEHUB_MCP_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
@@ -1179,6 +1374,12 @@ pub async fn serve(
         error,
         status,
         location,
+        McpObservability {
+            performance,
+            performance_demand,
+            device_logs,
+            device_log_demand,
+        },
         control,
     );
     let router = service_router(hub);
@@ -1239,6 +1440,8 @@ mod tests {
             "reconnect_device",
             "set_location",
             "clear_location",
+            "performance_snapshot",
+            "recent_device_logs",
             "status",
         ] {
             assert!(
@@ -1267,6 +1470,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observability_tools_filter_logs_and_release_temporary_demand() {
+        let observability = McpObservability::default();
+        observability
+            .device_logs
+            .publish("network connection failed".into());
+        observability
+            .device_logs
+            .publish("application ready".into());
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            InputSink::default(),
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            observability.clone(),
+            control,
+        );
+
+        let logs = hub
+            .recent_device_logs(Parameters(DeviceLogParams {
+                after: None,
+                limit: Some(10),
+                wait_ms: Some(0),
+                level: None,
+                query: Some("NETWORK".into()),
+            }))
+            .await
+            .unwrap();
+        let logs = logs
+            .content
+            .iter()
+            .find_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .unwrap();
+        assert!(logs.contains("network connection failed"));
+        assert!(!logs.contains("application ready"));
+        assert!(!observability.device_log_demand.enabled());
+
+        let performance = hub
+            .performance_snapshot(Parameters(PerformanceSnapshotParams { wait_ms: Some(0) }))
+            .await
+            .unwrap();
+        assert!(performance.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""available":false"#))
+        }));
+        assert!(!observability.performance_demand.enabled());
+    }
+
+    #[test]
+    fn device_log_level_filter_rejects_unknown_values() {
+        assert_eq!(
+            parse_log_level(Some("ERROR")).unwrap(),
+            Some(DeviceLogLevel::Error)
+        );
+        assert!(parse_log_level(Some("warning")).is_err());
+    }
+
+    #[tokio::test]
     async fn multi_touch_sends_simultaneous_down_and_release_frames() {
         let frames = FrameSlot::default();
         frames.publish(Arc::new(Frame {
@@ -1290,6 +1556,7 @@ mod tests {
             ErrorSlot::default(),
             StatusSlot::default(),
             LocationStatusSlot::default(),
+            McpObservability::default(),
             control,
         );
         hub.multi_touch(Parameters(MultiTouchParams {
@@ -1340,6 +1607,7 @@ mod tests {
             ErrorSlot::default(),
             StatusSlot::default(),
             LocationStatusSlot::default(),
+            McpObservability::default(),
             control,
         );
         let waiter = tokio::spawn(async move {
@@ -1409,6 +1677,7 @@ mod tests {
             ErrorSlot::default(),
             StatusSlot::default(),
             LocationStatusSlot::default(),
+            McpObservability::default(),
             control,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1421,6 +1690,26 @@ mod tests {
         let client = ClientInfo::default().serve(transport).await.unwrap();
         let tools = client.peer().list_tools(None).await.unwrap();
         assert!(tools.tools.iter().any(|tool| tool.name == "screenshot"));
+        assert!(
+            tools
+                .tools
+                .iter()
+                .any(|tool| tool.name == "performance_snapshot")
+        );
+        assert!(
+            tools
+                .tools
+                .iter()
+                .any(|tool| tool.name == "recent_device_logs")
+        );
+        let performance = client
+            .call_tool(
+                CallToolRequestParams::new("performance_snapshot")
+                    .with_arguments(serde_json::Map::from_iter([("wait_ms".into(), json!(0))])),
+            )
+            .await
+            .unwrap();
+        assert_ne!(performance.is_error, Some(true));
         let status = client
             .call_tool(CallToolRequestParams::new("status"))
             .await

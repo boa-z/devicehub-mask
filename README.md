@@ -34,8 +34,8 @@ exposed as a browser application.
   supervised DVT service recovery, device-wide DVT network/thermal condition
   simulation, plus bounded PCAP export through pcapd
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch,
-  app lifecycle control, frame synchronization, device switching, and DVT
-  virtual location
+  app lifecycle control, frame synchronization, device switching, DVT virtual
+  location, bounded performance snapshots, and filtered device logs
 - Native Tauri 2 desktop controls, Simplified Chinese and English UI, and signed
   nightly updates
 - macOS, Windows, and Linux verification and packaging through GitHub Actions

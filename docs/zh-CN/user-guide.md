@@ -183,6 +183,12 @@ DeviceHub Mask 运行期间，MCP 客户端可以连接 Streamable HTTP 端点
 同步多点触控、App 查询、启动/重启与停止、旋转、设备选择与重连、虚拟定位、画面帧同步
 和会话状态等工具。
 
+`performance_snapshot` 会在调用期间临时启用现有 DVT 性能服务，返回 CPU、高负载进程、
+能耗、图形、GPU 内存和网络指标。默认最多等待 2.5 秒获取新样本；将 `wait_ms` 设为 `0`
+可立即读取缓存快照。`recent_device_logs` 会临时启用设备日志服务，每次最多返回 500 条；
+使用 `after` 序列游标可增量读取，也可按 `level` 或不区分大小写的 `query` 筛选。MCP 的
+临时需求不会关闭桌面界面已经启用的性能采样或日志流。
+
 `type_text` 用于可打印 ASCII HID 逐键输入；CJK 或其他 Unicode 文本应使用
 `paste_text`，它会等待设备剪贴板写入和 Cmd+V 完成后再返回成功。
 
@@ -205,5 +211,6 @@ DeviceHub Mask 运行期间，MCP 客户端可以连接 Streamable HTTP 端点
 }
 ```
 
-该端点没有鉴权。除非主机位于可信隔离网络，否则应保持监听回环地址。开发者可用
+该端点没有鉴权，设备截图、性能进程名称和设备日志都可能包含敏感信息。除非主机位于
+可信隔离网络，否则应保持监听回环地址。开发者可用
 `DEVICEHUB_MCP_ADDR` 修改监听地址，详见[开发指南](development.md)。

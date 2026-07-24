@@ -160,27 +160,24 @@ impl DeviceLogSlot {
     }
 }
 
-#[derive(Clone)]
-pub struct DeviceLogDemand(watch::Sender<bool>);
-
-impl Default for DeviceLogDemand {
-    fn default() -> Self {
-        let (sender, _) = watch::channel(false);
-        Self(sender)
-    }
-}
+#[derive(Clone, Default)]
+pub struct DeviceLogDemand(crate::demand::Demand);
 
 impl DeviceLogDemand {
     pub fn set(&self, enabled: bool) {
-        self.0.send_replace(enabled);
+        self.0.set(enabled);
     }
 
     pub fn enabled(&self) -> bool {
-        *self.0.borrow()
+        self.0.enabled()
     }
 
     pub fn subscribe(&self) -> watch::Receiver<bool> {
         self.0.subscribe()
+    }
+
+    pub(crate) fn acquire(&self) -> crate::demand::DemandLease {
+        self.0.acquire()
     }
 }
 

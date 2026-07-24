@@ -249,6 +249,15 @@ swipes, simultaneous multi-touch, text and key input, hardware buttons, app
 discovery, launch/restart and stop, rotation, device selection and reconnection,
 virtual location, frame synchronization, and session status.
 
+`performance_snapshot` temporarily enables the existing DVT performance
+services and returns CPU, top-process, energy, graphics, GPU-memory, and network
+fields. It waits up to 2.5 seconds for a fresh sample by default; set `wait_ms`
+to `0` to read the current cached snapshot. `recent_device_logs` temporarily
+enables the device log service and returns at most 500 entries. Use its `after`
+sequence cursor for incremental reads, and optionally filter by `level` or a
+case-insensitive `query`. Temporary MCP demand does not disable sampling or log
+streaming that is already enabled in the desktop UI.
+
 Use `type_text` for printable ASCII HID keystrokes. Use `paste_text` for CJK or
 other Unicode text; it waits for the device pasteboard write and Cmd+V before
 returning success.
@@ -276,6 +285,7 @@ right-side action button in the same 250ms HID gesture:
 }
 ```
 
-The endpoint has no authentication. Keep it on loopback unless the host is on a
-trusted isolated network. Developers can change the bind address with
-`DEVICEHUB_MCP_ADDR`; see [Development](development.md).
+The endpoint has no authentication. Device screenshots, performance process
+names, and device logs can contain sensitive information. Keep it on loopback
+unless the host is on a trusted isolated network. Developers can change the
+bind address with `DEVICEHUB_MCP_ADDR`; see [Development](development.md).

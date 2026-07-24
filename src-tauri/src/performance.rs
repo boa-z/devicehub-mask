@@ -278,27 +278,24 @@ impl NetworkAccumulator {
     }
 }
 
-#[derive(Clone)]
-pub struct PerformanceDemand(watch::Sender<bool>);
-
-impl Default for PerformanceDemand {
-    fn default() -> Self {
-        let (sender, _) = watch::channel(false);
-        Self(sender)
-    }
-}
+#[derive(Clone, Default)]
+pub struct PerformanceDemand(crate::demand::Demand);
 
 impl PerformanceDemand {
     pub fn set(&self, enabled: bool) {
-        self.0.send_replace(enabled);
+        self.0.set(enabled);
     }
 
     pub fn enabled(&self) -> bool {
-        *self.0.borrow()
+        self.0.enabled()
     }
 
     pub fn subscribe(&self) -> watch::Receiver<bool> {
         self.0.subscribe()
+    }
+
+    pub(crate) fn acquire(&self) -> crate::demand::DemandLease {
+        self.0.acquire()
     }
 }
 

@@ -3,6 +3,7 @@ mod app_icons;
 mod audio_output;
 mod crash_reports;
 mod decode;
+mod demand;
 mod developer_mode;
 mod device_conditions;
 mod device_events;
@@ -209,6 +210,10 @@ fn spawn_backend(
                     error.clone(),
                     status.clone(),
                     location.clone(),
+                    performance.clone(),
+                    performance_demand.clone(),
+                    device_logs.clone(),
+                    device_log_demand.clone(),
                     thread_control.clone(),
                 ));
 
