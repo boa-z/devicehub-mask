@@ -45,6 +45,16 @@ export type ProcessPerformance = {
   cpu_percent: number | null;
   memory_bytes: number | null;
 };
+export type RunningProcess = {
+  pid: number;
+  name: string;
+  app_name: string | null;
+  is_application: boolean;
+};
+export type RunningProcessList = {
+  processes: RunningProcess[];
+  truncated: boolean;
+};
 export type ProcessEnergy = {
   pid: number;
   name: string;

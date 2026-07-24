@@ -1196,6 +1196,25 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "List a bounded, read-only inventory of processes currently running on the connected device through DVT DeviceInfo. Returns PID, sanitized process/app names, and whether iOS classifies each entry as an application. This tool cannot terminate or inspect arbitrary process memory."
+    )]
+    async fn list_processes(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::ListRunningProcesses(reply))?;
+        let list = tokio::time::timeout(APP_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("running process request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&list).map_err(|error| {
+            McpError::internal_error(
+                format!("unable to serialize running process inventory: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
         description = "Read DeviceHub Mask's supervised WebDriverAgent Runner state. This reports only a runner started by DeviceHub Mask; call wda_status separately to probe an externally managed WDA."
     )]
     async fn wda_runner_status(&self) -> Result<CallToolResult, McpError> {
@@ -2007,7 +2026,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes, performance_snapshot, and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -2129,6 +2148,7 @@ mod tests {
             "list_apps",
             "list_companion_devices",
             "home_screen_layout",
+            "list_processes",
             "wda_runner_status",
             "wda_start",
             "wda_stop",
@@ -2266,6 +2286,51 @@ mod tests {
             .unwrap();
         assert!(text.contains("Test Watch"));
         assert!(text.contains(r#""count":1"#));
+    }
+
+    #[tokio::test]
+    async fn running_process_tool_returns_bounded_device_info() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+        let task = tokio::spawn(async move { hub.list_processes().await.unwrap() });
+        let InputCmd::ListRunningProcesses(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected running process command");
+        };
+        reply
+            .send(Ok(crate::running_processes::RunningProcessList {
+                processes: vec![crate::running_processes::RunningProcess {
+                    pid: 42,
+                    name: "Example".into(),
+                    app_name: Some("Example App".into()),
+                    is_application: true,
+                }],
+                truncated: false,
+            }))
+            .unwrap();
+        let result = task.await.unwrap();
+        let text = result
+            .content
+            .iter()
+            .find_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .unwrap();
+        assert!(text.contains("Example App"));
+        assert!(text.contains(r#""pid":42"#));
+        assert!(text.contains(r#""truncated":false"#));
     }
 
     #[tokio::test]

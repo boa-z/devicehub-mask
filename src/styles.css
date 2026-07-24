@@ -365,6 +365,13 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .performance-process-table col:nth-child(2) { width: 88px; }
 .performance-process-table col:nth-child(3) { width: 112px; }
 .performance-process-table col:nth-child(4) { width: 150px; }
+.performance-inventory-table col:nth-child(1) { width: auto; }
+.performance-inventory-table col:nth-child(2) { width: 88px; }
+.performance-inventory-table col:nth-child(3) { width: 120px; }
+.performance-process-inventory-controls .ant-input-affix-wrapper { width: min(240px, 42vw); }
+.performance-inventory-table td:first-child small { display: block; margin-top: 2px; color: #899493; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.performance-process-pagination { min-height: 32px; padding-top: 12px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: #899493; font-size: 12px; font-variant-numeric: tabular-nums; }
+.performance-process-pagination .ant-btn { width: 32px; padding-inline: 0; }
 .performance-energy-table { min-width: 760px; }
 .performance-energy-table col:nth-child(2) { width: 76px; }
 .performance-energy-table col:nth-child(n+3) { width: 108px; }

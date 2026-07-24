@@ -26,6 +26,7 @@ mod network_capture;
 mod performance;
 mod protocol;
 mod provisioning;
+mod running_processes;
 mod screen_capture;
 mod session;
 mod settings;

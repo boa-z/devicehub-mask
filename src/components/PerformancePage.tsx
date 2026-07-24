@@ -1,12 +1,13 @@
-import { DashboardOutlined, DownloadOutlined, ExperimentOutlined, StopOutlined } from "@ant-design/icons";
+import { DashboardOutlined, DownloadOutlined, ExperimentOutlined, LeftOutlined, ReloadOutlined, RightOutlined, SearchOutlined, StopOutlined } from "@ant-design/icons";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Alert, Button, Modal, Segmented, Select, Space, Tag, Typography, message } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { Alert, Button, Input, Modal, Segmented, Select, Space, Tag, Tooltip, Typography, message } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { sortProcesses, type ProcessSort } from "../processPerformance";
 import { bluetoothCaptureFilename, networkCaptureDurations, networkCaptureFilename, networkCaptureRunning } from "../networkCapture";
 import { decodeDeviceConditionSelection, deviceConditionSelectionExists, encodeDeviceConditionSelection } from "../deviceConditions";
-import type { PerformanceSnapshot, PerformanceView, ServiceHealth, StreamMetrics } from "../types";
+import { filterRunningProcesses } from "../runningProcesses";
+import type { PerformanceSnapshot, PerformanceView, RunningProcessList, ServiceHealth, StreamMetrics } from "../types";
 
 type Props = {
   activeUdid: string | null;
@@ -19,6 +20,7 @@ type Props = {
 };
 
 const HISTORY_LIMIT = 120;
+const PROCESS_PAGE_SIZE = 50;
 
 function number(value: number | null | undefined, digits = 1) {
   return value == null || !Number.isFinite(value) ? "--" : value.toFixed(digits);
@@ -96,16 +98,53 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
   const [bluetoothBusy, setBluetoothBusy] = useState(false);
   const [conditionSelection, setConditionSelection] = useState<string | null>(null);
   const [conditionBusy, setConditionBusy] = useState(false);
+  const [processInventory, setProcessInventory] = useState<RunningProcessList | null>(null);
+  const [processInventoryLoading, setProcessInventoryLoading] = useState(false);
+  const [processInventoryError, setProcessInventoryError] = useState<string | null>(null);
+  const [processQuery, setProcessQuery] = useState("");
+  const [processPage, setProcessPage] = useState(1);
+  const processRequestSequence = useRef(0);
   const condition = view?.device_conditions;
   const appActivity = useMemo(
     () => [...(view?.app_activity ?? [])].reverse().slice(0, 20),
     [view?.app_activity],
   );
 
+  const loadProcessInventory = useCallback(async () => {
+    if (!activeUdid) return;
+    const sequence = ++processRequestSequence.current;
+    setProcessInventoryLoading(true);
+    setProcessInventoryError(null);
+    try {
+      const response = await request("/api/performance/processes");
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      const inventory = await response.json() as RunningProcessList;
+      if (sequence === processRequestSequence.current) {
+        setProcessInventory(inventory);
+        setProcessPage(1);
+      }
+    } catch (inventoryError) {
+      if (sequence === processRequestSequence.current) setProcessInventoryError(String(inventoryError));
+    } finally {
+      if (sequence === processRequestSequence.current) setProcessInventoryLoading(false);
+    }
+  }, [activeUdid, request]);
+
   useEffect(() => {
     setHistory([]);
     setConditionSelection(null);
+    setProcessInventory(null);
+    setProcessInventoryError(null);
+    setProcessQuery("");
+    setProcessPage(1);
   }, [activeUdid]);
+
+  useEffect(() => {
+    if (activeUdid) void loadProcessInventory();
+    return () => {
+      processRequestSequence.current += 1;
+    };
+  }, [activeUdid, loadProcessInventory]);
 
   useEffect(() => {
     const groups = condition?.groups ?? [];
@@ -143,6 +182,15 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
     () => sortProcesses(sample?.top_processes ?? [], processSort),
     [processSort, sample?.top_processes],
   );
+  const visibleProcessInventory = useMemo(
+    () => filterRunningProcesses(processInventory?.processes ?? [], processQuery),
+    [processInventory?.processes, processQuery],
+  );
+  const pagedProcessInventory = useMemo(
+    () => visibleProcessInventory.slice((processPage - 1) * PROCESS_PAGE_SIZE, processPage * PROCESS_PAGE_SIZE),
+    [processPage, visibleProcessInventory],
+  );
+  const processPageCount = Math.max(1, Math.ceil(visibleProcessInventory.length / PROCESS_PAGE_SIZE));
   const capture = view?.network_capture;
   const captureIsRunning = capture ? networkCaptureRunning(capture) : false;
   const captureStatus = capture
@@ -489,6 +537,80 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.captureElapsed")}</span><strong>{((bluetoothCapture?.elapsed_ms ?? 0) / 1000).toFixed(1)} s</strong></div>
         </div>
         {bluetoothCapture?.error && <Alert type="warning" showIcon message={t("performance.bluetoothCaptureFailed")} description={bluetoothCapture.error} />}
+      </section>
+
+      <section className="performance-section performance-section-process">
+        <div className="performance-process-header">
+          <div>
+            <Typography.Title level={5}>{t("performance.runningProcesses")}</Typography.Title>
+            <Typography.Text type="secondary">{t("performance.runningProcessesHint")}</Typography.Text>
+          </div>
+          <Space wrap className="performance-process-inventory-controls">
+            <Input
+              allowClear
+              aria-label={t("performance.searchProcesses")}
+              prefix={<SearchOutlined />}
+              placeholder={t("performance.searchProcesses")}
+              value={processQuery}
+              onChange={(event) => {
+                setProcessQuery(event.target.value);
+                setProcessPage(1);
+              }}
+            />
+            <Tooltip title={t("performance.refreshProcesses")}>
+              <Button
+                aria-label={t("performance.refreshProcesses")}
+                icon={<ReloadOutlined />}
+                disabled={!activeUdid}
+                loading={processInventoryLoading}
+                onClick={() => void loadProcessInventory()}
+              />
+            </Tooltip>
+          </Space>
+        </div>
+        {processInventoryError && <Alert type="warning" showIcon message={t("performance.processInventoryUnavailable")} description={processInventoryError} />}
+        {processInventory?.truncated && <Alert type="info" showIcon message={t("performance.processInventoryTruncated")} />}
+        <div className="performance-process-table-wrap">
+          <table className="performance-process-table performance-inventory-table">
+            <colgroup><col /><col /><col /></colgroup>
+            <thead><tr>
+              <th>{t("performance.processName")}</th>
+              <th>{t("performance.pid")}</th>
+              <th>{t("performance.processType")}</th>
+            </tr></thead>
+            <tbody>
+              {pagedProcessInventory.map((process) => <tr key={process.pid}>
+                <td>
+                  <span title={process.app_name ? `${process.app_name} · ${process.name}` : process.name}>{process.app_name ?? process.name}</span>
+                  {process.app_name && <small>{process.name}</small>}
+                </td>
+                <td>{process.pid}</td>
+                <td><Tag color={process.is_application ? "success" : "default"}>{t(process.is_application ? "performance.applicationProcess" : "performance.systemProcess")}</Tag></td>
+              </tr>)}
+              {!processInventoryLoading && visibleProcessInventory.length === 0 && <tr className="performance-process-empty"><td colSpan={3}>{t(processQuery ? "performance.noMatchingProcesses" : "performance.noRunningProcesses")}</td></tr>}
+              {processInventoryLoading && !processInventory && <tr className="performance-process-empty"><td colSpan={3}>{t("performance.loadingProcesses")}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {visibleProcessInventory.length > PROCESS_PAGE_SIZE && <div className="performance-process-pagination">
+          <Tooltip title={t("performance.previousProcessPage")}>
+            <Button
+              aria-label={t("performance.previousProcessPage")}
+              icon={<LeftOutlined />}
+              disabled={processPage <= 1}
+              onClick={() => setProcessPage((current) => Math.max(1, current - 1))}
+            />
+          </Tooltip>
+          <span>{t("performance.processPage", { current: processPage, total: processPageCount })}</span>
+          <Tooltip title={t("performance.nextProcessPage")}>
+            <Button
+              aria-label={t("performance.nextProcessPage")}
+              icon={<RightOutlined />}
+              disabled={processPage >= processPageCount}
+              onClick={() => setProcessPage((current) => Math.min(processPageCount, current + 1))}
+            />
+          </Tooltip>
+        </div>}
       </section>
 
       <section className="performance-section performance-section-process">

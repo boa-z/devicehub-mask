@@ -1589,6 +1589,14 @@ async fn run(
         supervisor.reporter("device.home_screen"),
         supervisor.shutdown_receiver(),
     ));
+    let (running_process_sender, running_process_receiver) = tokio::sync::mpsc::channel(2);
+    supervisor.spawn(crate::running_processes::serve(
+        adapter.clone(),
+        handshake.clone(),
+        running_process_receiver,
+        supervisor.reporter("performance.process_inventory"),
+        supervisor.shutdown_receiver(),
+    ));
     let (wda_sender, wda_receiver) = tokio::sync::mpsc::channel(4);
     supervisor.spawn(crate::wda_automation::serve(
         provider.clone(),
@@ -1713,6 +1721,7 @@ async fn run(
         icons: app_icon_sender,
         companions: companion_sender,
         home_screen: home_screen_sender,
+        running_processes: running_process_sender,
         wda: wda_sender,
         wda_runner: wda_runner_sender,
         documents: app_documents_sender,
@@ -2106,6 +2115,7 @@ struct DeviceManagementServices {
     icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
     companions: tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
     home_screen: tokio::sync::mpsc::Sender<crate::home_screen::HomeScreenCommand>,
+    running_processes: tokio::sync::mpsc::Sender<crate::running_processes::RunningProcessCommand>,
     wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
     wda_runner: tokio::sync::mpsc::Sender<crate::wda_runner::WdaRunnerCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
@@ -2568,6 +2578,22 @@ impl DeviceManagement {
                         }
                     };
                     let crate::home_screen::HomeScreenCommand::Get { reply } = command;
+                    let _ = reply.send(Err(reason.into()));
+                }
+                None
+            }
+            InputCmd::ListRunningProcesses(reply) => {
+                let command = crate::running_processes::RunningProcessCommand::List { reply };
+                if let Err(error) = self.services.running_processes.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("running process service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("running process service is unavailable", command)
+                        }
+                    };
+                    let crate::running_processes::RunningProcessCommand::List { reply } = command;
                     let _ = reply.send(Err(reason.into()));
                 }
                 None
@@ -3741,6 +3767,7 @@ async fn dispatch(
         | InputCmd::ListApps { .. }
         | InputCmd::ListCompanionDevices(_)
         | InputCmd::GetHomeScreenLayout(_)
+        | InputCmd::ListRunningProcesses(_)
         | InputCmd::WdaAutomation(_)
         | InputCmd::WdaRunner(_)
         | InputCmd::GetAppIcon { .. }

@@ -154,6 +154,7 @@ pub fn router(state: AppState, token: String) -> Router {
     Router::new()
         .route("/api/status", get(status))
         .route("/api/performance", get(performance))
+        .route("/api/performance/processes", get(running_processes))
         .route(
             "/api/performance/sampling",
             put(start_performance_sampling).delete(stop_performance_sampling),
@@ -356,6 +357,34 @@ async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
         bluetooth_capture: state.bluetooth_capture.get(),
         device_conditions: state.device_conditions.get(),
     })
+}
+
+async fn running_processes(
+    State(state): State<AppState>,
+) -> Result<Json<crate::running_processes::RunningProcessList>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::ListRunningProcesses(reply)) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let processes = tokio::time::timeout(Duration::from_secs(12), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "running process request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(processes))
 }
 
 #[derive(Deserialize)]
@@ -4237,6 +4266,32 @@ mod tests {
         let response = request.await.unwrap().unwrap();
         assert_eq!(response.0.len(), 1);
         assert_eq!(response.0[0].name.as_deref(), Some("Test Watch"));
+    }
+
+    #[tokio::test]
+    async fn running_process_endpoint_dispatches_a_bounded_read_only_query() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(running_processes(State(state)));
+        let InputCmd::ListRunningProcesses(reply) = input_rx.recv().await.unwrap() else {
+            panic!("expected running process query");
+        };
+        reply
+            .send(Ok(crate::running_processes::RunningProcessList {
+                processes: vec![crate::running_processes::RunningProcess {
+                    pid: 42,
+                    name: "Example".into(),
+                    app_name: Some("Example App".into()),
+                    is_application: true,
+                }],
+                truncated: false,
+            }))
+            .unwrap();
+        let response = request.await.unwrap().unwrap();
+        assert_eq!(response.0.processes[0].pid, 42);
+        assert_eq!(
+            response.0.processes[0].app_name.as_deref(),
+            Some("Example App")
+        );
     }
 
     #[tokio::test]

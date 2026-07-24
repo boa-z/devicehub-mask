@@ -11,7 +11,7 @@
 | **设备** | USB/Wi-Fi 设备选择、显式重新连接、实时画面、鼠标直接触控、映射与键盘透传模式、旋转、原生截图、WebView 支持时的画面录制、Unicode 粘贴、设备音频静音、硬件按键、设备画面全屏，以及支持普通/系统/轻 App 范围的设备检查器 |
 | **键盘映射** | 可视化放置与编辑、实时或冻结截图背景、配置创建/复制/重命名/导入/导出、scrcpy-mask `0.0.1` 兼容、PlayCover `2.0.0` 导入、App 与配置关联、硬件按键快捷键 |
 | **AFC** | 统一的公共 AFC、App Documents、App Container 与崩溃报告工作台；可搜索 App 选择、有界浏览与传输、新建、重命名、确认式递归删除、进度、取消及只读崩溃报告导出 |
-| **性能** | iPhone CPU/进程/内存/能耗、Core Animation FPS、GPU 内存、网络速率、App 活动、视频管线指标、服务健康、DVT 网络/热状态、网络 PCAP 和蓝牙 HCI PCAP |
+| **性能** | iPhone CPU/进程/内存/能耗、可搜索的按需运行进程清单、Core Animation FPS、GPU 内存、网络速率、App 活动、视频管线指标、服务健康、DVT 网络/热状态、网络 PCAP 和蓝牙 HCI PCAP |
 | **设备日志** | 按需结构化统一日志、SyslogRelay 回退、搜索、级别筛选、暂停、自动滚动、复制、清空、有界缓冲和恢复状态 |
 | **虚拟定位** | DVT 定位设置、经纬度输入、内置地点预设、当前状态和显式恢复真实定位 |
 | **设置** | 语言、窗口置顶、系统全屏、检查器显示、画面比例、映射覆盖层、旋转控制锁定、设备全屏工具栏行为、解码器与像素格式、音频、剪贴板同步、可配置性能 HUD、更新、Debug 日志和日志目录 |
@@ -75,7 +75,7 @@
 | 备份 | MobileBackup2 |
 | sysdiagnose | CoreDevice DiagnosticsService |
 | 设备日志 | OsTraceRelay / SyslogRelay |
-| 性能与设备状态模拟 | DVT Sysmontap、Graphics、Energy、Network Monitor、Notifications、Condition Inducer |
+| 性能、进程与设备状态模拟 | DVT DeviceInfo、Sysmontap、Graphics、Energy、Network Monitor、Notifications、Condition Inducer |
 | 虚拟定位 | DVT Location Simulation |
 | 网络/蓝牙抓包 | pcapd 和 BTPacketLogger |
 | Watch 元数据 | CompanionProxy |
@@ -89,7 +89,7 @@
 
 - 画面与输入：`screenshot`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、 `type_text`、`paste_text`、`press_key`、`press_button`、`rotate`。
 - 设备与会话：`status`、`device_details`、`list_devices`、`connect_device`、 `reconnect_device`、`lock_device`、`wait_for_device_event`、 `list_companion_devices`、`home_screen_layout`。
-- App 与诊断：`list_apps`、`launch_app`、`stop_app`、`list_crash_reports`、 `read_crash_report`、`performance_snapshot`、`recent_device_logs`。
+- App 与诊断：`list_apps`、`launch_app`、`stop_app`、`list_processes`、`list_crash_reports`、`read_crash_report`、`performance_snapshot`、`recent_device_logs`。
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。
 - WDA：`wda_runner_status`、`wda_start`、`wda_stop`、`wda_status`、 `wda_ui_tree`、`wda_find_elements`、`wda_click`。
 
