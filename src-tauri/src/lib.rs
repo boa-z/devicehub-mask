@@ -210,6 +210,7 @@ fn spawn_backend(
                     error.clone(),
                     status.clone(),
                     location.clone(),
+                    device_events.clone(),
                     performance.clone(),
                     performance_demand.clone(),
                     device_logs.clone(),

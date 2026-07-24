@@ -250,6 +250,15 @@ swipes, simultaneous multi-touch, text and key input, hardware buttons, app
 discovery, launch/restart and stop, rotation, device selection and reconnection,
 virtual location, frame synchronization, crash diagnosis, and session status.
 
+`device_details` refreshes the active device's product and OS versions, hardware
+model, storage, activation, Developer Mode, and battery diagnostics. UDID,
+serial number, and ECID are omitted by default; set `include_identifiers` only
+when stable hardware identity is required. `wait_for_device_event` waits without
+polling for normalized app installation/removal, disk-usage, or device-name
+changes. Pass the returned event `sequence` as `after_sequence` on the next call
+to close subscription races; raw notification names and payloads are never
+returned.
+
 `performance_snapshot` temporarily enables the existing DVT performance
 services and returns CPU, top-process, energy, graphics, GPU-memory, and network
 fields. It waits up to 2.5 seconds for a fresh sample by default; set `wait_ms`

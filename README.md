@@ -36,7 +36,7 @@ exposed as a browser application.
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch,
   app lifecycle control, frame synchronization, device switching, DVT virtual
   location, bounded performance snapshots, filtered device logs, and crash
-  report diagnosis
+  report diagnosis, with refreshed device details and event-driven metadata waits
 - Native Tauri 2 desktop controls, Simplified Chinese and English UI, and signed
   nightly updates
 - macOS, Windows, and Linux verification and packaging through GitHub Actions

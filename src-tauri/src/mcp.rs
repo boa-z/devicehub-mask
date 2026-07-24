@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
+use crate::device_events::DeviceEventSlot;
 use crate::device_logs::{DeviceLogDemand, DeviceLogEntry, DeviceLogLevel, DeviceLogSlot};
 use crate::hid::TouchContact;
 use crate::performance::{PerformanceDemand, PerformanceSlot};
@@ -40,6 +41,8 @@ const SETTLE_STABLE_SAMPLES: u32 = 3;
 const GRID_STEP: u32 = 100;
 const GRID_LABEL_EVERY: u32 = 2;
 const DEVICE_WAIT: Duration = Duration::from_secs(20);
+const DEVICE_DETAILS_WAIT: Duration = Duration::from_secs(8);
+const DEVICE_EVENT_WAIT_MAX: Duration = Duration::from_secs(30);
 const LOCATION_WAIT: Duration = Duration::from_secs(10);
 const CLIPBOARD_WAIT: Duration = Duration::from_secs(10);
 const APP_WAIT: Duration = Duration::from_secs(15);
@@ -51,6 +54,7 @@ const DEVICE_LOG_WAIT_DEFAULT: Duration = Duration::from_millis(1000);
 
 #[derive(Clone, Default)]
 struct McpObservability {
+    device_events: DeviceEventSlot,
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
     device_logs: DeviceLogSlot,
@@ -166,6 +170,21 @@ struct RotateParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DeviceParams {
     udid: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeviceDetailsParams {
+    /// Include UDID, serial number, and ECID. Defaults to false.
+    include_identifiers: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeviceEventParams {
+    /// Return immediately when the latest event sequence is newer than this cursor.
+    /// When omitted, wait only for an event occurring after this call starts.
+    after_sequence: Option<u64>,
+    /// Maximum wait in milliseconds. Defaults to 10000 and is clamped to 0..30000.
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1151,6 +1170,121 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Return refreshed Lockdown device metadata, storage, battery, activation, and Developer Mode state. Stable hardware identifiers are omitted unless include_identifiers is true."
+    )]
+    async fn device_details(
+        &self,
+        Parameters(params): Parameters<DeviceDetailsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::GetDeviceDetails(reply))?;
+        let details = tokio::time::timeout(DEVICE_DETAILS_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("device metadata request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        let identifiers = params.include_identifiers.unwrap_or(false).then(|| {
+            json!({
+                "udid": details.udid,
+                "serial_number": details.serial_number,
+                "ecid": details.ecid,
+            })
+        });
+        ok_text(
+            json!({
+                "name": details.name,
+                "product_type": details.product_type,
+                "product_version": details.product_version,
+                "build_version": details.build_version,
+                "hardware_model": details.hardware_model,
+                "total_disk_capacity": details.total_disk_capacity,
+                "storage": details.storage,
+                "activation_state": details.activation_state,
+                "developer_mode_enabled": details.developer_mode_enabled,
+                "battery": details.battery,
+                "identifiers": identifiers,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Wait for a normalized device metadata event: app_installed, app_uninstalled, disk_usage_changed, or device_name_changed. Pass the returned sequence as after_sequence for race-free incremental waiting."
+    )]
+    async fn wait_for_device_event(
+        &self,
+        Parameters(params): Parameters<DeviceEventParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let baseline = params.after_sequence.unwrap_or_else(|| {
+            self.observability
+                .device_events
+                .latest()
+                .map_or(0, |event| event.sequence)
+        });
+        let mut receiver = self.observability.device_events.subscribe();
+        if let Some(event) = self
+            .observability
+            .device_events
+            .latest()
+            .filter(|event| event.sequence > baseline)
+        {
+            return ok_text(
+                json!({
+                    "changed": true,
+                    "event": event,
+                })
+                .to_string(),
+            );
+        }
+        let wait =
+            Duration::from_millis(params.timeout_ms.unwrap_or(10_000)).min(DEVICE_EVENT_WAIT_MAX);
+        let event = tokio::time::timeout(wait, async {
+            loop {
+                match receiver.recv().await {
+                    Ok(event) if event.sequence > baseline => return Ok(event),
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if let Some(event) = self
+                            .observability
+                            .device_events
+                            .latest()
+                            .filter(|event| event.sequence > baseline)
+                        {
+                            return Ok(event);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err(McpError::internal_error("device event stream ended", None));
+                    }
+                }
+            }
+        })
+        .await;
+        match event {
+            Ok(Ok(event)) => ok_text(
+                json!({
+                    "changed": true,
+                    "event": event,
+                })
+                .to_string(),
+            ),
+            Ok(Err(error)) => Err(error),
+            Err(_) => ok_text(
+                json!({
+                    "changed": false,
+                    "after_sequence": baseline,
+                    "latest_sequence": self
+                        .observability
+                        .device_events
+                        .latest()
+                        .map(|event| event.sequence),
+                })
+                .to_string(),
+            ),
+        }
+    }
+
+    #[tool(
         description = "List attached iOS devices with UDID, name, connection type and active state."
     )]
     async fn list_devices(&self) -> Result<CallToolResult, McpError> {
@@ -1424,7 +1558,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_apps with launch_app or stop_app for app lifecycle control, and list_devices/connect_device when no device is active. Use device_details for battery and system context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -1438,6 +1572,7 @@ pub async fn serve(
     error: ErrorSlot,
     status: StatusSlot,
     location: LocationStatusSlot,
+    device_events: DeviceEventSlot,
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
     device_logs: DeviceLogSlot,
@@ -1464,6 +1599,7 @@ pub async fn serve(
         status,
         location,
         McpObservability {
+            device_events,
             performance,
             performance_demand,
             device_logs,
@@ -1503,6 +1639,24 @@ mod tests {
         transport::StreamableHttpClientTransport,
     };
 
+    fn test_device_details() -> crate::protocol::DeviceDetails {
+        crate::protocol::DeviceDetails {
+            udid: "private-udid".into(),
+            name: "Test iPhone".into(),
+            product_type: "iPhone14,3".into(),
+            product_version: "27.0".into(),
+            build_version: Some("24A123".into()),
+            hardware_model: Some("D64AP".into()),
+            serial_number: Some("private-serial".into()),
+            ecid: Some("123456789".into()),
+            total_disk_capacity: Some(256_000_000_000),
+            storage: None,
+            activation_state: Some(crate::protocol::DeviceActivationState::Activated),
+            developer_mode_enabled: Some(true),
+            battery: None,
+        }
+    }
+
     #[test]
     fn all_tools_are_registered() {
         let names: Vec<_> = DeviceHub::tool_router()
@@ -1526,6 +1680,8 @@ mod tests {
             "stop_app",
             "list_crash_reports",
             "read_crash_report",
+            "device_details",
+            "wait_for_device_event",
             "list_devices",
             "connect_device",
             "reconnect_device",
@@ -1558,6 +1714,119 @@ mod tests {
         assert!(validate_touch_count(6).is_err());
         assert!(valid_bundle_identifier("com.example.game"));
         assert!(!valid_bundle_identifier("invalid bundle"));
+    }
+
+    #[tokio::test]
+    async fn device_details_redact_identifiers_unless_requested() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            McpObservability::default(),
+            control,
+        );
+
+        for include_identifiers in [false, true] {
+            let details_hub = hub.clone();
+            let task = tokio::spawn(async move {
+                details_hub
+                    .device_details(Parameters(DeviceDetailsParams {
+                        include_identifiers: Some(include_identifiers),
+                    }))
+                    .await
+                    .unwrap()
+            });
+            let InputCmd::GetDeviceDetails(reply) = input_rx.recv().await.unwrap() else {
+                panic!("expected device details command");
+            };
+            reply.send(Ok(test_device_details())).unwrap();
+            let result = task.await.unwrap();
+            let text = result
+                .content
+                .iter()
+                .find_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .unwrap();
+            assert!(text.contains("Test iPhone"));
+            assert_eq!(text.contains("private-serial"), include_identifiers);
+            assert_eq!(text.contains("private-udid"), include_identifiers);
+        }
+    }
+
+    #[tokio::test]
+    async fn device_event_wait_uses_cursor_and_observes_future_events() {
+        let observability = McpObservability::default();
+        observability
+            .device_events
+            .publish(crate::device_events::DeviceEventKind::AppInstalled);
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            InputSink::default(),
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            observability.clone(),
+            control,
+        );
+
+        let existing = hub
+            .wait_for_device_event(Parameters(DeviceEventParams {
+                after_sequence: Some(0),
+                timeout_ms: Some(0),
+            }))
+            .await
+            .unwrap();
+        assert!(existing.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains("app_installed"))
+        }));
+
+        let wait_hub = hub.clone();
+        let waiter = tokio::spawn(async move {
+            wait_hub
+                .wait_for_device_event(Parameters(DeviceEventParams {
+                    after_sequence: Some(1),
+                    timeout_ms: Some(500),
+                }))
+                .await
+                .unwrap()
+        });
+        tokio::task::yield_now().await;
+        observability
+            .device_events
+            .publish(crate::device_events::DeviceEventKind::DeviceNameChanged);
+        let future = waiter.await.unwrap();
+        assert!(future.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains("device_name_changed"))
+        }));
+
+        let timed_out = hub
+            .wait_for_device_event(Parameters(DeviceEventParams {
+                after_sequence: None,
+                timeout_ms: Some(0),
+            }))
+            .await
+            .unwrap();
+        assert!(timed_out.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""changed":false"#))
+        }));
     }
 
     #[tokio::test]
@@ -1912,6 +2181,13 @@ mod tests {
                 .tools
                 .iter()
                 .any(|tool| tool.name == "read_crash_report")
+        );
+        assert!(tools.tools.iter().any(|tool| tool.name == "device_details"));
+        assert!(
+            tools
+                .tools
+                .iter()
+                .any(|tool| tool.name == "wait_for_device_event")
         );
         let performance = client
             .call_tool(

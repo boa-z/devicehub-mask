@@ -1,6 +1,7 @@
 //! Event-driven device metadata changes from the Lockdown notification proxy.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,7 @@ pub struct DeviceEvent {
 struct DeviceEventSlotInner {
     sender: broadcast::Sender<DeviceEvent>,
     sequence: AtomicU64,
+    latest: Mutex<Option<DeviceEvent>>,
 }
 
 #[derive(Clone)]
@@ -51,6 +53,7 @@ impl Default for DeviceEventSlot {
         Self(Arc::new(DeviceEventSlotInner {
             sender,
             sequence: AtomicU64::new(0),
+            latest: Mutex::new(None),
         }))
     }
 }
@@ -58,11 +61,21 @@ impl Default for DeviceEventSlot {
 impl DeviceEventSlot {
     pub fn publish(&self, kind: DeviceEventKind) {
         let sequence = self.0.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self.0.sender.send(DeviceEvent { sequence, kind });
+        let event = DeviceEvent { sequence, kind };
+        *self.0.latest.lock().unwrap() = Some(event);
+        let _ = self.0.sender.send(event);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<DeviceEvent> {
         self.0.sender.subscribe()
+    }
+
+    pub fn latest(&self) -> Option<DeviceEvent> {
+        *self.0.latest.lock().unwrap()
+    }
+
+    pub fn reset(&self) {
+        *self.0.latest.lock().unwrap() = None;
     }
 }
 
@@ -213,6 +226,17 @@ mod tests {
         assert_eq!(first.kind, DeviceEventKind::AppInstalled);
         assert_eq!(second.kind, DeviceEventKind::AppInstalled);
         assert_eq!(second.sequence, first.sequence + 1);
+        assert_eq!(slot.latest(), Some(second));
+    }
+
+    #[test]
+    fn reset_clears_retained_event_without_reusing_sequence() {
+        let slot = DeviceEventSlot::default();
+        slot.publish(DeviceEventKind::AppInstalled);
+        slot.reset();
+        assert_eq!(slot.latest(), None);
+        slot.publish(DeviceEventKind::AppUninstalled);
+        assert_eq!(slot.latest().unwrap().sequence, 2);
     }
 
     #[test]

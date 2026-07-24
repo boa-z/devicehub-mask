@@ -184,6 +184,12 @@ DeviceHub Mask 运行期间，MCP 客户端可以连接 Streamable HTTP 端点
 同步多点触控、App 查询、启动/重启与停止、旋转、设备选择与重连、虚拟定位、画面帧同步、
 崩溃诊断和会话状态等工具。
 
+`device_details` 会刷新当前设备的产品与系统版本、硬件型号、存储、激活状态、开发者模式
+和电池诊断。默认省略 UDID、序列号和 ECID；只有确实需要稳定硬件身份时才应启用
+`include_identifiers`。`wait_for_device_event` 无需轮询即可等待 App 安装/移除、磁盘用量或
+设备名称变化等归一化事件。下一次调用应把返回的 `sequence` 作为 `after_sequence`，避免
+订阅竞态；工具不会返回原始通知名称或载荷。
+
 `performance_snapshot` 会在调用期间临时启用现有 DVT 性能服务，返回 CPU、高负载进程、
 能耗、图形、GPU 内存和网络指标。默认最多等待 2.5 秒获取新样本；将 `wait_ms` 设为 `0`
 可立即读取缓存快照。`recent_device_logs` 会临时启用设备日志服务，每次最多返回 500 条；

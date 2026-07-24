@@ -37,7 +37,11 @@ dispatch.
 The MCP service is a separate Streamable HTTP endpoint on
 `127.0.0.1:8009/mcp` by default. It shares the manager's latest-frame slot,
 input sink, device state, control channel, performance snapshot, and bounded
-device-log buffer, so automation and the WebView use one CoreDevice session.
+device-log buffer, so automation and the WebView use one CoreDevice session. It
+also retains only the latest normalized device metadata event for the current
+session to close the race between reading an event cursor and subscribing for
+the next event. Session changes clear the retained event without reusing its
+monotonic sequence number.
 Performance and log calls acquire temporary demand leases that compose with the
 WebView's explicit demand instead of changing its state. Coordinate tools
 include the screenshot dimensions and are transformed through the same
@@ -47,6 +51,8 @@ queue. Screenshot and action results expose frame versions so an agent can skip
 the visual-stability delay and explicitly wait for the next decoded frame. MCP
 crash-report tools dispatch through the active session provider and cap report
 content at 1 MiB; device paths pass the same traversal checks as desktop export.
+Device-detail calls use the existing session command queue and omit stable
+hardware identifiers unless the caller explicitly requests them.
 has no authentication; binding it beyond loopback is an explicit deployment
 decision and emits a warning.
 
