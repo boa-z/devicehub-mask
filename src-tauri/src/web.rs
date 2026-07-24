@@ -50,6 +50,7 @@ pub struct AppState {
     pub active: ActiveSlot,
     pub error: ErrorSlot,
     pub app_operation: AppOperationSlot,
+    pub app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     pub location: LocationStatusSlot,
     pub performance: PerformanceSlot,
     pub performance_demand: PerformanceDemand,
@@ -268,6 +269,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route(
             "/api/device/apps/{bundle_id}/storage/rename",
             put(rename_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/activity",
+            get(app_document_activity),
         )
         .route("/api/device/apps/operation", get(app_operation))
         .route("/api/device/apps/install", put(install_app))
@@ -1425,6 +1430,14 @@ async fn app_documents(
     Ok(Json(
         await_app_document_response(response, "application document listing").await?,
     ))
+}
+
+async fn app_document_activity(
+    State(state): State<AppState>,
+    Path(bundle_id): Path<String>,
+) -> Result<Json<crate::app_documents::AppDocumentActivityView>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    Ok(Json(state.app_document_activity.get(&bundle_id)))
 }
 
 async fn export_app_document(
@@ -3068,6 +3081,7 @@ mod tests {
                 active: ActiveSlot::default(),
                 error: ErrorSlot::default(),
                 app_operation: AppOperationSlot::default(),
+                app_document_activity: crate::app_documents::AppDocumentActivitySlot::default(),
                 location: LocationStatusSlot::default(),
                 performance: PerformanceSlot::default(),
                 performance_demand: PerformanceDemand::default(),
@@ -4278,6 +4292,19 @@ mod tests {
         };
 
         let (state, mut input_rx) = test_state();
+        let activity = app_document_activity(State(state.clone()), Path("com.example.game".into()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            activity.state,
+            crate::app_documents::AppDocumentActivityState::Idle
+        );
+        assert!(
+            app_document_activity(State(state.clone()), Path("invalid".into()))
+                .await
+                .is_err()
+        );
         let list = tokio::spawn(app_documents(
             State(state.clone()),
             Path("com.example.game".into()),

@@ -170,6 +170,11 @@ App 存储由独立受监督的 House Arrest worker 处理。USB 会先通过已
 必须携带显式 API 标志，先按相同深度、条目类型与符号链接约束完成预扫描，再以后序逐项
 删除，并在每次删除前立即复验目标。
 
+worker 会按 App 发布当前设备会话内的传输 activity 快照。每复制一个 64 KiB 数据块便累计
+字节数，并最多每 100 ms 发布一次。单文件传输会公开已知总字节数；目录传输不额外执行一次
+远端预扫描，而是持续报告已完成的字节、文件与目录数量。前端仅在上传或下载请求进行期间
+轮询这个只读快照。
+
 设备公共文件由另一条受监督的标准 AFC worker 处理。USB 会先通过已配对的 lockdown provider
 打开 `com.apple.afc`，失败时可回退到克隆的 RSD tunnel；Wi-Fi 通过 RSD 使用
 `com.apple.afc.shim.remote`，任何路径都不会请求 AFC2。worker 会复用客户端直到操作失败，

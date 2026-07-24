@@ -215,6 +215,7 @@ fn spawn_backend(
                 let error = ErrorSlot::default();
                 let input = InputSink::default();
                 let app_operation = AppOperationSlot::default();
+                let app_document_activity = app_documents::AppDocumentActivitySlot::default();
                 let location = LocationStatusSlot::default();
                 let performance = performance::PerformanceSlot::default();
                 let performance_demand = performance::PerformanceDemand::default();
@@ -263,6 +264,7 @@ fn spawn_backend(
                     active.clone(),
                     error.clone(),
                     app_operation.clone(),
+                    app_document_activity.clone(),
                     location.clone(),
                     performance.clone(),
                     performance_demand.clone(),
@@ -290,6 +292,7 @@ fn spawn_backend(
                         active,
                         error,
                         app_operation,
+                        app_document_activity,
                         location,
                         performance,
                         performance_demand,

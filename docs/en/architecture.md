@@ -241,6 +241,13 @@ root mutation is rejected. Recursive deletion requires an explicit API flag,
 preflights the same depth, entry-type, and symlink constraints, then revalidates
 each planned item immediately before deleting it in postorder.
 
+The worker publishes a session-scoped transfer activity snapshot for each app.
+Byte counters are updated while each 64 KiB block is copied and published at
+most every 100 ms. Single-file transfers expose their known byte total; directory
+transfers remain indeterminate and report completed bytes, files, and directories
+without an additional remote preflight traversal. The frontend polls this
+read-only snapshot only while its upload or download request is active.
+
 Public device files use a separate supervised standard-AFC worker. USB first
 opens `com.apple.afc` through the paired lockdown provider and can fall back to
 the cloned RSD tunnel; Wi-Fi uses `com.apple.afc.shim.remote` through RSD. AFC2

@@ -243,6 +243,9 @@ to 64 levels and 100,000 entries. Uploads never overwrite an existing name.
 Container changes can damage app data, so use that
 scope only when inspecting or debugging an app you can recover. Apps that expose
 neither file sharing nor a developer container do not show the storage button.
+While uploading or downloading, the workspace shows transferred bytes and item
+counts. A single file also shows an exact percentage; folders use an ongoing
+counter because their total is not scanned twice before transfer.
 
 App storage and Device public files are separate boundaries. App storage uses
 House Arrest for one selected application's vended Documents or container root.

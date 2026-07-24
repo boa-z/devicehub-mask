@@ -1,8 +1,8 @@
 //! Sandboxed application storage access through House Arrest and AFC.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use idevice::afc::AfcClient;
 use idevice::afc::opcode::AfcFopenMode;
@@ -12,7 +12,7 @@ use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use idevice::{IdeviceService, RsdService};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::protocol::ConnKind;
@@ -25,6 +25,7 @@ const MAX_PATH_BYTES: usize = 1_024;
 const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_TRANSFER_ENTRIES: usize = 100_000;
 const MAX_TRANSFER_DEPTH: usize = 64;
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +64,185 @@ pub struct AppDocumentTransfer {
     pub bytes_transferred: u64,
     pub files_transferred: u64,
     pub directories_transferred: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppDocumentActivityKind {
+    Export,
+    Import,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppDocumentActivityState {
+    #[default]
+    Idle,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AppDocumentActivityView {
+    pub id: u64,
+    pub bundle_id: Option<String>,
+    pub scope: Option<AppStorageScope>,
+    pub kind: Option<AppDocumentActivityKind>,
+    pub state: AppDocumentActivityState,
+    pub path: Option<String>,
+    pub bytes_transferred: u64,
+    pub bytes_total: Option<u64>,
+    pub files_transferred: u64,
+    pub directories_transferred: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct AppDocumentActivitySlot(Arc<Mutex<AppDocumentActivityView>>);
+
+impl AppDocumentActivitySlot {
+    fn start(
+        &self,
+        bundle_id: &str,
+        scope: AppStorageScope,
+        kind: AppDocumentActivityKind,
+        path: String,
+        bytes_total: Option<u64>,
+    ) -> u64 {
+        let mut view = self.0.lock().expect("app document activity lock poisoned");
+        let id = view.id.wrapping_add(1).max(1);
+        *view = AppDocumentActivityView {
+            id,
+            bundle_id: Some(bundle_id.to_owned()),
+            scope: Some(scope),
+            kind: Some(kind),
+            state: AppDocumentActivityState::Running,
+            path: Some(path),
+            bytes_total,
+            ..AppDocumentActivityView::default()
+        };
+        id
+    }
+
+    fn update(&self, id: u64, transfer: AppDocumentTransfer) {
+        let mut view = self.0.lock().expect("app document activity lock poisoned");
+        if view.id == id && view.state == AppDocumentActivityState::Running {
+            view.bytes_transferred = transfer.bytes_transferred;
+            view.files_transferred = transfer.files_transferred;
+            view.directories_transferred = transfer.directories_transferred;
+        }
+    }
+
+    fn set_total(&self, id: u64, bytes_total: u64) {
+        let mut view = self.0.lock().expect("app document activity lock poisoned");
+        if view.id == id && view.state == AppDocumentActivityState::Running {
+            view.bytes_total = Some(bytes_total);
+        }
+    }
+
+    fn finish(&self, id: u64, result: &Result<(), String>) {
+        let mut view = self.0.lock().expect("app document activity lock poisoned");
+        if view.id != id || view.state != AppDocumentActivityState::Running {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                view.state = AppDocumentActivityState::Succeeded;
+                if let Some(total) = view.bytes_total {
+                    view.bytes_transferred = total;
+                }
+            }
+            Err(error) => {
+                view.state = AppDocumentActivityState::Failed;
+                view.error = Some(error.chars().take(512).collect());
+            }
+        }
+    }
+
+    pub fn get(&self, bundle_id: &str) -> AppDocumentActivityView {
+        let view = self.0.lock().expect("app document activity lock poisoned");
+        if view.bundle_id.as_deref() == Some(bundle_id) {
+            view.clone()
+        } else {
+            AppDocumentActivityView::default()
+        }
+    }
+
+    fn reset(&self) {
+        *self.0.lock().expect("app document activity lock poisoned") =
+            AppDocumentActivityView::default();
+    }
+}
+
+struct TransferProgress {
+    slot: AppDocumentActivitySlot,
+    id: u64,
+    transfer: AppDocumentTransfer,
+    last_published: Instant,
+    buffer: Vec<u8>,
+}
+
+impl TransferProgress {
+    fn new(slot: AppDocumentActivitySlot, id: u64) -> Self {
+        Self {
+            slot,
+            id,
+            transfer: AppDocumentTransfer::default(),
+            last_published: Instant::now(),
+            buffer: vec![0u8; TRANSFER_BUFFER_BYTES],
+        }
+    }
+
+    fn bytes(&mut self, bytes: u64) {
+        self.transfer.bytes_transferred = self.transfer.bytes_transferred.saturating_add(bytes);
+        self.publish(false);
+    }
+
+    fn set_total(&self, bytes_total: u64) {
+        self.slot.set_total(self.id, bytes_total);
+    }
+
+    fn file(&mut self) {
+        self.transfer.files_transferred = self.transfer.files_transferred.saturating_add(1);
+        self.publish(true);
+    }
+
+    fn directory(&mut self) {
+        self.transfer.directories_transferred =
+            self.transfer.directories_transferred.saturating_add(1);
+        self.publish(true);
+    }
+
+    fn publish(&mut self, force: bool) {
+        if force || self.last_published.elapsed() >= PROGRESS_INTERVAL {
+            self.slot.update(self.id, self.transfer);
+            self.last_published = Instant::now();
+        }
+    }
+
+    async fn copy<R, W>(&mut self, reader: &mut R, writer: &mut W) -> std::io::Result<u64>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let mut total = 0u64;
+        loop {
+            let read = reader.read(&mut self.buffer).await?;
+            if read == 0 {
+                return Ok(total);
+            }
+            writer.write_all(&self.buffer[..read]).await?;
+            let read = read as u64;
+            total = total.saturating_add(read);
+            self.bytes(read);
+        }
+    }
+
+    fn finish(mut self) -> AppDocumentTransfer {
+        self.publish(true);
+        self.transfer
+    }
 }
 
 #[derive(Debug)]
@@ -222,24 +402,31 @@ fn storage_unavailable(scope: AppStorageScope, failures: &[String]) -> String {
 pub async fn serve(
     mut transport: AppStorageTransport,
     mut commands: mpsc::Receiver<AppDocumentCommand>,
+    activity: AppDocumentActivitySlot,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    activity.reset();
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    return;
+                    break;
                 }
             }
             command = commands.recv() => {
-                let Some(command) = command else { return };
-                handle(command, &mut transport).await;
+                let Some(command) = command else { break };
+                handle(command, &mut transport, &activity).await;
             }
         }
     }
+    activity.reset();
 }
 
-async fn handle(command: AppDocumentCommand, transport: &mut AppStorageTransport) {
+async fn handle(
+    command: AppDocumentCommand,
+    transport: &mut AppStorageTransport,
+    activity: &AppDocumentActivitySlot,
+) {
     match command {
         AppDocumentCommand::List {
             bundle_id,
@@ -262,12 +449,30 @@ async fn handle(command: AppDocumentCommand, transport: &mut AppStorageTransport
             destination,
             reply,
         } => {
+            let id = activity.start(
+                &bundle_id,
+                scope,
+                AppDocumentActivityKind::Export,
+                path.clone(),
+                None,
+            );
+            let mut progress = TransferProgress::new(activity.clone(), id);
             let result = tokio::time::timeout(
                 TRANSFER_TIMEOUT,
-                export_path(transport, &bundle_id, scope, &path, &destination),
+                export_path(
+                    transport,
+                    &bundle_id,
+                    scope,
+                    &path,
+                    &destination,
+                    &mut progress,
+                ),
             )
             .await
             .unwrap_or_else(|_| Err("application document export timed out".into()));
+            let _ = progress.finish();
+            let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
+            activity.finish(id, &outcome);
             let _ = reply.send(result);
         }
         AppDocumentCommand::Import {
@@ -277,12 +482,30 @@ async fn handle(command: AppDocumentCommand, transport: &mut AppStorageTransport
             source,
             reply,
         } => {
+            let id = activity.start(
+                &bundle_id,
+                scope,
+                AppDocumentActivityKind::Import,
+                directory.clone(),
+                None,
+            );
+            let mut progress = TransferProgress::new(activity.clone(), id);
             let result = tokio::time::timeout(
                 TRANSFER_TIMEOUT,
-                import_path(transport, &bundle_id, scope, &directory, &source),
+                import_path(
+                    transport,
+                    &bundle_id,
+                    scope,
+                    &directory,
+                    &source,
+                    &mut progress,
+                ),
             )
             .await
             .unwrap_or_else(|_| Err("application document upload timed out".into()));
+            let _ = progress.finish();
+            let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
+            activity.finish(id, &outcome);
             let _ = reply.send(result);
         }
         AppDocumentCommand::CreateDirectory {
@@ -409,6 +632,7 @@ async fn export_path(
     scope: AppStorageScope,
     path: &str,
     destination: &Path,
+    progress: &mut TransferProgress,
 ) -> Result<AppDocumentTransfer, String> {
     let path = normalize_path(path, false)?;
     let mut client = transport.connect(bundle_id, scope).await?;
@@ -421,14 +645,24 @@ async fn export_path(
         return Err("symbolic links cannot be exported".into());
     }
     match info.st_ifmt.as_str() {
-        "S_IFREG" => export_regular_file(&mut client, scope, &path, destination, info.size as u64)
+        "S_IFREG" => {
+            progress.set_total(info.size as u64);
+            export_regular_file(
+                &mut client,
+                scope,
+                &path,
+                destination,
+                info.size as u64,
+                progress,
+            )
             .await
             .map(|bytes_transferred| AppDocumentTransfer {
                 bytes_transferred,
                 files_transferred: 1,
                 directories_transferred: 0,
-            }),
-        "S_IFDIR" => export_directory(&mut client, scope, &path, destination).await,
+            })
+        }
+        "S_IFDIR" => export_directory(&mut client, scope, &path, destination, progress).await,
         _ => Err("only regular application files and directories can be exported".into()),
     }
 }
@@ -439,6 +673,7 @@ async fn export_regular_file(
     path: &str,
     destination: &Path,
     expected_size: u64,
+    progress: &mut TransferProgress,
 ) -> Result<u64, String> {
     validate_export_destination(destination).await?;
     let temporary = temporary_sibling(destination, "app-export")?;
@@ -452,7 +687,8 @@ async fn export_regular_file(
             .await
             .map_err(|error| format!("unable to create export file: {error}"))?;
         let mut local = BufWriter::with_capacity(TRANSFER_BUFFER_BYTES, local);
-        let bytes = tokio::io::copy(&mut remote, &mut local)
+        let bytes = progress
+            .copy(&mut remote, &mut local)
             .await
             .map_err(|error| format!("unable to export application file: {error}"))?;
         if bytes != expected_size {
@@ -468,6 +704,7 @@ async fn export_regular_file(
             .await
             .map_err(|error| format!("unable to close application file: {error:?}"))?;
         replace_local_file(&temporary, destination).await?;
+        progress.file();
         Ok(bytes)
     }
     .await;
@@ -482,12 +719,14 @@ async fn export_directory(
     scope: AppStorageScope,
     path: &str,
     destination: &Path,
+    progress: &mut TransferProgress,
 ) -> Result<AppDocumentTransfer, String> {
     validate_new_directory_destination(destination).await?;
     let temporary = temporary_sibling(destination, "app-export-dir")?;
     tokio::fs::create_dir(&temporary)
         .await
         .map_err(|error| format!("unable to create temporary export directory: {error}"))?;
+    progress.directory();
     let result = async {
         let mut transfer = AppDocumentTransfer {
             directories_transferred: 1,
@@ -530,6 +769,7 @@ async fn export_directory(
                             format!("unable to create exported directory: {error}")
                         })?;
                         transfer.directories_transferred += 1;
+                        progress.directory();
                         pending.push((remote_path, local_path, depth + 1));
                     }
                     "S_IFREG" => {
@@ -539,6 +779,7 @@ async fn export_directory(
                             &remote_path,
                             &local_path,
                             info.size as u64,
+                            progress,
                         )
                         .await?;
                         transfer.files_transferred += 1;
@@ -569,6 +810,7 @@ async fn import_path(
     scope: AppStorageScope,
     directory: &str,
     source: &Path,
+    progress: &mut TransferProgress,
 ) -> Result<AppDocumentEntry, String> {
     let directory = normalize_path(directory, true)?;
     let source_metadata = tokio::fs::symlink_metadata(source)
@@ -597,9 +839,10 @@ async fn import_path(
     let temporary = join_path(&directory, &temporary_name)?;
     let result = async {
         if source_metadata.is_file() {
-            upload_regular_file(&mut client, scope, &source, &temporary).await?;
+            progress.set_total(source_metadata.len());
+            upload_regular_file(&mut client, scope, &source, &temporary, progress).await?;
         } else {
-            import_directory(&mut client, scope, &source, &temporary).await?;
+            import_directory(&mut client, scope, &source, &temporary, progress).await?;
         }
         client
             .rename(afc_path(scope, &temporary), afc_path(scope, &target))
@@ -623,6 +866,7 @@ async fn upload_regular_file(
     scope: AppStorageScope,
     source: &Path,
     target: &str,
+    progress: &mut TransferProgress,
 ) -> Result<u64, String> {
     let metadata = tokio::fs::symlink_metadata(source)
         .await
@@ -637,7 +881,8 @@ async fn upload_regular_file(
         .open(afc_path(scope, target), AfcFopenMode::WrOnly)
         .await
         .map_err(|error| format!("unable to create application file: {error:?}"))?;
-    let bytes = tokio::io::copy(&mut local, &mut remote)
+    let bytes = progress
+        .copy(&mut local, &mut remote)
         .await
         .map_err(|error| format!("unable to import application file: {error}"))?;
     if bytes != metadata.len() {
@@ -651,6 +896,7 @@ async fn upload_regular_file(
         .close()
         .await
         .map_err(|error| format!("unable to close imported application file: {error:?}"))?;
+    progress.file();
     Ok(bytes)
 }
 
@@ -659,11 +905,13 @@ async fn import_directory(
     scope: AppStorageScope,
     source: &Path,
     target: &str,
+    progress: &mut TransferProgress,
 ) -> Result<AppDocumentTransfer, String> {
     client
         .mk_dir(afc_path(scope, target))
         .await
         .map_err(|error| format!("unable to create application directory: {error:?}"))?;
+    progress.directory();
     let mut transfer = AppDocumentTransfer {
         directories_transferred: 1,
         ..AppDocumentTransfer::default()
@@ -706,10 +954,12 @@ async fn import_directory(
                         format!("unable to create application directory: {error:?}")
                     })?;
                 transfer.directories_transferred += 1;
+                progress.directory();
                 pending.push((entry.path(), remote_path, depth + 1));
             } else if metadata.is_file() {
                 transfer.bytes_transferred +=
-                    upload_regular_file(client, scope, &entry.path(), &remote_path).await?;
+                    upload_regular_file(client, scope, &entry.path(), &remote_path, progress)
+                        .await?;
                 transfer.files_transferred += 1;
             } else {
                 return Err("import source contains an unsupported entry type".into());
@@ -1220,6 +1470,73 @@ mod tests {
         assert_eq!(value["bytes_transferred"], 42);
         assert_eq!(value["files_transferred"], 2);
         assert_eq!(value["directories_transferred"], 1);
+    }
+
+    #[test]
+    fn activity_tracks_only_the_requested_application() {
+        let slot = AppDocumentActivitySlot::default();
+        let id = slot.start(
+            "com.example.game",
+            AppStorageScope::Documents,
+            AppDocumentActivityKind::Export,
+            "/Saves/slot.dat".into(),
+            Some(100),
+        );
+        slot.update(
+            id,
+            AppDocumentTransfer {
+                bytes_transferred: 42,
+                files_transferred: 0,
+                directories_transferred: 0,
+            },
+        );
+        let running = slot.get("com.example.game");
+        assert_eq!(running.state, AppDocumentActivityState::Running);
+        assert_eq!(running.bytes_transferred, 42);
+        assert_eq!(running.bytes_total, Some(100));
+        assert_eq!(
+            slot.get("com.example.other").state,
+            AppDocumentActivityState::Idle
+        );
+
+        slot.finish(id, &Ok(()));
+        let completed = slot.get("com.example.game");
+        assert_eq!(completed.state, AppDocumentActivityState::Succeeded);
+        assert_eq!(completed.bytes_transferred, 100);
+    }
+
+    #[test]
+    fn stale_activity_updates_cannot_replace_a_new_transfer() {
+        let slot = AppDocumentActivitySlot::default();
+        let stale = slot.start(
+            "com.example.game",
+            AppStorageScope::Documents,
+            AppDocumentActivityKind::Export,
+            "/old".into(),
+            None,
+        );
+        let current = slot.start(
+            "com.example.game",
+            AppStorageScope::Container,
+            AppDocumentActivityKind::Import,
+            "/new".into(),
+            None,
+        );
+        slot.update(
+            stale,
+            AppDocumentTransfer {
+                bytes_transferred: 99,
+                ..AppDocumentTransfer::default()
+            },
+        );
+        slot.finish(stale, &Err("stale failure".into()));
+
+        let view = slot.get("com.example.game");
+        assert_eq!(view.id, current);
+        assert_eq!(view.kind, Some(AppDocumentActivityKind::Import));
+        assert_eq!(view.state, AppDocumentActivityState::Running);
+        assert_eq!(view.bytes_transferred, 0);
+        assert_eq!(view.error, None);
     }
 
     #[tokio::test]

@@ -697,6 +697,7 @@ struct SessionViews {
     orientation: OrientationSlot,
     error: ErrorSlot,
     app_operation: AppOperationSlot,
+    app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     location: LocationStatusSlot,
     performance: performance::PerformanceSlot,
     performance_demand: performance::PerformanceDemand,
@@ -777,6 +778,7 @@ pub async fn manage(
     active: ActiveSlot,
     error: ErrorSlot,
     app_operation: AppOperationSlot,
+    app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     location: LocationStatusSlot,
     performance: performance::PerformanceSlot,
     performance_demand: performance::PerformanceDemand,
@@ -892,6 +894,7 @@ pub async fn manage(
                 orientation: orientation_view.clone(),
                 error: error.clone(),
                 app_operation: app_operation.clone(),
+                app_document_activity: app_document_activity.clone(),
                 location: location.clone(),
                 performance: performance.clone(),
                 performance_demand: performance_demand.clone(),
@@ -1567,6 +1570,7 @@ async fn run(
             handshake.clone(),
         ),
         app_documents_receiver,
+        views.app_document_activity.clone(),
         supervisor.shutdown_receiver(),
     ));
     let (device_files_sender, device_files_receiver) = tokio::sync::mpsc::channel(8);

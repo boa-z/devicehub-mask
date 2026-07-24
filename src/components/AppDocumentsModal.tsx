@@ -13,11 +13,11 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Segmented, Spin, Tooltip, Typography, message } from "antd";
+import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../deviceInspector";
-import type { AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
+import type { AppDocumentActivity, AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type AppStorageScope = "documents" | "container";
@@ -50,6 +50,7 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
   const [listing, setListing] = useState<AppDocumentList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [activity, setActivity] = useState<AppDocumentActivity | null>(null);
 
   const load = useCallback(async () => {
     if (!app
@@ -74,6 +75,32 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
     setListing(null);
     setError(null);
   }, [app?.bundle_id, app?.documents_available]);
+
+  const transferBusy = busy === "upload" || busy?.startsWith("export:") === true;
+  useEffect(() => {
+    const bundleId = app?.bundle_id;
+    if (!bundleId || !transferBusy) {
+      setActivity(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await readJson<AppDocumentActivity>(
+          await request(endpoint(bundleId, "/activity")),
+        );
+        if (!cancelled) setActivity(next);
+      } catch {
+        // The transfer request reports the authoritative error.
+      }
+    };
+    void poll();
+    const interval = window.setInterval(() => void poll(), 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [app?.bundle_id, request, transferBusy]);
 
   const changeScope = (nextScope: AppStorageScope) => {
     if (busy !== null || nextScope === scope) return;
@@ -279,6 +306,35 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
           <Button icon={<ReloadOutlined />} disabled={busy !== null} onClick={() => void load()} />
         </Tooltip>
       </div>
+      {transferBusy && (
+        <div className="app-document-transfer" role="status">
+          <div className="app-document-transfer-heading">
+            <Typography.Text>
+              {t(busy === "upload"
+                ? "deviceInspector.documentTransferUploading"
+                : "deviceInspector.documentTransferDownloading")}
+            </Typography.Text>
+            {activity?.state === "running" ? (
+              <Typography.Text type="secondary">
+                {t("deviceInspector.documentTransferProgress", {
+                  size: formatFileSize(activity.bytes_transferred),
+                  files: activity.files_transferred,
+                  directories: activity.directories_transferred,
+                })}
+              </Typography.Text>
+            ) : <Spin size="small" />}
+          </div>
+          {activity?.state === "running" && activity.bytes_total !== null && (
+            <Progress
+              size="small"
+              status="active"
+              percent={activity.bytes_total === 0
+                ? 100
+                : Math.min(100, Math.floor(activity.bytes_transferred * 100 / activity.bytes_total))}
+            />
+          )}
+        </div>
+      )}
       {error ? (
         <Alert type="error" showIcon message={t("deviceInspector.documentsUnavailable")} description={error} />
       ) : busy === "list" && !listing ? (
