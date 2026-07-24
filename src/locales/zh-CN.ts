@@ -32,6 +32,10 @@ export const zhCN = {
     exportCrashReport: "导出崩溃报告",
     crashExported: "崩溃报告已导出。",
     crashExportFailed: "无法导出崩溃报告：{{error}}",
+    deleteCrashReport: "删除崩溃报告",
+    deleteCrashReportConfirm: "要从设备永久删除 {{name}} 吗？",
+    crashReportDeleted: "已删除崩溃报告。",
+    crashReportDeleteFailed: "无法删除崩溃报告：{{error}}",
   },
   performance: {
     title: "性能工作台",
@@ -727,6 +731,10 @@ export const zhCN = {
     exportCrashReport: "导出报告",
     crashReportExported: "已导出 {{size}} 崩溃报告",
     crashReportExportFailed: "无法导出崩溃报告：{{error}}",
+    deleteCrashReport: "删除报告",
+    deleteCrashReportConfirm: "要从设备永久删除 {{name}} 吗？",
+    crashReportDeleted: "已删除崩溃报告。",
+    crashReportDeleteFailed: "无法删除崩溃报告：{{error}}",
     noCrashReports: "没有匹配的崩溃报告",
   },
   hardware: {

@@ -44,6 +44,10 @@ export const enUS = {
     exportCrashReport: "Export crash report",
     crashExported: "Crash report exported.",
     crashExportFailed: "Unable to export crash report: {{error}}",
+    deleteCrashReport: "Delete crash report",
+    deleteCrashReportConfirm: "Permanently delete {{name}} from this device?",
+    crashReportDeleted: "Crash report deleted.",
+    crashReportDeleteFailed: "Unable to delete crash report: {{error}}",
   },
   performance: {
     title: "Performance",
@@ -739,6 +743,10 @@ export const enUS = {
     exportCrashReport: "Export report",
     crashReportExported: "Exported {{size}} crash report",
     crashReportExportFailed: "Unable to export crash report: {{error}}",
+    deleteCrashReport: "Delete report",
+    deleteCrashReportConfirm: "Permanently delete {{name}} from this device?",
+    crashReportDeleted: "Crash report deleted.",
+    crashReportDeleteFailed: "Unable to delete crash report: {{error}}",
     noCrashReports: "No matching crash reports",
   },
   hardware: {

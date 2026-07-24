@@ -10,7 +10,7 @@ This page is the concise inventory of functionality already implemented in Devic
 | --- | --- |
 | **Device** | USB and Wi-Fi device selection, in-app USB trust pairing, explicit reconnect, live screen, direct touch, mapping and keyboard-passthrough modes, rotation, native screenshot, WebView-supported screen recording, Unicode paste, device audio mute, hardware buttons, focused device fullscreen, and a device inspector with regular/system/App Clip scopes |
 | **Key Mapping** | Visual placement and editing, live or frozen screenshot background, profile create/duplicate/rename/import/export, scrcpy-mask `0.0.1` compatibility, PlayCover `2.0.0` import, app-profile associations, and hardware-button shortcuts |
-| **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and read-only crash-report export |
+| **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and confirmed crash-report deletion |
 | **Performance** | iPhone CPU/process/memory/energy data, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, network PCAP, and Bluetooth HCI PCAP |
 | **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, and recovery state |
 | **Location** | DVT-first virtual location with legacy service fallback, numeric coordinate entry, built-in presets, backend status, and explicit restoration of the real device location |
@@ -45,7 +45,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 ### Profiles And Crashes
 
 - Provisioning profiles are listed through Misagent. Local `.mobileprovision` installation validates CMS, UUID, size, and expiration; removal is confirmed and verified against a refreshed catalog.
-- Crash reports are listed read-only through CrashReportCopyMobile and can be searched and exported. MCP can read a separately bounded text excerpt for agent diagnosis.
+- Crash reports are listed through CrashReportCopyMobile and can be searched, exported, or individually deleted after confirmation. MCP remains read-only and can inspect only a separately bounded text excerpt for agent diagnosis.
 
 ## Streaming And Input
 

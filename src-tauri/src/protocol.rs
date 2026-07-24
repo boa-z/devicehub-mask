@@ -380,6 +380,11 @@ pub enum InputCmd {
         destination: PathBuf,
         reply: oneshot::Sender<Result<u64, String>>,
     },
+    /// Delete one validated regular file from the crash report service root.
+    DeleteCrashReport {
+        device_path: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Validate and install a local IPA without blocking the HID dispatch loop.
     InstallApp {
         path: PathBuf,

@@ -190,6 +190,30 @@ pub async fn read(
     Ok(report_content(device_path, info.size, data))
 }
 
+pub async fn delete(provider: Arc<dyn IdeviceProvider>, device_path: String) -> Result<(), String> {
+    validate_device_path(&device_path)?;
+    let mut client = tokio::time::timeout(
+        SERVICE_TIMEOUT,
+        CrashReportCopyMobileClient::connect(provider.as_ref()),
+    )
+    .await
+    .map_err(|_| "crash report service connection timed out".to_string())?
+    .map_err(|error| format!("unable to connect to crash report service: {error:?}"))?;
+    let info = client
+        .afc_client
+        .get_file_info(&device_path)
+        .await
+        .map_err(|error| format!("unable to inspect crash report: {error:?}"))?;
+    if info.st_ifmt != "S_IFREG" {
+        return Err("selected crash report is not a regular file".to_string());
+    }
+    client
+        .afc_client
+        .remove(&device_path)
+        .await
+        .map_err(|error| format!("unable to delete crash report: {error:?}"))
+}
+
 fn report_content(
     device_path: String,
     size_bytes: usize,

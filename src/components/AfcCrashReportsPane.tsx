@@ -1,6 +1,6 @@
-import { DownloadOutlined, FileTextOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { DeleteOutlined, DownloadOutlined, FileTextOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Alert, Button, Empty, Input, Spin, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Empty, Input, Modal, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { filterCrashReports, formatFileSize, formatReportDate } from "../deviceInspector";
@@ -27,13 +27,14 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const version = useRef(0);
 
   useEffect(() => {
-    onTransferStateChange?.(exporting !== null);
+    onTransferStateChange?.(exporting !== null || deleting !== null);
     return () => onTransferStateChange?.(false);
-  }, [exporting, onTransferStateChange]);
+  }, [deleting, exporting, onTransferStateChange]);
 
   const load = useCallback(async () => {
     if (!active || !deviceId) return;
@@ -61,6 +62,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
     setError(null);
     setLoading(false);
     setExporting(null);
+    setDeleting(null);
   }, [deviceId]);
 
   useEffect(() => {
@@ -77,7 +79,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
       const response = await request("/api/device/crash-reports/export", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: report.path, destination }),
+        body: JSON.stringify({ device_path: report.path, destination }),
       });
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("afc.crashExported"));
@@ -86,6 +88,35 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
     } finally {
       setExporting(null);
     }
+  };
+
+  const deleteReport = (report: DeviceCrashReport) => {
+    if (exporting !== null || deleting !== null) return;
+    Modal.confirm({
+      title: t("afc.deleteCrashReport"),
+      content: t("afc.deleteCrashReportConfirm", { name: report.name }),
+      okText: t("common.delete"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        setDeleting(report.path);
+        try {
+          const response = await request("/api/device/crash-reports", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_path: report.path }),
+          });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          setReports((current) => current.filter((candidate) => candidate.path !== report.path));
+          void message.success(t("afc.crashReportDeleted"));
+        } catch (deleteError) {
+          void message.error(t("afc.crashReportDeleteFailed", { error: String(deleteError) }));
+          throw deleteError;
+        } finally {
+          setDeleting(null);
+        }
+      },
+    });
   };
 
   return (
@@ -100,7 +131,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
           onChange={(event) => setQuery(event.target.value)}
         />
         <Tooltip title={t("afc.refreshCrashReports")}>
-          <Button icon={<ReloadOutlined />} aria-label={t("afc.refreshCrashReports")} disabled={loading || exporting !== null} onClick={() => void load()} />
+          <Button icon={<ReloadOutlined />} aria-label={t("afc.refreshCrashReports")} disabled={loading || exporting !== null || deleting !== null} onClick={() => void load()} />
         </Tooltip>
       </div>
       {error ? (
@@ -108,7 +139,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
       ) : loading && reports.length === 0 ? (
         <div className="app-documents-loading"><Spin /></div>
       ) : visibleReports.length > 0 ? (
-        <div className="app-document-list" aria-busy={loading || exporting !== null}>
+        <div className="app-document-list" aria-busy={loading || exporting !== null || deleting !== null}>
           {visibleReports.map((report) => (
             <div className="afc-crash-row" key={report.path}>
               <span className="app-document-kind"><FileTextOutlined /></span>
@@ -127,8 +158,19 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
                     icon={<DownloadOutlined />}
                     aria-label={t("afc.exportCrashReport")}
                     loading={exporting === report.path}
-                    disabled={exporting !== null && exporting !== report.path}
+                    disabled={exporting !== null || deleting !== null}
                     onClick={() => void exportReport(report)}
+                  />
+                </Tooltip>
+                <Tooltip title={t("afc.deleteCrashReport")}>
+                  <Button
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    aria-label={t("afc.deleteCrashReport")}
+                    loading={deleting === report.path}
+                    disabled={exporting !== null || deleting !== null}
+                    onClick={() => deleteReport(report)}
                   />
                 </Tooltip>
               </div>

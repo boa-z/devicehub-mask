@@ -145,6 +145,7 @@ export function DeviceInspector({
   const [appProcessAction, setAppProcessAction] = useState<{ bundleId: string; kind: "launch" | "stop" } | null>(null);
   const [wdaRunnerAction, setWdaRunnerAction] = useState<string | null>(null);
   const [exportingReport, setExportingReport] = useState<string | null>(null);
+  const [deletingReport, setDeletingReport] = useState<string | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
@@ -284,6 +285,8 @@ export function DeviceInspector({
     setProfiles([]);
     setCrashReports([]);
     setCrashReportsTruncated(false);
+    setExportingReport(null);
+    setDeletingReport(null);
     setAppOperation(null);
     setProfileMutation(null);
     setDocumentsApp(null);
@@ -799,6 +802,35 @@ export function DeviceInspector({
     } finally {
       setExportingReport(null);
     }
+  };
+
+  const deleteCrashReport = (report: DeviceCrashReport) => {
+    if (exportingReport || deletingReport) return;
+    Modal.confirm({
+      title: t("deviceInspector.deleteCrashReport"),
+      content: t("deviceInspector.deleteCrashReportConfirm", { name: report.name }),
+      okText: t("common.delete"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        setDeletingReport(report.path);
+        try {
+          const response = await request("/api/device/crash-reports", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_path: report.path }),
+          });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          setCrashReports((current) => current.filter((candidate) => candidate.path !== report.path));
+          void message.success(t("deviceInspector.crashReportDeleted"));
+        } catch (deleteError) {
+          void message.error(t("deviceInspector.crashReportDeleteFailed", { error: String(deleteError) }));
+          throw deleteError;
+        } finally {
+          setDeletingReport(null);
+        }
+      },
+    });
   };
 
   const confirmDevicePowerAction = (action: "restart" | "shutdown") => {
@@ -1784,15 +1816,27 @@ export function DeviceInspector({
                     <Tag>{formatReportDate(report.modified, i18n.resolvedLanguage ?? i18n.language)}</Tag>
                   </div>
                 </div>
-                <Tooltip title={t("deviceInspector.exportCrashReport")}>
-                  <Button
-                    size="small"
-                    icon={<DownloadOutlined />}
-                    loading={exportingReport === report.path}
-                    disabled={exportingReport !== null}
-                    onClick={() => void exportCrashReport(report)}
-                  />
-                </Tooltip>
+                <div className="device-crash-actions">
+                  <Tooltip title={t("deviceInspector.exportCrashReport")}>
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      loading={exportingReport === report.path}
+                      disabled={exportingReport !== null || deletingReport !== null}
+                      onClick={() => void exportCrashReport(report)}
+                    />
+                  </Tooltip>
+                  <Tooltip title={t("deviceInspector.deleteCrashReport")}>
+                    <Button
+                      danger
+                      size="small"
+                      icon={<DeleteOutlined />}
+                      loading={deletingReport === report.path}
+                      disabled={exportingReport !== null || deletingReport !== null}
+                      onClick={() => deleteCrashReport(report)}
+                    />
+                  </Tooltip>
+                </div>
               </div>
             ))}
             {visibleCrashReports.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noCrashReports")} />}

@@ -300,7 +300,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
         .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
         .route("/api/device/apps/{bundle_id}/stop", put(stop_app))
-        .route("/api/device/crash-reports", get(device_crash_reports))
+        .route(
+            "/api/device/crash-reports",
+            get(device_crash_reports).delete(delete_crash_report),
+        )
         .route("/api/device/crash-reports/export", put(export_crash_report))
         .route(
             "/api/device/provisioning-profiles",
@@ -2359,6 +2362,43 @@ async fn export_crash_report(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(serde_json::json!({ "bytes_written": bytes_written })))
+}
+
+#[derive(Deserialize)]
+struct DeleteCrashReportRequest {
+    device_path: String,
+}
+
+async fn delete_crash_report(
+    State(state): State<AppState>,
+    Json(request): Json<DeleteCrashReportRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeleteCrashReport {
+        device_path: request.device_path,
+        reply,
+    }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "crash report delete timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
 fn valid_bundle_identifier(bundle_id: &str) -> bool {
@@ -5283,7 +5323,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn crash_report_list_and_export_use_the_device_session() {
+    async fn crash_report_list_export_and_delete_use_the_device_session() {
         let (state, mut input_rx) = test_state();
         let list_request = tokio::spawn(device_crash_reports(State(state.clone())));
         match input_rx.recv().await.unwrap() {
@@ -5307,7 +5347,7 @@ mod tests {
         assert!(!list.truncated);
 
         let export_request = tokio::spawn(export_crash_report(
-            State(state),
+            State(state.clone()),
             Json(ExportCrashReportRequest {
                 device_path: "/Report.ips".into(),
                 destination: PathBuf::from("/tmp/Report.ips"),
@@ -5327,6 +5367,22 @@ mod tests {
         }
         let Json(result) = export_request.await.unwrap().unwrap();
         assert_eq!(result, serde_json::json!({ "bytes_written": 42 }));
+
+        let delete_request = tokio::spawn(delete_crash_report(
+            State(state),
+            Json(DeleteCrashReportRequest {
+                device_path: "/Report.ips".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeleteCrashReport { device_path, reply } => {
+                assert_eq!(device_path, "/Report.ips");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let Json(result) = delete_request.await.unwrap().unwrap();
+        assert_eq!(result, serde_json::json!({ "deleted": true }));
     }
 
     #[tokio::test]
