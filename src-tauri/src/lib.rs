@@ -237,6 +237,7 @@ fn spawn_backend(
                     status.clone(),
                     location.clone(),
                     device_events.clone(),
+                    device_conditions.clone(),
                     performance.clone(),
                     performance_demand.clone(),
                     device_logs.clone(),

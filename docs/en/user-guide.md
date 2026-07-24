@@ -358,8 +358,9 @@ While DeviceHub Mask is running, MCP clients can connect to the Streamable HTTP
 endpoint at `http://127.0.0.1:8009/mcp`. The server exposes screenshots, taps,
 swipes, simultaneous multi-touch, text and key input, hardware buttons, app
 discovery, launch/restart and stop, rotation, device selection and reconnection,
-one-way device locking, virtual location, frame synchronization, crash
-diagnosis, and session status. `lock_device` uses Diagnostics Relay sleep, so it
+one-way device locking, virtual location, device conditions, frame
+synchronization, crash diagnosis, and session status. `lock_device` uses
+Diagnostics Relay sleep, so it
 does not wake an already locked device like a hardware-button toggle can.
 
 `device_details` refreshes the active device's product and OS versions, hardware
@@ -394,6 +395,14 @@ main/folder row and column counts, Dock capacity, and page limits. They describe
 SpringBoard layout units rather than the current screenshot coordinate space.
 The tool never returns raw icon-state plist, Widget configuration, Web Clip URLs,
 or private SpringBoard UUIDs.
+
+`list_device_conditions` returns the same bounded DVT network and thermal
+catalog, active profile, and cleanup state shown in the Performance workspace.
+`apply_device_condition` accepts only a group/profile pair from that catalog and
+affects the entire device, so it can interrupt the MCP connection as well as the
+foreground game. Always call `clear_device_condition` after a test. If cleanup
+remains pending after a transport failure, keep the device connected so the
+supervisor can restore normal conditions when its DVT channel recovers.
 
 `performance_snapshot` temporarily enables the existing DVT performance
 services and returns CPU, top-process, energy, graphics, GPU-memory, and network

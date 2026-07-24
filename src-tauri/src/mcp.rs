@@ -55,10 +55,13 @@ const DEVICE_LOG_WAIT_DEFAULT: Duration = Duration::from_millis(1000);
 const WDA_WAIT: Duration = Duration::from_secs(15);
 const WDA_COMMAND_DEADLINE: Duration = Duration::from_secs(12);
 const WDA_RUNNER_START_WAIT: Duration = Duration::from_secs(35);
+const DEVICE_CONDITION_COMMAND_DEADLINE: Duration = Duration::from_secs(7);
+const DEVICE_CONDITION_WAIT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Default)]
 struct McpObservability {
     device_events: DeviceEventSlot,
+    device_conditions: crate::device_conditions::DeviceConditionSlot,
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
     device_logs: DeviceLogSlot,
@@ -196,6 +199,14 @@ struct DeviceEventParams {
 struct LocationParams {
     latitude: f64,
     longitude: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeviceConditionParams {
+    /// Group identifier returned by list_device_conditions.
+    group_identifier: String,
+    /// Profile identifier returned within the selected group.
+    profile_identifier: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -635,6 +646,17 @@ fn log_entry_matches(
     .into_iter()
     .flatten()
     .any(|field| field.to_ascii_lowercase().contains(&query))
+}
+
+async fn await_device_condition(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), McpError> {
+    tokio::time::timeout(DEVICE_CONDITION_WAIT, response)
+        .await
+        .map_err(|_| McpError::internal_error(format!("{operation} timed out"), None))?
+        .map_err(|_| McpError::internal_error("device session ended", None))?
+        .map_err(|error| McpError::internal_error(error, None))
 }
 
 #[tool_router]
@@ -1753,6 +1775,62 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "List the bounded network and thermal condition profiles reported by the active device through DVT, including the active profile and cleanup state. This does not change the device."
+    )]
+    async fn list_device_conditions(&self) -> Result<CallToolResult, McpError> {
+        ok_text(
+            serde_json::to_string(&self.observability.device_conditions.get())
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        )
+    }
+
+    #[tool(
+        description = "Apply one enumerated DVT network or thermal condition to the entire active device. Identifiers must come from list_device_conditions. This can interrupt connectivity; call clear_device_condition when the test ends."
+    )]
+    async fn apply_device_condition(
+        &self,
+        Parameters(params): Parameters<DeviceConditionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::device_conditions::validate_identifiers(
+            &params.group_identifier,
+            &params.profile_identifier,
+        )
+        .map_err(|error| McpError::invalid_params(error, None))?;
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::DeviceCondition(
+            crate::device_conditions::DeviceConditionCommand::Apply {
+                group_identifier: params.group_identifier,
+                profile_identifier: params.profile_identifier,
+                expires_at: tokio::time::Instant::now() + DEVICE_CONDITION_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        await_device_condition(response, "apply device condition").await?;
+        ok_text(
+            serde_json::to_string(&self.observability.device_conditions.get())
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        )
+    }
+
+    #[tool(
+        description = "Restore normal device-wide conditions by disabling the active DVT network or thermal profile. Call this after every condition test, including after a failed test."
+    )]
+    async fn clear_device_condition(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        self.send(InputCmd::DeviceCondition(
+            crate::device_conditions::DeviceConditionCommand::Clear {
+                expires_at: tokio::time::Instant::now() + DEVICE_CONDITION_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        await_device_condition(response, "clear device condition").await?;
+        ok_text(
+            serde_json::to_string(&self.observability.device_conditions.get())
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        )
+    }
+
+    #[tool(
         description = "Collect a bounded DVT performance snapshot from the active device, including CPU, top processes, graphics, GPU, energy, and network rates. Sampling is enabled only for this call unless the desktop performance workspace is already active."
     )]
     async fn performance_snapshot(
@@ -1910,7 +1988,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_ui_tree, wda_find_elements, and wda_click. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -1926,6 +2004,7 @@ pub async fn serve(
     status: StatusSlot,
     location: LocationStatusSlot,
     device_events: DeviceEventSlot,
+    device_conditions: crate::device_conditions::DeviceConditionSlot,
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
     device_logs: DeviceLogSlot,
@@ -1954,6 +2033,7 @@ pub async fn serve(
         location,
         McpObservability {
             device_events,
+            device_conditions,
             performance,
             performance_demand,
             device_logs,
@@ -2052,6 +2132,9 @@ mod tests {
             "reconnect_device",
             "set_location",
             "clear_location",
+            "list_device_conditions",
+            "apply_device_condition",
+            "clear_device_condition",
             "performance_snapshot",
             "recent_device_logs",
             "status",
@@ -2556,6 +2639,96 @@ mod tests {
                 .as_text()
                 .is_some_and(|text| text.text.contains(r#""changed":false"#))
         }));
+    }
+
+    #[tokio::test]
+    async fn device_condition_tools_use_the_enumerated_supervised_service() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let observability = McpObservability::default();
+        observability
+            .device_conditions
+            .set(crate::device_conditions::DeviceConditionStatus {
+                available: true,
+                groups: vec![crate::device_conditions::DeviceConditionGroup {
+                    identifier: "Network".into(),
+                    profiles: vec![crate::device_conditions::DeviceConditionProfile {
+                        identifier: "LTE".into(),
+                        description: "LTE profile".into(),
+                    }],
+                }],
+                active: None,
+                cleanup_pending: false,
+                error: None,
+            });
+        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = DeviceHub::new(
+            FrameSlot::default(),
+            crate::browser_video::BrowserVideoSlot::default(),
+            input,
+            OrientationSlot::default(),
+            DeviceListSlot::default(),
+            ActiveSlot::default(),
+            ErrorSlot::default(),
+            StatusSlot::default(),
+            LocationStatusSlot::default(),
+            observability,
+            control,
+        );
+
+        let listed = hub.list_device_conditions().await.unwrap();
+        assert!(listed.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""identifier":"LTE""#))
+        }));
+        assert!(
+            hub.apply_device_condition(Parameters(DeviceConditionParams {
+                group_identifier: "bad\nidentifier".into(),
+                profile_identifier: "LTE".into(),
+            }))
+            .await
+            .is_err()
+        );
+        assert!(input_rx.try_recv().is_err());
+
+        let apply_hub = hub.clone();
+        let apply = tokio::spawn(async move {
+            apply_hub
+                .apply_device_condition(Parameters(DeviceConditionParams {
+                    group_identifier: "Network".into(),
+                    profile_identifier: "LTE".into(),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Apply {
+            group_identifier,
+            profile_identifier,
+            expires_at,
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected device condition apply command");
+        };
+        assert_eq!(group_identifier, "Network");
+        assert_eq!(profile_identifier, "LTE");
+        assert!(expires_at > tokio::time::Instant::now());
+        reply.send(Ok(())).unwrap();
+        apply.await.unwrap();
+
+        let clear = tokio::spawn(async move { hub.clear_device_condition().await.unwrap() });
+        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Clear {
+            expires_at,
+            reply,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected device condition clear command");
+        };
+        assert!(expires_at > tokio::time::Instant::now());
+        reply.send(Ok(())).unwrap();
+        clear.await.unwrap();
     }
 
     #[tokio::test]
