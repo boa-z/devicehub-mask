@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserVideoDecoder, parseBrowserVideoPacket, type BrowserVideoPacket } from "./browserVideo";
+import { BrowserVideoDecoder, hevcCodecFromAnnexB, parseBrowserVideoPacket, type BrowserVideoPacket } from "./browserVideo";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -26,7 +26,71 @@ describe("browser video packet", () => {
   });
 });
 
+describe("HEVC codec configuration", () => {
+  it("derives profile, compatibility, tier, level, and constraints from SPS", () => {
+    const sps = Uint8Array.from([
+      0, 0, 0, 1, 0x42, 0x01,
+      0x01, 0x01, 0x60, 0, 0, 0, 0xb0, 0, 0, 0, 0, 0, 153,
+    ]);
+    expect(hevcCodecFromAnnexB(sps)).toBe("hev1.1.6.L153.B0");
+  });
+
+  it("ignores non-SPS Annex-B units", () => {
+    expect(hevcCodecFromAnnexB(Uint8Array.from([0, 0, 1, 0x26, 0x01]))).toBeNull();
+  });
+});
+
 describe("browser video decoder recovery", () => {
+  it("retries a simpler configuration when configure rejects a supported candidate", async () => {
+    class InconsistentVideoDecoder {
+      static instances: InconsistentVideoDecoder[] = [];
+      static async isConfigSupported(config: VideoDecoderConfig) {
+        return { supported: true, config };
+      }
+
+      state: CodecState = "unconfigured";
+      decodeQueueSize = 0;
+      decodeCalls = 0;
+
+      constructor() {
+        InconsistentVideoDecoder.instances.push(this);
+      }
+
+      configure(config: VideoDecoderConfig) {
+        if (config.optimizeForLatency) throw new DOMException("Unsupported configuration", "OperationError");
+        this.state = "configured";
+      }
+
+      decode() { this.decodeCalls += 1; }
+      reset() { this.state = "unconfigured"; }
+      close() { this.state = "closed"; }
+    }
+
+    vi.stubGlobal("VideoDecoder", InconsistentVideoDecoder);
+    vi.stubGlobal("EncodedVideoChunk", class {});
+    vi.stubGlobal("window", { VideoDecoder: InconsistentVideoDecoder, setTimeout, clearTimeout });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const fatal = vi.fn();
+    const decoder = new BrowserVideoDecoder({ output: vi.fn(), requestKeyframe: vi.fn(), fatal });
+    decoder.enqueue({
+      key: true,
+      timestamp: 1,
+      sequence: 1n,
+      width: 1632,
+      height: 2176,
+      data: Uint8Array.from([
+        0, 0, 0, 1, 0x42, 0x01,
+        0x01, 0x01, 0x60, 0, 0, 0, 0xb0, 0, 0, 0, 0, 0, 153,
+        0, 0, 0, 1, 0x26, 0x01,
+      ]),
+    });
+
+    await vi.waitFor(() => expect(InconsistentVideoDecoder.instances[1]?.decodeCalls).toBe(1));
+    expect(InconsistentVideoDecoder.instances).toHaveLength(2);
+    expect(fatal).not.toHaveBeenCalled();
+    decoder.close();
+  });
+
   it("reconfigures a reset decoder when dimensions have not changed", async () => {
     class FakeVideoDecoder {
       static instances: FakeVideoDecoder[] = [];
@@ -73,7 +137,11 @@ describe("browser video decoder recovery", () => {
       sequence: 1n,
       width: 1290,
       height: 2796,
-      data: new Uint8Array([0, 0, 0, 1, 0x26]),
+      data: Uint8Array.from([
+        0, 0, 0, 1, 0x42, 0x01,
+        0x01, 0x01, 0x60, 0, 0, 0, 0xb0, 0, 0, 0, 0, 0, 153,
+        0, 0, 0, 1, 0x26, 0x01,
+      ]),
     };
 
     decoder.enqueue(packet);

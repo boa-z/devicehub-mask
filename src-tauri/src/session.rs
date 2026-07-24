@@ -1567,8 +1567,12 @@ async fn run(
     ));
     let (network_capture_sender, network_capture_receiver) = tokio::sync::mpsc::channel(4);
     supervisor.spawn(crate::network_capture::serve(
-        adapter.clone(),
-        handshake.clone(),
+        crate::network_capture::NetworkCaptureTransport::new(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+        ),
         network_capture_receiver,
         views.network_capture.clone(),
         supervisor.reporter("network.capture"),

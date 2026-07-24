@@ -4,14 +4,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use idevice::RsdService;
 use idevice::pcapd::{DevicePacket, PcapdClient};
+use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
+use idevice::{IdeviceService, RsdService};
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
+use crate::protocol::ConnKind;
 use crate::supervisor::ServiceReporter;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
@@ -170,9 +172,31 @@ struct ActiveCapture {
     packet_count: u64,
 }
 
+pub struct NetworkCaptureTransport {
+    provider: Arc<dyn IdeviceProvider>,
+    connection: ConnKind,
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+}
+
+impl NetworkCaptureTransport {
+    pub fn new(
+        provider: Arc<dyn IdeviceProvider>,
+        connection: ConnKind,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+    ) -> Self {
+        Self {
+            provider,
+            connection,
+            adapter,
+            handshake,
+        }
+    }
+}
+
 pub async fn serve(
-    mut adapter: AdapterHandle,
-    mut handshake: RsdHandshake,
+    mut transport: NetworkCaptureTransport,
     mut commands: mpsc::Receiver<NetworkCaptureCommand>,
     status: NetworkCaptureSlot,
     reporter: ServiceReporter,
@@ -208,9 +232,15 @@ pub async fn serve(
                     ..NetworkCaptureStatus::default()
                 });
                 reporter.connecting(attempt);
-                let active =
-                    begin_capture(&mut adapter, &mut handshake, destination, duration_seconds)
-                        .await;
+                let active = begin_capture(
+                    transport.provider.as_ref(),
+                    transport.connection,
+                    &mut transport.adapter,
+                    &mut transport.handshake,
+                    destination,
+                    duration_seconds,
+                )
+                .await;
                 let active = match active {
                     Ok(active) => active,
                     Err(error) => {
@@ -246,19 +276,15 @@ pub async fn serve(
 }
 
 async fn begin_capture(
+    provider: &dyn IdeviceProvider,
+    connection: ConnKind,
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
     destination: PathBuf,
     duration_seconds: u64,
 ) -> Result<ActiveCapture, String> {
     validate_request(&destination, duration_seconds).await?;
-    let client = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        PcapdClient::connect_rsd(adapter, handshake),
-    )
-    .await
-    .map_err(|_| "packet capture service connection timed out".to_string())?
-    .map_err(|error| format!("packet capture service unavailable: {error:?}"))?;
+    let client = connect_client(provider, connection, adapter, handshake).await?;
     let writer = CaptureWriter::create(destination).await?;
     Ok(ActiveCapture {
         client,
@@ -267,6 +293,74 @@ async fn begin_capture(
         started: Instant::now(),
         packet_count: 0,
     })
+}
+
+async fn connect_client(
+    provider: &dyn IdeviceProvider,
+    connection: ConnKind,
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+) -> Result<PcapdClient, String> {
+    let mut failures = Vec::new();
+    if connection == ConnKind::Usb {
+        match tokio::time::timeout(CONNECT_TIMEOUT, PcapdClient::connect(provider)).await {
+            Ok(Ok(client)) => {
+                tracing::info!(
+                    transport = "lockdown-usb",
+                    "packet capture service connected"
+                );
+                return Ok(client);
+            }
+            Ok(Err(error)) => failures.push(format!(
+                "USB lockdown pcapd: {}",
+                describe_service_error(&error)
+            )),
+            Err(_) => failures.push("USB lockdown pcapd: connection timed out".into()),
+        }
+    }
+
+    match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        PcapdClient::connect_rsd(adapter, handshake),
+    )
+    .await
+    {
+        Ok(Ok(client)) => {
+            tracing::info!(
+                transport = "coredevice-rsd",
+                "packet capture service connected"
+            );
+            Ok(client)
+        }
+        Ok(Err(error)) => {
+            failures.push(format!(
+                "CoreDevice RSD pcapd: {}",
+                describe_service_error(&error)
+            ));
+            Err(format!(
+                "packet capture service unavailable: {}",
+                failures.join("; ")
+            ))
+        }
+        Err(_) => {
+            failures.push("CoreDevice RSD pcapd: connection timed out".into());
+            Err(format!(
+                "packet capture service unavailable: {}",
+                failures.join("; ")
+            ))
+        }
+    }
+}
+
+fn describe_service_error(error: &idevice::IdeviceError) -> String {
+    match error {
+        idevice::IdeviceError::UnknownErrorType(message)
+            if message.eq_ignore_ascii_case("ServiceProhibited") =>
+        {
+            "the device prohibited this capture service".into()
+        }
+        _ => format!("{error:?}"),
+    }
 }
 
 async fn capture(
@@ -626,9 +720,16 @@ mod tests {
             "devicehub-mask-hardware-{}.pcap",
             uuid::Uuid::new_v4()
         ));
-        let mut active = begin_capture(&mut adapter, &mut handshake, destination.clone(), 10)
-            .await
-            .unwrap();
+        let mut active = begin_capture(
+            &provider,
+            ConnKind::Usb,
+            &mut adapter,
+            &mut handshake,
+            destination.clone(),
+            10,
+        )
+        .await
+        .unwrap();
         let packet = tokio::time::timeout(Duration::from_secs(10), active.client.next_packet())
             .await
             .expect("timed out waiting for device traffic")
@@ -637,5 +738,19 @@ mod tests {
         active.writer.write_packet(&packet).await.unwrap();
         assert!(active.writer.finish().await.unwrap() > PCAP_HEADER.len() as u64);
         tokio::fs::remove_file(destination).await.unwrap();
+    }
+
+    #[test]
+    fn prohibited_service_errors_are_actionable() {
+        assert_eq!(
+            describe_service_error(&idevice::IdeviceError::UnknownErrorType(
+                "ServiceProhibited".into()
+            )),
+            "the device prohibited this capture service"
+        );
+        assert!(
+            describe_service_error(&idevice::IdeviceError::ServiceNotFound)
+                .contains("ServiceNotFound")
+        );
     }
 }

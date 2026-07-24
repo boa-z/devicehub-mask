@@ -90,6 +90,11 @@ audio media session 同时建立视频和 Universal HID 控制授权。
 请安装 HEVC Video Extensions。“原生 / FFmpeg”仍是兼容性默认值，浏览器解码运行失败后
 也会自动重连并使用它。
 
+如果 WebCodecs 报告 `OperationError: Unsupported configuration`，应用会从数据流 SPS 读取
+HEVC profile 与 level，并重试保守的 `hev1`、`hvc1` 配置。准确配置全部失败后，本次运行会
+重连到“原生 / FFmpeg”；这通常表示平台 WebView 或系统 HEVC 组件无法解码当前设备的分辨率
+或 profile。
+
 观察界面的解码 / 发送 / 显示 FPS 和 JPEG 延迟：
 
 - 源 FPS 来自完整 RTP 帧 marker；解码与发布 FPS 会区分 FFmpeg 输出和重复帧抑制。

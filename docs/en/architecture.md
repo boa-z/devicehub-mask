@@ -168,8 +168,10 @@ tearing down display, HID, or management services. Only normalized status,
 bounded XML, match indexes, and finite rectangles cross the MCP boundary; WDA
 session and element identifiers remain private to the worker.
 
-Device packet capture is a separate, user-initiated pcapd worker over a cloned
-RSD tunnel. It writes normalized Ethernet records directly to a same-directory
+Device packet capture is a separate, user-initiated pcapd worker. USB sessions
+first open the traditional lockdown pcapd service and retain the cloned RSD
+tunnel as a fallback; Wi-Fi sessions use the CoreDevice remote pcapd shim over
+RSD. It writes normalized Ethernet records directly to a same-directory
 temporary host file, caps packets at the negotiated 256 KiB snapshot size and
 the complete capture at 256 MiB, then atomically replaces the selected `.pcap`
 destination. Stop, timeout, stream failure, and session shutdown all finalize
@@ -253,11 +255,16 @@ consumers drop stale decoded frames by construction.
 
 The default, experimental Browser / WebCodecs backend branches after the same
 bounded access-unit queue. Rust publishes versioned Annex-B HEVC access units over the
-authenticated WebSocket and the WebView decodes them with `VideoDecoder` before
-drawing `VideoFrame` objects to the existing canvas. Broadcast lag, decoder
+authenticated WebSocket. The WebView derives the RFC 6381 HEVC profile, tier,
+level, compatibility flags, and constraints from each stream's SPS, then decodes
+with `VideoDecoder` before drawing `VideoFrame` objects to the existing canvas.
+Broadcast lag, decoder
 backlog, missing decoder output, and configuration changes discard dependent
 frames and request a new IRAP through PLI/FIR. Repeated capability, timeout, or
-runtime failures reconnect the session with the native backend. MCP screenshots remain available through the
+runtime failures reconnect the session with the native backend. Decoder setup
+probes the exact dimensions and codec, retries progressively simpler `hev1` and
+`hvc1` configurations when WebKit reports support but rejects `configure()`, and
+only then invokes the native fallback. MCP screenshots remain available through the
 on-demand CoreDevice ScreenCaptureService and frame synchronization observes
 both native and browser frame versions.
 
@@ -275,8 +282,9 @@ on slower systems.
 
 The browser backend does not apply the FFmpeg dimension limit. Support depends
 on the platform WebView exposing HEVC through WebCodecs; Windows commonly also
-requires the system HEVC Video Extensions. The app probes the exact decoder
-configuration at runtime instead of assuming that WebCodecs implies HEVC.
+requires the system HEVC Video Extensions. The app probes and configures the
+exact SPS-derived decoder configuration at runtime instead of assuming that
+WebCodecs implies HEVC.
 
 The canvas contain-fits the rotated source with one shared scale. Pointer
 coordinates are normalized in the exact displayed rectangle, which prevents

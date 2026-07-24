@@ -110,6 +110,9 @@ and profiles depend on the device and iOS version.
 
 Packet Capture starts an explicit, time-bounded `pcapd` session and writes a
 standard `.pcap` file directly to the path selected by the native save dialog.
+USB capture uses the lockdown service first, while Wi-Fi capture uses the
+CoreDevice remote service. The remote service may be prohibited by the device or
+iOS policy; reconnect over USB when that error is reported.
 It can be stopped early, closes automatically after at most five minutes, and
 stops before the file exceeds 256 MiB. Partial traffic is finalized into a valid
 PCAP when the device session ends or the capture stream fails. Packet contents

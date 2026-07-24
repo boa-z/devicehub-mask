@@ -107,6 +107,12 @@ if the setting immediately reports a capability fallback. Native / FFmpeg is
 still the compatibility default, and runtime decoder failures reconnect with it
 automatically.
 
+If WebCodecs reports `OperationError: Unsupported configuration`, the app reads
+the HEVC profile and level from the stream SPS and retries conservative `hev1`
+and `hvc1` configurations. If all exact configurations fail, the current run
+reconnects with Native / FFmpeg; this usually means the platform WebView or its
+system HEVC component cannot decode that device's resolution/profile.
+
 Use the live Decode / Send / Display FPS and JPEG latency metrics:
 
 - Source FPS reports complete RTP frame markers; Decode and Published FPS separate
