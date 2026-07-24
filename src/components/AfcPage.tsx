@@ -5,7 +5,7 @@ import {
   HddOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Empty, Segmented, Select, Spin, Tag, Tooltip, Typography } from "antd";
+import { Button, Empty, Segmented, Select, Spin, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { availableAfcApps } from "../afcBrowser";
@@ -13,6 +13,7 @@ import type { DeviceApp } from "../types";
 import { AppDocumentsModal, type AppStorageScope } from "./AppDocumentsModal";
 import { AfcCrashReportsPane } from "./AfcCrashReportsPane";
 import { DeviceFilesPane } from "./DeviceFilesPane";
+import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type AfcWorkspaceScope = "public" | AppStorageScope | "crash-reports";
@@ -150,7 +151,7 @@ export function AfcPage({ active, activeUdid, request }: Props) {
           ) : scope === "crash-reports" ? (
             <AfcCrashReportsPane active={active} deviceId={activeUdid} request={request} onTransferStateChange={setCrashExportActive} />
           ) : appsError ? (
-            <Alert type="error" showIcon message={t("afc.appsUnavailable")} description={appsError} />
+            <ErrorAlert title={t("afc.appsUnavailable")} error={appsError} />
           ) : appsLoading && apps === null ? (
             <div className="app-documents-loading"><Spin /></div>
           ) : selectedApp ? (

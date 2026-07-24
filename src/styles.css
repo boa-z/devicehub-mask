@@ -260,7 +260,15 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-profile-details { display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr); gap: 3px 10px; font-size: 11px; }
 .device-profile-details > span { color: #7f8a89; }
 .device-profile-details > .ant-typography { text-align: right; margin: 0; overflow-wrap: anywhere; }
-.device-profile-error { font-size: 11px; overflow-wrap: anywhere; }
+.device-profile-error { min-width: 0; display: flex; align-items: center; gap: 4px; font-size: 11px; overflow-wrap: anywhere; }
+.device-profile-error > .ant-typography { min-width: 0; flex: 1; }
+.topbar-status { min-width: 0; display: inline-flex; align-items: center; }
+.topbar-status .ant-tag { min-width: 0; max-width: min(520px, 38vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-error-message { min-width: 0; display: inline-flex; align-items: center; gap: 6px; }
+.user-error-message > span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.user-error-message-copy { flex: none; color: inherit; }
+.ant-alert .ant-alert-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ant-alert .ant-alert-action { align-self: center; margin-inline-start: 8px; }
 .device-crashes-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .device-crash-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
 .device-crash-row { min-height: 68px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 28px minmax(0, 1fr) 104px; align-items: center; gap: 8px; }

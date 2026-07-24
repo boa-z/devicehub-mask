@@ -3,7 +3,19 @@ import type { enUS } from "./en-US";
 type LocaleShape<T> = { [Key in keyof T]: T[Key] extends string ? string : LocaleShape<T[Key]> };
 
 export const zhCN = {
-  common: { confirm: "确认", cancel: "取消", create: "新建", rename: "重命名", delete: "删除", back: "返回", close: "关闭" },
+  common: {
+    confirm: "确认",
+    cancel: "取消",
+    create: "新建",
+    rename: "重命名",
+    delete: "删除",
+    back: "返回",
+    close: "关闭",
+    error: "错误",
+    copyError: "复制错误详情",
+    errorCopied: "已复制错误详情。",
+    errorCopyFailed: "无法复制错误详情。",
+  },
   brand: { subtitle: "iOS 游戏控制" },
   navigation: { label: "主导航", device: "设备", mappings: "键盘映射", afc: "AFC 文件", performance: "性能", logs: "设备日志", location: "虚拟定位", settings: "应用设置" },
   afc: {

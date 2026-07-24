@@ -30,9 +30,11 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { showErrorMessage } from "../errorMessage";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
+import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
 import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
@@ -412,7 +414,7 @@ export function DeviceInspector({
       setDetails((current) => current ? { ...current, developer_image_mounted: false } : current);
       void message.success(t("deviceInspector.developerImageUnmounted"));
     } else if (developerImageStatus.state === "failed") {
-      void message.error(t("deviceInspector.developerImageMountFailed", { error: developerImageStatus.error ?? "" }));
+      void showErrorMessage(t("deviceInspector.developerImageMountFailed", { error: developerImageStatus.error ?? "" }));
     }
   }, [developerImageStatus, t]);
 
@@ -448,7 +450,7 @@ export function DeviceInspector({
       }
     } catch (scopeError) {
       if (appScopesRequest.current !== requestId) return;
-      void message.error(t("deviceInspector.appScopesUnavailable", { error: String(scopeError) }));
+      void showErrorMessage(t("deviceInspector.appScopesUnavailable", { error: String(scopeError) }));
     } finally {
       if (appScopesRequest.current === requestId) setAppScopesLoading(false);
     }
@@ -485,7 +487,7 @@ export function DeviceInspector({
       void message.success(t(`deviceInspector.appOperationResult.${appOperation.kind ?? "install"}`));
       if (tab === "apps") void load();
     } else if (appOperation.state === "failed") {
-      void message.error(t("deviceInspector.appOperationFailed", { error: appOperation.error ?? "" }));
+      void showErrorMessage(t("deviceInspector.appOperationFailed", { error: appOperation.error ?? "" }));
     } else {
       void message.info(t("deviceInspector.appOperationCancelled"));
     }
@@ -539,7 +541,7 @@ export function DeviceInspector({
       onAppLaunched?.(app.bundle_id);
       await loadApps();
     } catch (launchError) {
-      void message.error(t("deviceInspector.appLaunchFailed", { error: String(launchError) }));
+      void showErrorMessage(t("deviceInspector.appLaunchFailed", { error: String(launchError) }));
     } finally {
       setAppProcessAction(null);
     }
@@ -554,7 +556,7 @@ export function DeviceInspector({
       void message.success(t(result.was_running ? "deviceInspector.appStopped" : "deviceInspector.appAlreadyStopped", { name: app.name }));
       await loadApps();
     } catch (stopError) {
-      void message.error(t("deviceInspector.appStopFailed", { error: String(stopError) }));
+      void showErrorMessage(t("deviceInspector.appStopFailed", { error: String(stopError) }));
     } finally {
       setAppProcessAction(null);
     }
@@ -579,7 +581,7 @@ export function DeviceInspector({
           void message.success(t("deviceInspector.wdaRunnerStarted", { name: app.name }));
         } catch (runnerError) {
           await loadWdaRunnerStatus();
-          void message.error(t("deviceInspector.wdaRunnerStartFailed", { error: String(runnerError) }));
+          void showErrorMessage(t("deviceInspector.wdaRunnerStartFailed", { error: String(runnerError) }));
           throw runnerError;
         } finally {
           setWdaRunnerAction(null);
@@ -596,7 +598,7 @@ export function DeviceInspector({
       setWdaRunnerStatus(status);
       void message.success(t("deviceInspector.wdaRunnerStopped"));
     } catch (runnerError) {
-      void message.error(t("deviceInspector.wdaRunnerStopFailed", { error: String(runnerError) }));
+      void showErrorMessage(t("deviceInspector.wdaRunnerStopFailed", { error: String(runnerError) }));
     } finally {
       setWdaRunnerAction(null);
     }
@@ -620,7 +622,7 @@ export function DeviceInspector({
       await loadBackupStatus();
       void message.success(t("deviceInspector.backupStarted"));
     } catch (backupError) {
-      void message.error(t("deviceInspector.backupStartFailed", { error: String(backupError) }));
+      void showErrorMessage(t("deviceInspector.backupStartFailed", { error: String(backupError) }));
     } finally {
       setBackupAction(null);
     }
@@ -634,7 +636,7 @@ export function DeviceInspector({
       await loadBackupStatus();
       void message.info(t("deviceInspector.backupCancelled"));
     } catch (backupError) {
-      void message.error(t("deviceInspector.backupStopFailed", { error: String(backupError) }));
+      void showErrorMessage(t("deviceInspector.backupStopFailed", { error: String(backupError) }));
     } finally {
       setBackupAction(null);
     }
@@ -665,7 +667,7 @@ export function DeviceInspector({
           await loadSysdiagnoseStatus();
           void message.success(t("deviceInspector.sysdiagnoseStarted"));
         } catch (sysdiagnoseError) {
-          void message.error(t("deviceInspector.sysdiagnoseStartFailed", { error: String(sysdiagnoseError) }));
+          void showErrorMessage(t("deviceInspector.sysdiagnoseStartFailed", { error: String(sysdiagnoseError) }));
           throw sysdiagnoseError;
         } finally {
           setSysdiagnoseAction(null);
@@ -682,7 +684,7 @@ export function DeviceInspector({
       await loadSysdiagnoseStatus();
       void message.info(t("deviceInspector.sysdiagnoseCancelled"));
     } catch (sysdiagnoseError) {
-      void message.error(t("deviceInspector.sysdiagnoseStopFailed", { error: String(sysdiagnoseError) }));
+      void showErrorMessage(t("deviceInspector.sysdiagnoseStopFailed", { error: String(sysdiagnoseError) }));
     } finally {
       setSysdiagnoseAction(null);
     }
@@ -704,7 +706,7 @@ export function DeviceInspector({
       await onAppProfileBindingChange(bundleId, bind);
       void message.success(t(bind ? "deviceInspector.appProfileBound" : "deviceInspector.appProfileUnbound", { profile: activeProfile }));
     } catch (bindingError) {
-      void message.error(t("deviceInspector.appProfileBindingFailed", { error: String(bindingError) }));
+      void showErrorMessage(t("deviceInspector.appProfileBindingFailed", { error: String(bindingError) }));
     } finally {
       setBindingApp(null);
     }
@@ -774,14 +776,14 @@ export function DeviceInspector({
           });
           if (!response.ok) {
             const failure = new Error((await response.text()) || response.statusText);
-            void message.error(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(failure) }));
+            void showErrorMessage(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(failure) }));
             throw failure;
           }
           await refreshAppOperation();
         },
       });
     } catch (installError) {
-      void message.error(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(installError) }));
+      void showErrorMessage(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(installError) }));
     } finally {
       setIpaPreflightBusy(false);
     }
@@ -798,7 +800,7 @@ export function DeviceInspector({
         const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}`, { method: "DELETE" });
         if (!response.ok) {
           const failure = new Error((await response.text()) || response.statusText);
-          void message.error(t("deviceInspector.appUninstallFailed", { error: String(failure) }));
+          void showErrorMessage(t("deviceInspector.appUninstallFailed", { error: String(failure) }));
           throw failure;
         }
         await refreshAppOperation();
@@ -825,7 +827,7 @@ export function DeviceInspector({
       void message.success(t("deviceInspector.profileInstalled", { name: installed.name }));
       await load();
     } catch (profileError) {
-      void message.error(t("deviceInspector.profileInstallFailed", { error: String(profileError) }));
+      void showErrorMessage(t("deviceInspector.profileInstallFailed", { error: String(profileError) }));
     } finally {
       setProfileMutation(null);
     }
@@ -849,7 +851,7 @@ export function DeviceInspector({
           void message.success(t("deviceInspector.profileRemoved", { name: profile.name }));
           await load();
         } catch (profileError) {
-          void message.error(t("deviceInspector.profileRemoveFailed", { error: String(profileError) }));
+          void showErrorMessage(t("deviceInspector.profileRemoveFailed", { error: String(profileError) }));
           throw profileError;
         } finally {
           setProfileMutation(null);
@@ -874,7 +876,7 @@ export function DeviceInspector({
           if (!response.ok) throw new Error((await response.text()) || response.statusText);
           void message.success(t("deviceInspector.appSignerTrusted", { name: profile.name }));
         } catch (profileError) {
-          void message.error(t("deviceInspector.appSignerTrustFailed", { error: String(profileError) }));
+          void showErrorMessage(t("deviceInspector.appSignerTrustFailed", { error: String(profileError) }));
           throw profileError;
         } finally {
           setProfileMutation(null);
@@ -900,7 +902,7 @@ export function DeviceInspector({
       const result = await response.json() as { bytes_written: number };
       void message.success(t("deviceInspector.crashReportExported", { size: formatFileSize(result.bytes_written) }));
     } catch (exportError) {
-      void message.error(t("deviceInspector.crashReportExportFailed", { error: String(exportError) }));
+      void showErrorMessage(t("deviceInspector.crashReportExportFailed", { error: String(exportError) }));
     } finally {
       setExportingReport(null);
     }
@@ -926,7 +928,7 @@ export function DeviceInspector({
           setCrashReports((current) => current.filter((candidate) => candidate.path !== report.path));
           void message.success(t("deviceInspector.crashReportDeleted"));
         } catch (deleteError) {
-          void message.error(t("deviceInspector.crashReportDeleteFailed", { error: String(deleteError) }));
+          void showErrorMessage(t("deviceInspector.crashReportDeleteFailed", { error: String(deleteError) }));
           throw deleteError;
         } finally {
           setDeletingReport(null);
@@ -950,7 +952,7 @@ export function DeviceInspector({
           if (!response.ok) throw new Error((await response.text()) || response.statusText);
           void message.success(t(`deviceInspector.${action}Requested`));
         } catch (powerError) {
-          void message.error(t("deviceInspector.powerActionFailed", { error: String(powerError) }));
+          void showErrorMessage(t("deviceInspector.powerActionFailed", { error: String(powerError) }));
           throw powerError;
         } finally {
           setDevicePowerAction(null);
@@ -978,12 +980,12 @@ export function DeviceInspector({
           } else if (result.outcome === "host_record_removed") {
             void message.warning(t("deviceInspector.hostTrustRemoved", { error: result.error ?? t("device.pairingUnknownError") }));
           } else if (result.outcome === "device_forgotten_host_cleanup_failed") {
-            void message.error(t("deviceInspector.hostTrustCleanupFailed", { error: result.error ?? t("device.pairingUnknownError") }));
+            void showErrorMessage(t("deviceInspector.hostTrustCleanupFailed", { error: result.error ?? t("device.pairingUnknownError") }));
           } else {
             throw new Error(result.error ?? t("device.pairingUnknownError"));
           }
         } catch (forgetError) {
-          void message.error(t("deviceInspector.forgetTrustFailed", { error: String(forgetError) }));
+          void showErrorMessage(t("deviceInspector.forgetTrustFailed", { error: String(forgetError) }));
           throw forgetError;
         } finally {
           setForgettingTrust(false);
@@ -1007,7 +1009,7 @@ export function DeviceInspector({
         void message.success(t("deviceInspector.developerModeRevealed"));
       }
     } catch (prepareError) {
-      void message.error(t("deviceInspector.developerModeRevealFailed", { error: String(prepareError) }));
+      void showErrorMessage(t("deviceInspector.developerModeRevealFailed", { error: String(prepareError) }));
     } finally {
       setDeveloperModeBusy(false);
     }
@@ -1027,7 +1029,7 @@ export function DeviceInspector({
     if (!details || developerImageAction) return;
     const majorVersion = Number.parseInt(details.product_version.split(".")[0] ?? "", 10);
     if (!Number.isFinite(majorVersion)) {
-      void message.error(t("deviceInspector.developerImageVersionInvalid"));
+      void showErrorMessage(t("deviceInspector.developerImageVersionInvalid"));
       return;
     }
     const image = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImage"), ["dmg"]);
@@ -1063,7 +1065,7 @@ export function DeviceInspector({
           await loadDeveloperImageStatus();
           void message.info(t("deviceInspector.developerImageMountStarted"));
         } catch (mountError) {
-          void message.error(t("deviceInspector.developerImageMountFailed", { error: String(mountError) }));
+          void showErrorMessage(t("deviceInspector.developerImageMountFailed", { error: String(mountError) }));
         } finally {
           setDeveloperImageAction(null);
         }
@@ -1081,7 +1083,7 @@ export function DeviceInspector({
       await load();
       void message.info(t("deviceInspector.developerImageMountCancelled"));
     } catch (mountError) {
-      void message.error(t("deviceInspector.developerImageCancelFailed", { error: String(mountError) }));
+      void showErrorMessage(t("deviceInspector.developerImageCancelFailed", { error: String(mountError) }));
     } finally {
       setDeveloperImageAction(null);
     }
@@ -1103,7 +1105,7 @@ export function DeviceInspector({
           await loadDeveloperImageStatus();
           void message.info(t("deviceInspector.developerImageUnmountStarted"));
         } catch (unmountError) {
-          void message.error(t("deviceInspector.developerImageUnmountFailed", { error: String(unmountError) }));
+          void showErrorMessage(t("deviceInspector.developerImageUnmountFailed", { error: String(unmountError) }));
         } finally {
           setDeveloperImageAction(null);
         }
@@ -1126,7 +1128,7 @@ export function DeviceInspector({
       setRenameOpen(false);
       void message.success(t("deviceInspector.deviceRenamed", { name: result.name }));
     } catch (renameError) {
-      void message.error(t("deviceInspector.deviceRenameFailed", { error: String(renameError) }));
+      void showErrorMessage(t("deviceInspector.deviceRenameFailed", { error: String(renameError) }));
     } finally {
       setRenameBusy(false);
     }
@@ -1250,7 +1252,7 @@ export function DeviceInspector({
       {!activeUdid ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noDevice")} />
       ) : error ? (
-        <Alert type="error" showIcon message={t("deviceInspector.loadFailed")} description={error} />
+        <ErrorAlert title={t("deviceInspector.loadFailed")} error={error} />
       ) : loading && (tab === "info" ? !details : tab === "apps" ? apps.length === 0 : tab === "profiles" ? profiles.length === 0 : crashReports.length === 0) ? (
         <div className="device-inspector-loading"><Spin /></div>
       ) : tab === "info" ? (
@@ -1304,7 +1306,7 @@ export function DeviceInspector({
                 />
               )}
               {developerImageStatus.state === "failed" && developerImageStatus.error && (
-                <Alert type="error" showIcon message={t("deviceInspector.developerImageMountFailedTitle")} description={developerImageStatus.error} />
+                <ErrorAlert title={t("deviceInspector.developerImageMountFailedTitle")} error={developerImageStatus.error} />
               )}
             </div>
           )}
@@ -1473,7 +1475,7 @@ export function DeviceInspector({
                 </div>
               )}
               {backupStatus?.state === "failed" && backupStatus.error && (
-                <Alert type="error" showIcon message={t("deviceInspector.backupFailed")} description={backupStatus.error} />
+                <ErrorAlert title={t("deviceInspector.backupFailed")} error={backupStatus.error} />
               )}
               <div className="device-backup-actions">
                 {backupRunning ? (
@@ -1528,7 +1530,7 @@ export function DeviceInspector({
                 </div>
               )}
               {sysdiagnoseStatus?.state === "failed" && sysdiagnoseStatus.error && (
-                <Alert type="error" showIcon message={t("deviceInspector.sysdiagnoseFailed")} description={sysdiagnoseStatus.error} />
+                <ErrorAlert title={t("deviceInspector.sysdiagnoseFailed")} error={sysdiagnoseStatus.error} />
               )}
               <div className="device-backup-actions">
                 {sysdiagnoseRunning ? (
@@ -1929,7 +1931,10 @@ export function DeviceInspector({
                   )}
                 </div>
                 {profile.parse_error ? (
-                  <Typography.Text type="danger" className="device-profile-error">{profile.parse_error}</Typography.Text>
+                  <span className="device-profile-error">
+                    <Typography.Text type="danger">{profile.parse_error}</Typography.Text>
+                    <ErrorCopyButton error={profile.parse_error} />
+                  </span>
                 ) : (
                   <div className="device-profile-details">
                     <span>{t("deviceInspector.profileAppId")}</span>

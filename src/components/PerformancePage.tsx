@@ -7,7 +7,9 @@ import { sortProcesses, type ProcessSort } from "../processPerformance";
 import { bluetoothCaptureFilename, networkCaptureDurations, networkCaptureFilename, networkCaptureRunning } from "../networkCapture";
 import { decodeDeviceConditionSelection, deviceConditionSelectionExists, encodeDeviceConditionSelection } from "../deviceConditions";
 import { filterRunningProcesses } from "../runningProcesses";
+import { showErrorMessage } from "../errorMessage";
 import type { PerformanceSnapshot, PerformanceView, RunningProcessList, ServiceHealth, StreamMetrics } from "../types";
+import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
 
 type Props = {
   activeUdid: string | null;
@@ -261,7 +263,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("performance.captureStarted"));
     } catch (captureError) {
-      void message.error(t("performance.captureStartFailed", { error: String(captureError) }));
+      void showErrorMessage(t("performance.captureStartFailed", { error: String(captureError) }));
     } finally {
       setCaptureBusy(false);
     }
@@ -274,7 +276,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("performance.captureSaved"));
     } catch (captureError) {
-      void message.error(t("performance.captureStopFailed", { error: String(captureError) }));
+      void showErrorMessage(t("performance.captureStopFailed", { error: String(captureError) }));
     } finally {
       setCaptureBusy(false);
     }
@@ -296,7 +298,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("performance.bluetoothCaptureStarted"));
     } catch (captureError) {
-      void message.error(t("performance.bluetoothCaptureStartFailed", { error: String(captureError) }));
+      void showErrorMessage(t("performance.bluetoothCaptureStartFailed", { error: String(captureError) }));
     } finally {
       setBluetoothBusy(false);
     }
@@ -309,7 +311,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("performance.bluetoothCaptureSaved"));
     } catch (captureError) {
-      void message.error(t("performance.bluetoothCaptureStopFailed", { error: String(captureError) }));
+      void showErrorMessage(t("performance.bluetoothCaptureStopFailed", { error: String(captureError) }));
     } finally {
       setBluetoothBusy(false);
     }
@@ -339,7 +341,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           if (!response.ok) throw new Error((await response.text()) || response.statusText);
           void message.success(t("performance.conditionApplied"));
         } catch (conditionError) {
-          void message.error(t("performance.conditionApplyFailed", { error: String(conditionError) }));
+          void showErrorMessage(t("performance.conditionApplyFailed", { error: String(conditionError) }));
         } finally {
           setConditionBusy(false);
         }
@@ -355,7 +357,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("performance.conditionCleared"));
     } catch (conditionError) {
-      void message.error(t("performance.conditionClearFailed", { error: String(conditionError) }));
+      void showErrorMessage(t("performance.conditionClearFailed", { error: String(conditionError) }));
     } finally {
       setConditionBusy(false);
     }
@@ -372,7 +374,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
       </header>
 
       {!activeUdid && <Alert type="info" showIcon message={t("performance.connectDevice")} />}
-      {error && <Alert type="warning" showIcon message={t("performance.loadFailed")} description={error} />}
+      {error && <ErrorAlert type="warning" title={t("performance.loadFailed")} error={error} />}
 
       <div className="performance-dashboard">
       <section className="performance-section performance-section-device">
@@ -465,7 +467,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           message={t("performance.conditionActive")}
           description={condition.active.description || condition.active.profile_identifier}
         />}
-        {condition?.cleanup_pending && <Alert
+        {condition?.cleanup_pending && !condition.error && <Alert
           type="error"
           showIcon
           message={t("performance.conditionCleanupPending")}
@@ -476,8 +478,11 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           showIcon
           message={t("performance.conditionsUnavailable")}
           description={condition.error ?? t("performance.conditionsUnavailableHint")}
+          action={condition.error ? <ErrorCopyButton error={condition.error} /> : undefined}
         />}
-        {condition?.error && condition.cleanup_pending && <Typography.Text type="danger">{condition.error}</Typography.Text>}
+        {condition?.error && condition.cleanup_pending && (
+          <ErrorAlert title={t("performance.conditionCleanupPending")} error={condition.error} />
+        )}
       </section>
 
       <section className="performance-section performance-section-wide">
@@ -556,7 +561,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.captureSize")}</span><strong>{fileSize(capture?.bytes_written)}</strong></div>
           <div><span>{t("performance.captureElapsed")}</span><strong>{((capture?.elapsed_ms ?? 0) / 1000).toFixed(1)} s</strong></div>
         </div>
-        {capture?.error && <Alert type="warning" showIcon message={t("performance.captureFailed")} description={capture.error} />}
+        {capture?.error && <ErrorAlert type="warning" title={t("performance.captureFailed")} error={capture.error} />}
       </section>
 
       <section className="performance-section performance-section-capture">
@@ -593,7 +598,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.captureSize")}</span><strong>{fileSize(bluetoothCapture?.bytes_written)}</strong></div>
           <div><span>{t("performance.captureElapsed")}</span><strong>{((bluetoothCapture?.elapsed_ms ?? 0) / 1000).toFixed(1)} s</strong></div>
         </div>
-        {bluetoothCapture?.error && <Alert type="warning" showIcon message={t("performance.bluetoothCaptureFailed")} description={bluetoothCapture.error} />}
+        {bluetoothCapture?.error && <ErrorAlert type="warning" title={t("performance.bluetoothCaptureFailed")} error={bluetoothCapture.error} />}
       </section>
 
       <section className="performance-section performance-section-process">
@@ -625,7 +630,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
             </Tooltip>
           </Space>
         </div>
-        {processInventoryError && <Alert type="warning" showIcon message={t("performance.processInventoryUnavailable")} description={processInventoryError} />}
+        {processInventoryError && <ErrorAlert type="warning" title={t("performance.processInventoryUnavailable")} error={processInventoryError} />}
         {processInventory?.truncated && <Alert type="info" showIcon message={t("performance.processInventoryTruncated")} />}
         <div className="performance-process-table-wrap">
           <table className="performance-process-table performance-inventory-table">

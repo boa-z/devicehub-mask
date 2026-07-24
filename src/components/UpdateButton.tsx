@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { UpdateContext, type UpdateContextValue, useUpdates } from "../updateContext";
 import { readAutomaticUpdatePreference, writeAutomaticUpdatePreference } from "../updatePreferences";
 import { logFrontend } from "../diagnostics";
+import { showErrorMessage } from "../errorMessage";
 
 const progressMessageKey = "app-update-progress";
 
@@ -63,7 +64,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       });
     } catch (error) {
       logFrontend("warn", "updater", "check_for_update", error);
-      if (manual) void message.error(translateRef.current("update.failed", { error: String(error) }));
+      if (manual) void showErrorMessage(translateRef.current("update.failed", { error: String(error) }));
     } finally {
       checkingRef.current = false;
       setChecking(false);

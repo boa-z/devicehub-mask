@@ -4,8 +4,10 @@ import { Alert, Button, Empty, Input, Modal, Spin, Tooltip, Typography, message 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { filterCrashReports, formatFileSize, formatReportDate } from "../deviceInspector";
+import { showErrorMessage } from "../errorMessage";
 import type { DeviceCrashReport, DeviceCrashReportList } from "../types";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
+import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -87,7 +89,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t("afc.crashExported"));
     } catch (exportError) {
-      void message.error(t("afc.crashExportFailed", { error: String(exportError) }));
+      void showErrorMessage(t("afc.crashExportFailed", { error: String(exportError) }));
     } finally {
       setExporting(null);
     }
@@ -113,7 +115,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
           setReports((current) => current.filter((candidate) => candidate.path !== report.path));
           void message.success(t("afc.crashReportDeleted"));
         } catch (deleteError) {
-          void message.error(t("afc.crashReportDeleteFailed", { error: String(deleteError) }));
+          void showErrorMessage(t("afc.crashReportDeleteFailed", { error: String(deleteError) }));
           throw deleteError;
         } finally {
           setDeleting(null);
@@ -138,7 +140,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
         </Tooltip>
       </div>
       {error ? (
-        <Alert type="error" showIcon message={t("afc.crashReportsUnavailable")} description={error} />
+        <ErrorAlert title={t("afc.crashReportsUnavailable")} error={error} />
       ) : loading && reports.length === 0 ? (
         <div className="app-documents-loading"><Spin /></div>
       ) : visibleReports.length > 0 ? (

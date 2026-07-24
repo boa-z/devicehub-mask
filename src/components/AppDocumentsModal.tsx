@@ -18,7 +18,9 @@ import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Progress, Seg
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../deviceInspector";
+import { showErrorMessage } from "../errorMessage";
 import type { AppDocumentActivity, AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
+import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 export type AppStorageScope = "documents" | "container";
@@ -156,7 +158,7 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
       if (operation === "upload" && (cancelRequestedRef.current || String(mutationError).includes("application storage transfer cancelled"))) {
         void message.info(t("deviceInspector.documentTransferCancelled"));
       } else {
-        void message.error(t("deviceInspector.documentOperationFailed", { error: String(mutationError) }));
+        void showErrorMessage(t("deviceInspector.documentOperationFailed", { error: String(mutationError) }));
       }
       return false;
     } finally {
@@ -211,7 +213,7 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
       if (cancelRequestedRef.current || String(exportError).includes("application storage transfer cancelled")) {
         void message.info(t("deviceInspector.documentTransferCancelled"));
       } else {
-        void message.error(t("deviceInspector.documentOperationFailed", { error: String(exportError) }));
+        void showErrorMessage(t("deviceInspector.documentOperationFailed", { error: String(exportError) }));
       }
     } finally {
       setBusy(null);
@@ -233,7 +235,7 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
       setCancelRequested(true);
     } catch (cancelError) {
       if (activeBundleIdRef.current === bundleId) {
-        void message.error(t("deviceInspector.documentCancelFailed", { error: String(cancelError) }));
+        void showErrorMessage(t("deviceInspector.documentCancelFailed", { error: String(cancelError) }));
       }
     } finally {
       if (activeBundleIdRef.current === bundleId) setCancelPending(false);
@@ -401,7 +403,7 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
         </div>
       )}
       {error ? (
-        <Alert type="error" showIcon message={t("deviceInspector.documentsUnavailable")} description={error} />
+        <ErrorAlert title={t("deviceInspector.documentsUnavailable")} error={error} />
       ) : busy === "list" && !listing ? (
         <div className="app-documents-loading"><Spin /></div>
       ) : listing?.entries.length ? (

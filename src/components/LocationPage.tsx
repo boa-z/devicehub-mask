@@ -1,9 +1,10 @@
 import { EnvironmentOutlined } from "@ant-design/icons";
-import { Alert, Button, InputNumber, Space, Tag, Typography, message } from "antd";
+import { Button, InputNumber, Space, Tag, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { validLocationCoordinates } from "../location";
 import type { LocationStatus } from "../types";
+import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -95,7 +96,7 @@ export function LocationPage({ activeUdid, status, request }: Props) {
         </Space>
       </header>
 
-      {(error || status.error) && <Alert type="error" showIcon message={error ?? status.error} />}
+      {(error || status.error) && <ErrorAlert title={t("common.error")} error={error ?? status.error} />}
 
       <section className="location-section" aria-labelledby="location-coordinates-title">
         <Typography.Title id="location-coordinates-title" level={5}>{t("location.coordinates")}</Typography.Title>

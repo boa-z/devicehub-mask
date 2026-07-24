@@ -5,6 +5,7 @@ import { Button, Checkbox, Select, Slider, Space, Switch, Tag, Typography, messa
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import { showErrorMessage } from "../errorMessage";
 import type { DeviceAudioPreferences } from "../deviceAudio";
 import { type DeviceViewPreferences, type DeviceViewScale } from "../deviceViewPreferences";
 import { performanceHudItems, type PerformanceHudItem, type PerformanceHudPreferences } from "../performanceHudPreferences";
@@ -62,7 +63,7 @@ export function SettingsPage({
   useEffect(() => {
     void readDiagnosticsStatus()
       .then(setDiagnostics)
-      .catch((error) => message.error(t("settings.diagnosticsUnavailable", { error: String(error) })));
+      .catch((error) => showErrorMessage(t("settings.diagnosticsUnavailable", { error: String(error) })));
   }, [t]);
   useEffect(() => {
     void readVideoSettings()
@@ -70,7 +71,7 @@ export function SettingsPage({
         setVideoSettings(settings);
         onAudioEnabledChange(settings.audio_enabled);
       })
-      .catch((error) => message.error(t("settings.videoSettingsUnavailable", { error: String(error) })));
+      .catch((error) => showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) })));
   }, [onAudioEnabledChange, t]);
 
   const changeVideoPixelFormat = async (videoPixelFormat: VideoPixelFormat) => {
@@ -79,7 +80,7 @@ export function SettingsPage({
       setVideoSettings(await setVideoPixelFormat(videoPixelFormat));
       message.success(t("settings.videoPixelFormatChanged"));
     } catch (error) {
-      message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
     } finally {
       setVideoSettingsBusy(false);
     }
@@ -91,7 +92,7 @@ export function SettingsPage({
       setVideoSettings(await setVideoDecoderBackend(videoDecoderBackend));
       message.success(t("settings.videoDecoderChanged"));
     } catch (error) {
-      message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
     } finally {
       setVideoSettingsBusy(false);
     }
@@ -105,7 +106,7 @@ export function SettingsPage({
       onAudioEnabledChange(settings.audio_enabled);
       message.success(t("settings.deviceAudioChanged"));
     } catch (error) {
-      message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
     } finally {
       setVideoSettingsBusy(false);
     }
@@ -117,7 +118,7 @@ export function SettingsPage({
       setVideoSettings(await setClipboardSyncEnabled(enabled));
       message.success(t("settings.clipboardSyncChanged"));
     } catch (error) {
-      message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
     } finally {
       setVideoSettingsBusy(false);
     }
@@ -128,7 +129,7 @@ export function SettingsPage({
     try {
       setDiagnostics(await setDebugLogging(enabled));
     } catch (error) {
-      message.error(t("settings.diagnosticsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.diagnosticsUnavailable", { error: String(error) }));
     } finally {
       setDiagnosticsBusy(false);
     }
@@ -138,7 +139,7 @@ export function SettingsPage({
     try {
       await openLogDirectory();
     } catch (error) {
-      message.error(t("settings.diagnosticsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.diagnosticsUnavailable", { error: String(error) }));
     }
   };
 
@@ -146,7 +147,7 @@ export function SettingsPage({
     try {
       await openUrl("https://github.com/boa-z/devicehub-mask");
     } catch (error) {
-      message.error(t("settings.openRepositoryFailed", { error: String(error) }));
+      showErrorMessage(t("settings.openRepositoryFailed", { error: String(error) }));
     }
   };
 

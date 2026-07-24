@@ -1,9 +1,10 @@
 import { ClearOutlined, ReloadOutlined, StopOutlined } from "@ant-design/icons";
-import { Alert, Button, Input, Modal, Spin, Tag, Tooltip, Typography } from "antd";
+import { Button, Input, Modal, Spin, Tag, Tooltip, Typography } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { mergeConsoleLines } from "../appConsole";
 import type { AppConsoleLine, AppConsoleSnapshot, DeviceApp } from "../types";
+import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -158,7 +159,7 @@ export function AppConsoleModal({ app, request, onClose }: Props) {
           <Button danger aria-label={t("deviceInspector.stopAppConsole")} icon={<StopOutlined />} loading={busy && phase === "running"} disabled={busy || phase !== "running"} onClick={() => void stop()} />
         </Tooltip>
       </div>
-      {error && <Alert type="error" showIcon message={t("deviceInspector.appConsoleFailed")} description={error} />}
+      {error && <ErrorAlert title={t("deviceInspector.appConsoleFailed")} error={error} />}
       <div className="app-console-output" ref={output} role="log" aria-live="polite">
         {busy && lines.length === 0 ? <Spin size="small" /> : visibleLines.map((line) => (
           <div className="app-console-line" key={line.sequence}>{line.text || " "}</div>

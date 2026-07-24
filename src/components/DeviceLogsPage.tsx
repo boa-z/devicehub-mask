@@ -13,8 +13,10 @@ import { Alert, Button, Empty, Input, Modal, Select, Switch, Tag, Tooltip, Typog
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatElapsed, formatFileSize } from "../deviceInspector";
+import { showErrorMessage } from "../errorMessage";
 import { deviceLogContext, filterDeviceLogs, formatDeviceLogLine, type DeviceLogLevelFilter } from "../deviceLogs";
 import type { DeviceLogEntry, DeviceLogsView, LogArchiveStatus } from "../types";
+import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -160,7 +162,7 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
       setGapDetected(false);
       cursor.current = null;
     } catch (clearError) {
-      void message.error(t("deviceLogs.clearFailed", { error: String(clearError) }));
+      void showErrorMessage(t("deviceLogs.clearFailed", { error: String(clearError) }));
     }
   };
 
@@ -170,7 +172,7 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
         formatDeviceLogLine(entry, timeFormatter.format(new Date(entry.received_at_ms)))).join("\n"));
       void message.success(t("deviceLogs.copied", { count: visibleEntries.length }));
     } catch (copyError) {
-      void message.error(t("deviceLogs.copyFailed", { error: String(copyError) }));
+      void showErrorMessage(t("deviceLogs.copyFailed", { error: String(copyError) }));
     }
   };
 
@@ -193,7 +195,7 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
       setArchiveModalOpen(false);
       void message.success(t("deviceLogs.archiveStarted"));
     } catch (archiveError) {
-      void message.error(t("deviceLogs.archiveStartFailed", { error: String(archiveError) }));
+      void showErrorMessage(t("deviceLogs.archiveStartFailed", { error: String(archiveError) }));
     } finally {
       setArchiveAction(null);
     }
@@ -207,7 +209,7 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
       await loadArchiveStatus();
       void message.info(t("deviceLogs.archiveCancelled"));
     } catch (archiveError) {
-      void message.error(t("deviceLogs.archiveStopFailed", { error: String(archiveError) }));
+      void showErrorMessage(t("deviceLogs.archiveStopFailed", { error: String(archiveError) }));
     } finally {
       setArchiveAction(null);
     }
@@ -239,8 +241,8 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
       </header>
 
       {!activeUdid && <Alert type="info" showIcon message={t("deviceLogs.connectDevice")} />}
-      {error && <Alert type="warning" showIcon message={t("deviceLogs.loadFailed")} description={error} />}
-      {view?.service?.last_error && <Alert type="warning" showIcon message={t("deviceLogs.serviceUnavailable")} description={view.service.last_error} />}
+      {error && <ErrorAlert type="warning" title={t("deviceLogs.loadFailed")} error={error} />}
+      {view?.service?.last_error && <ErrorAlert type="warning" title={t("deviceLogs.serviceUnavailable")} error={view.service.last_error} />}
       {gapDetected && <Alert type="warning" showIcon closable message={t("deviceLogs.truncated")} onClose={() => setGapDetected(false)} />}
       {archive && archive.state !== "idle" && (
         <Alert
@@ -261,7 +263,7 @@ export function DeviceLogsPage({ activeUdid, request }: Props) {
             <Button size="small" danger icon={<StopOutlined />} loading={archiveAction === "stop"} onClick={() => void stopArchive()}>
               {t("deviceLogs.archiveCancel")}
             </Button>
-          ) : undefined}
+          ) : archive.error ? <ErrorCopyButton error={archive.error} /> : undefined}
         />
       )}
 

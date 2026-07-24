@@ -23,7 +23,9 @@ import { useTranslation } from "react-i18next";
 import { normalizeAfcPath, sortAfcEntries } from "../afcBrowser";
 import type { AfcSortDirection, AfcSortField } from "../afcBrowser";
 import { formatFileSize } from "../deviceInspector";
+import { showErrorMessage } from "../errorMessage";
 import type { DeviceFileActivity, DeviceFileEntry, DeviceFileList } from "../types";
+import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -162,7 +164,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
   const commitPath = () => {
     const normalized = normalizeAfcPath(pathDraft);
     if (!normalized) {
-      void message.error(t("deviceInspector.deviceFilePathInvalid"));
+      void showErrorMessage(t("deviceInspector.deviceFilePathInvalid"));
       return;
     }
     setPath(normalized);
@@ -184,7 +186,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
         if (operation === "import" && (cancelRequestedRef.current || String(mutationError).includes("device file transfer cancelled"))) {
           void message.info(t("deviceInspector.deviceFileTransferCancelled"));
         } else {
-          void message.error(t("deviceInspector.deviceFileOperationFailed", { error: String(mutationError) }));
+          void showErrorMessage(t("deviceInspector.deviceFileOperationFailed", { error: String(mutationError) }));
         }
       }
       return false;
@@ -245,7 +247,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
         if (cancelRequestedRef.current || String(exportError).includes("device file transfer cancelled")) {
           void message.info(t("deviceInspector.deviceFileTransferCancelled"));
         } else {
-          void message.error(t("deviceInspector.deviceFileExportFailed", { error: String(exportError) }));
+          void showErrorMessage(t("deviceInspector.deviceFileExportFailed", { error: String(exportError) }));
         }
       }
     } finally {
@@ -271,7 +273,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
       }
     } catch (cancelError) {
       if (requestVersion.current === version) {
-        void message.error(t("deviceInspector.deviceFileCancelFailed", { error: String(cancelError) }));
+        void showErrorMessage(t("deviceInspector.deviceFileCancelFailed", { error: String(cancelError) }));
       }
     } finally {
       if (requestVersion.current === version) setCancelPending(false);
@@ -465,7 +467,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
         </div>
       )}
       {error ? (
-        <Alert type="error" showIcon message={t("deviceInspector.deviceFilesUnavailable")} description={error} />
+        <ErrorAlert title={t("deviceInspector.deviceFilesUnavailable")} error={error} />
       ) : busy === "list" && !listing ? (
         <div className="app-documents-loading"><Spin /></div>
       ) : visibleEntries.length ? (

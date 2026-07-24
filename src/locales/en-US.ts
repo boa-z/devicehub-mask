@@ -7,6 +7,10 @@ export const enUS = {
     delete: "Delete",
     back: "Back",
     close: "Close",
+    error: "Error",
+    copyError: "Copy error details",
+    errorCopied: "Error details copied.",
+    errorCopyFailed: "Unable to copy error details.",
   },
   brand: { subtitle: "iOS Game Control" },
   navigation: {

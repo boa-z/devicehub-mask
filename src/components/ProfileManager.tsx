@@ -9,11 +9,12 @@ import {
   SaveOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
-import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { importMappingFile, mappingImportSource, mappingImportSources, uniqueImportedProfileName, type MappingImportSourceId } from "../mappingImport";
 import { exportScrcpyMaskConfig } from "../scrcpyCompat";
+import { showErrorMessage } from "../errorMessage";
 import type { Profile } from "../types";
 
 type DialogKind = "create" | "duplicate" | "rename";
@@ -85,11 +86,11 @@ export function ProfileManager({
   const submitDialog = async () => {
     const name = profileName(nextName);
     if (!name) {
-      void message.error(t("profile.invalidName"));
+      void showErrorMessage(t("profile.invalidName"));
       return;
     }
     if (profiles.includes(name) && !(dialog === "rename" && name === profile.name)) {
-      void message.error(t("profile.duplicateName"));
+      void showErrorMessage(t("profile.duplicateName"));
       return;
     }
     try {
@@ -98,7 +99,7 @@ export function ProfileManager({
       if (dialog === "rename") await onRename(name);
       setDialog(null);
     } catch (error) {
-      void message.error(String(error));
+      void showErrorMessage(error);
     }
   };
   const confirmDelete = () => Modal.confirm({
@@ -110,7 +111,7 @@ export function ProfileManager({
     onOk: (close) => {
       void onDelete()
         .then(() => close())
-        .catch((error) => message.error(String(error)));
+        .catch((error) => showErrorMessage(error));
     },
   });
   const chooseImportFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -141,7 +142,7 @@ export function ProfileManager({
       setImportDialog(false);
       setSelectedImportFile(null);
     } catch (error) {
-      void message.error(t("profile.importFailed", { error: String(error) }));
+      void showErrorMessage(t("profile.importFailed", { error: String(error) }));
     } finally {
       setImportBusy(false);
     }
@@ -152,12 +153,12 @@ export function ProfileManager({
       <Select
         value={profile.name}
         options={profiles.map((name) => ({ value: name, label: name }))}
-        onChange={(name) => void onLoad(name).catch((error) => message.error(String(error)))}
+        onChange={(name) => void onLoad(name).catch((error) => showErrorMessage(error))}
       />
       {activeProfile === profile.name && <Tag color="success">{t("profile.active")}</Tag>}
       <Space size={4}>
         <Tooltip title={t("profile.save")}><Button icon={<SaveOutlined />} onClick={() => void onSave()} /></Tooltip>
-        <Tooltip title={t("profile.activate")}><Button disabled={activeProfile === profile.name} icon={<CheckOutlined />} onClick={() => void onActivate().catch((error) => message.error(String(error)))} /></Tooltip>
+        <Tooltip title={t("profile.activate")}><Button disabled={activeProfile === profile.name} icon={<CheckOutlined />} onClick={() => void onActivate().catch((error) => showErrorMessage(error))} /></Tooltip>
         <Tooltip title={t("profile.create")}><Button icon={<PlusOutlined />} onClick={() => openDialog("create")} /></Tooltip>
         <Tooltip title={t("profile.duplicate")}><Button icon={<CopyOutlined />} onClick={() => openDialog("duplicate")} /></Tooltip>
         <Tooltip title={t("profile.rename")}><Button icon={<EditOutlined />} onClick={() => openDialog("rename")} /></Tooltip>
@@ -212,7 +213,7 @@ export function ProfileManager({
           const normalized = [...new Set(nextBundleIdentifiers.map((value) => value.trim()).filter(Boolean))];
           const invalid = normalized.some((value) => value.length > 255 || !value.includes(".") || !/^[A-Za-z0-9.-]+$/.test(value));
           if (invalid || normalized.length > 32) {
-            void message.error(t("profile.invalidAppBindings"));
+            void showErrorMessage(t("profile.invalidAppBindings"));
             return;
           }
           onBundleIdentifiersChange(normalized);

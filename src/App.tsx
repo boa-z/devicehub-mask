@@ -36,6 +36,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceFullscreenToolbar } from "./components/DeviceFullscreenToolbar";
+import { ErrorCopyButton } from "./components/ErrorPresentation";
 import { KeyboardIcon } from "./components/KeyboardIcon";
 import type { MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingOverlay } from "./components/MappingOverlay";
@@ -43,6 +44,7 @@ import { PerformanceHud } from "./components/PerformanceHud";
 import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
+import { showErrorMessage } from "./errorMessage";
 import { parsePngDimensions } from "./deviceScreenshot";
 import { buildMappingRuntimeFrame, buildTouchFrame, isBoundKey, isUiControl, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
@@ -232,7 +234,7 @@ export default function App() {
     } catch (error) {
       if (audioPlaybackGenerationRef.current === generation) {
         setAudioPlaybackPreferences(previous);
-        void message.error(t("settings.videoSettingsUnavailable", { error: String(error) }));
+        void showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
       }
       logFrontend("warn", "audio", "set_playback", error);
     }
@@ -533,7 +535,7 @@ export default function App() {
     }
     const blob = await canvasPng(canvas);
     if (!blob) {
-      void message.error(t("mapping.screenshotFailed"));
+      void showErrorMessage(t("mapping.screenshotFailed"));
       return null;
     }
     const next = {
@@ -595,7 +597,7 @@ export default function App() {
         dimensions = { width: canvas.width, height: canvas.height };
       }
       if (!blob) {
-        void message.error(t("device.screenshotFailed"));
+        void showErrorMessage(t("device.screenshotFailed"));
         return;
       }
       const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
@@ -647,7 +649,7 @@ export default function App() {
       };
       recorder.onerror = (event) => {
         logFrontend("warn", "video", "recording", event.error);
-        void message.error(t("device.recordingFailed", { error: event.error.message }));
+        void showErrorMessage(t("device.recordingFailed", { error: event.error.message }));
       };
       recorder.onstop = () => {
         const chunks = recordingChunksRef.current;
@@ -678,7 +680,7 @@ export default function App() {
       recorderRef.current = null;
       setRecording(false);
       logFrontend("warn", "video", "start_recording", error);
-      void message.error(t("device.recordingFailed", { error: String(error) }));
+      void showErrorMessage(t("device.recordingFailed", { error: String(error) }));
     }
   }, [canvasReadyRef, canvasRef, status.active_udid, status.devices, t]);
 
@@ -836,7 +838,7 @@ export default function App() {
         void message.success(translateRef.current("profile.switched", { profile: target }));
       }
     } catch (error) {
-      void message.error(translateRef.current("profile.switchFailed", { error: String(error) }));
+      void showErrorMessage(translateRef.current("profile.switchFailed", { error: String(error) }));
     }
   }, [activateSavedControlProfile]);
 
@@ -897,7 +899,7 @@ export default function App() {
       setControlProfile(loaded);
       setSelectedId(loaded.mappings[0]?.id ?? null);
     };
-    void initializeProfiles().catch((error) => message.error(String(error)));
+    void initializeProfiles().catch((error) => showErrorMessage(error));
   }, [backend, readProfile, refreshProfiles, request, writeProfile]);
 
   const updateMapping = (next: Mapping) => setProfile((current) => {
@@ -950,7 +952,7 @@ export default function App() {
       }
       void message.success(t("mapping.saved"));
     } catch (error) {
-      void message.error(String(error));
+      void showErrorMessage(error);
     }
   };
   const activateCurrentProfile = async () => {
@@ -1007,7 +1009,7 @@ export default function App() {
       await appWindow.setAlwaysOnTop(next);
       setAlwaysOnTop(next);
     } catch (error) {
-      void message.error(t("errors.windowTop", { error: String(error) }));
+      void showErrorMessage(t("errors.windowTop", { error: String(error) }));
     }
   };
   const toggleSystemFullscreen = async () => {
@@ -1017,7 +1019,7 @@ export default function App() {
       await appWindow.setFullscreen(next);
       setSystemFullscreen(next);
     } catch (error) {
-      void message.error(t("errors.systemFullscreen", { error: String(error) }));
+      void showErrorMessage(t("errors.systemFullscreen", { error: String(error) }));
     }
   };
   const toggleDeviceFullscreen = () => {
@@ -1035,7 +1037,7 @@ export default function App() {
       const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "PUT" });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     } catch (error) {
-      void message.error(t("errors.reconnectDevice", { error: String(error) }));
+      void showErrorMessage(t("errors.reconnectDevice", { error: String(error) }));
     }
   };
   const reconnectDevice = async () => {
@@ -1046,7 +1048,7 @@ export default function App() {
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return true;
     } catch (error) {
-      void message.error(t("errors.reconnectDevice", { error: String(error) }));
+      void showErrorMessage(t("errors.reconnectDevice", { error: String(error) }));
       return false;
     }
   };
@@ -1078,10 +1080,10 @@ export default function App() {
             : result.outcome === "timed_out"
               ? "device.pairingTimedOut"
               : "device.pairingFailed";
-        void message.error({ key: messageKey, content: t(key, { error: result.error ?? t("device.pairingUnknownError") }) });
+        void showErrorMessage(t(key, { error: result.error ?? t("device.pairingUnknownError") }), { key: messageKey });
       }
     } catch (error) {
-      void message.error({ key: messageKey, content: t("device.pairingFailed", { error: String(error) }) });
+      void showErrorMessage(t("device.pairingFailed", { error: String(error) }), { key: messageKey });
     } finally {
       setPairingDeviceId(null);
     }
@@ -1099,7 +1101,7 @@ export default function App() {
       setTextInput("");
       setTextInputOpen(false);
     } catch (error) {
-      void message.error(t("device.pasteTextFailed", { error: String(error) }));
+      void showErrorMessage(t("device.pasteTextFailed", { error: String(error) }));
       logFrontend("warn", "clipboard", "paste_text", error);
     } finally {
       setTextInputBusy(false);
@@ -1130,7 +1132,7 @@ export default function App() {
         reconnecting ? "Reconnect requested; native playback enabled" : "Manual reconnect required; native playback enabled",
       );
     } catch (error) {
-      void message.error(t("device.deviceAudioEnableFailed", { error: String(error) }));
+      void showErrorMessage(t("device.deviceAudioEnableFailed", { error: String(error) }));
       logFrontend("error", "audio", "enable_failed", error);
     } finally {
       setDeviceAudioBusy(false);
@@ -1396,7 +1398,10 @@ export default function App() {
       {!deviceFullscreen && <header className="topbar">
         <div className="brand"><AimOutlined /><strong>DeviceHub Mask</strong><span>{t("brand.subtitle")}</span></div>
         <Space size={8} wrap>
-          <Tag color={connected && status.active_udid ? "success" : "default"}>{statusText}</Tag>
+          <span className="topbar-status">
+            <Tag color={connected && status.active_udid ? "success" : status.error ? "error" : "default"}>{statusText}</Tag>
+            {status.error && <ErrorCopyButton error={status.error} />}
+          </span>
           <Select
             className="device-select"
             value={selectedDevice}

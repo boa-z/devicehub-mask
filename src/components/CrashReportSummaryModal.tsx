@@ -2,6 +2,7 @@ import { Alert, Button, Descriptions, Modal, Spin } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { DeviceCrashReportSummary } from "../types";
+import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -76,7 +77,7 @@ export function CrashReportSummaryModal({ open, devicePath, reportName, request,
       {loading ? (
         <div className="crash-summary-loading"><Spin /></div>
       ) : error ? (
-        <Alert type="error" showIcon message={t("crashSummary.loadFailed")} description={error} />
+        <ErrorAlert title={t("crashSummary.loadFailed")} error={error} />
       ) : summary ? (
         <div className="crash-summary-content">
           {!summary.details_parsed && <Alert type="info" showIcon message={t("crashSummary.partialDetails")} />}
