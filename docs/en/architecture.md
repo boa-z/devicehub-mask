@@ -232,11 +232,12 @@ tunnel; Wi-Fi uses RSD only. Every command carries an explicit `documents` or
 `VendContainer`; omitted API scope defaults to Documents for compatibility.
 Logical paths are rooted at `/Documents` or `/` accordingly and reject traversal
 and separators in item names. Symbolic links are exposed only as non-actionable
-special entries.
-Downloads use rollback-capable local replacement, while uploads write a unique
-remote temporary file and rename it only after the stream closes. Uploads do not
-silently replace an existing item, root mutation is rejected, and deletes are
-non-recursive.
+special entries. File and directory downloads use rollback-capable local staging,
+while uploads write a unique remote temporary path and rename it only after every
+stream closes. Recursive transfers are iterative, limited to 64 levels and
+100,000 entries, reject symbolic links and special entries, and verify every
+regular file's byte count. Uploads do not silently replace an existing item,
+root mutation is rejected, and deletes are non-recursive.
 
 Public device files use a separate supervised standard-AFC worker. USB first
 opens `com.apple.afc` through the paired lockdown provider and can fall back to

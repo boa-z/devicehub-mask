@@ -1442,9 +1442,12 @@ async fn export_app_document(
             reply,
         },
     )?;
-    let bytes_written =
-        await_app_document_response(response, "application document export").await?;
-    Ok(Json(json!({ "bytes_written": bytes_written })))
+    let transfer = await_app_document_response(response, "application document export").await?;
+    Ok(Json(json!({
+        "bytes_written": transfer.bytes_transferred,
+        "files_written": transfer.files_transferred,
+        "directories_written": transfer.directories_transferred,
+    })))
 }
 
 async fn import_app_document(
@@ -1572,12 +1575,16 @@ async fn await_app_document_response<T>(
             )
         })?
         .map_err(|error| {
-            let status = if error == "an application document with this name already exists" {
+            let status = if error.contains("already exists") {
                 StatusCode::CONFLICT
             } else if error.starts_with("invalid ")
                 || error.contains("root cannot be modified")
                 || error.contains("must be a regular file")
-                || error.contains("only regular application documents")
+                || error.contains("only regular application")
+                || error.contains("destination")
+                || error.contains("import source")
+                || error.contains("symbolic link")
+                || error.contains("unsupported")
                 || error.contains("cannot traverse symbolic links")
                 || error.contains("non-directory component")
             {
@@ -4256,7 +4263,8 @@ mod tests {
     #[tokio::test]
     async fn app_storage_endpoints_dispatch_scoped_commands() {
         use crate::app_documents::{
-            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList, AppStorageScope,
+            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList,
+            AppDocumentTransfer, AppStorageScope,
         };
 
         let (state, mut input_rx) = test_state();
@@ -4389,11 +4397,20 @@ mod tests {
                 destination, reply, ..
             }) => {
                 assert_eq!(destination, PathBuf::from("slot-2.dat"));
-                reply.send(Ok(84)).unwrap();
+                reply
+                    .send(Ok(AppDocumentTransfer {
+                        bytes_transferred: 84,
+                        files_transferred: 2,
+                        directories_transferred: 1,
+                    }))
+                    .unwrap();
             }
             _ => panic!("unexpected command"),
         }
-        assert_eq!(export.await.unwrap().unwrap().0["bytes_written"], 84);
+        let export = export.await.unwrap().unwrap().0;
+        assert_eq!(export["bytes_written"], 84);
+        assert_eq!(export["files_written"], 2);
+        assert_eq!(export["directories_written"], 1);
     }
 
     #[tokio::test]
@@ -4539,16 +4556,17 @@ mod tests {
 
     #[tokio::test]
     async fn app_document_conflicts_are_reported_as_http_conflicts() {
-        let (reply, response) = oneshot::channel::<Result<(), String>>();
-        reply
-            .send(Err(
-                "an application document with this name already exists".into()
-            ))
-            .unwrap();
-        assert!(matches!(
-            await_app_document_response(response, "upload").await,
-            Err((StatusCode::CONFLICT, _))
-        ));
+        for error in [
+            "an application document with this name already exists",
+            "directory export destination already exists",
+        ] {
+            let (reply, response) = oneshot::channel::<Result<(), String>>();
+            reply.send(Err(error.into())).unwrap();
+            assert!(matches!(
+                await_app_document_response(response, "transfer").await,
+                Err((StatusCode::CONFLICT, _))
+            ));
+        }
     }
 
     #[tokio::test]

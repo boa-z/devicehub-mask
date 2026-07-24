@@ -12,16 +12,19 @@ use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use idevice::{IdeviceService, RsdService};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::protocol::ConnKind;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
-const TRANSFER_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_DIRECTORY_ENTRIES: usize = 500;
 const MAX_PATH_BYTES: usize = 1_024;
+const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_TRANSFER_ENTRIES: usize = 100_000;
+const MAX_TRANSFER_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +58,13 @@ pub struct AppDocumentList {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct AppDocumentTransfer {
+    pub bytes_transferred: u64,
+    pub files_transferred: u64,
+    pub directories_transferred: u64,
+}
+
 #[derive(Debug)]
 pub enum AppDocumentCommand {
     List {
@@ -68,7 +78,7 @@ pub enum AppDocumentCommand {
         scope: AppStorageScope,
         path: String,
         destination: PathBuf,
-        reply: oneshot::Sender<Result<u64, String>>,
+        reply: oneshot::Sender<Result<AppDocumentTransfer, String>>,
     },
     Import {
         bundle_id: String,
@@ -253,7 +263,7 @@ async fn handle(command: AppDocumentCommand, transport: &mut AppStorageTransport
         } => {
             let result = tokio::time::timeout(
                 TRANSFER_TIMEOUT,
-                export_document(transport, &bundle_id, scope, &path, &destination),
+                export_path(transport, &bundle_id, scope, &path, &destination),
             )
             .await
             .unwrap_or_else(|_| Err("application document export timed out".into()));
@@ -268,7 +278,7 @@ async fn handle(command: AppDocumentCommand, transport: &mut AppStorageTransport
         } => {
             let result = tokio::time::timeout(
                 TRANSFER_TIMEOUT,
-                import_document(transport, &bundle_id, scope, &directory, &source),
+                import_path(transport, &bundle_id, scope, &directory, &source),
             )
             .await
             .unwrap_or_else(|_| Err("application document upload timed out".into()));
@@ -391,54 +401,70 @@ fn document_kind_order(kind: AppDocumentKind) -> u8 {
     }
 }
 
-async fn export_document(
+async fn export_path(
     transport: &mut AppStorageTransport,
     bundle_id: &str,
     scope: AppStorageScope,
     path: &str,
     destination: &Path,
-) -> Result<u64, String> {
+) -> Result<AppDocumentTransfer, String> {
     let path = normalize_path(path, false)?;
     let mut client = transport.connect(bundle_id, scope).await?;
     ensure_no_symlink_components(&mut client, scope, &path).await?;
     let info = client
         .get_file_info(afc_path(scope, &path))
         .await
-        .map_err(|error| format!("unable to inspect application document: {error:?}"))?;
-    if info.st_ifmt != "S_IFREG" || info.st_link_target.is_some() {
-        return Err("only regular application documents can be exported".into());
+        .map_err(|error| format!("unable to inspect application storage item: {error:?}"))?;
+    if info.st_link_target.is_some() {
+        return Err("symbolic links cannot be exported".into());
     }
-    let expected_size = info.size as u64;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| "export destination has no parent directory".to_string())?;
-    tokio::fs::metadata(parent)
-        .await
-        .map_err(|error| format!("export destination is unavailable: {error}"))?;
-    let temporary = temporary_sibling(destination, "export")?;
-    let result = async {
-        let mut remote = client
-            .open(afc_path(scope, &path), AfcFopenMode::RdOnly)
+    match info.st_ifmt.as_str() {
+        "S_IFREG" => export_regular_file(&mut client, scope, &path, destination, info.size as u64)
             .await
-            .map_err(|error| format!("unable to open application document: {error:?}"))?;
+            .map(|bytes_transferred| AppDocumentTransfer {
+                bytes_transferred,
+                files_transferred: 1,
+                directories_transferred: 0,
+            }),
+        "S_IFDIR" => export_directory(&mut client, scope, &path, destination).await,
+        _ => Err("only regular application files and directories can be exported".into()),
+    }
+}
+
+async fn export_regular_file(
+    client: &mut AfcClient,
+    scope: AppStorageScope,
+    path: &str,
+    destination: &Path,
+    expected_size: u64,
+) -> Result<u64, String> {
+    validate_export_destination(destination).await?;
+    let temporary = temporary_sibling(destination, "app-export")?;
+    let result = async {
+        let remote = client
+            .open(afc_path(scope, path), AfcFopenMode::RdOnly)
+            .await
+            .map_err(|error| format!("unable to open application file: {error:?}"))?;
+        let mut remote = BufReader::with_capacity(TRANSFER_BUFFER_BYTES, remote);
         let local = tokio::fs::File::create(&temporary)
             .await
             .map_err(|error| format!("unable to create export file: {error}"))?;
-        let mut local = BufWriter::new(local);
+        let mut local = BufWriter::with_capacity(TRANSFER_BUFFER_BYTES, local);
         let bytes = tokio::io::copy(&mut remote, &mut local)
             .await
-            .map_err(|error| format!("unable to export application document: {error}"))?;
+            .map_err(|error| format!("unable to export application file: {error}"))?;
         if bytes != expected_size {
-            return Err("application document changed while it was being exported".into());
+            return Err("application file changed while it was being exported".into());
         }
         local
             .flush()
             .await
             .map_err(|error| format!("unable to flush export file: {error}"))?;
         remote
+            .into_inner()
             .close()
             .await
-            .map_err(|error| format!("unable to close application document: {error:?}"))?;
+            .map_err(|error| format!("unable to close application file: {error:?}"))?;
         replace_local_file(&temporary, destination).await?;
         Ok(bytes)
     }
@@ -449,7 +475,93 @@ async fn export_document(
     result
 }
 
-async fn import_document(
+async fn export_directory(
+    client: &mut AfcClient,
+    scope: AppStorageScope,
+    path: &str,
+    destination: &Path,
+) -> Result<AppDocumentTransfer, String> {
+    validate_new_directory_destination(destination).await?;
+    let temporary = temporary_sibling(destination, "app-export-dir")?;
+    tokio::fs::create_dir(&temporary)
+        .await
+        .map_err(|error| format!("unable to create temporary export directory: {error}"))?;
+    let result = async {
+        let mut transfer = AppDocumentTransfer {
+            directories_transferred: 1,
+            ..AppDocumentTransfer::default()
+        };
+        let mut entries_seen = 0usize;
+        let mut pending = vec![(path.to_owned(), temporary.clone(), 0usize)];
+        while let Some((remote_directory, local_directory, depth)) = pending.pop() {
+            if depth >= MAX_TRANSFER_DEPTH {
+                return Err(
+                    "application directory export exceeds the maximum nesting depth".into(),
+                );
+            }
+            let names = client
+                .list_dir(afc_path(scope, &remote_directory))
+                .await
+                .map_err(|error| {
+                    format!("unable to list application directory during export: {error:?}")
+                })?;
+            for name in names.into_iter().filter(|name| name != "." && name != "..") {
+                validate_name(&name)?;
+                entries_seen += 1;
+                if entries_seen > MAX_TRANSFER_ENTRIES {
+                    return Err("application directory export contains too many entries".into());
+                }
+                let remote_path = join_path(&remote_directory, &name)?;
+                let local_path = local_directory.join(&name);
+                let info = client
+                    .get_file_info(afc_path(scope, &remote_path))
+                    .await
+                    .map_err(|error| {
+                        format!("unable to inspect application entry during export: {error:?}")
+                    })?;
+                if info.st_link_target.is_some() {
+                    return Err(format!("symbolic link cannot be exported: {remote_path}"));
+                }
+                match info.st_ifmt.as_str() {
+                    "S_IFDIR" => {
+                        tokio::fs::create_dir(&local_path).await.map_err(|error| {
+                            format!("unable to create exported directory: {error}")
+                        })?;
+                        transfer.directories_transferred += 1;
+                        pending.push((remote_path, local_path, depth + 1));
+                    }
+                    "S_IFREG" => {
+                        transfer.bytes_transferred += export_regular_file(
+                            client,
+                            scope,
+                            &remote_path,
+                            &local_path,
+                            info.size as u64,
+                        )
+                        .await?;
+                        transfer.files_transferred += 1;
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported application entry cannot be exported: {remote_path}"
+                        ));
+                    }
+                }
+            }
+        }
+        tokio::fs::rename(&temporary, destination)
+            .await
+            .map_err(|error| format!("unable to finish directory export: {error}"))?;
+        Ok(transfer)
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_dir_all(&temporary).await;
+    }
+    result
+}
+
+async fn import_path(
     transport: &mut AppStorageTransport,
     bundle_id: &str,
     scope: AppStorageScope,
@@ -459,72 +571,150 @@ async fn import_document(
     let directory = normalize_path(directory, true)?;
     let source_metadata = tokio::fs::symlink_metadata(source)
         .await
-        .map_err(|error| format!("upload source is unavailable: {error}"))?;
-    if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
-        return Err("upload source must be a regular file".into());
+        .map_err(|error| format!("import source is unavailable: {error}"))?;
+    if source_metadata.file_type().is_symlink()
+        || (!source_metadata.is_file() && !source_metadata.is_dir())
+    {
+        return Err("import source must be a regular file or directory".into());
     }
     let source = tokio::fs::canonicalize(source)
         .await
-        .map_err(|error| format!("upload source is unavailable: {error}"))?;
-    let metadata = tokio::fs::metadata(&source)
-        .await
-        .map_err(|error| format!("unable to inspect upload source: {error}"))?;
-    if !metadata.is_file() {
-        return Err("upload source must be a regular file".into());
-    }
+        .map_err(|error| format!("import source is unavailable: {error}"))?;
     let name = source
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| "upload source has an unsupported file name".to_string())?
+        .ok_or_else(|| "import source has an unsupported file name".to_string())?
         .to_owned();
     validate_name(&name)?;
     let target = join_path(&directory, &name)?;
     let mut client = transport.connect(bundle_id, scope).await?;
     ensure_no_symlink_components(&mut client, scope, &directory).await?;
-    let existing = client
-        .list_dir(afc_path(scope, &directory))
-        .await
-        .map_err(|error| format!("unable to inspect upload directory: {error:?}"))?;
-    if existing.iter().any(|entry| entry == &name) {
-        return Err("an application document with this name already exists".into());
-    }
+    ensure_name_available(&mut client, scope, &directory, &name).await?;
 
-    let temporary_name = format!(".devicehub-upload-{}", uuid::Uuid::new_v4());
+    let temporary_name = format!(".devicehub-import-{}", uuid::Uuid::new_v4());
     let temporary = join_path(&directory, &temporary_name)?;
     let result = async {
-        let mut local = tokio::fs::File::open(&source)
-            .await
-            .map_err(|error| format!("unable to open upload source: {error}"))?;
-        let mut remote = client
-            .open(afc_path(scope, &temporary), AfcFopenMode::WrOnly)
-            .await
-            .map_err(|error| format!("unable to create remote temporary file: {error:?}"))?;
-        tokio::io::copy(&mut local, &mut remote)
-            .await
-            .map_err(|error| format!("unable to upload application document: {error}"))?;
-        remote
-            .shutdown()
-            .await
-            .map_err(|error| format!("unable to flush application document: {error}"))?;
-        remote
-            .close()
-            .await
-            .map_err(|error| format!("unable to close application document: {error:?}"))?;
+        if source_metadata.is_file() {
+            upload_regular_file(&mut client, scope, &source, &temporary).await?;
+        } else {
+            import_directory(&mut client, scope, &source, &temporary).await?;
+        }
         client
             .rename(afc_path(scope, &temporary), afc_path(scope, &target))
             .await
-            .map_err(|error| format!("unable to finish application document upload: {error:?}"))?;
+            .map_err(|error| format!("unable to finish application storage import: {error:?}"))?;
         let info = client
             .get_file_info(afc_path(scope, &target))
             .await
-            .map_err(|error| format!("unable to inspect uploaded document: {error:?}"))?;
+            .map_err(|error| format!("unable to inspect imported application item: {error:?}"))?;
         Ok(entry_from_info(name, target, &info))
     }
     .await;
     if result.is_err() {
-        let _ = client.remove(afc_path(scope, &temporary)).await;
+        let _ = client.remove_all(afc_path(scope, &temporary)).await;
     }
     result
+}
+
+async fn upload_regular_file(
+    client: &mut AfcClient,
+    scope: AppStorageScope,
+    source: &Path,
+    target: &str,
+) -> Result<u64, String> {
+    let metadata = tokio::fs::symlink_metadata(source)
+        .await
+        .map_err(|error| format!("unable to inspect import source: {error}"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("import source must contain only regular files and directories".into());
+    }
+    let mut local = tokio::fs::File::open(source)
+        .await
+        .map_err(|error| format!("unable to open import source: {error}"))?;
+    let mut remote = client
+        .open(afc_path(scope, target), AfcFopenMode::WrOnly)
+        .await
+        .map_err(|error| format!("unable to create application file: {error:?}"))?;
+    let bytes = tokio::io::copy(&mut local, &mut remote)
+        .await
+        .map_err(|error| format!("unable to import application file: {error}"))?;
+    if bytes != metadata.len() {
+        return Err("import source changed while it was being transferred".into());
+    }
+    remote
+        .shutdown()
+        .await
+        .map_err(|error| format!("unable to flush imported application file: {error}"))?;
+    remote
+        .close()
+        .await
+        .map_err(|error| format!("unable to close imported application file: {error:?}"))?;
+    Ok(bytes)
+}
+
+async fn import_directory(
+    client: &mut AfcClient,
+    scope: AppStorageScope,
+    source: &Path,
+    target: &str,
+) -> Result<AppDocumentTransfer, String> {
+    client
+        .mk_dir(afc_path(scope, target))
+        .await
+        .map_err(|error| format!("unable to create application directory: {error:?}"))?;
+    let mut transfer = AppDocumentTransfer {
+        directories_transferred: 1,
+        ..AppDocumentTransfer::default()
+    };
+    let mut entries_seen = 0usize;
+    let mut pending = vec![(source.to_owned(), target.to_owned(), 0usize)];
+    while let Some((local_directory, remote_directory, depth)) = pending.pop() {
+        if depth >= MAX_TRANSFER_DEPTH {
+            return Err("import directory exceeds the maximum nesting depth".into());
+        }
+        let mut entries = tokio::fs::read_dir(&local_directory)
+            .await
+            .map_err(|error| format!("unable to read import directory: {error}"))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| format!("unable to read import directory: {error}"))?
+        {
+            entries_seen += 1;
+            if entries_seen > MAX_TRANSFER_ENTRIES {
+                return Err("import directory contains too many entries".into());
+            }
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "import source has an unsupported file name".to_string())?;
+            validate_name(&name)?;
+            let remote_path = join_path(&remote_directory, &name)?;
+            let metadata = tokio::fs::symlink_metadata(entry.path())
+                .await
+                .map_err(|error| format!("unable to inspect import entry: {error}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err("import directories cannot contain symbolic links".into());
+            }
+            if metadata.is_dir() {
+                client
+                    .mk_dir(afc_path(scope, &remote_path))
+                    .await
+                    .map_err(|error| {
+                        format!("unable to create application directory: {error:?}")
+                    })?;
+                transfer.directories_transferred += 1;
+                pending.push((entry.path(), remote_path, depth + 1));
+            } else if metadata.is_file() {
+                transfer.bytes_transferred +=
+                    upload_regular_file(client, scope, &entry.path(), &remote_path).await?;
+                transfer.files_transferred += 1;
+            } else {
+                return Err("import source contains an unsupported entry type".into());
+            }
+        }
+    }
+    Ok(transfer)
 }
 
 async fn create_directory(
@@ -702,6 +892,33 @@ fn afc_path(scope: AppStorageScope, path: &str) -> String {
     }
 }
 
+async fn validate_export_destination(destination: &Path) -> Result<(), String> {
+    if !destination.is_absolute() || destination.file_name().is_none() {
+        return Err("export destination must be an absolute file path".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "export destination has no parent directory".to_string())?;
+    let metadata = tokio::fs::metadata(parent)
+        .await
+        .map_err(|error| format!("export destination is unavailable: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("export destination parent is not a directory".into());
+    }
+    Ok(())
+}
+
+async fn validate_new_directory_destination(destination: &Path) -> Result<(), String> {
+    validate_export_destination(destination).await?;
+    match tokio::fs::symlink_metadata(destination).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err("directory export destination already exists".into()),
+        Err(error) => Err(format!(
+            "unable to inspect directory export destination: {error}"
+        )),
+    }
+}
+
 pub(crate) fn temporary_sibling(destination: &Path, operation: &str) -> Result<PathBuf, String> {
     let parent = destination
         .parent()
@@ -844,6 +1061,47 @@ mod tests {
         assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"new");
         assert!(!temporary.exists());
         tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn directory_export_requires_a_new_absolute_destination() {
+        let directory = std::env::temp_dir().join(format!(
+            "devicehub-mask-app-directory-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let destination = directory.join("Saves");
+
+        validate_new_directory_destination(&destination)
+            .await
+            .unwrap();
+        tokio::fs::create_dir(&destination).await.unwrap();
+        assert!(
+            validate_new_directory_destination(&destination)
+                .await
+                .unwrap_err()
+                .contains("already exists")
+        );
+        assert!(
+            validate_new_directory_destination(Path::new("relative"))
+                .await
+                .is_err()
+        );
+
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[test]
+    fn transfer_counts_serialize_for_api_clients() {
+        let transfer = AppDocumentTransfer {
+            bytes_transferred: 42,
+            files_transferred: 2,
+            directories_transferred: 1,
+        };
+        let value = serde_json::to_value(transfer).unwrap();
+        assert_eq!(value["bytes_transferred"], 42);
+        assert_eq!(value["files_transferred"], 2);
+        assert_eq!(value["directories_transferred"], 1);
     }
 
     #[tokio::test]

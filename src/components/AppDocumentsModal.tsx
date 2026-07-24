@@ -3,6 +3,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  FileAddOutlined,
   FileOutlined,
   FolderAddOutlined,
   FolderOpenOutlined,
@@ -12,7 +13,7 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Alert, Breadcrumb, Button, Empty, Input, Modal, Segmented, Spin, Tooltip, Typography, message } from "antd";
+import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Segmented, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../deviceInspector";
@@ -114,9 +115,9 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
     }
   };
 
-  const upload = async () => {
+  const upload = async (directory: boolean) => {
     if (!app) return;
-    const source = await open({ multiple: false, directory: false });
+    const source = await open({ multiple: false, directory });
     if (!source || Array.isArray(source)) return;
     await mutate(
       "upload",
@@ -125,24 +126,32 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ directory: path, source, scope }),
       }),
-      t("deviceInspector.documentUploaded"),
+      t(directory ? "deviceInspector.documentDirectoryUploaded" : "deviceInspector.documentUploaded"),
     );
   };
 
   const download = async (entry: AppDocumentEntry) => {
-    if (!app || entry.kind !== "file") return;
+    if (!app || entry.kind === "other") return;
     const destination = await save({ defaultPath: entry.name });
     if (!destination) return;
-    await mutate(
-      `export:${entry.path}`,
-      () => request(endpoint(app.bundle_id, "/export"), {
+    setBusy(`export:${entry.path}`);
+    try {
+      const response = await request(endpoint(app.bundle_id, "/export"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: entry.path, destination, scope }),
-      }),
-      t("deviceInspector.documentExported"),
-      false,
-    );
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      const result = await response.json() as { bytes_written: number; files_written: number };
+      void message.success(t("deviceInspector.documentExported", {
+        size: formatFileSize(result.bytes_written),
+        count: result.files_written,
+      }));
+    } catch (exportError) {
+      void message.error(t("deviceInspector.documentOperationFailed", { error: String(exportError) }));
+    } finally {
+      setBusy(null);
+    }
   };
 
   const createDirectory = () => {
@@ -248,9 +257,18 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
         <Tooltip title={t("deviceInspector.createDocumentDirectory")}>
           <Button icon={<FolderAddOutlined />} disabled={busy !== null} onClick={createDirectory} />
         </Tooltip>
-        <Tooltip title={t("deviceInspector.uploadDocument")}>
-          <Button icon={<UploadOutlined />} disabled={busy !== null} onClick={() => void upload()} />
-        </Tooltip>
+        <Dropdown
+          disabled={busy !== null}
+          menu={{
+            items: [
+              { key: "file", icon: <FileAddOutlined />, label: t("deviceInspector.uploadDocument") },
+              { key: "directory", icon: <FolderAddOutlined />, label: t("deviceInspector.uploadDocumentDirectory") },
+            ],
+            onClick: ({ key }) => void upload(key === "directory"),
+          }}
+        >
+          <Button icon={<UploadOutlined />} aria-label={t("deviceInspector.uploadDocumentPath")} disabled={busy !== null} />
+        </Dropdown>
         <Tooltip title={t("deviceInspector.refreshDocuments")}>
           <Button icon={<ReloadOutlined />} disabled={busy !== null} onClick={() => void load()} />
         </Tooltip>
@@ -275,7 +293,7 @@ export function AppDocumentsModal({ app, request, onClose }: Props) {
                 {entry.kind === "directory" && (
                   <Tooltip title={t("deviceInspector.openDocumentDirectory")}><Button size="small" icon={<FolderOpenOutlined />} disabled={busy !== null} onClick={() => setPath(entry.path)} /></Tooltip>
                 )}
-                {entry.kind === "file" && (
+                {entry.kind !== "other" && (
                   <Tooltip title={t("deviceInspector.exportDocument")}><Button size="small" icon={<DownloadOutlined />} loading={busy === `export:${entry.path}`} disabled={busy !== null && busy !== `export:${entry.path}`} onClick={() => void download(entry)} /></Tooltip>
                 )}
                 <Tooltip title={t("deviceInspector.renameDocument")}><Button size="small" icon={<EditOutlined />} disabled={busy !== null || entry.kind === "other"} onClick={() => rename(entry)} /></Tooltip>
