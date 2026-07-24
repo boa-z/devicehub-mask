@@ -705,6 +705,7 @@ struct SessionViews {
     device_events: crate::device_events::DeviceEventSlot,
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
+    device_backup: crate::device_backup::DeviceBackupSlot,
     device_conditions: crate::device_conditions::DeviceConditionSlot,
 }
 
@@ -766,6 +767,7 @@ pub async fn manage(
     device_events: crate::device_events::DeviceEventSlot,
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
+    device_backup: crate::device_backup::DeviceBackupSlot,
     device_conditions: crate::device_conditions::DeviceConditionSlot,
     orientation_view: OrientationSlot,
     device_list: DeviceListSlot,
@@ -896,6 +898,7 @@ pub async fn manage(
                 device_events: device_events.clone(),
                 network_capture: network_capture.clone(),
                 bluetooth_capture: bluetooth_capture.clone(),
+                device_backup: device_backup.clone(),
                 device_conditions: device_conditions.clone(),
             },
             in_rx,
@@ -1424,7 +1427,7 @@ async fn run(
     views.status.set("connecting to device...");
     let requested_udid = endpoint.udid().to_owned();
     let (provider, connection) = connect_provider(endpoint.clone()).await?;
-    let device_details = read_device_details(&*provider, requested_udid).await;
+    let device_details = read_device_details(&*provider, requested_udid.clone()).await;
     if let Some(details) = &device_details {
         tracing::info!(
             product_type = %details.product_type,
@@ -1587,6 +1590,20 @@ async fn run(
         supervisor.reporter("bluetooth.capture"),
         supervisor.shutdown_receiver(),
     ));
+    let (device_backup_sender, device_backup_receiver) = tokio::sync::mpsc::channel(4);
+    supervisor.spawn(crate::device_backup::serve(
+        crate::device_backup::DeviceBackupTransport::new(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+            requested_udid,
+        ),
+        device_backup_receiver,
+        views.device_backup.clone(),
+        supervisor.reporter("device.backup"),
+        supervisor.shutdown_receiver(),
+    ));
     let (device_condition_sender, device_condition_receiver) = tokio::sync::mpsc::channel(4);
     supervisor.spawn(crate::device_conditions::supervise(
         adapter.clone(),
@@ -1614,6 +1631,7 @@ async fn run(
         screen_capture: screen_capture_sender,
         network_capture: network_capture_sender,
         bluetooth_capture: bluetooth_capture_sender,
+        device_backup: device_backup_sender,
         device_conditions: device_condition_sender,
         provisioning: provisioning_sender,
     };
@@ -2003,6 +2021,7 @@ struct DeviceManagementServices {
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
     network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
     bluetooth_capture: tokio::sync::mpsc::Sender<crate::bluetooth_capture::BluetoothCaptureCommand>,
+    device_backup: tokio::sync::mpsc::Sender<crate::device_backup::DeviceBackupCommand>,
     device_conditions: tokio::sync::mpsc::Sender<crate::device_conditions::DeviceConditionCommand>,
     provisioning: tokio::sync::mpsc::Sender<crate::provisioning::ProvisioningCommand>,
 }
@@ -2078,6 +2097,16 @@ fn reject_bluetooth_capture_command(
 
     match command {
         BluetoothCaptureCommand::Start { reply, .. } | BluetoothCaptureCommand::Stop { reply } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+    }
+}
+
+fn reject_device_backup_command(command: crate::device_backup::DeviceBackupCommand, reason: &str) {
+    use crate::device_backup::DeviceBackupCommand;
+
+    match command {
+        DeviceBackupCommand::Start { reply, .. } | DeviceBackupCommand::Stop { reply } => {
             let _ = reply.send(Err(reason.into()));
         }
     }
@@ -2458,6 +2487,20 @@ impl DeviceManagement {
                         }
                     };
                     reject_bluetooth_capture_command(command, reason);
+                }
+                None
+            }
+            InputCmd::DeviceBackup(command) => {
+                if let Err(error) = self.services.device_backup.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("device backup service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("device backup service is unavailable", command)
+                        }
+                    };
+                    reject_device_backup_command(command, reason);
                 }
                 None
             }
@@ -3415,6 +3458,7 @@ async fn dispatch(
         | InputCmd::TakeScreenshot(_)
         | InputCmd::NetworkCapture(_)
         | InputCmd::BluetoothCapture(_)
+        | InputCmd::DeviceBackup(_)
         | InputCmd::DeviceCondition(_)
         | InputCmd::AppDocuments(_)
         | InputCmd::RestartDevice(_)

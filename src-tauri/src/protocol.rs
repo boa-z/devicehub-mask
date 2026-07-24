@@ -320,6 +320,8 @@ pub enum InputCmd {
     NetworkCapture(crate::network_capture::NetworkCaptureCommand),
     /// Start or stop a bounded Bluetooth HCI capture owned by the active session.
     BluetoothCapture(crate::bluetooth_capture::BluetoothCaptureCommand),
+    /// Start or cancel a MobileBackup2 backup owned by the active session.
+    DeviceBackup(crate::device_backup::DeviceBackupCommand),
     /// Apply or clear a DVT device-wide network/thermal condition.
     DeviceCondition(crate::device_conditions::DeviceConditionCommand),
     /// Access one application's vended Documents root through House Arrest.

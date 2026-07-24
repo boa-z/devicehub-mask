@@ -2,6 +2,7 @@ import {
   AppstoreOutlined,
   BugOutlined,
   CopyOutlined,
+  DatabaseOutlined,
   DeleteOutlined,
   DisconnectOutlined,
   DownloadOutlined,
@@ -20,13 +21,13 @@ import {
   UploadOutlined,
 } from "@ant-design/icons";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeviceApp, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
+import type { AppOperation, CompanionDevice, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, HomeScreenLayout, ProvisioningProfile, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -134,6 +135,9 @@ export function DeviceInspector({
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
+  const [backupStatus, setBackupStatus] = useState<DeviceBackupStatus | null>(null);
+  const [backupFull, setBackupFull] = useState(false);
+  const [backupAction, setBackupAction] = useState<"start" | "stop" | null>(null);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -171,6 +175,12 @@ export function DeviceInspector({
     } catch {
       setWdaRunnerStatus(null);
     }
+  }, [request]);
+
+  const loadBackupStatus = useCallback(async () => {
+    const status = await readJson<DeviceBackupStatus>(await request("/api/device/backup"));
+    setBackupStatus(status);
+    return status;
   }, [request]);
 
   const load = useCallback(async () => {
@@ -231,12 +241,38 @@ export function DeviceInspector({
     setRenameValue("");
     setRenameBusy(false);
     setDeveloperModeBusy(false);
+    setBackupStatus(null);
+    setBackupAction(null);
     setError(null);
   }, [activeUdid]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!activeUdid) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      let next: DeviceBackupStatus | null = null;
+      try {
+        next = await readJson<DeviceBackupStatus>(await request("/api/device/backup"));
+        if (!cancelled) setBackupStatus(next);
+      } catch {
+        // The regular inspector request path surfaces connection errors.
+      }
+      if (!cancelled) {
+        const active = next?.state === "starting" || next?.state === "backing_up";
+        timer = setTimeout(poll, active ? 350 : 2_000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeUdid, request]);
 
   useEffect(() => {
     if (!deviceEvent || deviceEvent.sequence <= handledDeviceEvent.current) return;
@@ -393,6 +429,44 @@ export function DeviceInspector({
       void message.error(t("deviceInspector.wdaRunnerStopFailed", { error: String(runnerError) }));
     } finally {
       setWdaRunnerAction(null);
+    }
+  };
+
+  const startDeviceBackup = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: true,
+        title: t("deviceInspector.backupSelectDestination"),
+      });
+      if (!selected || Array.isArray(selected)) return;
+      setBackupAction("start");
+      const response = await request("/api/device/backup", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destination: selected, full: backupFull }),
+      });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadBackupStatus();
+      void message.success(t("deviceInspector.backupStarted"));
+    } catch (backupError) {
+      void message.error(t("deviceInspector.backupStartFailed", { error: String(backupError) }));
+    } finally {
+      setBackupAction(null);
+    }
+  };
+
+  const stopDeviceBackup = async () => {
+    setBackupAction("stop");
+    try {
+      const response = await request("/api/device/backup", { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadBackupStatus();
+      void message.info(t("deviceInspector.backupCancelled"));
+    } catch (backupError) {
+      void message.error(t("deviceInspector.backupStopFailed", { error: String(backupError) }));
+    } finally {
+      setBackupAction(null);
     }
   };
 
@@ -638,6 +712,18 @@ export function DeviceInspector({
       ? "-"
       : t("deviceInspector.minutes", { count: details.battery.time_remaining_minutes })],
   ] : [];
+  const backupRunning = backupStatus?.state === "starting" || backupStatus?.state === "backing_up";
+  const backupProgress = backupStatus?.progress_percent
+    ?? (backupStatus && backupStatus.bytes_total > 0
+      ? Math.min(100, backupStatus.bytes_done * 100 / backupStatus.bytes_total)
+      : undefined);
+  const backupStatusColor = backupStatus?.state === "completed"
+    ? "success"
+    : backupStatus?.state === "failed"
+      ? "error"
+      : backupRunning
+        ? "processing"
+        : "default";
 
   return (
     <>
@@ -776,6 +862,74 @@ export function DeviceInspector({
                 </div>
               )}
             </div>}
+            <section className="device-backup-section">
+              <div className="device-backup-heading">
+                <div>
+                  <Typography.Text strong>{t("deviceInspector.backupTitle")}</Typography.Text>
+                  <Typography.Text type="secondary">{t("deviceInspector.backupHint")}</Typography.Text>
+                </div>
+                {backupStatus && backupStatus.state !== "idle" && (
+                  <Tag color={backupStatusColor}>
+                    {t(`deviceInspector.backupStates.${backupStatus.state}`)}
+                  </Tag>
+                )}
+              </div>
+              <div className="device-backup-mode">
+                <div>
+                  <Typography.Text>{t("deviceInspector.backupFull")}</Typography.Text>
+                  <Typography.Text type="secondary">{t("deviceInspector.backupFullHint")}</Typography.Text>
+                </div>
+                <Switch
+                  checked={backupFull}
+                  disabled={backupRunning}
+                  aria-label={t("deviceInspector.backupFull")}
+                  onChange={setBackupFull}
+                />
+              </div>
+              {backupStatus && backupStatus.state !== "idle" && (
+                <div className="device-backup-progress">
+                  <Progress
+                    size="small"
+                    percent={backupProgress}
+                    status={backupStatus.state === "failed" ? "exception" : backupStatus.state === "completed" ? "success" : "active"}
+                  />
+                  <div className="device-backup-metrics">
+                    <span>{t("deviceInspector.backupFiles", { count: backupStatus.files_received })}</span>
+                    <span>{backupStatus.bytes_total > 0
+                      ? `${formatFileSize(backupStatus.bytes_done)} / ${formatFileSize(backupStatus.bytes_total)}`
+                      : formatFileSize(backupStatus.bytes_done)}</span>
+                    <span>{formatElapsed(backupStatus.elapsed_ms)}</span>
+                  </div>
+                  {backupStatus.destination_name && (
+                    <Typography.Text type="secondary" ellipsis={{ tooltip: backupStatus.destination_name }}>
+                      {t("deviceInspector.backupDestination", { name: backupStatus.destination_name })}
+                    </Typography.Text>
+                  )}
+                </div>
+              )}
+              {backupStatus?.state === "failed" && backupStatus.error && (
+                <Alert type="error" showIcon message={t("deviceInspector.backupFailed")} description={backupStatus.error} />
+              )}
+              <div className="device-backup-actions">
+                {backupRunning ? (
+                  <Button
+                    danger
+                    icon={<StopOutlined />}
+                    loading={backupAction === "stop"}
+                    disabled={backupAction !== null}
+                    onClick={() => void stopDeviceBackup()}
+                  >{t("deviceInspector.backupCancel")}</Button>
+                ) : (
+                  <Button
+                    type="primary"
+                    icon={<DatabaseOutlined />}
+                    loading={backupAction === "start"}
+                    disabled={backupAction !== null}
+                    onClick={() => void startDeviceBackup()}
+                  >{t("deviceInspector.backupStart")}</Button>
+                )}
+              </div>
+            </section>
           </div>
           <div className="device-power-actions">
             <div>

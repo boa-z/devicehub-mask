@@ -8,6 +8,7 @@ mod crash_reports;
 mod decode;
 mod demand;
 mod developer_mode;
+mod device_backup;
 mod device_conditions;
 mod device_events;
 mod device_logs;
@@ -203,6 +204,7 @@ fn spawn_backend(
                 let device_events = device_events::DeviceEventSlot::default();
                 let network_capture = network_capture::NetworkCaptureSlot::default();
                 let bluetooth_capture = bluetooth_capture::BluetoothCaptureSlot::default();
+                let device_backup = device_backup::DeviceBackupSlot::default();
                 let device_conditions = device_conditions::DeviceConditionSlot::default();
                 let orientation = OrientationSlot::default();
                 let devices = DeviceListSlot::default();
@@ -250,6 +252,7 @@ fn spawn_backend(
                     device_events.clone(),
                     network_capture.clone(),
                     bluetooth_capture.clone(),
+                    device_backup.clone(),
                     device_conditions.clone(),
                     orientation.clone(),
                     devices.clone(),
@@ -273,6 +276,7 @@ fn spawn_backend(
                         device_events,
                         network_capture,
                         bluetooth_capture,
+                        device_backup,
                         device_conditions,
                         video_counters,
                         status,

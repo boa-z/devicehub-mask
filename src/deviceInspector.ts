@@ -65,7 +65,17 @@ export function formatFileSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "-";
   if (bytes < 1_000) return `${bytes} B`;
   if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(bytes < 10_000 ? 1 : 0)} KB`;
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(bytes < 10_000_000_000 ? 1 : 0)} GB`;
   return `${(bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0)} MB`;
+}
+
+export function formatElapsed(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "-";
+  const seconds = Math.floor(milliseconds / 1_000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
 export function formatReportDate(value: string, locale: string): string {

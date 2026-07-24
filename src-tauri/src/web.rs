@@ -40,6 +40,7 @@ pub struct AppState {
     pub device_events: crate::device_events::DeviceEventSlot,
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
     pub bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
+    pub device_backup: crate::device_backup::DeviceBackupSlot,
     pub device_conditions: crate::device_conditions::DeviceConditionSlot,
     pub video_counters: VideoCounters,
     pub status: StatusSlot,
@@ -174,6 +175,12 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
         .route("/api/device/details", get(device_details))
+        .route(
+            "/api/device/backup",
+            get(device_backup_status)
+                .put(start_device_backup)
+                .delete(stop_device_backup),
+        )
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
         .route(
@@ -501,6 +508,87 @@ async fn await_bluetooth_capture_command(
     result.map_err(|error| {
         let status = if error.contains("already running") || error.contains("no Bluetooth capture")
         {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        };
+        (status, error)
+    })
+}
+
+async fn device_backup_status(
+    State(state): State<AppState>,
+) -> Json<crate::device_backup::DeviceBackupStatus> {
+    Json(state.device_backup.get())
+}
+
+#[derive(Deserialize)]
+struct StartDeviceBackupRequest {
+    destination: PathBuf,
+    #[serde(default)]
+    full: bool,
+}
+
+async fn start_device_backup(
+    State(state): State<AppState>,
+    Json(request): Json<StartDeviceBackupRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let destination = crate::device_backup::prepare_destination(&request.destination)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeviceBackup(
+        crate::device_backup::DeviceBackupCommand::Start {
+            destination,
+            full: request.full,
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_device_backup_command(response, "start device backup").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn stop_device_backup(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeviceBackup(
+        crate::device_backup::DeviceBackupCommand::Stop { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_device_backup_command(response, "stop device backup").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn await_device_backup_command(
+    response: oneshot::Receiver<Result<(), String>>,
+    operation: &str,
+) -> Result<(), (StatusCode, String)> {
+    let result = tokio::time::timeout(Duration::from_secs(45), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?;
+    result.map_err(|error| {
+        let status = if error.contains("already running") || error.contains("no device backup") {
             StatusCode::CONFLICT
         } else {
             StatusCode::SERVICE_UNAVAILABLE
@@ -2609,6 +2697,7 @@ mod tests {
                 device_events: crate::device_events::DeviceEventSlot::default(),
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),
                 bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot::default(),
+                device_backup: crate::device_backup::DeviceBackupSlot::default(),
                 device_conditions: crate::device_conditions::DeviceConditionSlot::default(),
                 video_counters: VideoCounters::default(),
                 status: StatusSlot::default(),
@@ -2978,6 +3067,62 @@ mod tests {
             InputCmd::BluetoothCapture(
                 crate::bluetooth_capture::BluetoothCaptureCommand::Stop { reply },
             ) => reply.send(Ok(())).unwrap(),
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn device_backup_endpoints_validate_and_dispatch_commands() {
+        let (state, mut input_rx) = test_state();
+        let missing = std::env::temp_dir().join(format!(
+            "devicehub-mask-missing-web-backup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let invalid = start_device_backup(
+            State(state.clone()),
+            Json(StartDeviceBackupRequest {
+                destination: missing,
+                full: false,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+
+        let destination = std::env::temp_dir();
+        let expected = tokio::fs::canonicalize(&destination).await.unwrap();
+        let start = tokio::spawn(start_device_backup(
+            State(state.clone()),
+            Json(StartDeviceBackupRequest {
+                destination,
+                full: true,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceBackup(crate::device_backup::DeviceBackupCommand::Start {
+                destination,
+                full,
+                reply,
+            }) => {
+                assert_eq!(destination, expected);
+                assert!(full);
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            device_backup_status(State(state.clone())).await.0.state,
+            crate::device_backup::DeviceBackupState::Idle
+        );
+
+        let stop = tokio::spawn(stop_device_backup(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceBackup(crate::device_backup::DeviceBackupCommand::Stop { reply }) => {
+                reply.send(Ok(())).unwrap();
+            }
             _ => panic!("unexpected command"),
         }
         assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);

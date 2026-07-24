@@ -80,6 +80,15 @@ device** actions. Both end the current control session. Restart reconnects only
 after iOS and the USB services are available again; a shut-down device must be
 turned on manually.
 
+Local Device Backup in the Info tab creates a standard, unencrypted
+MobileBackup2 backup in a host directory selected through the native dialog.
+Leave **Force full backup** off to reuse an existing backup and transfer only
+changes; enable it when a complete new pass is required. Keep the device
+unlocked and connected. Cancelling or losing the session keeps files already
+received so the same directory can be used for a later incremental run. Backup
+contents can include private application and account data and must be protected
+accordingly. This version intentionally does not expose restore or erase.
+
 ### Performance
 
 The Performance workspace combines device-side DVT telemetry with the desktop

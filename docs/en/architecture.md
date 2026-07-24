@@ -168,6 +168,17 @@ tearing down display, HID, or management services. Only normalized status,
 bounded XML, match indexes, and finite rectangles cross the MCP boundary; WDA
 session and element identifiers remain private to the worker.
 
+Local device backup is an explicit MobileBackup2 worker owned by the active
+session. USB first uses the lockdown service and can fall back to the cloned RSD
+tunnel; Wi-Fi uses the remote RSD shim. The worker writes only beneath the host
+directory selected by the native dialog and the validated device identifier.
+Every delegate filesystem operation verifies lexical confinement and rejects
+symbolic-link ancestors, including when an existing backup is reused for an
+incremental run. Progress callbacks publish bounded counters without exposing
+file paths. Cancellation drops the DeviceLink session immediately and retains
+already transferred data for a later incremental backup. Restore, erase, backup
+password changes, and automatic/background backup are outside this boundary.
+
 Device packet capture is a separate, user-initiated pcapd worker. USB sessions
 first open the traditional lockdown pcapd service and retain the cloned RSD
 tunnel as a fallback; Wi-Fi sessions use the CoreDevice remote pcapd shim over

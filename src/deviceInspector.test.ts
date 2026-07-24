@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "./deviceInspector";
+import { appProfileBindingState, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -117,6 +117,8 @@ describe("device inspector", () => {
     expect(filterCrashReports(crashReports, "")).toBe(crashReports);
     expect(formatFileSize(999)).toBe("999 B");
     expect(formatFileSize(1_250_000)).toBe("1.3 MB");
+    expect(formatFileSize(5_250_000_000)).toBe("5.3 GB");
+    expect(formatElapsed(3_754_000)).toBe("1h 02m");
     expect(formatReportDate("bad", "en-US")).toBe("-");
     expect(formatReportDate("2026-07-24T01:02:03Z", "en-US")).not.toBe("-");
   });

@@ -94,6 +94,18 @@ export type BluetoothCaptureStatus = {
   stop_reason: BluetoothCaptureStopReason | null;
   error: string | null;
 };
+export type DeviceBackupState = "idle" | "starting" | "backing_up" | "completed" | "cancelled" | "failed";
+export type DeviceBackupStatus = {
+  state: DeviceBackupState;
+  files_received: number;
+  bytes_done: number;
+  bytes_total: number;
+  progress_percent: number | null;
+  elapsed_ms: number;
+  full: boolean;
+  destination_name: string | null;
+  error: string | null;
+};
 export type DeviceConditionProfile = {
   identifier: string;
   description: string;
