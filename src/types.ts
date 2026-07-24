@@ -106,7 +106,7 @@ export type DeviceBackupStatus = {
   destination_name: string | null;
   error: string | null;
 };
-export type DeveloperImageMountState = "idle" | "validating" | "personalizing" | "uploading" | "mounting" | "mounted" | "cancelled" | "failed";
+export type DeveloperImageMountState = "idle" | "validating" | "personalizing" | "uploading" | "mounting" | "unmounting" | "mounted" | "unmounted" | "cancelled" | "failed";
 export type DeveloperImageMountStatus = {
   state: DeveloperImageMountState;
   progress_percent: number | null;

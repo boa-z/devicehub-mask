@@ -201,6 +201,10 @@ pub fn router(state: AppState, token: String) -> Router {
                 .put(start_developer_image_mount)
                 .delete(stop_developer_image_mount),
         )
+        .route(
+            "/api/device/developer-image/unmount",
+            put(unmount_developer_image),
+        )
         .route("/api/device/screenshot", get(device_screenshot))
         .route("/api/device/text/paste", put(paste_device_text))
         .route("/api/device/lock", put(lock_device))
@@ -953,6 +957,22 @@ async fn stop_developer_image_mount(
         ));
     }
     await_developer_image_command(response, "stop developer image mount").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn unmount_developer_image(
+    State(state): State<AppState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::DeveloperImageMount(
+        crate::developer_image::DeveloperImageMountCommand::Unmount { reply },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_developer_image_command(response, "unmount developer image").await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -4014,7 +4034,7 @@ mod tests {
         }
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let stop = tokio::spawn(stop_developer_image_mount(State(state)));
+        let stop = tokio::spawn(stop_developer_image_mount(State(state.clone())));
         match input_rx.recv().await.unwrap() {
             InputCmd::DeveloperImageMount(DeveloperImageMountCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
@@ -4022,6 +4042,15 @@ mod tests {
             _ => panic!("unexpected command"),
         }
         assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let unmount = tokio::spawn(unmount_developer_image(State(state)));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeveloperImageMount(DeveloperImageMountCommand::Unmount { reply }) => {
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(unmount.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

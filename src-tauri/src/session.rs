@@ -2148,7 +2148,8 @@ fn reject_developer_image_command(
 
     match command {
         DeveloperImageMountCommand::Start { reply, .. }
-        | DeveloperImageMountCommand::Stop { reply } => {
+        | DeveloperImageMountCommand::Stop { reply }
+        | DeveloperImageMountCommand::Unmount { reply } => {
             let _ = reply.send(Err(reason.into()));
         }
     }

@@ -30,7 +30,9 @@ pub enum DeveloperImageMountState {
     Personalizing,
     Uploading,
     Mounting,
+    Unmounting,
     Mounted,
+    Unmounted,
     Cancelled,
     Failed,
 }
@@ -83,6 +85,9 @@ pub enum DeveloperImageMountCommand {
         reply: oneshot::Sender<Result<(), String>>,
     },
     Stop {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Unmount {
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -139,7 +144,7 @@ pub async fn serve(
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let mut active: Option<JoinHandle<Result<(), String>>> = None;
+    let mut active: Option<JoinHandle<Result<DeveloperImageMountState, String>>> = None;
     let mut attempt = 0;
     status.reset();
     reporter.stopped(attempt);
@@ -168,7 +173,7 @@ pub async fn serve(
                 match command {
                     DeveloperImageMountCommand::Start { request, reply } => {
                         if active.is_some() {
-                            let _ = reply.send(Err("a developer image mount is already running".into()));
+                            let _ = reply.send(Err("a developer image operation is already running".into()));
                             continue;
                         }
                         attempt += 1;
@@ -180,7 +185,9 @@ pub async fn serve(
                         let mount_provider = provider.clone();
                         let mount_status = status.clone();
                         active = Some(tokio::spawn(async move {
-                            mount_image(mount_provider.as_ref(), request, mount_status).await
+                            mount_image(mount_provider.as_ref(), request, mount_status)
+                                .await
+                                .map(|_| DeveloperImageMountState::Mounted)
                         }));
                         let _ = reply.send(Ok(()));
                     }
@@ -191,28 +198,47 @@ pub async fn serve(
                             reporter.stopped(attempt);
                             let _ = reply.send(Ok(()));
                         } else {
-                            let _ = reply.send(Err("no developer image mount is running".into()));
+                            let _ = reply.send(Err("no developer image operation is running".into()));
                         }
+                    }
+                    DeveloperImageMountCommand::Unmount { reply } => {
+                        if active.is_some() {
+                            let _ = reply.send(Err("a developer image operation is already running".into()));
+                            continue;
+                        }
+                        attempt += 1;
+                        status.set(DeveloperImageMountStatus {
+                            state: DeveloperImageMountState::Unmounting,
+                            ..DeveloperImageMountStatus::default()
+                        });
+                        reporter.connecting(attempt);
+                        let unmount_provider = provider.clone();
+                        let unmount_status = status.clone();
+                        active = Some(tokio::spawn(async move {
+                            unmount_image(unmount_provider.as_ref(), unmount_status).await
+                        }));
+                        let _ = reply.send(Ok(()));
                     }
                 }
             }
             result = wait_for_mount(&mut active) => {
                 active.take();
                 match result {
-                    Ok(Ok(())) => {
+                    Ok(Ok(completed)) => {
                         status.update(|current| {
-                            current.state = DeveloperImageMountState::Mounted;
-                            current.progress_percent = Some(100.0);
+                            current.state = completed;
+                            current.progress_percent = (completed == DeveloperImageMountState::Mounted)
+                                .then_some(100.0);
                             current.error = None;
                         });
                         reporter.stopped(attempt);
-                        tracing::info!("developer image mounted");
+                        tracing::info!(state = ?completed, "developer image operation completed");
                     }
                     Ok(Err(error)) => {
                         fail(&status, &reporter, attempt, error);
                     }
                     Err(error) if error.is_cancelled() => {
-                        mark_cancelled(&status, "developer image mount cancelled");
+                        mark_cancelled(&status, "developer image operation cancelled");
                         reporter.stopped(attempt);
                     }
                     Err(error) => {
@@ -230,11 +256,43 @@ pub async fn serve(
 }
 
 async fn wait_for_mount(
-    active: &mut Option<JoinHandle<Result<(), String>>>,
-) -> Result<Result<(), String>, tokio::task::JoinError> {
+    active: &mut Option<JoinHandle<Result<DeveloperImageMountState, String>>>,
+) -> Result<Result<DeveloperImageMountState, String>, tokio::task::JoinError> {
     match active.as_mut() {
         Some(task) => task.await,
         None => pending().await,
+    }
+}
+
+async fn unmount_image(
+    provider: &dyn IdeviceProvider,
+    status: DeveloperImageMountSlot,
+) -> Result<DeveloperImageMountState, String> {
+    let product_version = read_product_version(provider).await?;
+    let image_type = image_type_for_version(&product_version)?;
+    status.update(|current| {
+        current.product_version = Some(product_version.clone());
+        current.image_type = Some(image_type.to_string());
+    });
+    if !is_mounted(provider, &product_version).await? {
+        return Err("no compatible Developer Disk Image is mounted".into());
+    }
+    let mount_path = mount_path_for_image_type(image_type);
+    let mut mounter = ImageMounter::connect(provider)
+        .await
+        .map_err(|error| format!("cannot connect mobile image mounter: {error:?}"))?;
+    mounter
+        .unmount_image(mount_path)
+        .await
+        .map_err(|error| format!("cannot unmount developer image: {error:?}"))?;
+    Ok(DeveloperImageMountState::Unmounted)
+}
+
+fn mount_path_for_image_type(image_type: &str) -> &'static str {
+    if image_type == "Developer" {
+        "/Developer"
+    } else {
+        "/System/Developer"
     }
 }
 
@@ -517,6 +575,11 @@ mod tests {
         assert_eq!(image_type_for_version("27.0").unwrap(), "Personalized");
         assert!(image_type_for_version("").is_err());
         assert!(image_type_for_version("future").is_err());
+        assert_eq!(mount_path_for_image_type("Developer"), "/Developer");
+        assert_eq!(
+            mount_path_for_image_type("Personalized"),
+            "/System/Developer"
+        );
     }
 
     #[test]

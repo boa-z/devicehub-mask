@@ -266,6 +266,10 @@ DMG、`.trustcache` 与 `BuildManifest.plist`。只能使用与当前 iOS build 
 不会终止外部启动的 WDA。设备会话结束时会自动清理 Runner。DeviceHub Mask 不负责安装、
 签名或静默自动启动 WDA。
 
+镜像已挂载时，可通过“设备信息”中的同一控制区显式卸载。卸载可能立即终止正在运行的
+XCTest 与 WebDriverAgent 会话，因此应先停止由应用管理的自动化。挂载、卸载和取消请求会
+串行执行；切换设备会取消当前镜像操作。
+
 `wda_ui_tree` 返回长度受限的辅助功能 XML 树，`wda_find_elements` 返回带画面矩形的
 零基匹配结果，`wda_click` 则在一次请求中查找并点击指定结果。支持的策略为
 `accessibility id`、`name`、`class name`、`xpath`、`-ios predicate string` 和

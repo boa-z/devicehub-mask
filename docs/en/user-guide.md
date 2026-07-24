@@ -372,6 +372,11 @@ DeviceHub Mask, and `wda_stop` stops only that managed runner; an externally lau
 is never terminated. Runner ownership is released automatically when the device
 session ends. DeviceHub Mask does not install, sign, or silently auto-start WDA.
 
+When an image is mounted, the same Info-tab control can explicitly unmount it.
+Unmounting can immediately stop active XCTest and WebDriverAgent sessions, so
+stop managed automation first. Mount, unmount, and cancel requests are serialized;
+switching devices cancels the active image operation.
+
 `wda_ui_tree` returns a
 bounded accessibility XML tree, `wda_find_elements` returns zero-based matches
 with screen rectangles, and `wda_click` finds and clicks one match atomically.

@@ -145,7 +145,7 @@ export function DeviceInspector({
   const [renameBusy, setRenameBusy] = useState(false);
   const [developerModeBusy, setDeveloperModeBusy] = useState(false);
   const [developerImageStatus, setDeveloperImageStatus] = useState<DeveloperImageMountStatus | null>(null);
-  const [developerImageAction, setDeveloperImageAction] = useState<"start" | "stop" | null>(null);
+  const [developerImageAction, setDeveloperImageAction] = useState<"start" | "stop" | "unmount" | null>(null);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const [deviceFilesOpen, setDeviceFilesOpen] = useState(false);
@@ -303,7 +303,7 @@ export function DeviceInspector({
         // The regular inspector request path surfaces connection errors.
       }
       if (!cancelled) {
-        const active = next && ["validating", "personalizing", "uploading", "mounting"].includes(next.state);
+        const active = next && ["validating", "personalizing", "uploading", "mounting", "unmounting"].includes(next.state);
         timer = setTimeout(poll, active ? 350 : 2_000);
       }
     };
@@ -322,6 +322,9 @@ export function DeviceInspector({
     if (developerImageStatus.state === "mounted") {
       setDetails((current) => current ? { ...current, developer_image_mounted: true } : current);
       void message.success(t("deviceInspector.developerImageMounted"));
+    } else if (developerImageStatus.state === "unmounted") {
+      setDetails((current) => current ? { ...current, developer_image_mounted: false } : current);
+      void message.success(t("deviceInspector.developerImageUnmounted"));
     } else if (developerImageStatus.state === "failed") {
       void message.error(t("deviceInspector.developerImageMountFailed", { error: developerImageStatus.error ?? "" }));
     }
@@ -783,12 +786,37 @@ export function DeviceInspector({
       const response = await request("/api/device/developer-image", { method: "DELETE" });
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       await loadDeveloperImageStatus();
+      await load();
       void message.info(t("deviceInspector.developerImageMountCancelled"));
     } catch (mountError) {
       void message.error(t("deviceInspector.developerImageCancelFailed", { error: String(mountError) }));
     } finally {
       setDeveloperImageAction(null);
     }
+  };
+
+  const unmountDeveloperImage = () => {
+    if (developerImageAction) return;
+    Modal.confirm({
+      title: t("deviceInspector.unmountDeveloperImage"),
+      content: t("deviceInspector.unmountDeveloperImageConfirm"),
+      okText: t("deviceInspector.unmountDeveloperImage"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      async onOk() {
+        setDeveloperImageAction("unmount");
+        try {
+          const response = await request("/api/device/developer-image/unmount", { method: "PUT" });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          await loadDeveloperImageStatus();
+          void message.info(t("deviceInspector.developerImageUnmountStarted"));
+        } catch (unmountError) {
+          void message.error(t("deviceInspector.developerImageUnmountFailed", { error: String(unmountError) }));
+        } finally {
+          setDeveloperImageAction(null);
+        }
+      },
+    });
   };
 
   const renameDevice = async () => {
@@ -830,9 +858,6 @@ export function DeviceInspector({
     [t("deviceInspector.developerMode"), details.developer_mode_enabled == null
       ? t("deviceInspector.developerModeStates.unknown")
       : t(`deviceInspector.developerModeStates.${details.developer_mode_enabled ? "enabled" : "disabled"}`)],
-    [t("deviceInspector.developerImage"), details.developer_image_mounted == null
-      ? t("deviceInspector.developerImageStates.unknown")
-      : t(`deviceInspector.developerImageStates.${details.developer_image_mounted ? "mounted" : "missing"}`)],
     [t("deviceInspector.batteryLevel"), details.battery?.level_percent == null ? "-" : `${details.battery.level_percent}%`],
     [t("deviceInspector.batteryState"), details.battery?.fully_charged
       ? t("deviceInspector.batteryStates.full")
@@ -857,7 +882,7 @@ export function DeviceInspector({
   ] : [];
   const backupRunning = backupStatus?.state === "starting" || backupStatus?.state === "backing_up";
   const developerImageMountRunning = developerImageStatus != null
-    && ["validating", "personalizing", "uploading", "mounting"].includes(developerImageStatus.state);
+    && ["validating", "personalizing", "uploading", "mounting", "unmounting"].includes(developerImageStatus.state);
   const backupProgress = backupStatus?.progress_percent
     ?? (backupStatus && backupStatus.bytes_total > 0
       ? Math.min(100, backupStatus.bytes_done * 100 / backupStatus.bytes_total)
@@ -932,27 +957,9 @@ export function DeviceInspector({
               showIcon
               message={t("deviceInspector.developerImageMissing")}
               description={t("deviceInspector.developerImageHint")}
-              action={developerImageMountRunning ? (
-                <Button
-                  danger
-                  size="small"
-                  icon={<StopOutlined />}
-                  loading={developerImageAction === "stop"}
-                  disabled={developerImageAction !== null}
-                  onClick={() => void stopDeveloperImageMount()}
-                >{t("deviceInspector.cancelDeveloperImageMount")}</Button>
-              ) : (
-                <Button
-                  size="small"
-                  icon={<UploadOutlined />}
-                  loading={developerImageAction === "start"}
-                  disabled={developerImageAction !== null}
-                  onClick={() => void startDeveloperImageMount()}
-                >{t("deviceInspector.mountDeveloperImage")}</Button>
-              )}
             />
           )}
-          {developerImageStatus && developerImageStatus.state !== "idle" && developerImageStatus.state !== "mounted" && (
+          {developerImageStatus && !["idle", "mounted", "unmounted"].includes(developerImageStatus.state) && (
             <div className="developer-image-progress">
               <div className="developer-image-progress-heading">
                 <Typography.Text>{t(`deviceInspector.developerImageMountStates.${developerImageStatus.state}`)}</Typography.Text>
@@ -992,6 +999,44 @@ export function DeviceInspector({
                   </Tooltip>
                 </div>
               </div>
+            )}
+            {details?.developer_mode_enabled === true && (
+              <section className="device-developer-image-section">
+                <div>
+                  <Typography.Text strong>{t("deviceInspector.developerImage")}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {developerImageMountRunning && developerImageStatus
+                      ? t(`deviceInspector.developerImageMountStates.${developerImageStatus.state}`)
+                      : details.developer_image_mounted == null
+                        ? t("deviceInspector.developerImageStates.unknown")
+                        : t(`deviceInspector.developerImageStates.${details.developer_image_mounted ? "mounted" : "missing"}`)}
+                  </Typography.Text>
+                </div>
+                {developerImageMountRunning ? (
+                  <Button
+                    danger
+                    icon={<StopOutlined />}
+                    loading={developerImageAction === "stop"}
+                    disabled={developerImageAction !== null}
+                    onClick={() => void stopDeveloperImageMount()}
+                  >{t("deviceInspector.cancelDeveloperImageMount")}</Button>
+                ) : details.developer_image_mounted ? (
+                  <Button
+                    danger
+                    icon={<DisconnectOutlined />}
+                    loading={developerImageAction === "unmount"}
+                    disabled={developerImageAction !== null}
+                    onClick={unmountDeveloperImage}
+                  >{t("deviceInspector.unmountDeveloperImage")}</Button>
+                ) : details.developer_image_mounted === false ? (
+                  <Button
+                    icon={<UploadOutlined />}
+                    loading={developerImageAction === "start"}
+                    disabled={developerImageAction !== null}
+                    onClick={() => void startDeveloperImageMount()}
+                  >{t("deviceInspector.mountDeveloperImage")}</Button>
+                ) : null}
+              </section>
             )}
             {infoRows.map(([label, value]) => (
               <div className="device-info-row" key={label}>

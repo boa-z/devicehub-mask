@@ -187,7 +187,10 @@ trust cache, and nonempty `BuildManifest.plist`. Personalized
 mounting uses idevice's TSS flow and therefore sends device-specific signing
 identifiers to Apple's service only after the user confirms the operation. The
 task reports bounded phase/progress state, can be cancelled by the user or session
-shutdown, and never discovers or downloads images automatically.
+shutdown, and never discovers or downloads images automatically. Explicit
+unmount uses `/Developer` before iOS 17 and `/System/Developer` on newer systems;
+it shares the same single-operation queue so mount, unmount, and cancellation
+cannot race.
 
 Local device backup is an explicit MobileBackup2 worker owned by the active
 session. USB first uses the lockdown service and can fall back to the cloned RSD
