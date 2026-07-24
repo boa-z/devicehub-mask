@@ -4272,19 +4272,31 @@ async fn rename_device(
         .start_session(&pairing_file)
         .await
         .map_err(|error| format!("cannot start Lockdown session for device rename: {error}"))?;
-    lockdown
-        .set_value("DeviceName", plist::Value::String(name.clone()), None)
-        .await
-        .map_err(|error| format!("device rejected the new name: {error}"))?;
-    let verified = lockdown
-        .get_value(Some("DeviceName"), None)
-        .await
-        .map_err(|error| format!("cannot verify the new device name: {error}"))?
-        .into_string()
-        .ok_or_else(|| "device returned an invalid name after rename".to_string())?;
-    if verified != name {
-        return Err("device did not retain the requested name".into());
+    let rename_result: Result<(), String> = async {
+        lockdown
+            .set_value("DeviceName", plist::Value::String(name.clone()), None)
+            .await
+            .map_err(|error| format!("device rejected the new name: {error}"))?;
+        let verified = lockdown
+            .get_value(Some("DeviceName"), None)
+            .await
+            .map_err(|error| format!("cannot verify the new device name: {error}"))?
+            .into_string()
+            .ok_or_else(|| "device returned an invalid name after rename".to_string())?;
+        if verified != name {
+            return Err("device did not retain the requested name".into());
+        }
+        Ok(())
     }
+    .await;
+    match tokio::time::timeout(Duration::from_secs(1), lockdown.stop_session()).await {
+        Ok(Ok(())) => tracing::debug!("device rename Lockdown session stopped"),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "unable to stop device rename Lockdown session")
+        }
+        Err(_) => tracing::warn!("stopping device rename Lockdown session timed out"),
+    }
+    rename_result?;
     tracing::info!(
         name_chars = name.chars().count(),
         "device name changed through Lockdown"
