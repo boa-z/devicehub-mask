@@ -112,7 +112,7 @@ impl NetmuxdSupervisor {
             .arg(&self.pairing_dir)
             .env(
                 "RUST_LOG",
-                std::env::var("DEVICEHUB_NETMUXD_LOG").unwrap_or_else(|_| "warn".into()),
+                std::env::var("DEVICEHUB_NETMUXD_LOG").unwrap_or_else(|_| "info".into()),
             )
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

@@ -771,13 +771,10 @@ pub async fn manage(
     // Cache of UDID -> DeviceName so a refresh doesn't re-query lockdown.
     let mut names: HashMap<String, String> = HashMap::new();
     let mut netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), resource_dir);
-    let mut wifi = match WifiDiscovery::start(pairing_dir) {
-        Ok(discovery) => Some(discovery),
-        Err(error) => {
-            tracing::warn!(%error, "Wi-Fi discovery unavailable; continuing with usbmuxd");
-            None
-        }
-    };
+    // Keep direct Bonjour discovery active even when netmuxd is available. On
+    // macOS, Local Network access can differ between the app and its child
+    // process, so a healthy sidecar may expose USB while missing Wi-Fi devices.
+    let mut wifi = start_wifi_discovery(&pairing_dir);
     // Auto-pick the first device only when no UDID was given, and only until we've
     // connected once: after a session ends we drop to idle rather than hot-loop.
     let mut auto_pick = initial_udid.is_none();
@@ -1034,9 +1031,11 @@ async fn enumerate_devices(
         }
     }
 
-    // netmuxd already performs authenticated Bonjour discovery. Run our scanner
-    // only as the fallback so one process owns discovery at a time.
-    if !using_netmuxd && let Some(discovery) = wifi {
+    // Merge authenticated direct Bonjour results with the selected usbmuxd
+    // provider. This fills device-level gaps when netmuxd is reachable but its
+    // child process cannot browse the local network. Existing selectors win, so
+    // netmuxd remains the provider when both paths discover the same transport.
+    if let Some(discovery) = wifi {
         for endpoint in discovery.refresh() {
             let id = device_selector(&endpoint.udid, ConnKind::Network);
             if endpoints.contains_key(&id) {
@@ -1062,12 +1061,40 @@ async fn enumerate_devices(
             endpoints.insert(id, SessionEndpoint::Wifi(Box::new(endpoint)));
         }
     }
+    let usb_count = out
+        .iter()
+        .filter(|device| device.connection == ConnKind::Usb)
+        .count();
+    let wifi_count = out
+        .iter()
+        .filter(|device| device.connection == ConnKind::Network)
+        .count();
+    tracing::debug!(
+        provider = if using_netmuxd {
+            "netmuxd"
+        } else {
+            "system-usbmuxd"
+        },
+        usb_count,
+        wifi_count,
+        "device discovery refresh completed"
+    );
     out.sort_by(|a, b| {
         a.udid.cmp(&b.udid).then_with(|| {
             connection_kind_priority(a.connection).cmp(&connection_kind_priority(b.connection))
         })
     });
     (out, endpoints)
+}
+
+fn start_wifi_discovery(pairing_dir: &Path) -> Option<WifiDiscovery> {
+    match WifiDiscovery::start(pairing_dir.to_owned()) {
+        Ok(discovery) => Some(discovery),
+        Err(error) => {
+            tracing::warn!(%error, "Wi-Fi discovery unavailable; continuing with usbmuxd");
+            None
+        }
+    }
 }
 
 /// Resolve a device's `DeviceName` over lockdown, with a timeout. Returns `None`
