@@ -36,8 +36,9 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 ### Apps
 
 - Lists user apps and, on request, Apple default apps through CoreDevice AppService, with Installation Proxy fallback for the user-app catalog.
+- Explicitly launches developer and third-party apps with a bounded, session-only stdout/stderr console through CoreDevice OpenStdioSocket.
 - Shows native icons, versions, signing type, removable state, reported storage, running state, and SpringBoard Dock/page/folder placement when available.
-- Launches, restarts, stops, installs new IPA files, explicitly upgrades installed apps from IPA files, and safely uninstalls eligible user apps. Operations are session-owned and report progress or failure.
+- Launches, restarts, stops, installs new IPA files, explicitly upgrades installed apps from IPA files, and safely uninstalls eligible user apps. Before upload, IPA preflight displays bounded app metadata and checks the selected operation, minimum OS, device family, and declared required capabilities against the active device. Operations are session-owned and report progress or failure.
 - Opens Documents or the full container through House Arrest when iOS permits that scope, with bounded file and directory mutation and transfer.
 - Associates an app with a saved key-mapping profile so launching it from the App list activates that profile.
 - Explicitly starts and stops an installed developer-signed WebDriverAgent `.xctrunner`; DeviceHub Mask does not install or sign WDA.
@@ -67,6 +68,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Device identity, name, storage fallback | Lockdown |
 | Screen, audio, orientation, clipboard, HID | CoreDevice display, orientation, Pasteboard, and HID services |
 | App list, process state, launch, stop | CoreDevice AppService |
+| Explicit per-app console launch | CoreDevice AppService + OpenStdioSocket |
 | IPA installation and user-app fallback | Installation Proxy |
 | App Documents/container | House Arrest and AFC |
 | Public media files | Standard AFC / remote AFC shim |

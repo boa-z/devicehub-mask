@@ -50,6 +50,10 @@ use crate::audio_output::AudioOutput;
 use crate::decode;
 use crate::developer_mode;
 use crate::hid::{UniversalHidClient, build_multitouch_report};
+use crate::ipa::{
+    InstalledAppMatch, IpaArchiveMetadata, IpaCompatibility, IpaOperation, IpaPreflight,
+    IpaPreflightIssue,
+};
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardContentKind, ClipboardEvent,
     ClipboardSlot, ConnKind, ControlCmd, DeviceActivationState, DeviceApp, DeviceBattery,
@@ -1937,6 +1941,14 @@ async fn run(
         supervisor.reporter("device.wda_runner"),
         supervisor.shutdown_receiver(),
     ));
+    let (app_console_sender, app_console_receiver) = tokio::sync::mpsc::channel(4);
+    supervisor.spawn(crate::app_console::serve(
+        adapter.clone(),
+        handshake.clone(),
+        app_console_receiver,
+        supervisor.reporter("device.app_console"),
+        supervisor.shutdown_receiver(),
+    ));
     let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
     supervisor.spawn(crate::app_documents::serve(
         crate::app_documents::AppStorageTransport::new(
@@ -2060,6 +2072,7 @@ async fn run(
         running_processes: running_process_sender,
         wda: wda_sender,
         wda_runner: wda_runner_sender,
+        app_console: app_console_sender,
         documents: app_documents_sender,
         device_files: device_files_sender,
         screen_capture: screen_capture_sender,
@@ -2455,6 +2468,7 @@ struct DeviceManagementServices {
     running_processes: tokio::sync::mpsc::Sender<crate::running_processes::RunningProcessCommand>,
     wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
     wda_runner: tokio::sync::mpsc::Sender<crate::wda_runner::WdaRunnerCommand>,
+    app_console: tokio::sync::mpsc::Sender<crate::app_console::AppConsoleCommand>,
     documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
     device_files: tokio::sync::mpsc::Sender<crate::device_files::DeviceFileCommand>,
     screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
@@ -2713,11 +2727,11 @@ impl DeviceManagement {
 
     async fn install_app(&mut self, path: PathBuf, kind: AppOperationKind) -> Result<(), String> {
         self.clear_finished_operation();
-        let (path, label) = validate_ipa_path(&path).await?;
-        let id = self.app_operation.start(kind, label)?;
-        self.app_operation.update(id, "uploading", None);
+        let metadata = crate::ipa::inspect(&path).await?;
+        let id = self.app_operation.start(kind, metadata.file_name.clone())?;
 
         let provider = self.provider.clone();
+        let details = self.details.clone();
         let operation = self.app_operation.clone();
         let task_operation = operation.clone();
         let handle = tokio::spawn(async move {
@@ -2726,42 +2740,51 @@ impl DeviceManagement {
                     operation.update(operation_id, stage, Some(progress.min(100) as u8));
                 }
             };
-            let result = match kind {
-                AppOperationKind::Install => {
-                    install_package_with_callback(
+            let result = async {
+                let ipa_operation = match kind {
+                    AppOperationKind::Install => IpaOperation::Install,
+                    AppOperationKind::Upgrade => IpaOperation::Upgrade,
+                    AppOperationKind::Uninstall => {
+                        unreachable!("package operation cannot uninstall")
+                    }
+                };
+                let preflight = build_ipa_preflight(
+                    provider.as_ref(),
+                    details.as_ref(),
+                    metadata.clone(),
+                    ipa_operation,
+                )
+                .await?;
+                reject_blocked_ipa(&preflight)?;
+                operation.update(id, "uploading", None);
+                match kind {
+                    AppOperationKind::Install => install_package_with_callback(
                         provider.as_ref(),
-                        path,
+                        metadata.path,
                         None,
                         progress("installing"),
                         (task_operation, id),
                     )
                     .await
-                }
-                AppOperationKind::Upgrade => {
-                    upgrade_package_with_callback(
+                    .map_err(|error| format!("unable to install IPA: {error:?}")),
+                    AppOperationKind::Upgrade => upgrade_package_with_callback(
                         provider.as_ref(),
-                        path,
+                        metadata.path,
                         None,
                         progress("upgrading"),
                         (task_operation, id),
                     )
                     .await
+                    .map_err(|error| format!("unable to upgrade IPA: {error:?}")),
+                    AppOperationKind::Uninstall => {
+                        unreachable!("package operation cannot uninstall")
+                    }
                 }
-                AppOperationKind::Uninstall => unreachable!("package operation cannot uninstall"),
-            };
+            }
+            .await;
             match result {
                 Ok(()) => operation.succeed(id),
-                Err(error) => operation.fail(
-                    id,
-                    format!(
-                        "unable to {} IPA: {error:?}",
-                        match kind {
-                            AppOperationKind::Install => "install",
-                            AppOperationKind::Upgrade => "upgrade",
-                            AppOperationKind::Uninstall => "process",
-                        }
-                    ),
-                ),
+                Err(error) => operation.fail(id, error),
             }
         });
         self.operation_task = Some(ActiveAppOperation { id, handle });
@@ -2999,6 +3022,20 @@ impl DeviceManagement {
                         }
                         tokio::sync::mpsc::error::TrySendError::Closed(command) => {
                             ("WDA runner service is unavailable", command)
+                        }
+                    };
+                    command.reject(reason);
+                }
+                None
+            }
+            InputCmd::AppConsole(command) => {
+                if let Err(error) = self.services.app_console.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("application console service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("application console service is unavailable", command)
                         }
                     };
                     command.reject(reason);
@@ -3247,6 +3284,29 @@ impl DeviceManagement {
                 });
                 None
             }
+            InputCmd::PreflightApp {
+                path,
+                operation,
+                reply,
+            } => {
+                let provider = self.provider.clone();
+                let details = self.details.clone();
+                tokio::spawn(async move {
+                    let result = async {
+                        let metadata = crate::ipa::inspect(&path).await?;
+                        build_ipa_preflight(
+                            provider.as_ref(),
+                            details.as_ref(),
+                            metadata,
+                            operation,
+                        )
+                        .await
+                    }
+                    .await;
+                    let _ = reply.send(result);
+                });
+                None
+            }
             InputCmd::InstallApp { path, reply } => {
                 let result = self.install_app(path, AppOperationKind::Install).await;
                 let _ = reply.send(result);
@@ -3310,30 +3370,128 @@ fn spawn_device_power_action(
     });
 }
 
-async fn validate_ipa_path(path: &Path) -> Result<(PathBuf, String), String> {
-    if !path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("ipa"))
-    {
-        return Err("selected file must have an .ipa extension".into());
-    }
-    let canonical = tokio::fs::canonicalize(path)
+async fn build_ipa_preflight(
+    provider: &dyn IdeviceProvider,
+    details: Option<&DeviceDetails>,
+    metadata: IpaArchiveMetadata,
+    operation: IpaOperation,
+) -> Result<IpaPreflight, String> {
+    let mut client = InstallationProxyClient::connect(provider)
         .await
-        .map_err(|error| format!("unable to access IPA: {error}"))?;
-    let metadata = tokio::fs::metadata(&canonical)
+        .map_err(|error| format!("installation proxy is unavailable: {error:?}"))?;
+    let mut apps = client
+        .get_apps(Some("User"), Some(vec![metadata.bundle_id.clone()]))
         .await
-        .map_err(|error| format!("unable to inspect IPA: {error}"))?;
-    if !metadata.is_file() {
-        return Err("selected IPA path is not a regular file".into());
-    }
-    let label = canonical
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| "selected IPA has no valid file name".to_string())?
-        .to_string();
-    Ok((canonical, label))
+        .map_err(|error| format!("unable to verify installed app: {error:?}"))?;
+    let installed_app = apps.remove(&metadata.bundle_id).map(|value| {
+        let app = device_app_from_installation(metadata.bundle_id.clone(), &value)
+            .ok_or_else(|| "device returned invalid installed app metadata".to_string())?;
+        Ok::<_, String>(InstalledAppMatch {
+            name: bounded_ipa_device_text(&app.name),
+            version: app.version.map(|value| bounded_ipa_device_text(&value)),
+            bundle_version: app
+                .bundle_version
+                .map(|value| bounded_ipa_device_text(&value)),
+        })
+    });
+    let installed_app = match installed_app {
+        Some(result) => Some(result?),
+        None => None,
+    };
+
+    let positive_capabilities_supported = if metadata.required_capabilities.is_empty() {
+        Some(true)
+    } else {
+        match client
+            .check_capabilities_match(
+                metadata
+                    .required_capabilities
+                    .iter()
+                    .cloned()
+                    .map(plist::Value::String)
+                    .collect(),
+                None,
+            )
+            .await
+        {
+            Ok(matches) => Some(matches),
+            Err(error) => {
+                tracing::warn!(?error, "unable to check IPA device capabilities");
+                None
+            }
+        }
+    };
+    let capabilities_supported = match positive_capabilities_supported {
+        Some(false) => Some(false),
+        Some(true) if metadata.prohibited_capabilities.is_empty() => Some(true),
+        _ => None,
+    };
+    let minimum_os_supported = match (&metadata.minimum_os_version, details) {
+        (Some(minimum), Some(details)) => {
+            crate::ipa::version_at_least(&details.product_version, minimum)
+        }
+        _ => None,
+    };
+    let device_family_supported = details.and_then(|details| {
+        crate::ipa::device_family_supported(&details.product_type, &metadata.device_families)
+    });
+    let compatibility = IpaCompatibility {
+        minimum_os_supported,
+        device_family_supported,
+        capabilities_supported,
+    };
+    let blocking_issues =
+        crate::ipa::preflight_issues(operation, installed_app.is_some(), &compatibility);
+    Ok(IpaPreflight {
+        operation,
+        file_name: metadata.file_name,
+        file_size_bytes: metadata.file_size_bytes,
+        bundle_id: metadata.bundle_id,
+        name: metadata.name,
+        version: metadata.version,
+        bundle_version: metadata.bundle_version,
+        minimum_os_version: metadata.minimum_os_version,
+        device_families: metadata.device_families,
+        required_capabilities: metadata.required_capabilities,
+        prohibited_capabilities: metadata.prohibited_capabilities,
+        installed_app,
+        compatibility,
+        operation_allowed: blocking_issues.is_empty(),
+        blocking_issues,
+    })
+}
+
+fn bounded_ipa_device_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(256)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn reject_blocked_ipa(preflight: &IpaPreflight) -> Result<(), String> {
+    let Some(issue) = preflight.blocking_issues.first() else {
+        return Ok(());
+    };
+    Err(match issue {
+        IpaPreflightIssue::AlreadyInstalled => {
+            "this app is already installed; use the explicit upgrade action".into()
+        }
+        IpaPreflightIssue::NotInstalled => {
+            "this app is not installed; use the explicit install action".into()
+        }
+        IpaPreflightIssue::MinimumOsUnsupported => {
+            "the device does not meet the IPA minimum OS version".into()
+        }
+        IpaPreflightIssue::DeviceFamilyUnsupported => {
+            "the IPA does not support this device family".into()
+        }
+        IpaPreflightIssue::RequiredCapabilitiesUnsupported => {
+            "the device does not provide all IPA required capabilities".into()
+        }
+    })
 }
 
 async fn uninstall_user_app(
@@ -3427,6 +3585,15 @@ async fn list_device_apps(
                                 dynamic_disk_usage_bytes,
                                 total_disk_usage_bytes,
                             ) = metadata.map(app_disk_usage).unwrap_or((None, None, None));
+                            let signing_kind = app_signing_kind(
+                                metadata,
+                                entry.is_first_party,
+                                entry.is_developer_app,
+                            );
+                            let is_developer_app = entry.is_developer_app
+                                || signing_kind == crate::protocol::AppSigningKind::Development;
+                            let minimum_os_version = metadata.and_then(app_minimum_os_version);
+                            let debuggable = metadata.and_then(app_debuggable);
                             DeviceApp {
                                 is_running: processes.as_ref().map(|processes| {
                                     processes.iter().any(|process| {
@@ -3444,8 +3611,11 @@ async fn list_device_apps(
                                 bundle_version: entry.bundle_version,
                                 is_removable: entry.is_removable,
                                 is_first_party: entry.is_first_party,
-                                is_developer_app: entry.is_developer_app,
+                                is_developer_app,
                                 is_app_clip: entry.is_app_clip,
+                                signing_kind,
+                                minimum_os_version,
+                                debuggable,
                                 documents_available,
                                 static_disk_usage_bytes,
                                 dynamic_disk_usage_bytes,
@@ -3510,6 +3680,10 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
         .or_else(|| string("CFBundleName"))
         .unwrap_or_else(|| bundle_id.clone());
     let signer = string("SignerIdentity").unwrap_or_default();
+    let is_first_party = boolean("IsFirstParty").unwrap_or(false);
+    let is_developer_app = boolean("IsXcodeManaged").unwrap_or(false)
+        || signer.contains("Apple Development")
+        || signer.contains("iPhone Developer");
     let (static_disk_usage_bytes, dynamic_disk_usage_bytes, total_disk_usage_bytes) =
         app_disk_usage(value);
     Some(DeviceApp {
@@ -3518,17 +3692,94 @@ fn device_app_from_installation(bundle_id: String, value: &plist::Value) -> Opti
         version: string("CFBundleShortVersionString"),
         bundle_version: string("CFBundleVersion"),
         is_removable: boolean("IsRemovable").unwrap_or(false),
-        is_first_party: boolean("IsFirstParty")
-            .unwrap_or_else(|| signer.contains("Apple iPhone OS Application Signing")),
-        is_developer_app: boolean("IsXcodeManaged").unwrap_or(false)
-            || signer.contains("Apple Development"),
+        is_first_party,
+        is_developer_app,
         is_app_clip: false,
+        signing_kind: app_signing_kind(Some(value), is_first_party, is_developer_app),
+        minimum_os_version: app_minimum_os_version(value),
+        debuggable: app_debuggable(value),
         documents_available: installation_supports_documents(value),
         static_disk_usage_bytes,
         dynamic_disk_usage_bytes,
         total_disk_usage_bytes,
         is_running: None,
     })
+}
+
+fn app_signing_kind(
+    value: Option<&plist::Value>,
+    is_first_party: bool,
+    is_developer_app: bool,
+) -> crate::protocol::AppSigningKind {
+    use crate::protocol::AppSigningKind;
+
+    if is_first_party {
+        return AppSigningKind::System;
+    }
+    let fields = value.and_then(plist::Value::as_dictionary);
+    let signer = fields
+        .and_then(|fields| fields.get("SignerIdentity"))
+        .and_then(plist::Value::as_string)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let xcode_managed = fields
+        .and_then(|fields| fields.get("IsXcodeManaged"))
+        .and_then(plist::Value::as_boolean)
+        .unwrap_or(false);
+    if is_developer_app
+        || xcode_managed
+        || signer.contains("development")
+        || signer.contains("developer")
+    {
+        return AppSigningKind::Development;
+    }
+    let testflight = fields.is_some_and(|fields| {
+        fields.contains_key("BetaExternalVersionIdentifier")
+            || fields
+                .get("IsBetaApp")
+                .and_then(plist::Value::as_boolean)
+                .unwrap_or(false)
+    });
+    if testflight {
+        AppSigningKind::TestFlight
+    } else if signer.contains("iphone os application signing") {
+        AppSigningKind::AppStore
+    } else if signer.contains("distribution") {
+        AppSigningKind::Distribution
+    } else {
+        AppSigningKind::Unknown
+    }
+}
+
+fn app_minimum_os_version(value: &plist::Value) -> Option<String> {
+    let version = normalized_app_metadata_text(value, "MinimumOSVersion", 32)?;
+    let segments = version.split('.').collect::<Vec<_>>();
+    (segments.len() <= 4
+        && segments.iter().all(|segment| {
+            !segment.is_empty()
+                && segment.len() <= 3
+                && segment.bytes().all(|byte| byte.is_ascii_digit())
+        }))
+    .then_some(version)
+}
+
+fn app_debuggable(value: &plist::Value) -> Option<bool> {
+    value
+        .as_dictionary()?
+        .get("Entitlements")?
+        .as_dictionary()?
+        .get("get-task-allow")?
+        .as_boolean()
+}
+
+fn normalized_app_metadata_text(
+    value: &plist::Value,
+    key: &str,
+    max_chars: usize,
+) -> Option<String> {
+    let raw = value.as_dictionary()?.get(key)?.as_string()?;
+    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!normalized.is_empty() && normalized.chars().count() <= max_chars).then_some(normalized)
 }
 
 const MAX_APP_DISK_USAGE_BYTES: u64 = 16 * 1_000_000_000_000;
@@ -4176,6 +4427,7 @@ async fn dispatch(
         | InputCmd::ListRunningProcesses(_)
         | InputCmd::WdaAutomation(_)
         | InputCmd::WdaRunner(_)
+        | InputCmd::AppConsole(_)
         | InputCmd::GetAppIcon { .. }
         | InputCmd::TakeScreenshot(_)
         | InputCmd::NetworkCapture(_)
@@ -4197,6 +4449,7 @@ async fn dispatch(
         | InputCmd::ReadCrashReport { .. }
         | InputCmd::ExportCrashReport { .. }
         | InputCmd::DeleteCrashReport { .. }
+        | InputCmd::PreflightApp { .. }
         | InputCmd::InstallApp { .. }
         | InputCmd::UpgradeApp { .. }
         | InputCmd::UninstallApp { .. }
@@ -6251,6 +6504,87 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_app_signing_metadata_without_exposing_signer_identity() {
+        use crate::protocol::AppSigningKind;
+
+        let metadata = |signer: &str, extra: Vec<(&str, plist::Value)>| {
+            let mut fields = plist::Dictionary::new();
+            fields.insert("SignerIdentity".into(), signer.into());
+            fields.extend(extra.into_iter().map(|(key, value)| (key.into(), value)));
+            plist::Value::Dictionary(fields)
+        };
+        let development = metadata(
+            "Apple Development: Private Name (TEAM123)",
+            vec![
+                ("MinimumOSVersion", " 17.0\n".into()),
+                (
+                    "Entitlements",
+                    plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                        String::from("get-task-allow"),
+                        plist::Value::Boolean(true),
+                    )])),
+                ),
+            ],
+        );
+        assert_eq!(
+            app_signing_kind(Some(&development), false, false),
+            AppSigningKind::Development
+        );
+        assert_eq!(
+            app_minimum_os_version(&development).as_deref(),
+            Some("17.0")
+        );
+        assert_eq!(app_debuggable(&development), Some(true));
+
+        let testflight = metadata(
+            "Apple iPhone OS Application Signing",
+            vec![("BetaExternalVersionIdentifier", 123_u64.into())],
+        );
+        assert_eq!(
+            app_signing_kind(Some(&testflight), false, false),
+            AppSigningKind::TestFlight
+        );
+        assert_eq!(
+            app_signing_kind(
+                Some(&metadata("Apple iPhone OS Application Signing", vec![])),
+                false,
+                false,
+            ),
+            AppSigningKind::AppStore
+        );
+        assert_eq!(
+            app_signing_kind(
+                Some(&metadata("iPhone Distribution: Private Company", vec![])),
+                false,
+                false,
+            ),
+            AppSigningKind::Distribution
+        );
+        assert_eq!(
+            app_signing_kind(Some(&testflight), true, false),
+            AppSigningKind::System
+        );
+        assert_eq!(
+            app_signing_kind(None, false, false),
+            AppSigningKind::Unknown
+        );
+    }
+
+    #[test]
+    fn rejects_unbounded_app_metadata_text() {
+        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            String::from("MinimumOSVersion"),
+            plist::Value::String("x".repeat(33)),
+        )]));
+        assert_eq!(app_minimum_os_version(&value), None);
+        let invalid = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            String::from("MinimumOSVersion"),
+            plist::Value::String("17.0 beta".into()),
+        )]));
+        assert_eq!(app_minimum_os_version(&invalid), None);
+    }
+
+    #[test]
     fn matches_only_an_apps_main_executable() {
         let app = "/private/var/containers/Bundle/Application/UUID/Example.app/";
         assert!(process_executable_belongs_to_app(
@@ -6269,28 +6603,5 @@ mod tests {
             app,
             "/private/var/containers/Bundle/Application/OTHER/Example.app/Example"
         ));
-    }
-
-    #[tokio::test]
-    async fn validates_and_canonicalizes_ipa_files() {
-        let directory =
-            std::env::temp_dir().join(format!("devicehub-mask-ipa-test-{}", uuid::Uuid::new_v4()));
-        tokio::fs::create_dir_all(&directory).await.unwrap();
-        let ipa = directory.join("Example.IPA");
-        tokio::fs::write(&ipa, b"placeholder").await.unwrap();
-
-        let (validated, label) = validate_ipa_path(&ipa).await.unwrap();
-        assert_eq!(validated, tokio::fs::canonicalize(&ipa).await.unwrap());
-        assert_eq!(label, "Example.IPA");
-        assert!(
-            validate_ipa_path(&directory.join("Example.zip"))
-                .await
-                .is_err()
-        );
-
-        let fake_ipa_directory = directory.join("folder.ipa");
-        tokio::fs::create_dir(&fake_ipa_directory).await.unwrap();
-        assert!(validate_ipa_path(&fake_ipa_directory).await.is_err());
-        let _ = tokio::fs::remove_dir_all(directory).await;
     }
 }

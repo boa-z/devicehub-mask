@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 arboard = { version = "3", default-features = false, features = ["image-data"] }
+async_zip = { version = "0.0.18", features = ["tokio-fs", "deflate"] }
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1"

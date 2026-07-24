@@ -2,6 +2,7 @@ import {
   AppstoreOutlined,
   BugOutlined,
   CheckOutlined,
+  CodeOutlined,
   CopyOutlined,
   DatabaseOutlined,
   DeleteOutlined,
@@ -30,9 +31,10 @@ import { Alert, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
+import { AppConsoleModal } from "./AppConsoleModal";
 import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
+import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -108,6 +110,17 @@ function DeviceAppIcon({ app, request }: { app: DeviceApp; request: Request }) {
   );
 }
 
+function appSigningTagColor(kind: DeviceApp["signing_kind"]): string | undefined {
+  switch (kind) {
+    case "system": return "gold";
+    case "development": return "blue";
+    case "test_flight": return "cyan";
+    case "distribution": return "orange";
+    case "app_store": return "green";
+    case "unknown": return undefined;
+  }
+}
+
 export function DeviceInspector({
   activeUdid,
   activeDeviceId,
@@ -148,6 +161,7 @@ export function DeviceInspector({
   const [deletingReport, setDeletingReport] = useState<string | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
+  const [ipaPreflightBusy, setIpaPreflightBusy] = useState(false);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
   const [forgettingTrust, setForgettingTrust] = useState(false);
   const [backupStatus, setBackupStatus] = useState<DeviceBackupStatus | null>(null);
@@ -163,6 +177,7 @@ export function DeviceInspector({
   const [developerImageAction, setDeveloperImageAction] = useState<"start" | "stop" | "unmount" | null>(null);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
+  const [consoleApp, setConsoleApp] = useState<DeviceApp | null>(null);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
   const handledDeveloperImageState = useRef<string>("");
@@ -288,8 +303,10 @@ export function DeviceInspector({
     setExportingReport(null);
     setDeletingReport(null);
     setAppOperation(null);
+    setIpaPreflightBusy(false);
     setProfileMutation(null);
     setDocumentsApp(null);
+    setConsoleApp(null);
     setRenameOpen(false);
     setRenameValue("");
     setRenameBusy(false);
@@ -690,7 +707,8 @@ export function DeviceInspector({
     }
   };
 
-  const installApp = async (operation: "install" | "upgrade") => {
+  const installApp = async (operation: IpaOperation) => {
+    if (ipaPreflightBusy || appOperation?.state === "running") return;
     try {
       const selected = await open({
         multiple: false,
@@ -698,15 +716,71 @@ export function DeviceInspector({
         filters: [{ name: t("deviceInspector.ipaFile"), extensions: ["ipa"] }],
       });
       if (!selected || Array.isArray(selected)) return;
-      const response = await request(`/api/device/apps/${operation}`, {
+      setIpaPreflightBusy(true);
+      const preflight = await readJson<IpaPreflight>(await request("/api/device/apps/preflight", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: selected }),
+        body: JSON.stringify({ path: selected, operation }),
+      }));
+      setIpaPreflightBusy(false);
+      const version = [preflight.version, preflight.bundle_version].filter(Boolean).join(" (") + (preflight.version && preflight.bundle_version ? ")" : "");
+      const installedVersion = preflight.installed_app
+        ? [preflight.installed_app.version, preflight.installed_app.bundle_version].filter(Boolean).join(" (") + (preflight.installed_app.version && preflight.installed_app.bundle_version ? ")" : "")
+        : t("deviceInspector.notInstalled");
+      const deviceFamilies = preflight.device_families.length === 0
+        ? t("deviceInspector.notDeclared")
+        : preflight.device_families.map((family) => t(`deviceInspector.ipaDeviceFamilies.${family}`, { defaultValue: `#${family}` })).join(", ");
+      const capabilities = preflight.required_capabilities.length === 0
+        ? t("deviceInspector.noneRequired")
+        : preflight.required_capabilities.join(", ");
+      const hasUnknownCompatibility = Object.values(preflight.compatibility).some((value) => value === null)
+        || preflight.prohibited_capabilities.length > 0;
+      Modal.confirm({
+        title: t(operation === "upgrade" ? "deviceInspector.confirmAppUpgrade" : "deviceInspector.confirmAppInstall"),
+        width: 560,
+        content: (
+          <div className="ipa-preflight">
+            <div className="ipa-preflight-summary">
+              <Typography.Text strong>{preflight.name}</Typography.Text>
+              <Typography.Text type="secondary" copyable={{ text: preflight.bundle_id }}>{preflight.bundle_id}</Typography.Text>
+            </div>
+            <dl className="ipa-preflight-details">
+              <dt>{t("deviceInspector.ipaVersion")}</dt><dd>{version || "-"}</dd>
+              <dt>{t("deviceInspector.installedVersion")}</dt><dd>{installedVersion || "-"}</dd>
+              <dt>{t("deviceInspector.ipaSize")}</dt><dd>{formatFileSize(preflight.file_size_bytes)}</dd>
+              <dt>{t("deviceInspector.minimumOs")}</dt><dd>{preflight.minimum_os_version ?? t("deviceInspector.notDeclared")}</dd>
+              <dt>{t("deviceInspector.deviceFamilies")}</dt><dd>{deviceFamilies}</dd>
+              <dt>{t("deviceInspector.requiredCapabilities")}</dt><dd>{capabilities}</dd>
+            </dl>
+            {preflight.blocking_issues.map((issue) => (
+              <Alert key={issue} type="error" showIcon message={t(`deviceInspector.ipaPreflightIssues.${issue}`)} />
+            ))}
+            {preflight.operation_allowed && hasUnknownCompatibility && (
+              <Alert type="warning" showIcon message={t("deviceInspector.ipaCompatibilityIncomplete")} />
+            )}
+          </div>
+        ),
+        okText: t(operation === "upgrade" ? "deviceInspector.upgrade" : "deviceInspector.install"),
+        cancelText: t("common.cancel"),
+        okButtonProps: { disabled: !preflight.operation_allowed },
+        async onOk() {
+          const response = await request(`/api/device/apps/${operation}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: selected }),
+          });
+          if (!response.ok) {
+            const failure = new Error((await response.text()) || response.statusText);
+            void message.error(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(failure) }));
+            throw failure;
+          }
+          await refreshAppOperation();
+        },
       });
-      if (!response.ok) throw new Error((await response.text()) || response.statusText);
-      await refreshAppOperation();
     } catch (installError) {
       void message.error(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(installError) }));
+    } finally {
+      setIpaPreflightBusy(false);
     }
   };
 
@@ -1552,11 +1626,11 @@ export function DeviceInspector({
                   { key: "install", icon: <UploadOutlined />, label: t("deviceInspector.installApp") },
                   { key: "upgrade", icon: <ReloadOutlined />, label: t("deviceInspector.upgradeApp") },
                 ],
-                onClick: ({ key }) => void installApp(key as "install" | "upgrade"),
+                onClick: ({ key }) => void installApp(key as IpaOperation),
               }}
             >
               <Tooltip title={t("deviceInspector.installOrUpgradeApp")}>
-                <Button aria-label={t("deviceInspector.installOrUpgradeApp")} icon={<UploadOutlined />} disabled={appMutationRunning} />
+                <Button aria-label={t("deviceInspector.installOrUpgradeApp")} icon={<UploadOutlined />} loading={ipaPreflightBusy} disabled={appMutationRunning} />
               </Tooltip>
             </Dropdown>
           </div>
@@ -1647,6 +1721,13 @@ export function DeviceInspector({
                 : bindingState === "other"
                   ? t("deviceInspector.appProfileBoundOther", { profile: boundProfile })
                   : t(bindingState === "active" ? "deviceInspector.unbindAppProfile" : "deviceInspector.bindAppProfile", { profile: activeProfile });
+              const signingTooltip = [
+                t(`deviceInspector.appSigningKinds.${app.signing_kind}`),
+                app.minimum_os_version ? t("deviceInspector.appMinimumOs", { version: app.minimum_os_version }) : null,
+                app.debuggable === null
+                  ? null
+                  : t(app.debuggable ? "deviceInspector.appDebuggable" : "deviceInspector.appNotDebuggable"),
+              ].filter(Boolean).join(" · ");
               return <div className="device-app-row" key={app.bundle_id}>
                 <DeviceAppIcon app={app} request={request} />
                 <div className="device-app-meta">
@@ -1664,8 +1745,9 @@ export function DeviceInspector({
                     )}
                     {locationLabel && <Tooltip title={locationTooltip}><Tag color="cyan">{locationLabel}</Tag></Tooltip>}
                     {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
-                    {app.is_first_party && <Tag color="gold">{t("deviceInspector.systemApp")}</Tag>}
-                    {app.is_developer_app && <Tag color="blue">{t("deviceInspector.developerApp")}</Tag>}
+                    <Tooltip title={signingTooltip}>
+                      <Tag color={appSigningTagColor(app.signing_kind)}>{t(`deviceInspector.appSigningKinds.${app.signing_kind}`)}</Tag>
+                    </Tooltip>
                     {app.is_app_clip && <Tag color="processing">{t("deviceInspector.appClip")}</Tag>}
                     {activeWdaRunner && wdaRunnerStatus?.phase === "starting" && <Tag color="processing">{t("deviceInspector.wdaRunnerStarting")}</Tag>}
                     {activeWdaRunner && wdaRunnerStatus?.phase === "running" && <Tag color="success">{t("deviceInspector.wdaRunnerRunning")}</Tag>}
@@ -1704,6 +1786,16 @@ export function DeviceInspector({
                         loading={wdaRunnerAction === app.bundle_id}
                         disabled={wdaRunnerAction !== null || (wdaRunnerStatus?.managed === true && !activeWdaRunner)}
                         onClick={() => activeWdaRunner && wdaRunnerStatus?.managed ? void stopWdaRunner() : startWdaRunner(app)}
+                      />
+                    </Tooltip>
+                  )}
+                  {(!app.is_first_party || app.is_developer_app) && !app.is_app_clip && (
+                    <Tooltip title={t("deviceInspector.launchWithConsole")}>
+                      <Button
+                        size="small"
+                        icon={<CodeOutlined />}
+                        disabled={appProcessAction !== null || consoleApp !== null}
+                        onClick={() => setConsoleApp(app)}
                       />
                     </Tooltip>
                   )}
@@ -1914,6 +2006,7 @@ export function DeviceInspector({
         }}
       />
     </Modal>
+    <AppConsoleModal app={consoleApp} request={request} onClose={() => setConsoleApp(null)} />
     <AppDocumentsModal app={documentsApp} request={request} onClose={() => setDocumentsApp(null)} />
     </>
   );

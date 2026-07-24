@@ -1,3 +1,4 @@
+mod app_console;
 mod app_documents;
 mod app_icons;
 mod application;
@@ -19,6 +20,7 @@ mod diagnostics;
 mod heartbeat;
 mod hid;
 mod home_screen;
+mod ipa;
 mod location;
 mod log_archive;
 mod mcp;

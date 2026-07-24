@@ -258,11 +258,32 @@ export type DeviceApp = {
   is_first_party: boolean;
   is_developer_app: boolean;
   is_app_clip: boolean;
+  signing_kind: "system" | "development" | "test_flight" | "app_store" | "distribution" | "unknown";
+  minimum_os_version: string | null;
+  debuggable: boolean | null;
   documents_available: boolean;
   static_disk_usage_bytes: number | null;
   dynamic_disk_usage_bytes: number | null;
   total_disk_usage_bytes: number | null;
   is_running: boolean | null;
+};
+export type AppConsolePhase = "stopped" | "starting" | "running" | "exited" | "failed";
+export type AppConsoleLine = {
+  sequence: number;
+  text: string;
+};
+export type AppConsoleSnapshot = {
+  phase: AppConsolePhase;
+  bundle_id: string | null;
+  started_at_ms: number | null;
+  ended_at_ms: number | null;
+  total_bytes: number;
+  total_lines: number;
+  dropped_lines: number;
+  next_sequence: number;
+  reset: boolean;
+  lines: AppConsoleLine[];
+  last_error: string | null;
 };
 export type WdaRunnerStatus = {
   phase: "stopped" | "starting" | "running" | "failed";
@@ -381,6 +402,29 @@ export type AppOperation = {
   progress: number | null;
   label: string | null;
   error: string | null;
+};
+export type IpaOperation = "install" | "upgrade";
+export type IpaPreflightIssue = "already_installed" | "not_installed" | "minimum_os_unsupported" | "device_family_unsupported" | "required_capabilities_unsupported";
+export type IpaPreflight = {
+  operation: IpaOperation;
+  file_name: string;
+  file_size_bytes: number;
+  bundle_id: string;
+  name: string;
+  version: string | null;
+  bundle_version: string | null;
+  minimum_os_version: string | null;
+  device_families: number[];
+  required_capabilities: string[];
+  prohibited_capabilities: string[];
+  installed_app: { name: string; version: string | null; bundle_version: string | null } | null;
+  compatibility: {
+    minimum_os_supported: boolean | null;
+    device_family_supported: boolean | null;
+    capabilities_supported: boolean | null;
+  };
+  blocking_issues: IpaPreflightIssue[];
+  operation_allowed: boolean;
 };
 export type ProvisioningProfile = {
   name: string;

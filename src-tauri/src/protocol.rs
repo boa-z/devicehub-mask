@@ -327,6 +327,8 @@ pub enum InputCmd {
     WdaAutomation(crate::wda_automation::WdaAutomationCommand),
     /// Manage one installed WebDriverAgent XCTest runner for the active session.
     WdaRunner(crate::wda_runner::WdaRunnerCommand),
+    /// Launch an installed application with a bounded, session-only console capture.
+    AppConsole(crate::app_console::AppConsoleCommand),
     /// Read one validated PNG application icon through SpringBoardServices.
     GetAppIcon {
         bundle_id: String,
@@ -386,6 +388,12 @@ pub enum InputCmd {
     DeleteCrashReport {
         device_path: String,
         reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Parse and validate a local IPA against the active device without uploading it.
+    PreflightApp {
+        path: PathBuf,
+        operation: crate::ipa::IpaOperation,
+        reply: oneshot::Sender<Result<crate::ipa::IpaPreflight, String>>,
     },
     /// Validate and install a local IPA without blocking the HID dispatch loop.
     InstallApp {
@@ -648,12 +656,26 @@ pub struct DeviceApp {
     pub is_first_party: bool,
     pub is_developer_app: bool,
     pub is_app_clip: bool,
+    pub signing_kind: AppSigningKind,
+    pub minimum_os_version: Option<String>,
+    pub debuggable: Option<bool>,
     pub documents_available: bool,
     pub static_disk_usage_bytes: Option<u64>,
     pub dynamic_disk_usage_bytes: Option<u64>,
     pub total_disk_usage_bytes: Option<u64>,
     /// `None` means the process list was unavailable for this request.
     pub is_running: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppSigningKind {
+    System,
+    Development,
+    TestFlight,
+    AppStore,
+    Distribution,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize)]

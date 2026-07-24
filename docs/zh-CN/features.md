@@ -36,8 +36,9 @@
 ### App
 
 - 通过 CoreDevice AppService 列出用户 App，并可按需列出 Apple 默认 App；用户 App 目录可 回退 Installation Proxy。
+- 可通过 CoreDevice OpenStdioSocket 显式启动开发者 App 或第三方 App，并在当前会话内有界采集 stdout/stderr。
 - 在设备允许时显示原生图标、版本、签名类型、可移除状态、上报存储、运行状态，以及 SpringBoard Dock/页面/文件夹位置。
-- 支持启动、重新启动、停止、安装新 IPA、通过 IPA 显式升级已安装 App，以及安全卸载符合条件的用户 App；操作由当前会话持有，并报告进度或失败。
+- 支持启动、重新启动、停止、安装新 IPA、通过 IPA 显式升级已安装 App，以及安全卸载符合条件的用户 App。上传前会显示经过限制的 IPA 元数据，并针对活动设备核对操作类型、最低系统版本、设备族和声明的所需能力；操作由当前会话持有，并报告进度或失败。
 - iOS 允许时通过 House Arrest 打开 Documents 或完整 Container，执行有界的文件与目录 传输和修改。
 - 可将 App 关联到已保存的按键映射配置；从 App 列表启动时会激活对应配置。
 - 可显式启动和停止已安装、开发者签名的 WebDriverAgent `.xctrunner`；应用不会安装或签名 WDA。
@@ -67,6 +68,7 @@
 | 设备身份、名称、存储回退 | Lockdown |
 | 画面、音频、方向、剪贴板、HID | CoreDevice display、orientation、Pasteboard 和 HID 服务 |
 | App 列表、进程状态、启动、停止 | CoreDevice AppService |
+| 显式带控制台启动 App | CoreDevice AppService + OpenStdioSocket |
 | IPA 安装与用户 App 回退 | Installation Proxy |
 | App Documents/Container | House Arrest 和 AFC |
 | 公共媒体文件 | 标准 AFC / remote AFC shim |
