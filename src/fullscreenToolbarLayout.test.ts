@@ -80,4 +80,13 @@ describe("fullscreen toolbar layout", () => {
       toolbar,
     )).toEqual({ hardware: "top-center", function: "bottom-center" });
   });
+
+  it("never displaces hardware controls when every function slot overlaps", () => {
+    expect(reconcileFullscreenToolbarDocks(
+      { hardware: "top-center", function: "bottom-center" },
+      { width: 120, height: 80 },
+      { width: 104, height: 44 },
+      { width: 104, height: 44 },
+    ).hardware).toBe("top-center");
+  });
 });
