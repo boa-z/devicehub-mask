@@ -129,6 +129,13 @@ export function filterProvisioningProfiles(
   });
 }
 
+export function canTrustProvisioningProfileSigner(profile: ProvisioningProfile): boolean {
+  return profile.parse_error === null
+    && !profile.is_expired
+    && profile.get_task_allow
+    && profile.removal_supported;
+}
+
 export function formatProfileDate(value: string | null, locale: string): string {
   if (!value) return "-";
   const date = new Date(value);

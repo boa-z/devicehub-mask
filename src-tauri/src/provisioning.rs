@@ -1,16 +1,19 @@
 use std::future::Future;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use cms::content_info::ContentInfo;
 use cms::signed_data::SignedData;
 use der::Decode;
 use der::asn1::{ObjectIdentifier, OctetString};
-use idevice::RsdService;
 use idevice::misagent::MisagentClient;
+use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
+use idevice::services::amfi::AmfiClient;
 use idevice::tcp::handle::AdapterHandle;
+use idevice::{IdeviceService, RsdService};
 use plist::{Dictionary, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -30,6 +33,7 @@ pub enum ProvisioningFailure {
     Invalid(String),
     NotFound(String),
     Conflict(String),
+    Operation(String),
     Unavailable(String),
     Deadline(String),
     Timeout(String),
@@ -41,6 +45,7 @@ impl ProvisioningFailure {
             Self::Invalid(message)
             | Self::NotFound(message)
             | Self::Conflict(message)
+            | Self::Operation(message)
             | Self::Unavailable(message)
             | Self::Deadline(message)
             | Self::Timeout(message) => message,
@@ -74,11 +79,17 @@ pub enum ProvisioningCommand {
         expires_at: tokio::time::Instant,
         reply: oneshot::Sender<Result<(), ProvisioningFailure>>,
     },
+    TrustSigner {
+        uuid: String,
+        expires_at: tokio::time::Instant,
+        reply: oneshot::Sender<Result<(), ProvisioningFailure>>,
+    },
 }
 
 pub async fn supervise(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
+    provider: Arc<dyn IdeviceProvider>,
     mut commands: mpsc::Receiver<ProvisioningCommand>,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -124,7 +135,7 @@ pub async fn supervise(
                 }
                 command = commands.recv() => {
                     let Some(command) = command else { break None };
-                    if let Err(error) = handle_command(&mut client, command).await {
+                    if let Err(error) = handle_command(&mut client, provider.as_ref(), command).await {
                         break Some(error);
                     }
                 }
@@ -141,6 +152,7 @@ pub async fn supervise(
 
 async fn handle_command(
     client: &mut MisagentClient,
+    provider: &dyn IdeviceProvider,
     command: ProvisioningCommand,
 ) -> Result<(), String> {
     match command {
@@ -274,7 +286,82 @@ async fn handle_command(
                 }
             }
         }
+        ProvisioningCommand::TrustSigner {
+            uuid,
+            expires_at,
+            reply,
+        } => {
+            let Some(reply) = active_reply(expires_at, reply) else {
+                return Ok(());
+            };
+            match trust_signer_until(client, provider, &uuid, expires_at).await {
+                Ok(()) => {
+                    let _ = reply.send(Ok(()));
+                    Ok(())
+                }
+                Err(error) => {
+                    let reconnect = error.reconnect_service();
+                    let message = error.to_string();
+                    let _ = reply.send(Err(error));
+                    if reconnect { Err(message) } else { Ok(()) }
+                }
+            }
+        }
     }
+}
+
+async fn trust_signer_until(
+    client: &mut MisagentClient,
+    provider: &dyn IdeviceProvider,
+    uuid: &str,
+    expires_at: tokio::time::Instant,
+) -> Result<(), ProvisioningFailure> {
+    let profiles = list_profiles_until(client, expires_at).await?;
+    let profile_uuid = authorize_signer_profile(&profiles, uuid)?;
+    let trusted = tokio::time::timeout_at(
+        expires_at.min(tokio::time::Instant::now() + OPERATION_TIMEOUT),
+        async {
+            let mut amfi = AmfiClient::connect(provider).await?;
+            amfi.trust_app_signer(&profile_uuid).await
+        },
+    )
+    .await
+    .map_err(|_| ProvisioningFailure::Operation("app signer trust request timed out".into()))?
+    .map_err(|error| {
+        ProvisioningFailure::Operation(format!("unable to trust app signer: {error}"))
+    })?;
+    if !trusted {
+        return Err(ProvisioningFailure::Conflict(
+            "device did not confirm the app signer as trusted".into(),
+        ));
+    }
+    tracing::info!(
+        component = "provisioning",
+        operation = "trust_app_signer",
+        profile_uuid,
+        "device confirmed app signer trust"
+    );
+    Ok(())
+}
+
+fn authorize_signer_profile(
+    profiles: &[ProvisioningProfile],
+    uuid: &str,
+) -> Result<String, ProvisioningFailure> {
+    let requested = uuid::Uuid::parse_str(uuid)
+        .map_err(|_| ProvisioningFailure::Invalid("invalid provisioning profile UUID".into()))?;
+    let profile = profiles
+        .iter()
+        .find(|profile| uuid::Uuid::parse_str(&profile.uuid).ok() == Some(requested))
+        .ok_or_else(|| {
+            ProvisioningFailure::NotFound("provisioning profile is not installed".into())
+        })?;
+    if profile.parse_error.is_some() || profile.is_expired || !profile.get_task_allow {
+        return Err(ProvisioningFailure::Invalid(
+            "app signer trust requires a valid, unexpired development profile".into(),
+        ));
+    }
+    Ok(profile.uuid.clone())
 }
 
 fn active_reply<T>(
@@ -650,6 +737,32 @@ mod tests {
     }
 
     #[test]
+    fn signer_trust_authorizes_only_an_installed_valid_development_profile() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(20);
+        let valid =
+            parse_profile_plist(&profile_value(now + Duration::from_secs(10)), now).unwrap();
+        assert_eq!(
+            authorize_signer_profile(std::slice::from_ref(&valid), &valid.uuid).unwrap(),
+            valid.uuid
+        );
+
+        let mut expired = valid.clone();
+        expired.is_expired = true;
+        assert!(matches!(
+            authorize_signer_profile(&[expired], &valid.uuid),
+            Err(ProvisioningFailure::Invalid(_))
+        ));
+        assert!(matches!(
+            authorize_signer_profile(&[], &valid.uuid),
+            Err(ProvisioningFailure::NotFound(_))
+        ));
+        assert!(matches!(
+            authorize_signer_profile(&[valid], "not-a-uuid"),
+            Err(ProvisioningFailure::Invalid(_))
+        ));
+    }
+
+    #[test]
     fn expired_profiles_are_detected_against_the_supplied_clock() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(20);
         let parsed =
@@ -763,6 +876,7 @@ mod tests {
         assert!(!ProvisioningFailure::Invalid("invalid".into()).reconnect_service());
         assert!(!ProvisioningFailure::NotFound("missing".into()).reconnect_service());
         assert!(!ProvisioningFailure::Conflict("conflict".into()).reconnect_service());
+        assert!(!ProvisioningFailure::Operation("failed".into()).reconnect_service());
         assert!(!ProvisioningFailure::Deadline("expired".into()).reconnect_service());
         assert!(ProvisioningFailure::Unavailable("closed".into()).reconnect_service());
         assert!(ProvisioningFailure::Timeout("slow".into()).reconnect_service());

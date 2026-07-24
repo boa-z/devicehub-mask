@@ -30,7 +30,7 @@ import { Alert, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AppDocumentsModal } from "./AppDocumentsModal";
-import { appProfileBindingState, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
@@ -690,7 +690,7 @@ export function DeviceInspector({
     }
   };
 
-  const installApp = async () => {
+  const installApp = async (operation: "install" | "upgrade") => {
     try {
       const selected = await open({
         multiple: false,
@@ -698,7 +698,7 @@ export function DeviceInspector({
         filters: [{ name: t("deviceInspector.ipaFile"), extensions: ["ipa"] }],
       });
       if (!selected || Array.isArray(selected)) return;
-      const response = await request("/api/device/apps/install", {
+      const response = await request(`/api/device/apps/${operation}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: selected }),
@@ -706,7 +706,7 @@ export function DeviceInspector({
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       await refreshAppOperation();
     } catch (installError) {
-      void message.error(t("deviceInspector.appInstallFailed", { error: String(installError) }));
+      void message.error(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(installError) }));
     }
   };
 
@@ -763,7 +763,7 @@ export function DeviceInspector({
       cancelText: t("common.cancel"),
       okButtonProps: { danger: true },
       async onOk() {
-        setProfileMutation(profile.uuid);
+        setProfileMutation(`remove:${profile.uuid}`);
         try {
           const response = await request(`/api/device/provisioning-profiles/${encodeURIComponent(profile.uuid)}`, {
             method: "DELETE",
@@ -773,6 +773,31 @@ export function DeviceInspector({
           await load();
         } catch (profileError) {
           void message.error(t("deviceInspector.profileRemoveFailed", { error: String(profileError) }));
+          throw profileError;
+        } finally {
+          setProfileMutation(null);
+        }
+      },
+    });
+  };
+
+  const trustProvisioningProfileSigner = (profile: ProvisioningProfile) => {
+    if (!canTrustProvisioningProfileSigner(profile) || profileMutation) return;
+    Modal.confirm({
+      title: t("deviceInspector.trustAppSigner"),
+      content: t("deviceInspector.trustAppSignerConfirm", { name: profile.name, uuid: profile.uuid }),
+      okText: t("deviceInspector.trustAppSignerAction"),
+      cancelText: t("common.cancel"),
+      async onOk() {
+        setProfileMutation(`trust:${profile.uuid}`);
+        try {
+          const response = await request(`/api/device/provisioning-profiles/${encodeURIComponent(profile.uuid)}/trust`, {
+            method: "PUT",
+          });
+          if (!response.ok) throw new Error((await response.text()) || response.statusText);
+          void message.success(t("deviceInspector.appSignerTrusted", { name: profile.name }));
+        } catch (profileError) {
+          void message.error(t("deviceInspector.appSignerTrustFailed", { error: String(profileError) }));
           throw profileError;
         } finally {
           setProfileMutation(null);
@@ -1520,9 +1545,20 @@ export function DeviceInspector({
                 />
               </Tooltip>
             </Dropdown>
-            <Tooltip title={t("deviceInspector.installApp")}>
-              <Button icon={<UploadOutlined />} disabled={appMutationRunning} onClick={() => void installApp()} />
-            </Tooltip>
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                items: [
+                  { key: "install", icon: <UploadOutlined />, label: t("deviceInspector.installApp") },
+                  { key: "upgrade", icon: <ReloadOutlined />, label: t("deviceInspector.upgradeApp") },
+                ],
+                onClick: ({ key }) => void installApp(key as "install" | "upgrade"),
+              }}
+            >
+              <Tooltip title={t("deviceInspector.installOrUpgradeApp")}>
+                <Button aria-label={t("deviceInspector.installOrUpgradeApp")} icon={<UploadOutlined />} disabled={appMutationRunning} />
+              </Tooltip>
+            </Dropdown>
           </div>
           {appOperation && appOperation.id > 0 && appOperation.state !== "idle" && (
             <div className="device-app-operation">
@@ -1755,13 +1791,24 @@ export function DeviceInspector({
                     <Tag color="success">{t("deviceInspector.profileValid")}</Tag>
                   )}
                   {profile.get_task_allow && <Tag color="blue">{t("deviceInspector.profileDevelopment")}</Tag>}
+                  {canTrustProvisioningProfileSigner(profile) && (
+                    <Tooltip title={t("deviceInspector.trustAppSigner")}>
+                      <Button
+                        size="small"
+                        icon={<SafetyCertificateOutlined />}
+                        loading={profileMutation === `trust:${profile.uuid}`}
+                        disabled={profileMutation !== null}
+                        onClick={() => trustProvisioningProfileSigner(profile)}
+                      />
+                    </Tooltip>
+                  )}
                   {profile.removal_supported && (
                     <Tooltip title={t("deviceInspector.removeProfile")}>
                       <Button
                         danger
                         size="small"
                         icon={<DeleteOutlined />}
-                        loading={profileMutation === profile.uuid}
+                        loading={profileMutation === `remove:${profile.uuid}`}
                         disabled={profileMutation !== null}
                         onClick={() => removeProvisioningProfile(profile)}
                       />

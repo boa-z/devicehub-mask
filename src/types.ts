@@ -371,7 +371,7 @@ export type DeviceLogsView = {
   source: DeviceLogSource | null;
   service: ServiceHealth | null;
 };
-export type AppOperationKind = "install" | "uninstall";
+export type AppOperationKind = "install" | "upgrade" | "uninstall";
 export type AppOperationState = "idle" | "running" | "succeeded" | "failed" | "cancelled";
 export type AppOperation = {
   id: number;

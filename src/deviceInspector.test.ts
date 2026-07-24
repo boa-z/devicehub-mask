@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
+import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -160,6 +160,14 @@ describe("device inspector", () => {
     expect(filterProvisioningProfiles(profiles, "", "valid")).toEqual([profiles[0]]);
     expect(filterProvisioningProfiles(profiles, "", "expired")).toEqual([profiles[1]]);
     expect(filterProvisioningProfiles(profiles, "", "invalid")).toEqual([profiles[2]]);
+  });
+
+  it("offers signer trust only for actionable development profiles", () => {
+    expect(canTrustProvisioningProfileSigner(profiles[0])).toBe(true);
+    expect(canTrustProvisioningProfileSigner(profiles[1])).toBe(false);
+    expect(canTrustProvisioningProfileSigner(profiles[2])).toBe(false);
+    expect(canTrustProvisioningProfileSigner({ ...profiles[0], get_task_allow: false })).toBe(false);
+    expect(canTrustProvisioningProfileSigner({ ...profiles[0], removal_supported: false })).toBe(false);
   });
 
   it("formats profile dates and rejects malformed values", () => {

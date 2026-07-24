@@ -37,14 +37,14 @@
 
 - 通过 CoreDevice AppService 列出用户 App，并可按需列出 Apple 默认 App；用户 App 目录可 回退 Installation Proxy。
 - 在设备允许时显示原生图标、版本、签名类型、可移除状态、上报存储、运行状态，以及 SpringBoard Dock/页面/文件夹位置。
-- 支持启动、重新启动、停止、IPA 安装和安全卸载符合条件的用户 App；操作由当前会话持有， 并报告进度或失败。
+- 支持启动、重新启动、停止、安装新 IPA、通过 IPA 显式升级已安装 App，以及安全卸载符合条件的用户 App；操作由当前会话持有，并报告进度或失败。
 - iOS 允许时通过 House Arrest 打开 Documents 或完整 Container，执行有界的文件与目录 传输和修改。
 - 可将 App 关联到已保存的按键映射配置；从 App 列表启动时会激活对应配置。
 - 可显式启动和停止已安装、开发者签名的 WebDriverAgent `.xctrunner`；应用不会安装或签名 WDA。
 
 ### 描述文件与崩溃报告
 
-- 通过 Misagent 列出描述文件。本地 `.mobileprovision` 安装会校验 CMS、UUID、大小与过期 状态；移除需要确认，并通过刷新后的设备目录验证。
+- 通过 Misagent 列出描述文件。本地 `.mobileprovision` 安装会校验 CMS、UUID、大小与过期 状态；移除需要确认，并通过刷新后的设备目录验证。有效的开发描述文件可在确认后显式请求 AMFI 信任 App 签名者。
 - 通过 CrashReportCopyMobile 列出、搜索、导出崩溃报告，并可在确认后逐条删除。MCP 保持只读，只能为 Agent 诊断读取另行限制大小的文本片段。
 
 ## 画面、音频与输入
@@ -72,7 +72,7 @@
 | 公共媒体文件 | 标准 AFC / remote AFC shim |
 | 电池与设备电源操作 | Diagnostics Relay |
 | 开发者模式与镜像 | AMFI 和 MobileImageMounter |
-| 描述文件 | Misagent |
+| 描述文件与显式签名者信任 | Misagent 和 AMFI |
 | 备份 | MobileBackup2 |
 | sysdiagnose | CoreDevice DiagnosticsService |
 | 设备日志与离线归档 | OsTraceRelay / SyslogRelay |
@@ -95,7 +95,7 @@
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。
 - WDA：`wda_runner_status`、`wda_start`、`wda_stop`、`wda_status`、 `wda_ui_tree`、`wda_find_elements`、`wda_click`。
 
-MCP 当前开放单向锁屏，但不开放设备重启或关机。重启与关机已经在桌面“设备信息”页实现， 并要求交互式确认。MCP 也不开放 AFC 修改、备份、sysdiagnose、统一日志归档导出、描述文件修改、抓包或开发者磁盘镜像修改。
+MCP 当前开放单向锁屏，但不开放设备重启或关机。重启与关机已经在桌面“设备信息”页实现，并要求交互式确认。MCP 也不开放 IPA 安装、升级或卸载、AMFI 签名者信任、AFC 修改、备份、sysdiagnose、统一日志归档导出、描述文件修改、抓包或开发者磁盘镜像修改。
 
 ## 有意保留的边界
 

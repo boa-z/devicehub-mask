@@ -42,7 +42,7 @@ use idevice::{
     springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
     tcp::handle::{AdapterHandle, UdpSocketHandle},
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
-    utils::installation::install_package_with_callback,
+    utils::installation::{install_package_with_callback, upgrade_package_with_callback},
 };
 use tokio::process::ChildStdin;
 
@@ -2048,6 +2048,7 @@ async fn run(
     supervisor.spawn(crate::provisioning::supervise(
         adapter.clone(),
         handshake.clone(),
+        provider.clone(),
         provisioning_receiver,
         supervisor.reporter("device.provisioning"),
         supervisor.shutdown_receiver(),
@@ -2481,6 +2482,9 @@ fn reject_provisioning_command(command: crate::provisioning::ProvisioningCommand
         ProvisioningCommand::Remove { reply, .. } => {
             let _ = reply.send(Err(failure()));
         }
+        ProvisioningCommand::TrustSigner { reply, .. } => {
+            let _ = reply.send(Err(failure()));
+        }
     }
 }
 
@@ -2707,29 +2711,57 @@ impl DeviceManagement {
         }
     }
 
-    async fn install_app(&mut self, path: PathBuf) -> Result<(), String> {
+    async fn install_app(&mut self, path: PathBuf, kind: AppOperationKind) -> Result<(), String> {
         self.clear_finished_operation();
         let (path, label) = validate_ipa_path(&path).await?;
-        let id = self.app_operation.start(AppOperationKind::Install, label)?;
+        let id = self.app_operation.start(kind, label)?;
         self.app_operation.update(id, "uploading", None);
 
         let provider = self.provider.clone();
         let operation = self.app_operation.clone();
         let task_operation = operation.clone();
         let handle = tokio::spawn(async move {
-            let result = install_package_with_callback(
-                provider.as_ref(),
-                path,
-                None,
-                |(progress, (operation, operation_id))| async move {
-                    operation.update(operation_id, "installing", Some(progress.min(100) as u8));
-                },
-                (task_operation, id),
-            )
-            .await;
+            let progress = |stage: &'static str| {
+                move |(progress, (operation, operation_id)): (u64, (AppOperationSlot, u64))| async move {
+                    operation.update(operation_id, stage, Some(progress.min(100) as u8));
+                }
+            };
+            let result = match kind {
+                AppOperationKind::Install => {
+                    install_package_with_callback(
+                        provider.as_ref(),
+                        path,
+                        None,
+                        progress("installing"),
+                        (task_operation, id),
+                    )
+                    .await
+                }
+                AppOperationKind::Upgrade => {
+                    upgrade_package_with_callback(
+                        provider.as_ref(),
+                        path,
+                        None,
+                        progress("upgrading"),
+                        (task_operation, id),
+                    )
+                    .await
+                }
+                AppOperationKind::Uninstall => unreachable!("package operation cannot uninstall"),
+            };
             match result {
                 Ok(()) => operation.succeed(id),
-                Err(error) => operation.fail(id, format!("unable to install IPA: {error:?}")),
+                Err(error) => operation.fail(
+                    id,
+                    format!(
+                        "unable to {} IPA: {error:?}",
+                        match kind {
+                            AppOperationKind::Install => "install",
+                            AppOperationKind::Upgrade => "upgrade",
+                            AppOperationKind::Uninstall => "process",
+                        }
+                    ),
+                ),
             }
         });
         self.operation_task = Some(ActiveAppOperation { id, handle });
@@ -3216,7 +3248,12 @@ impl DeviceManagement {
                 None
             }
             InputCmd::InstallApp { path, reply } => {
-                let result = self.install_app(path).await;
+                let result = self.install_app(path, AppOperationKind::Install).await;
+                let _ = reply.send(result);
+                None
+            }
+            InputCmd::UpgradeApp { path, reply } => {
+                let result = self.install_app(path, AppOperationKind::Upgrade).await;
                 let _ = reply.send(result);
                 None
             }
@@ -4161,6 +4198,7 @@ async fn dispatch(
         | InputCmd::ExportCrashReport { .. }
         | InputCmd::DeleteCrashReport { .. }
         | InputCmd::InstallApp { .. }
+        | InputCmd::UpgradeApp { .. }
         | InputCmd::UninstallApp { .. }
         | InputCmd::SetLocation { .. }
         | InputCmd::ClearLocation { .. } => Ok(()),

@@ -304,6 +304,7 @@ pub fn router(state: AppState, token: String) -> Router {
         )
         .route("/api/device/apps/operation", get(app_operation))
         .route("/api/device/apps/install", put(install_app))
+        .route("/api/device/apps/upgrade", put(upgrade_app))
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
         .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
         .route("/api/device/apps/{bundle_id}/stop", put(stop_app))
@@ -319,6 +320,10 @@ pub fn router(state: AppState, token: String) -> Router {
         .route(
             "/api/device/provisioning-profiles/{uuid}",
             delete(remove_provisioning_profile),
+        )
+        .route(
+            "/api/device/provisioning-profiles/{uuid}/trust",
+            put(trust_provisioning_profile_signer),
         )
         .route("/api/profiles", get(list_profiles))
         .route("/api/profiles/{name}", get(load_profile).put(save_profile))
@@ -2165,6 +2170,24 @@ async fn install_app(
     Ok(StatusCode::ACCEPTED)
 }
 
+async fn upgrade_app(
+    State(state): State<AppState>,
+    Json(request): Json<InstallAppRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::UpgradeApp {
+        path: request.path,
+        reply,
+    }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_app_operation_acceptance(response, "app upgrade").await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
 async fn uninstall_app(
     State(state): State<AppState>,
     Path(bundle_id): Path<String>,
@@ -2287,6 +2310,35 @@ async fn remove_provisioning_profile(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn trust_provisioning_profile_signer(
+    State(state): State<AppState>,
+    Path(uuid): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let profile_uuid = uuid::Uuid::parse_str(&uuid)
+        .map(|uuid| uuid.to_string())
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid provisioning profile UUID".into(),
+            )
+        })?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::Provisioning(
+        crate::provisioning::ProvisioningCommand::TrustSigner {
+            uuid: profile_uuid,
+            expires_at: tokio::time::Instant::now() + Duration::from_secs(20),
+            reply,
+        },
+    )) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    await_provisioning_response(response, "app signer trust request").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn await_provisioning_response<T>(
     response: oneshot::Receiver<Result<T, crate::provisioning::ProvisioningFailure>>,
     operation: &str,
@@ -2311,6 +2363,7 @@ async fn await_provisioning_response<T>(
                 ProvisioningFailure::Invalid(_) => StatusCode::BAD_REQUEST,
                 ProvisioningFailure::NotFound(_) => StatusCode::NOT_FOUND,
                 ProvisioningFailure::Conflict(_) => StatusCode::CONFLICT,
+                ProvisioningFailure::Operation(_) => StatusCode::BAD_GATEWAY,
                 ProvisioningFailure::Unavailable(_) => StatusCode::BAD_GATEWAY,
                 ProvisioningFailure::Deadline(_) => StatusCode::GATEWAY_TIMEOUT,
                 ProvisioningFailure::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
@@ -3709,7 +3762,7 @@ mod tests {
         assert_eq!(install.await.unwrap().unwrap().0.uuid, profile.uuid);
 
         let remove = tokio::spawn(remove_provisioning_profile(
-            State(state),
+            State(state.clone()),
             Path("00000000-1111-2222-3333-444444444444".into()),
         ));
         let InputCmd::Provisioning(crate::provisioning::ProvisioningCommand::Remove {
@@ -3723,15 +3776,63 @@ mod tests {
         assert_eq!(uuid, "00000000-1111-2222-3333-444444444444");
         reply.send(Ok(())).unwrap();
         assert_eq!(remove.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let trust = tokio::spawn(trust_provisioning_profile_signer(
+            State(state),
+            Path("00000000-AAAA-BBBB-CCCC-111111111111".into()),
+        ));
+        let InputCmd::Provisioning(crate::provisioning::ProvisioningCommand::TrustSigner {
+            uuid,
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected app signer trust command");
+        };
+        assert_eq!(uuid, "00000000-aaaa-bbbb-cccc-111111111111");
+        reply.send(Ok(())).unwrap();
+        assert_eq!(trust.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn provisioning_remove_rejects_invalid_uuid_before_dispatch() {
         let (state, mut input_rx) = test_state();
-        let error = remove_provisioning_profile(State(state), Path("not-a-uuid".into()))
+        let error = remove_provisioning_profile(State(state.clone()), Path("not-a-uuid".into()))
             .await
             .unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+
+        let error =
+            trust_provisioning_profile_signer(State(state), Path("still-not-a-uuid".into()))
+                .await
+                .unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn signer_trust_requires_an_installed_development_profile() {
+        let (state, mut input_rx) = test_state();
+        let request = tokio::spawn(trust_provisioning_profile_signer(
+            State(state),
+            Path("00000000-aaaa-bbbb-cccc-111111111111".into()),
+        ));
+        let InputCmd::Provisioning(crate::provisioning::ProvisioningCommand::TrustSigner {
+            reply,
+            ..
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected app signer trust command");
+        };
+        reply
+            .send(Err(crate::provisioning::ProvisioningFailure::NotFound(
+                "provisioning profile is not installed".into(),
+            )))
+            .unwrap();
+
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(error.0, StatusCode::NOT_FOUND);
         assert!(input_rx.try_recv().is_err());
     }
 
@@ -3751,6 +3852,10 @@ mod tests {
             (
                 ProvisioningFailure::Conflict("conflict".into()),
                 StatusCode::CONFLICT,
+            ),
+            (
+                ProvisioningFailure::Operation("failed".into()),
+                StatusCode::BAD_GATEWAY,
             ),
             (
                 ProvisioningFailure::Unavailable("closed".into()),
@@ -4825,11 +4930,29 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
+            trust_provisioning_profile_signer(
+                State(state.clone()),
+                Path("00000000-aaaa-bbbb-cccc-111111111111".into()),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
             device_crash_reports(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
             install_app(
+                State(state.clone()),
+                Json(InstallAppRequest {
+                    path: PathBuf::from("Example.ipa"),
+                }),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            upgrade_app(
                 State(state.clone()),
                 Json(InstallAppRequest {
                     path: PathBuf::from("Example.ipa"),
@@ -5577,6 +5700,28 @@ mod tests {
 
         let (result, ()) = tokio::join!(request, respond);
         assert!(matches!(result, Err((StatusCode::CONFLICT, _))));
+    }
+
+    #[tokio::test]
+    async fn app_upgrade_dispatches_a_distinct_operation() {
+        let (state, mut input_rx) = test_state();
+        let request = upgrade_app(
+            State(state),
+            Json(InstallAppRequest {
+                path: PathBuf::from("Example.ipa"),
+            }),
+        );
+        let respond = async move {
+            let command = input_rx.recv().await.unwrap();
+            let InputCmd::UpgradeApp { path, reply } = command else {
+                panic!("expected upgrade command");
+            };
+            assert_eq!(path, PathBuf::from("Example.ipa"));
+            let _ = reply.send(Ok(()));
+        };
+
+        let (result, ()) = tokio::join!(request, respond);
+        assert_eq!(result.unwrap(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]

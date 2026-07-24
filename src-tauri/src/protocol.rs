@@ -392,6 +392,11 @@ pub enum InputCmd {
         path: PathBuf,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Validate and upgrade an installed app from a local IPA without blocking HID dispatch.
+    UpgradeApp {
+        path: PathBuf,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// Uninstall a removable user application without blocking HID dispatch.
     UninstallApp {
         bundle_id: String,
@@ -694,6 +699,7 @@ pub struct ProvisioningProfile {
 #[serde(rename_all = "snake_case")]
 pub enum AppOperationKind {
     Install,
+    Upgrade,
     Uninstall,
 }
 
@@ -975,6 +981,20 @@ mod tests {
         assert_eq!(completed.state, AppOperationState::Succeeded);
         assert_eq!(completed.progress, Some(100));
         assert!(completed.stage.is_none());
+    }
+
+    #[test]
+    fn app_upgrade_has_a_distinct_public_operation_kind() {
+        let slot = AppOperationSlot::default();
+        let id = slot
+            .start(AppOperationKind::Upgrade, "Example.ipa".into())
+            .unwrap();
+        slot.update(id, "upgrading", Some(40));
+
+        let view = slot.get();
+        assert_eq!(view.kind, Some(AppOperationKind::Upgrade));
+        assert_eq!(view.stage.as_deref(), Some("upgrading"));
+        assert_eq!(serde_json::to_value(view.kind).unwrap(), "upgrade");
     }
 
     #[test]

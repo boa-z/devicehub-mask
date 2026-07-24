@@ -37,14 +37,14 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 
 - Lists user apps and, on request, Apple default apps through CoreDevice AppService, with Installation Proxy fallback for the user-app catalog.
 - Shows native icons, versions, signing type, removable state, reported storage, running state, and SpringBoard Dock/page/folder placement when available.
-- Launches, restarts, stops, installs IPA files, and safely uninstalls eligible user apps. Operations are session-owned and report progress or failure.
+- Launches, restarts, stops, installs new IPA files, explicitly upgrades installed apps from IPA files, and safely uninstalls eligible user apps. Operations are session-owned and report progress or failure.
 - Opens Documents or the full container through House Arrest when iOS permits that scope, with bounded file and directory mutation and transfer.
 - Associates an app with a saved key-mapping profile so launching it from the App list activates that profile.
 - Explicitly starts and stops an installed developer-signed WebDriverAgent `.xctrunner`; DeviceHub Mask does not install or sign WDA.
 
 ### Profiles And Crashes
 
-- Provisioning profiles are listed through Misagent. Local `.mobileprovision` installation validates CMS, UUID, size, and expiration; removal is confirmed and verified against a refreshed catalog.
+- Provisioning profiles are listed through Misagent. Local `.mobileprovision` installation validates CMS, UUID, size, and expiration; removal is confirmed and verified against a refreshed catalog. Valid development profiles can explicitly request AMFI app-signer trust after confirmation.
 - Crash reports are listed through CrashReportCopyMobile and can be searched, exported, or individually deleted after confirmation. MCP remains read-only and can inspect only a separately bounded text excerpt for agent diagnosis.
 
 ## Streaming And Input
@@ -72,7 +72,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Public media files | Standard AFC / remote AFC shim |
 | Battery and power actions | Diagnostics Relay |
 | Developer Mode and image | AMFI and MobileImageMounter |
-| Provisioning profiles | Misagent |
+| Provisioning profiles and explicit signer trust | Misagent and AMFI |
 | Backup | MobileBackup2 |
 | Sysdiagnose | CoreDevice DiagnosticsService |
 | Device logs and offline archive | OsTraceRelay / SyslogRelay |
@@ -95,7 +95,7 @@ The Streamable HTTP MCP endpoint exposes the following tools while the desktop a
 - Location and conditions: `set_location`, `clear_location`, `list_device_conditions`, `apply_device_condition`, and `clear_device_condition`.
 - WDA: `wda_runner_status`, `wda_start`, `wda_stop`, `wda_status`, `wda_ui_tree`, `wda_find_elements`, and `wda_click`.
 
-MCP currently exposes one-way device locking, but not device restart or shutdown. Restart and shutdown are available in the desktop Device Info tab and require an interactive confirmation. MCP also does not expose AFC mutation, backup, sysdiagnose, Unified Log archive export, provisioning-profile mutation, packet capture, or Developer Disk Image mutation.
+MCP currently exposes one-way device locking, but not device restart or shutdown. Restart and shutdown are available in the desktop Device Info tab and require an interactive confirmation. MCP also does not expose IPA installation, upgrade, or removal; AMFI signer trust; AFC mutation; backup; sysdiagnose; Unified Log archive export; provisioning-profile mutation; packet capture; or Developer Disk Image mutation.
 
 ## Intentional Boundaries
 
