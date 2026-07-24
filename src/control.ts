@@ -1,6 +1,7 @@
 import { mappingPosition, type ButtonBinding, type DirectionBinding, type Mapping } from "./types";
 
 export type TouchContact = { identity: number; touching: boolean; x: number; y: number };
+export type MappingRuntimeFrame = { contacts: TouchContact[]; activeMappingIds: Set<string> };
 export const minimumTapDurationMs = 50;
 const pressed = (held: ReadonlySet<string>, code: string) => code.length > 0 && held.has(code);
 const bound = (held: ReadonlySet<string>, keys: ButtonBinding) => keys.length > 0 && keys.every((key) => pressed(held, key));
@@ -58,13 +59,24 @@ function contact(mapping: Mapping, held: ReadonlySet<string>, frame: { width: nu
   return { identity: mapping.pointer_id, touching: active, ...position };
 }
 
-export function buildTouchFrame(mappings: Mapping[], held: ReadonlySet<string>, frame = { width: 1296, height: 2816 }, now = performance.now(), heldSince: ReadonlyMap<string, number> = new Map(), offsets: ReadonlyMap<string, { x: number; y: number }> = new Map()): TouchContact[] {
-  const contacts = mappings.map((mapping) => contact(mapping, held, frame, now, heldSince, offsets)).filter((value): value is TouchContact => Boolean(value));
-  const active = contacts.filter((value) => value.touching);
-  const inactive = contacts.filter((value) => !value.touching);
+export function buildMappingRuntimeFrame(mappings: Mapping[], held: ReadonlySet<string>, frame = { width: 1296, height: 2816 }, now = performance.now(), heldSince: ReadonlyMap<string, number> = new Map(), offsets: ReadonlyMap<string, { x: number; y: number }> = new Map()): MappingRuntimeFrame {
+  const evaluated = mappings
+    .map((mapping) => ({ mappingId: mapping.id, contact: contact(mapping, held, frame, now, heldSince, offsets) }))
+    .filter((value): value is { mappingId: string; contact: TouchContact } => Boolean(value.contact));
+  const active = evaluated.filter((value) => value.contact.touching);
+  const inactive = evaluated.filter((value) => !value.contact.touching);
   const unique = new Map<number, TouchContact>();
-  for (const value of [...active, ...inactive]) if (!unique.has(value.identity) && unique.size < 5) unique.set(value.identity, value);
-  return [...unique.values()];
+  for (const value of [...active, ...inactive]) {
+    if (!unique.has(value.contact.identity) && unique.size < 5) unique.set(value.contact.identity, value.contact);
+  }
+  return {
+    contacts: [...unique.values()],
+    activeMappingIds: new Set(active.map((value) => value.mappingId)),
+  };
+}
+
+export function buildTouchFrame(mappings: Mapping[], held: ReadonlySet<string>, frame = { width: 1296, height: 2816 }, now = performance.now(), heldSince: ReadonlyMap<string, number> = new Map(), offsets: ReadonlyMap<string, { x: number; y: number }> = new Map()): TouchContact[] {
+  return buildMappingRuntimeFrame(mappings, held, frame, now, heldSince, offsets).contacts;
 }
 
 export function touchFramesEqual(left: readonly TouchContact[] | null, right: readonly TouchContact[]) {

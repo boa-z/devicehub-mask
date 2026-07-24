@@ -51,7 +51,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { parsePngDimensions } from "./deviceScreenshot";
-import { buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
+import { buildMappingRuntimeFrame, buildTouchFrame, isBoundKey, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
@@ -209,7 +209,7 @@ export default function App() {
   const [audioOutputState, setAudioOutputState] = useState<AudioOutputStatus["state"] | null>(null);
   const [clipboardEvent, setClipboardEvent] = useState<ClipboardEvent | null>(null);
   const [deviceEvent, setDeviceEvent] = useState<DeviceEvent | null>(null);
-  const [activeIds, setActiveIds] = useState<Set<number>>(new Set());
+  const [activeMappingIds, setActiveMappingIds] = useState<Set<string>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
   const [hasFrame, setHasFrame] = useState(false);
@@ -246,7 +246,7 @@ export default function App() {
   const directTouchesRef = useRef(new Map<number, TouchContact>());
   const directTouchStartedAtRef = useRef(new Map<number, number>());
   const directTouchReleaseTimersRef = useRef(new Map<number, number>());
-  const activeIdsRef = useRef(new Set<number>());
+  const activeMappingIdsRef = useRef(new Set<string>());
   const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
   const capturedScreenshotRef = useRef<CapturedScreenshot | null>(null);
   const hasFrameRef = useRef(false);
@@ -470,7 +470,7 @@ export default function App() {
   }, []);
 
   const sendFrame = useCallback((nextHeld = heldRef.current, released: TouchContact[] = []) => {
-    const mappedContacts = buildTouchFrame(
+    const mappedFrame = buildMappingRuntimeFrame(
       controlProfile.mappings,
       nextHeld,
       frameSize,
@@ -478,15 +478,16 @@ export default function App() {
       heldSinceRef.current,
       mappingOffsetsRef.current,
     );
+    const mappedContacts = mappedFrame.contacts;
     const contacts = mergeTouchContacts(
       mappedContacts,
       [...directTouchesRef.current.values()],
       released,
     );
-    const nextActiveIds = new Set(mappedContacts.filter((contact) => contact.touching).map((contact) => contact.identity));
-    if (nextActiveIds.size !== activeIdsRef.current.size || [...nextActiveIds].some((identity) => !activeIdsRef.current.has(identity))) {
-      activeIdsRef.current = nextActiveIds;
-      setActiveIds(nextActiveIds);
+    const nextActiveMappingIds = mappedFrame.activeMappingIds;
+    if (nextActiveMappingIds.size !== activeMappingIdsRef.current.size || [...nextActiveMappingIds].some((mappingId) => !activeMappingIdsRef.current.has(mappingId))) {
+      activeMappingIdsRef.current = nextActiveMappingIds;
+      setActiveMappingIds(nextActiveMappingIds);
     }
     const socket = socketRef.current;
     if (socket?.readyState !== WebSocket.OPEN || touchFramesEqual(lastSentTouchFrameRef.current, contacts)) return;
@@ -750,8 +751,8 @@ export default function App() {
         pendingFrame = null;
         browserDecoder.close();
         lastSentTouchFrameRef.current = null;
-        activeIdsRef.current = new Set();
-        setActiveIds(new Set());
+        activeMappingIdsRef.current = new Set();
+        setActiveMappingIds(new Set());
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
         lastVideoActivityAtRef.current = 0;
@@ -1841,7 +1842,7 @@ export default function App() {
                         <img className="mapping-screenshot" src={capturedScreenshot.url} alt="" draggable={false} />
                       )}
                       {(page === "mappings" || controlOverlayVisible) && (
-                        <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} activeIds={activeIds} onSelect={setSelectedId} onMove={moveMapping} />
+                        <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} activeMappingIds={activeMappingIds} onSelect={setSelectedId} onMove={moveMapping} />
                       )}
                       {directTouches.map((contact) => (
                         <span key={contact.identity} className="direct-touch" style={{ left: `${contact.x * 100}%`, top: `${contact.y * 100}%` }} />

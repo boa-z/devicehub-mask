@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTouchFrame, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual } from "./control";
+import { buildMappingRuntimeFrame, buildTouchFrame, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual } from "./control";
 import { createMapping, type PadCastSpellMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
 
 describe("mapping controller runtime", () => {
@@ -22,6 +22,23 @@ describe("mapping controller runtime", () => {
   it("allows many saved mappings while limiting each HID frame to five contacts", () => {
     const mappings = Array.from({ length: 8 }, (_, identity) => ({ ...createMapping("SingleTap", { x: 0.5, y: 0.5 }), id: String(identity), bind: ["Space"], pointer_id: identity % 5 } as SingleTapMapping));
     expect(buildTouchFrame(mappings, new Set(["Space"]), undefined, 10, new Map([["Space", 0]]))).toHaveLength(5);
+  });
+
+  it("tracks active mappings independently when contact identities are reused", () => {
+    const first = { ...createMapping("SingleTap", { x: 0.2, y: 0.3 }), id: "first", bind: ["KeyQ"], pointer_id: 0 } as SingleTapMapping;
+    const second = { ...createMapping("SingleTap", { x: 0.7, y: 0.8 }), id: "second", bind: ["KeyE"], pointer_id: 0 } as SingleTapMapping;
+    const frame = buildMappingRuntimeFrame([first, second], new Set(["KeyQ"]), undefined, 10, new Map([["KeyQ", 0]]));
+
+    expect(frame.activeMappingIds).toEqual(new Set(["first"]));
+    expect(frame.contacts).toEqual([{ identity: 0, touching: true, x: 0.2, y: 0.3 }]);
+  });
+
+  it("reports every mapping intentionally bound to the same key as active", () => {
+    const first = { ...createMapping("SingleTap", { x: 0.2, y: 0.3 }), id: "first", bind: ["KeyQ"], pointer_id: 0 } as SingleTapMapping;
+    const second = { ...createMapping("SingleTap", { x: 0.7, y: 0.8 }), id: "second", bind: ["KeyQ"], pointer_id: 1 } as SingleTapMapping;
+    const frame = buildMappingRuntimeFrame([first, second], new Set(["KeyQ"]), undefined, 10, new Map([["KeyQ", 0]]));
+
+    expect(frame.activeMappingIds).toEqual(new Set(["first", "second"]));
   });
 
   it("reads compound pad bindings without mutating the saved mapping", () => {
