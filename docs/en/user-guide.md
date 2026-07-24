@@ -60,6 +60,8 @@ Sampling starts only while the Performance workspace is open and stops when it i
 
 Virtual Location automatically prefers the DVT backend and displays the selected backend beside its state. If DVT is unavailable, it tries Apple's legacy location service for devices using the older Developer Disk Image workflow. The legacy service requires a compatible image to be mounted. Coordinates remain active across a location-channel recovery, while **Stop simulation** and session shutdown explicitly restore the real device location.
 
+The Device network section also shows the bounded interface catalog returned by DVT DeviceInfo. Each entry contains only a validated interface name, a fixed Wi-Fi/cellular/Ethernet/loopback/other classification, and a short description. It never contains IP or MAC addresses. The catalog describes interfaces known to iOS; an entry's presence does not prove that interface is currently active or carrying the DeviceHub Mask connection. `performance_snapshot` returns the same catalog when it is available.
+
 ## Control Modes
 
 Use the **Mapping / Keyboard passthrough** segmented control above the device view.

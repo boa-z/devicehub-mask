@@ -76,6 +76,12 @@ export type ProcessEnergy = {
   location_score: number;
   app_state_score: number;
 };
+export type DeviceNetworkInterfaceKind = "wifi" | "cellular" | "ethernet" | "loopback" | "other";
+export type DeviceNetworkInterface = {
+  name: string;
+  kind: DeviceNetworkInterfaceKind;
+  description: string;
+};
 export type PerformanceSnapshot = {
   captured_at_ms: number;
   system_cpu_percent: number | null;
@@ -93,6 +99,9 @@ export type PerformanceSnapshot = {
   network_rx_bytes_per_second: number | null;
   network_tx_bytes_per_second: number | null;
   network_recent_connections: number | null;
+  network_interfaces: DeviceNetworkInterface[];
+  network_interfaces_available: boolean;
+  network_interfaces_truncated: boolean;
 };
 export type AppActivityEvent = {
   sequence: number;

@@ -81,6 +81,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Sysdiagnose | CoreDevice DiagnosticsService |
 | Device logs and offline archive | OsTraceRelay / SyslogRelay |
 | Performance, processes, and conditions | DVT DeviceInfo, Sysmontap, Graphics, Energy, Network Monitor, Notifications, and Condition Inducer |
+| Read-only network-interface catalog | DVT DeviceInfo, without IP or MAC addresses |
 | Virtual location | DVT Location Simulation with `com.apple.dt.simulatelocation` fallback |
 | All-device/per-process network and Bluetooth capture | pcapd packet PID/effective PID metadata and BTPacketLogger |
 | Watch metadata | CompanionProxy |

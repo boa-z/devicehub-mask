@@ -106,6 +106,8 @@ IPA 安装、显式升级和应用卸载使用独立 Tokio 任务及新的 Insta
 
 原生截图回退链现在只会在 CoreDevice ScreenCaptureService 与 screenshotr 均失败后尝试一条短生命周期的 DVT Screenshot 连接，因此新增的 DDI 依赖路径不会延迟任一已有后端。DVT 连接与截图截止时间相互独立，返回字节继续经过相同的格式、尺寸和大小校验；DVT 失败后会直接丢弃连接，不会留在会话 worker 中。
 
+系统性能监督器会在独立 RemoteServer 连接上启动 DVT DeviceInfo 网络接口查询，并在 Sysmontap 循环中并行轮询结果，因此目录缓慢或不可用不会延迟 CPU 采样或 MCP 的首个性能样本。归一化最多检查 256 个字典项，最多保留 64 个经校验的 ASCII 接口名和 96 字符描述，并映射到固定公开类型，同时显式返回可用与截断状态。IP 地址、MAC 地址和原始 plist 值不会进入性能快照；会话重置时会与其他快照字段一起清除。
+
 ## 视频管线
 
 CoreDevice displayservice 输出 RTP/HEVC。后端先组装完整 HEVC Access Unit，再进入 16 MiB 字节上限队列；溢出时丢弃依赖帧直至 IRAP，并通过 PLI/FIR 请求恢复。FFmpeg 默认输出 自描述的 RGB24 PAM 帧。实验性 YUV420P 设置（也可通过 `DEVICEHUB_VIDEO_PIXEL_FORMAT=yuv420p` 选择）输出 YUV4MPEG2，并将 planar YUV420P 直接交给 TurboJPEG，避免 RGB 转换并将解码帧带宽减半。 最新帧通过 `watch` 通道按事件通知 WebSocket，取消固定频率轮询；慢消费者只会看到最新帧， 不会积压陈旧画面。

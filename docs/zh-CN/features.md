@@ -81,6 +81,7 @@
 | sysdiagnose | CoreDevice DiagnosticsService |
 | 设备日志与离线归档 | OsTraceRelay / SyslogRelay |
 | 性能、进程与设备状态模拟 | DVT DeviceInfo、Sysmontap、Graphics、Energy、Network Monitor、Notifications、Condition Inducer |
+| 只读网络接口目录 | DVT DeviceInfo，不包含 IP 或 MAC 地址 |
 | 虚拟定位 | DVT Location Simulation，并回退 `com.apple.dt.simulatelocation` |
 | 全设备/按进程网络抓包与蓝牙抓包 | pcapd 数据包 PID/effective PID 元数据和 BTPacketLogger |
 | Watch 元数据 | CompanionProxy |

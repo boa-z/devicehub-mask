@@ -403,6 +403,22 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.networkSend")}</span><strong>{byteRate(sample?.network_tx_bytes_per_second)}</strong></div>
           <div><span>{t("performance.networkConnections")}</span><strong>{sample?.network_recent_connections ?? "--"}</strong></div>
         </div>
+        <div className="performance-network-interfaces">
+          <div>
+            <span>{t("performance.networkInterfaces")}</span>
+            <small>{t("performance.networkInterfacesHint")}</small>
+          </div>
+          <div className="performance-network-interface-list">
+            {(sample?.network_interfaces ?? []).map((networkInterface) => (
+              <Tooltip key={networkInterface.name} title={networkInterface.description}>
+                <Tag>{networkInterface.name} · {t(`performance.networkInterfaceKinds.${networkInterface.kind}`)}</Tag>
+              </Tooltip>
+            ))}
+            {!sample?.network_interfaces_available && <Typography.Text type="secondary">--</Typography.Text>}
+            {sample?.network_interfaces_available && sample.network_interfaces.length === 0 && <Typography.Text type="secondary">{t("performance.noNetworkInterfaces")}</Typography.Text>}
+            {sample?.network_interfaces_truncated && <Tag>{t("performance.networkInterfacesTruncated")}</Tag>}
+          </div>
+        </div>
       </section>
 
       <section className="performance-section performance-section-wide">

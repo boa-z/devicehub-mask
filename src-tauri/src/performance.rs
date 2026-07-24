@@ -23,6 +23,7 @@ use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(8);
+const NETWORK_CATALOG_TIMEOUT: Duration = Duration::from_secs(3);
 const SAMPLE_INTERVAL_MS: u32 = 1_000;
 const TOP_PROCESSES_PER_METRIC: usize = 10;
 const MAX_ENERGY_PROCESSES: usize = 16;
@@ -35,6 +36,10 @@ const MAX_ACTIVITY_EVENTS: usize = 100;
 const MAX_ACTIVITY_TYPE_CHARS: usize = 96;
 const MAX_ACTIVITY_NAME_CHARS: usize = 128;
 const MAX_ACTIVITY_STATE_CHARS: usize = 160;
+const MAX_RAW_NETWORK_INTERFACES: usize = 256;
+const MAX_NETWORK_INTERFACES: usize = 64;
+const MAX_NETWORK_INTERFACE_NAME_BYTES: usize = 64;
+const MAX_NETWORK_INTERFACE_DESCRIPTION_CHARS: usize = 96;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessPerformance {
@@ -57,6 +62,23 @@ pub struct ProcessEnergy {
     pub app_state_score: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceNetworkInterfaceKind {
+    Wifi,
+    Cellular,
+    Ethernet,
+    Loopback,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeviceNetworkInterface {
+    pub name: String,
+    pub kind: DeviceNetworkInterfaceKind,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PerformanceSnapshot {
     pub captured_at_ms: u64,
@@ -75,6 +97,9 @@ pub struct PerformanceSnapshot {
     pub network_rx_bytes_per_second: Option<f64>,
     pub network_tx_bytes_per_second: Option<f64>,
     pub network_recent_connections: Option<u32>,
+    pub network_interfaces: Vec<DeviceNetworkInterface>,
+    pub network_interfaces_available: bool,
+    pub network_interfaces_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -165,6 +190,14 @@ impl PerformanceSlot {
         snapshot.logical_cpu_count = cpu_count(hardware);
         snapshot.physical_cpu_count = physical_cpu_count(hardware);
         snapshot.physical_memory_bytes = physical_memory_bytes(hardware);
+    }
+
+    fn update_network_interfaces(&self, network: &plist::Dictionary) {
+        let (interfaces, truncated) = normalize_network_interfaces(network);
+        let mut snapshot = self.0.sample.lock().unwrap();
+        snapshot.network_interfaces = interfaces;
+        snapshot.network_interfaces_available = true;
+        snapshot.network_interfaces_truncated = truncated;
     }
 
     fn update_graphics(&self, sample: &idevice::dvt::graphics::GraphicsSample) {
@@ -603,6 +636,9 @@ async fn run_system_once(
     reporter: &ServiceReporter,
     attempt: u32,
 ) -> Result<(), String> {
+    let network_catalog = load_network_interface_catalog(adapter.clone(), handshake.clone());
+    tokio::pin!(network_catalog);
+    let mut network_catalog_pending = true;
     let mut remote = connect_remote(adapter, handshake).await?;
     let (process_attributes, system_attributes, hardware) =
         tokio::time::timeout(SETUP_TIMEOUT, async {
@@ -638,6 +674,19 @@ async fn run_system_once(
     reporter.ready(attempt);
     loop {
         tokio::select! {
+            result = &mut network_catalog, if network_catalog_pending => {
+                network_catalog_pending = false;
+                match result {
+                    Ok(network) => {
+                        slot.update_network_interfaces(&network);
+                        tracing::debug!(
+                            count = slot.get().network_interfaces.len(),
+                            "DVT network interface catalog updated"
+                        );
+                    }
+                    Err(error) => tracing::debug!(%error, "DVT network interface catalog unavailable"),
+                }
+            }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     let _ = client.stop().await;
@@ -656,6 +705,22 @@ async fn run_system_once(
             }
         }
     }
+}
+
+async fn load_network_interface_catalog(
+    mut adapter: AdapterHandle,
+    mut handshake: RsdHandshake,
+) -> Result<plist::Dictionary, String> {
+    tokio::time::timeout(NETWORK_CATALOG_TIMEOUT, async {
+        let mut remote =
+            RemoteServerClient::<Box<dyn ReadWrite>>::connect_rsd(&mut adapter, &mut handshake)
+                .await?;
+        let mut device_info = DeviceInfoClient::new(&mut remote).await?;
+        device_info.network_information().await
+    })
+    .await
+    .map_err(|_| "DVT network interface catalog request timed out".to_string())?
+    .map_err(|error| format!("DVT network interface catalog request failed: {error:?}"))
 }
 
 async fn run_graphics_once(
@@ -1105,6 +1170,75 @@ fn unix_millis() -> u64 {
         .as_millis() as u64
 }
 
+fn normalize_network_interfaces(
+    network: &plist::Dictionary,
+) -> (Vec<DeviceNetworkInterface>, bool) {
+    let mut interfaces = network
+        .iter()
+        .take(MAX_RAW_NETWORK_INTERFACES)
+        .filter_map(|(name, value)| {
+            let name = normalize_network_interface_name(name)?;
+            let description = value
+                .as_string()
+                .and_then(normalize_network_interface_description)?;
+            Some(DeviceNetworkInterface {
+                kind: classify_network_interface(&name, &description),
+                name,
+                description,
+            })
+        })
+        .collect::<Vec<_>>();
+    interfaces.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    let truncated =
+        network.len() > MAX_RAW_NETWORK_INTERFACES || interfaces.len() > MAX_NETWORK_INTERFACES;
+    interfaces.truncate(MAX_NETWORK_INTERFACES);
+    (interfaces, truncated)
+}
+
+fn normalize_network_interface_name(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= MAX_NETWORK_INTERFACE_NAME_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')))
+    .then(|| value.to_string())
+}
+
+fn normalize_network_interface_description(value: &str) -> Option<String> {
+    if value
+        .chars()
+        .any(|character| character.is_control() && !character.is_whitespace())
+    {
+        return None;
+    }
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!normalized.is_empty()).then(|| {
+        normalized
+            .chars()
+            .take(MAX_NETWORK_INTERFACE_DESCRIPTION_CHARS)
+            .collect()
+    })
+}
+
+fn classify_network_interface(name: &str, description: &str) -> DeviceNetworkInterfaceKind {
+    let description = description.to_ascii_lowercase();
+    if name == "lo0" || description.contains("loopback") {
+        DeviceNetworkInterfaceKind::Loopback
+    } else if name.starts_with("pdp_ip") || description.contains("cellular") {
+        DeviceNetworkInterfaceKind::Cellular
+    } else if description.contains("wi-fi") || description.contains("wifi") {
+        DeviceNetworkInterfaceKind::Wifi
+    } else if description.contains("ethernet") {
+        DeviceNetworkInterfaceKind::Ethernet
+    } else {
+        DeviceNetworkInterfaceKind::Other
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1177,6 +1311,69 @@ mod tests {
         let serialized = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(serialized["physical_cpu_count"], 6);
         assert_eq!(serialized["physical_memory_bytes"], 6_442_450_944_u64);
+    }
+
+    #[test]
+    fn network_interface_catalog_is_classified_sanitized_and_bounded() {
+        let mut network = plist::Dictionary::from_iter([
+            (String::from("en0"), Value::String("  Wi-Fi  ".into())),
+            (
+                String::from("pdp_ip0"),
+                Value::String("Cellular (pdp_ip0)".into()),
+            ),
+            (
+                String::from("en2"),
+                Value::String("Ethernet\nAdaptor (en2)".into()),
+            ),
+            (String::from("lo0"), Value::String("Loopback".into())),
+            (String::from("utun0"), Value::String("Tunnel".into())),
+            (String::from("bad/name"), Value::String("Private".into())),
+            (String::from("empty"), Value::String("   ".into())),
+            (String::from("control"), Value::String("bad\0value".into())),
+            (String::from("numeric"), Value::Integer(1.into())),
+        ]);
+        let (interfaces, truncated) = normalize_network_interfaces(&network);
+        assert!(!truncated);
+        assert_eq!(interfaces.len(), 5);
+        assert_eq!(interfaces[0].name, "en0");
+        assert_eq!(interfaces[0].kind, DeviceNetworkInterfaceKind::Wifi);
+        assert_eq!(interfaces[1].kind, DeviceNetworkInterfaceKind::Cellular);
+        assert_eq!(interfaces[2].description, "Ethernet Adaptor (en2)");
+        assert_eq!(interfaces[3].kind, DeviceNetworkInterfaceKind::Loopback);
+        assert_eq!(interfaces[4].kind, DeviceNetworkInterfaceKind::Other);
+
+        network.clear();
+        for index in 0..=MAX_NETWORK_INTERFACES {
+            network.insert(format!("utun{index}"), Value::String("Tunnel".into()));
+        }
+        let (interfaces, truncated) = normalize_network_interfaces(&network);
+        assert_eq!(interfaces.len(), MAX_NETWORK_INTERFACES);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn network_interface_catalog_is_retained_and_serialized_without_addresses() {
+        let slot = PerformanceSlot::default();
+        slot.update_network_interfaces(&plist::Dictionary::from_iter([(
+            String::from("en0"),
+            Value::String("Wi-Fi".into()),
+        )]));
+        slot.update_graphics(&idevice::dvt::graphics::GraphicsSample {
+            timestamp: 1,
+            fps: 60.0,
+            alloc_system_memory: 10,
+            in_use_system_memory: 8,
+            in_use_system_memory_driver: 3,
+            gpu_bundle_name: "Built-In".into(),
+            recovery_count: 0,
+        });
+        let serialized = serde_json::to_value(slot.get()).unwrap();
+        assert_eq!(serialized["network_interfaces"][0]["name"], "en0");
+        assert_eq!(serialized["network_interfaces"][0]["kind"], "wifi");
+        assert_eq!(serialized["network_interfaces"][0]["description"], "Wi-Fi");
+        assert_eq!(serialized["network_interfaces_available"], true);
+        assert_eq!(serialized["network_interfaces_truncated"], false);
+        assert!(serialized.get("address").is_none());
     }
 
     #[test]

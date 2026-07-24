@@ -2181,7 +2181,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Collect a bounded DVT performance snapshot from the active device, including logical and physical CPU counts, physical-memory capacity, CPU load, top processes, graphics, GPU, energy, and network rates. Sampling is enabled only for this call unless the desktop performance workspace is already active."
+        description = "Collect a bounded DVT performance snapshot from the active device, including logical and physical CPU counts, physical-memory capacity, CPU load, top processes, graphics, GPU, energy, network rates, and a read-only interface catalog without IP or MAC addresses. Interface presence does not mean it is active. Sampling is enabled only for this call unless the desktop performance workspace is already active."
     )]
     async fn performance_snapshot(
         &self,
