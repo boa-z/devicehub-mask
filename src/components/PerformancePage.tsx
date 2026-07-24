@@ -389,6 +389,11 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div className="performance-metric"><span>{t("performance.processes")}</span><strong>{sample?.process_count ?? "--"}</strong></div>
           <div className="performance-metric"><span>{t("performance.gpuMemory")}</span><strong>{bytes(sample?.gpu_in_use_bytes)}</strong><small>{t("performance.allocated", { value: bytes(sample?.gpu_allocated_bytes) })}</small></div>
         </div>
+        <div className="performance-transport-grid performance-hardware-grid">
+          <div><span>{t("performance.logicalCpuCores")}</span><strong>{sample?.logical_cpu_count ?? "--"}</strong></div>
+          <div><span>{t("performance.physicalCpuCores")}</span><strong>{sample?.physical_cpu_count ?? "--"}</strong></div>
+          <div><span>{t("performance.physicalMemory")}</span><strong>{bytes(sample?.physical_memory_bytes)}</strong></div>
+        </div>
       </section>
 
       <section className="performance-section performance-section-network">

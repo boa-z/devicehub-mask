@@ -11,7 +11,7 @@ This page is the concise inventory of functionality already implemented in Devic
 | **Device** | USB and Wi-Fi device selection, in-app USB trust pairing, explicit reconnect, live screen, direct touch, mapping and keyboard-passthrough modes, rotation, native screenshot, WebView-supported screen recording, Unicode paste, device audio mute, hardware buttons, focused device fullscreen, and a device inspector with regular/system/App Clip scopes |
 | **Key Mapping** | Visual placement and editing, live or frozen screenshot background, profile create/duplicate/rename/import/export, scrcpy-mask `0.0.1` compatibility, PlayCover `2.0.0` import, app-profile associations, and hardware-button shortcuts |
 | **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and confirmed crash-report deletion |
-| **Performance** | iPhone CPU/process/memory/energy data, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, all-device or per-process network PCAP, and Bluetooth HCI PCAP |
+| **Performance** | iPhone CPU/process/memory/energy data, bounded logical/physical core and physical-memory capacity, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, all-device or per-process network PCAP, and Bluetooth HCI PCAP |
 | **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, recovery state, and confirmed 1/6/24-hour offline Unified Log archive export |
 | **Location** | DVT-first virtual location with legacy service fallback, numeric coordinate entry, built-in presets, backend status, and explicit restoration of the real device location |
 | **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, rotation-control lock, device-fullscreen toolbar behavior, decoder and pixel format, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
@@ -22,7 +22,8 @@ System fullscreen and device fullscreen are different. System fullscreen changes
 
 ### Info
 
-- Refreshes Lockdown identity, iOS/build versions, hardware model, normalized language/locale/time-zone settings, storage, activation state, battery health and charging data.
+- Refreshes Lockdown identity, iOS/build versions, bounded device class, CPU architecture, model number and chassis-color fields, normalized language/locale/time-zone settings, storage, activation state, and bounded battery health, temperature, and charging data.
+- Refreshes the Info tab after normalized language/time-zone or Developer Disk Image mount notifications without exposing the vendor notification payload.
 - Renames the device through a paired Lockdown session and verifies the value.
 - Explicitly revokes USB Lockdown trust and removes the host pairing record, with confirmation and partial-success reporting.
 - Shows Developer Mode and Developer Disk Image state; it can reveal the Developer Mode setting and explicitly mount, cancel, or unmount a compatible local image set.
@@ -72,7 +73,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | IPA installation and user-app fallback | Installation Proxy |
 | App Documents/container | House Arrest and AFC |
 | Public media files | Standard AFC / remote AFC shim |
-| Battery and power actions | Diagnostics Relay |
+| Bounded battery health/temperature and power actions | Diagnostics Relay |
 | Developer Mode and image | AMFI and MobileImageMounter |
 | Provisioning profiles and explicit signer trust | Misagent and AMFI |
 | Backup | MobileBackup2 |

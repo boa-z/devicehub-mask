@@ -1138,6 +1138,11 @@ export function DeviceInspector({
     t("deviceInspector.clock12Hour"),
     t("deviceInspector.clock24Hour"),
   );
+  const batteryHealth = details?.battery?.health_percent == null
+    ? "-"
+    : details.battery.full_charge_capacity_mah != null && details.battery.design_capacity_mah != null
+      ? `${details.battery.health_percent.toFixed(1)}% (${details.battery.full_charge_capacity_mah}/${details.battery.design_capacity_mah} mAh)`
+      : `${details.battery.health_percent.toFixed(1)}%`;
 
   const infoRows = details ? [
     [t("deviceInspector.os"), `iOS ${details.product_version}${details.build_version ? ` (${details.build_version})` : ""}`],
@@ -1145,8 +1150,13 @@ export function DeviceInspector({
     [t("deviceInspector.capacity"), formatCapacity(details.total_disk_capacity)],
     [t("deviceInspector.dataStorageUsed"), formatStorageUsage(details.storage?.data_capacity_bytes ?? null, details.storage?.data_available_bytes ?? null)],
     [t("deviceInspector.dataStorageAvailable"), formatCapacity(details.storage?.data_available_bytes ?? null)],
+    [t("deviceInspector.deviceClass"), details.device_class ?? "-"],
     [t("deviceInspector.productType"), details.product_type],
+    [t("deviceInspector.cpuArchitecture"), details.cpu_architecture ?? "-"],
+    [t("deviceInspector.modelNumber"), details.model_number ?? "-"],
     [t("deviceInspector.hardwareModel"), details.hardware_model ?? "-"],
+    [t("deviceInspector.deviceColor"), details.device_color ?? "-"],
+    [t("deviceInspector.enclosureColor"), details.enclosure_color ?? "-"],
     [t("deviceInspector.languageAndLocale"), languageAndLocale],
     [t("deviceInspector.timeZoneAndClock"), timeZoneAndClock],
     [t("deviceInspector.serialNumber"), details.serial_number ?? "-"],
@@ -1165,9 +1175,10 @@ export function DeviceInspector({
         : details.battery?.external_connected
           ? t("deviceInspector.batteryStates.connected")
           : details.battery ? t("deviceInspector.batteryStates.discharging") : "-"],
-    [t("deviceInspector.batteryHealth"), details.battery?.health_percent == null
+    [t("deviceInspector.batteryHealth"), batteryHealth],
+    [t("deviceInspector.batteryTemperature"), details.battery?.temperature_celsius == null
       ? "-"
-      : `${details.battery.health_percent.toFixed(1)}% (${details.battery.full_charge_capacity_mah ?? "-"}/${details.battery.design_capacity_mah ?? "-"} mAh)`],
+      : `${details.battery.temperature_celsius.toFixed(1)} °C`],
     [t("deviceInspector.batteryCycles"), details.battery?.cycle_count?.toString() ?? "-"],
     [t("deviceInspector.batteryElectrical"), details.battery?.voltage_mv == null && details.battery?.instant_amperage_ma == null
       ? "-"

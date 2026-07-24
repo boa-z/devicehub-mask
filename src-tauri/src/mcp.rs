@@ -1568,7 +1568,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Return refreshed Lockdown device metadata, normalized language, locale, time zone and clock format, storage, battery, activation, Developer Mode, and Developer Disk Image state. Stable hardware identifiers are omitted unless include_identifiers is true."
+        description = "Return refreshed Lockdown device metadata, including bounded non-unique model, architecture and color fields, normalized regional settings, storage, battery, activation, Developer Mode, and Developer Disk Image state. Stable hardware identifiers are omitted unless include_identifiers is true."
     )]
     async fn device_details(
         &self,
@@ -1594,7 +1594,12 @@ impl DeviceHub {
                 "product_type": details.product_type,
                 "product_version": details.product_version,
                 "build_version": details.build_version,
+                "device_class": details.device_class,
+                "cpu_architecture": details.cpu_architecture,
+                "model_number": details.model_number,
                 "hardware_model": details.hardware_model,
+                "device_color": details.device_color,
+                "enclosure_color": details.enclosure_color,
                 "total_disk_capacity": details.total_disk_capacity,
                 "storage": details.storage,
                 "activation_state": details.activation_state,
@@ -1609,7 +1614,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Wait for a normalized device event: app_installed, app_uninstalled, activation_state_changed, disk_usage_changed, device_name_changed, or lock_state_changed. A lock_state_changed event reports only that the state changed; take a screenshot to observe the current screen. Pass the returned sequence as after_sequence for race-free incremental waiting."
+        description = "Wait for a normalized device event: app_installed, app_uninstalled, activation_state_changed, disk_usage_changed, device_name_changed, regional_settings_changed, developer_image_mounted, or lock_state_changed. A lock_state_changed event reports only that the state changed; take a screenshot to observe the current screen. Pass the returned sequence as after_sequence for race-free incremental waiting."
     )]
     async fn wait_for_device_event(
         &self,
@@ -1884,7 +1889,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Collect a bounded DVT performance snapshot from the active device, including CPU, top processes, graphics, GPU, energy, and network rates. Sampling is enabled only for this call unless the desktop performance workspace is already active."
+        description = "Collect a bounded DVT performance snapshot from the active device, including logical and physical CPU counts, physical-memory capacity, CPU load, top processes, graphics, GPU, energy, and network rates. Sampling is enabled only for this call unless the desktop performance workspace is already active."
     )]
     async fn performance_snapshot(
         &self,
@@ -2131,7 +2136,12 @@ mod tests {
             product_type: "iPhone14,3".into(),
             product_version: "27.0".into(),
             build_version: Some("24A123".into()),
+            device_class: Some("iPhone".into()),
+            cpu_architecture: Some("arm64e".into()),
+            model_number: Some("MU663CH/A".into()),
             hardware_model: Some("D64AP".into()),
+            device_color: Some("#3b3b3c".into()),
+            enclosure_color: Some("black".into()),
             serial_number: Some("private-serial".into()),
             ecid: Some("123456789".into()),
             total_disk_capacity: Some(256_000_000_000),
@@ -2145,7 +2155,22 @@ mod tests {
                 time_zone: Some("Asia/Taipei".into()),
                 uses_24_hour_clock: Some(true),
             }),
-            battery: None,
+            battery: Some(crate::protocol::DeviceBattery {
+                level_percent: Some(78),
+                temperature_celsius: Some(31.5),
+                is_charging: Some(true),
+                external_connected: Some(true),
+                fully_charged: Some(false),
+                cycle_count: Some(250),
+                voltage_mv: Some(4_010),
+                instant_amperage_ma: Some(1_200),
+                design_capacity_mah: Some(4_300),
+                full_charge_capacity_mah: Some(3_900),
+                health_percent: Some(91.0),
+                time_remaining_minutes: Some(120),
+                adapter_watts: Some(20),
+                adapter_name: Some("USB-C Power Adapter".into()),
+            }),
         }
     }
 
@@ -2313,8 +2338,12 @@ mod tests {
                 .find_map(|content| content.as_text().map(|text| text.text.as_str()))
                 .unwrap();
             assert!(text.contains("Test iPhone"));
+            assert!(text.contains("\"cpu_architecture\":\"arm64e\""));
+            assert!(text.contains("\"model_number\":\"MU663CH/A\""));
+            assert!(text.contains("\"device_color\":\"#3b3b3c\""));
             assert!(text.contains("\"developer_image_mounted\":true"));
             assert!(text.contains("\"time_zone\":\"Asia/Taipei\""));
+            assert!(text.contains("\"temperature_celsius\":31.5"));
             assert_eq!(text.contains("private-serial"), include_identifiers);
             assert_eq!(text.contains("private-udid"), include_identifiers);
         }
@@ -2773,12 +2802,12 @@ mod tests {
         tokio::task::yield_now().await;
         observability
             .device_events
-            .publish(crate::device_events::DeviceEventKind::DeviceNameChanged);
+            .publish(crate::device_events::DeviceEventKind::RegionalSettingsChanged);
         let future = waiter.await.unwrap();
         assert!(future.content.iter().any(|content| {
             content
                 .as_text()
-                .is_some_and(|text| text.text.contains("device_name_changed"))
+                .is_some_and(|text| text.text.contains("regional_settings_changed"))
         }));
 
         let timed_out = hub

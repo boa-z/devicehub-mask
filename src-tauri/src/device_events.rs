@@ -15,13 +15,16 @@ use tokio::sync::{broadcast, watch};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
-const DISK_USAGE_EVENT_INTERVAL: Duration = Duration::from_secs(1);
+const COALESCED_EVENT_INTERVAL: Duration = Duration::from_secs(1);
 const OBSERVED_NOTIFICATIONS: &[&str] = &[
     "com.apple.mobile.application_installed",
     "com.apple.mobile.application_uninstalled",
     "com.apple.mobile.lockdown.activation_state",
     "com.apple.mobile.lockdown.disk_usage_changed",
     "com.apple.mobile.lockdown.device_name_changed",
+    "com.apple.mobile.lockdown.timezone_changed",
+    "com.apple.language.changed",
+    "com.apple.mobile.developer_image_mounted",
     "com.apple.springboard.lockstate",
 ];
 
@@ -33,6 +36,8 @@ pub enum DeviceEventKind {
     ActivationStateChanged,
     DiskUsageChanged,
     DeviceNameChanged,
+    RegionalSettingsChanged,
+    DeveloperImageMounted,
     LockStateChanged,
 }
 
@@ -92,6 +97,10 @@ fn normalize_notification(name: &str) -> Option<DeviceEventKind> {
         }
         "com.apple.mobile.lockdown.disk_usage_changed" => Some(DeviceEventKind::DiskUsageChanged),
         "com.apple.mobile.lockdown.device_name_changed" => Some(DeviceEventKind::DeviceNameChanged),
+        "com.apple.mobile.lockdown.timezone_changed" | "com.apple.language.changed" => {
+            Some(DeviceEventKind::RegionalSettingsChanged)
+        }
+        "com.apple.mobile.developer_image_mounted" => Some(DeviceEventKind::DeveloperImageMounted),
         "com.apple.springboard.lockstate" => Some(DeviceEventKind::LockStateChanged),
         _ => None,
     }
@@ -100,18 +109,21 @@ fn normalize_notification(name: &str) -> Option<DeviceEventKind> {
 fn should_publish(
     kind: DeviceEventKind,
     last_disk_usage_event: &mut Option<Instant>,
+    last_regional_event: &mut Option<Instant>,
     now: Instant,
 ) -> bool {
-    if kind != DeviceEventKind::DiskUsageChanged {
-        return true;
-    }
-    if last_disk_usage_event
-        .is_some_and(|last| now.saturating_duration_since(last) < DISK_USAGE_EVENT_INTERVAL)
+    let last_event = match kind {
+        DeviceEventKind::DiskUsageChanged => last_disk_usage_event,
+        DeviceEventKind::RegionalSettingsChanged => last_regional_event,
+        _ => return true,
+    };
+    if last_event.is_some_and(|last| now.saturating_duration_since(last) < COALESCED_EVENT_INTERVAL)
     {
-        return false;
+        false
+    } else {
+        *last_event = Some(now);
+        true
     }
-    *last_disk_usage_event = Some(now);
-    true
 }
 
 pub async fn supervise(
@@ -175,6 +187,7 @@ async fn run_once(
     .map_err(|error| format!("device notification registration failed: {error:?}"))?;
     reporter.ready(attempt);
     let mut last_disk_usage_event = None;
+    let mut last_regional_event = None;
 
     loop {
         tokio::select! {
@@ -187,7 +200,12 @@ async fn run_once(
                 let name = notification
                     .map_err(|error| format!("device notification stream failed: {error:?}"))?;
                 if let Some(kind) = normalize_notification(&name)
-                    && should_publish(kind, &mut last_disk_usage_event, Instant::now())
+                    && should_publish(
+                        kind,
+                        &mut last_disk_usage_event,
+                        &mut last_regional_event,
+                        Instant::now(),
+                    )
                 {
                     tracing::debug!(?kind, "received normalized device notification");
                     events.publish(kind);
@@ -224,6 +242,18 @@ mod tests {
             Some(DeviceEventKind::DeviceNameChanged)
         );
         assert_eq!(
+            normalize_notification("com.apple.mobile.lockdown.timezone_changed"),
+            Some(DeviceEventKind::RegionalSettingsChanged)
+        );
+        assert_eq!(
+            normalize_notification("com.apple.language.changed"),
+            Some(DeviceEventKind::RegionalSettingsChanged)
+        );
+        assert_eq!(
+            normalize_notification("com.apple.mobile.developer_image_mounted"),
+            Some(DeviceEventKind::DeveloperImageMounted)
+        );
+        assert_eq!(
             normalize_notification("com.apple.springboard.lockstate"),
             Some(DeviceEventKind::LockStateChanged)
         );
@@ -256,28 +286,45 @@ mod tests {
     }
 
     #[test]
-    fn disk_usage_events_are_coalesced_without_delaying_other_events() {
+    fn bursty_metadata_events_are_coalesced_independently() {
         let start = Instant::now();
         let mut last_disk_usage_event = None;
+        let mut last_regional_event = None;
         assert!(should_publish(
             DeviceEventKind::DiskUsageChanged,
             &mut last_disk_usage_event,
+            &mut last_regional_event,
             start,
         ));
         assert!(!should_publish(
             DeviceEventKind::DiskUsageChanged,
             &mut last_disk_usage_event,
+            &mut last_regional_event,
             start + Duration::from_millis(500),
+        ));
+        assert!(should_publish(
+            DeviceEventKind::RegionalSettingsChanged,
+            &mut last_disk_usage_event,
+            &mut last_regional_event,
+            start + Duration::from_millis(500),
+        ));
+        assert!(!should_publish(
+            DeviceEventKind::RegionalSettingsChanged,
+            &mut last_disk_usage_event,
+            &mut last_regional_event,
+            start + Duration::from_millis(750),
         ));
         assert!(should_publish(
             DeviceEventKind::AppInstalled,
             &mut last_disk_usage_event,
+            &mut last_regional_event,
             start + Duration::from_millis(500),
         ));
         assert!(should_publish(
             DeviceEventKind::DiskUsageChanged,
             &mut last_disk_usage_event,
-            start + DISK_USAGE_EVENT_INTERVAL,
+            &mut last_regional_event,
+            start + COALESCED_EVENT_INTERVAL,
         ));
     }
 }

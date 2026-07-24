@@ -363,6 +363,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .performance-sparkline line { stroke: #394142; stroke-width: .6; }
 .performance-sparkline polyline { fill: none; stroke: #42b883; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .performance-transport-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #303638; }
+.performance-hardware-grid { margin-top: 12px; }
 .performance-transport-grid > div { min-height: 72px; padding: 13px 15px; border-right: 1px solid #303638; border-bottom: 1px solid #303638; display: flex; flex-direction: column; gap: 4px; }
 .performance-transport-grid > div:nth-child(3n) { border-right: 0; }
 .performance-transport-grid > div:nth-last-child(-n+3) { border-bottom: 0; }

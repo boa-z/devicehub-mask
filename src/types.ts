@@ -38,7 +38,7 @@ export type ClipboardEvent = {
 };
 export type DeviceEvent = {
   sequence: number;
-  kind: "app_installed" | "app_uninstalled" | "activation_state_changed" | "disk_usage_changed" | "device_name_changed" | "lock_state_changed";
+  kind: "app_installed" | "app_uninstalled" | "activation_state_changed" | "disk_usage_changed" | "device_name_changed" | "regional_settings_changed" | "developer_image_mounted" | "lock_state_changed";
 };
 export type ServicePhase = "connecting" | "ready" | "recovering" | "unavailable" | "stopped";
 export type ServiceHealth = {
@@ -81,6 +81,8 @@ export type PerformanceSnapshot = {
   system_cpu_percent: number | null;
   process_count: number | null;
   logical_cpu_count: number | null;
+  physical_cpu_count: number | null;
+  physical_memory_bytes: number | null;
   top_processes: ProcessPerformance[];
   energy_processes: ProcessEnergy[];
   graphics_fps: number | null;
@@ -212,7 +214,12 @@ export type DeviceDetails = {
   product_type: string;
   product_version: string;
   build_version: string | null;
+  device_class: string | null;
+  cpu_architecture: string | null;
+  model_number: string | null;
   hardware_model: string | null;
+  device_color: string | null;
+  enclosure_color: string | null;
   serial_number: string | null;
   ecid: string | null;
   total_disk_capacity: number | null;
@@ -245,6 +252,7 @@ export type DeviceStorage = {
 };
 export type DeviceBattery = {
   level_percent: number | null;
+  temperature_celsius: number | null;
   is_charging: boolean | null;
   external_connected: boolean | null;
   fully_charged: boolean | null;

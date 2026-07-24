@@ -584,7 +584,12 @@ pub struct DeviceDetails {
     pub product_type: String,
     pub product_version: String,
     pub build_version: Option<String>,
+    pub device_class: Option<String>,
+    pub cpu_architecture: Option<String>,
+    pub model_number: Option<String>,
     pub hardware_model: Option<String>,
+    pub device_color: Option<String>,
+    pub enclosure_color: Option<String>,
     pub serial_number: Option<String>,
     /// Decimal text avoids losing 64-bit ECID precision in JavaScript clients.
     pub ecid: Option<String>,
@@ -641,6 +646,7 @@ pub struct DeviceStorage {
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceBattery {
     pub level_percent: Option<u8>,
+    pub temperature_celsius: Option<f64>,
     pub is_charging: Option<bool>,
     pub external_connected: Option<bool>,
     pub fully_charged: Option<bool>,

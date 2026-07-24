@@ -63,6 +63,8 @@ pub struct PerformanceSnapshot {
     pub system_cpu_percent: Option<f64>,
     pub process_count: Option<u32>,
     pub logical_cpu_count: Option<u32>,
+    pub physical_cpu_count: Option<u32>,
+    pub physical_memory_bytes: Option<u64>,
     pub top_processes: Vec<ProcessPerformance>,
     pub energy_processes: Vec<ProcessEnergy>,
     pub graphics_fps: Option<f64>,
@@ -156,6 +158,13 @@ impl PerformanceSlot {
             );
             snapshot.system_cpu_percent = normalized_cpu_load;
         }
+    }
+
+    fn update_hardware(&self, hardware: &plist::Dictionary) {
+        let mut snapshot = self.0.sample.lock().unwrap();
+        snapshot.logical_cpu_count = cpu_count(hardware);
+        snapshot.physical_cpu_count = physical_cpu_count(hardware);
+        snapshot.physical_memory_bytes = physical_memory_bytes(hardware);
     }
 
     fn update_graphics(&self, sample: &idevice::dvt::graphics::GraphicsSample) {
@@ -595,20 +604,21 @@ async fn run_system_once(
     attempt: u32,
 ) -> Result<(), String> {
     let mut remote = connect_remote(adapter, handshake).await?;
-    let (process_attributes, system_attributes, cpu_count) =
+    let (process_attributes, system_attributes, hardware) =
         tokio::time::timeout(SETUP_TIMEOUT, async {
             let mut device_info = DeviceInfoClient::new(&mut remote).await?;
             let process = device_info.sysmon_process_attributes().await?;
             let system = device_info.sysmon_system_attributes().await?;
             let hardware = device_info.hardware_information().await?;
-            Ok::<_, idevice::IdeviceError>((process, system, cpu_count(&hardware)))
+            Ok::<_, idevice::IdeviceError>((process, system, hardware))
         })
         .await
         .map_err(|_| "DVT sysmontap attribute query timed out".to_string())?
         .map_err(|error| format!("DVT sysmontap attribute query failed: {error:?}"))?;
-    let cpu_count = cpu_count.ok_or_else(|| {
+    let cpu_count = cpu_count(&hardware).ok_or_else(|| {
         "DVT hardware information did not report a valid logical CPU count".to_string()
     })?;
+    slot.update_hardware(&hardware);
     let process_schema = ProcessSchema::new(&process_attributes);
     let mut client = SysmontapClient::new(&mut remote)
         .await
@@ -903,6 +913,20 @@ fn cpu_count(hardware: &plist::Dictionary) -> Option<u32> {
         .find(|count| (1..=256).contains(count))
 }
 
+fn physical_cpu_count(hardware: &plist::Dictionary) -> Option<u32> {
+    hardware
+        .get("numberOfPhysicalCpus")
+        .and_then(numeric_u32)
+        .filter(|count| (1..=256).contains(count))
+}
+
+fn physical_memory_bytes(hardware: &plist::Dictionary) -> Option<u64> {
+    hardware
+        .get("physicalMemory")
+        .and_then(numeric_u64)
+        .filter(|bytes| (16 * 1024 * 1024..=1024 * 1024 * 1024 * 1024).contains(bytes))
+}
+
 fn numeric_u32(value: &Value) -> Option<u32> {
     match value {
         Value::Integer(value) => value
@@ -1098,16 +1122,61 @@ mod tests {
     }
 
     #[test]
-    fn logical_cpu_count_falls_back_to_physical_count() {
+    fn hardware_metrics_are_bounded_and_logical_count_falls_back() {
         let mut hardware = plist::Dictionary::new();
         hardware.insert("numberOfPhysicalCpus".into(), Value::Integer(6.into()));
+        hardware.insert(
+            "physicalMemory".into(),
+            Value::Integer(6_442_450_944_u64.into()),
+        );
         assert_eq!(cpu_count(&hardware), Some(6));
+        assert_eq!(physical_cpu_count(&hardware), Some(6));
+        assert_eq!(physical_memory_bytes(&hardware), Some(6_442_450_944));
 
         hardware.insert("numberOfCpus".into(), Value::Integer(8.into()));
         assert_eq!(cpu_count(&hardware), Some(8));
 
         hardware.insert("numberOfCpus".into(), Value::Integer(0.into()));
         assert_eq!(cpu_count(&hardware), Some(6));
+
+        hardware.insert("numberOfPhysicalCpus".into(), Value::Integer(257.into()));
+        hardware.insert("physicalMemory".into(), Value::Integer(u64::MAX.into()));
+        assert_eq!(cpu_count(&hardware), None);
+        assert_eq!(physical_cpu_count(&hardware), None);
+        assert_eq!(physical_memory_bytes(&hardware), None);
+    }
+
+    #[test]
+    fn hardware_metrics_are_retained_across_partial_samples() {
+        let slot = PerformanceSlot::default();
+        let hardware = plist::Dictionary::from_iter([
+            (String::from("numberOfCpus"), Value::Integer(8.into())),
+            (
+                String::from("numberOfPhysicalCpus"),
+                Value::Integer(6.into()),
+            ),
+            (
+                String::from("physicalMemory"),
+                Value::Integer(6_442_450_944_u64.into()),
+            ),
+        ]);
+        slot.update_hardware(&hardware);
+        slot.update_graphics(&idevice::dvt::graphics::GraphicsSample {
+            timestamp: 1,
+            fps: 60.0,
+            alloc_system_memory: 10,
+            in_use_system_memory: 8,
+            in_use_system_memory_driver: 3,
+            gpu_bundle_name: "Built-In".into(),
+            recovery_count: 0,
+        });
+        let snapshot = slot.get();
+        assert_eq!(snapshot.logical_cpu_count, Some(8));
+        assert_eq!(snapshot.physical_cpu_count, Some(6));
+        assert_eq!(snapshot.physical_memory_bytes, Some(6_442_450_944));
+        let serialized = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(serialized["physical_cpu_count"], 6);
+        assert_eq!(serialized["physical_memory_bytes"], 6_442_450_944_u64);
     }
 
     #[test]

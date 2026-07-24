@@ -23,7 +23,12 @@ export function normalizeDeviceNameInput(name: string): string | null {
 export function shouldRefreshDeviceInspector(kind: DeviceEvent["kind"], tab: DeviceInspectorTab): boolean {
   if (kind === "app_installed" || kind === "app_uninstalled") return tab === "apps";
   if (kind === "disk_usage_changed") return tab === "info" || tab === "apps";
-  return (kind === "activation_state_changed" || kind === "device_name_changed") && tab === "info";
+  return (
+    kind === "activation_state_changed"
+    || kind === "device_name_changed"
+    || kind === "regional_settings_changed"
+    || kind === "developer_image_mounted"
+  ) && tab === "info";
 }
 
 export function sortDeviceApps(apps: DeviceApp[], sort: DeviceAppSort, locale: string): DeviceApp[] {

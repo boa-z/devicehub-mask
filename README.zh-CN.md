@@ -11,12 +11,12 @@ DeviceHub Mask 是一个基于 Tauri 2 的 iOS 游戏桌面控制应用，支持
 - CoreDevice HEVC 实时画面，最高 60 FPS，并保持横竖屏比例
 - 最多五个 Universal HID 并发触点、鼠标直接触控、键盘透传和可配置硬件按键快捷键
 - 完整导入和导出 scrcpy-mask `0.0.1` 控制器配置，支持实时画面或截图背景的可视化编辑器
-- 可编辑设备名称、设备信息与激活就绪状态、带真实图标和运行状态的普通/系统/轻 App 浏览、启动、重启与停止、 IPA 安装、安全卸载、App Documents 文件管理、受限的标准 AFC 文件与目录管理、隐私有界的崩溃报告摘要、硬件键锁屏、确认式重启与关机、描述文件检查、校验安装和确认移除，以及可取消的 CoreDevice sysdiagnose 采集
+- 可编辑设备名称、有界的型号/架构/颜色信息、激活就绪状态及有界的电池健康/温度诊断、带真实图标和运行状态的普通/系统/轻 App 浏览、启动、重启与停止、 IPA 安装、安全卸载、App Documents 文件管理、受限的标准 AFC 文件与目录管理、隐私有界的崩溃报告摘要、硬件键锁屏、确认式重启与关机、描述文件检查、校验安装和确认移除，以及可取消的 CoreDevice sysdiagnose 采集
 - 通过 CoreDevice Pasteboard Service 支持单次 Unicode 文本粘贴，并可选启用文本与图片双向同步
 - 按需读取结构化 iPhone 统一日志，支持级别与上下文筛选、受监督 SyslogRelay 回退和有界缓冲
 - 面向开发者 App 与第三方 App 的显式带控制台启动，提供仅限当前会话的有界 stdout/stderr 采集
-- 按需采集归一化 iPhone CPU、高负载进程 CPU/内存与相对能耗排行、可搜索的 DVT 运行进程清单、Core Animation FPS、GPU 内存与设备网络速率，并监督 DVT 服务恢复；支持设备级 DVT 网络/热状态模拟，还可有界导出全设备或按进程过滤的网络 PCAP 与蓝牙 HCI PCAP
-- 内置 Streamable HTTP MCP 服务，支持截图、低延迟多点触控、App 启动、帧同步、设备切换、DVT 虚拟定位、有界进程/性能检查、设备日志筛选、崩溃报告诊断、刷新设备详情和事件等待
+- 按需采集归一化 iPhone CPU、有界的核心数与物理内存容量、高负载进程 CPU/内存与相对能耗排行、可搜索的 DVT 运行进程清单、Core Animation FPS、GPU 内存与设备网络速率，并监督 DVT 服务恢复；支持设备级 DVT 网络/热状态模拟，还可有界导出全设备或按进程过滤的网络 PCAP 与蓝牙 HCI PCAP
+- 内置 Streamable HTTP MCP 服务，支持截图、低延迟多点触控、App 启动、帧同步、设备切换、DVT 虚拟定位、有界进程/性能检查、设备日志筛选、崩溃报告诊断、刷新设备详情，以及对 App、存储、区域设置、开发者镜像、名称、激活和锁屏变化的事件等待
 - 原生 Tauri 2 桌面控件、中英文界面和签名 nightly 自动更新
 - 使用 GitHub Actions 验证并打包 macOS、Windows 和 Linux 版本
 

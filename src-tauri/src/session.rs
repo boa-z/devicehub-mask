@@ -4956,12 +4956,6 @@ async fn read_device_details(
     let mut lockdown = LockdownClient::connect(provider).await.ok()?;
     let values = lockdown.get_value(None, None).await.ok()?;
     let values = values.as_dictionary()?;
-    let string = |key: &str| {
-        values
-            .get(key)
-            .and_then(plist::Value::as_string)
-            .map(ToOwned::to_owned)
-    };
     let integer = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
     let disk_usage = lockdown
         .get_value(None, Some("com.apple.disk_usage"))
@@ -4982,13 +4976,20 @@ async fn read_device_details(
             .and_then(|value| value.as_unsigned_integer());
     }
     Some(DeviceDetails {
-        udid: string("UniqueDeviceID").unwrap_or(requested_udid),
-        name: string("DeviceName").unwrap_or_else(|| "iOS Device".to_string()),
-        product_type: string("ProductType").unwrap_or_else(|| "Unknown".to_string()),
-        product_version: string("ProductVersion").unwrap_or_else(|| "Unknown".to_string()),
-        build_version: string("BuildVersion"),
-        hardware_model: string("HardwareModel"),
-        serial_number: string("SerialNumber"),
+        udid: device_identity_token(values, "UniqueDeviceID", 128).unwrap_or(requested_udid),
+        name: device_display_name(values).unwrap_or_else(|| "iOS Device".to_string()),
+        product_type: device_identity_token(values, "ProductType", 32)
+            .unwrap_or_else(|| "Unknown".to_string()),
+        product_version: device_identity_token(values, "ProductVersion", 32)
+            .unwrap_or_else(|| "Unknown".to_string()),
+        build_version: device_identity_token(values, "BuildVersion", 32),
+        device_class: device_identity_token(values, "DeviceClass", 32),
+        cpu_architecture: device_identity_token(values, "CPUArchitecture", 32),
+        model_number: device_identity_token(values, "ModelNumber", 32),
+        hardware_model: device_identity_token(values, "HardwareModel", 32),
+        device_color: device_identity_token(values, "DeviceColor", 32),
+        enclosure_color: device_identity_token(values, "EnclosureColor", 32),
+        serial_number: device_identity_token(values, "SerialNumber", 64),
         ecid: integer("UniqueChipID").map(|value| value.to_string()),
         total_disk_capacity,
         storage,
@@ -4998,6 +4999,32 @@ async fn read_device_details(
         regional_settings: device_regional_settings(values),
         battery: None,
     })
+}
+
+fn device_display_name(values: &plist::Dictionary) -> Option<String> {
+    let value = values.get("DeviceName")?.as_string()?.trim();
+    let characters = value.chars().count();
+    (!value.is_empty()
+        && value.len() <= 255
+        && characters <= 64
+        && !value.chars().any(char::is_control))
+    .then(|| value.to_string())
+}
+
+fn device_identity_token(
+    values: &plist::Dictionary,
+    key: &str,
+    max_characters: usize,
+) -> Option<String> {
+    let value = values.get(key)?.as_string()?.trim();
+    (!value.is_empty()
+        && value.len() <= 128
+        && value.chars().count() <= max_characters
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '-' | '_' | '.' | '#' | '/' | ',')
+        }))
+    .then(|| value.to_string())
 }
 
 fn device_regional_settings(values: &plist::Dictionary) -> Option<DeviceRegionalSettings> {
@@ -5158,15 +5185,17 @@ async fn read_device_battery(provider: &dyn IdeviceProvider) -> Result<DeviceBat
 }
 
 fn device_battery_from_ioregistry(values: &plist::Dictionary) -> DeviceBattery {
-    let unsigned = |dictionary: &plist::Dictionary, key: &str| {
+    let unsigned = |dictionary: &plist::Dictionary, key: &str, maximum: u64| {
         dictionary
             .get(key)
             .and_then(plist::Value::as_unsigned_integer)
+            .filter(|value| *value <= maximum)
     };
-    let signed = |dictionary: &plist::Dictionary, key: &str| {
+    let signed = |dictionary: &plist::Dictionary, key: &str, absolute_maximum: i64| {
         dictionary
             .get(key)
             .and_then(plist::Value::as_signed_integer)
+            .filter(|value| value.unsigned_abs() <= absolute_maximum as u64)
     };
     let boolean = |dictionary: &plist::Dictionary, key: &str| {
         dictionary.get(key).and_then(|value| {
@@ -5184,42 +5213,62 @@ fn device_battery_from_ioregistry(values: &plist::Dictionary) -> DeviceBattery {
     let charger_data = values
         .get("ChargerData")
         .and_then(plist::Value::as_dictionary);
-    let design_capacity_mah = battery_data.and_then(|data| unsigned(data, "DesignCapacity"));
+    let design_capacity_mah =
+        battery_data.and_then(|data| unsigned(data, "DesignCapacity", 100_000));
     let full_charge_capacity_mah =
-        battery_data.and_then(|data| unsigned(data, "FullChargeCapacity"));
-    let health_percent = design_capacity_mah
-        .filter(|capacity| *capacity > 0)
-        .zip(full_charge_capacity_mah)
-        .map(|(design, full)| (full as f64 * 100.0 / design as f64).clamp(0.0, 100.0));
+        battery_data.and_then(|data| unsigned(data, "FullChargeCapacity", 100_000));
+    let health_percent = unsigned(values, "MaximumCapacityPercent", 100)
+        .or_else(|| battery_data.and_then(|data| unsigned(data, "MaximumCapacityPercent", 100)))
+        .map(|value| value as f64)
+        .or_else(|| {
+            design_capacity_mah
+                .filter(|capacity| *capacity > 0)
+                .zip(full_charge_capacity_mah)
+                .map(|(design, full)| (full as f64 * 100.0 / design as f64).clamp(0.0, 100.0))
+        });
+    let temperature_celsius = signed(values, "Temperature", 8_000)
+        .or_else(|| signed(values, "BatteryTemperature", 8_000))
+        .or_else(|| battery_data.and_then(|data| signed(data, "Temperature", 8_000)))
+        .map(|value| value as f64 / 100.0)
+        .filter(|value| (-20.0..=80.0).contains(value));
 
     DeviceBattery {
-        level_percent: unsigned(values, "CurrentCapacity")
-            .or_else(|| battery_data.and_then(|data| unsigned(data, "CurrentCapacity")))
-            .filter(|value| *value <= 100)
+        level_percent: unsigned(values, "CurrentCapacity", 100)
+            .or_else(|| battery_data.and_then(|data| unsigned(data, "CurrentCapacity", 100)))
             .map(|value| value as u8),
+        temperature_celsius,
         is_charging: boolean(values, "IsCharging")
             .or_else(|| charger_data.and_then(|data| boolean(data, "IsCharging"))),
         external_connected: boolean(values, "ExternalConnected")
             .or_else(|| boolean(values, "AppleRawExternalConnected")),
         fully_charged: boolean(values, "FullyCharged")
             .or_else(|| battery_data.and_then(|data| boolean(data, "FullyCharged"))),
-        cycle_count: unsigned(values, "CycleCount"),
-        voltage_mv: unsigned(values, "Voltage")
-            .or_else(|| unsigned(values, "AppleRawBatteryVoltage")),
-        instant_amperage_ma: signed(values, "InstantAmperage")
-            .or_else(|| signed(values, "Amperage")),
+        cycle_count: unsigned(values, "CycleCount", 100_000),
+        voltage_mv: unsigned(values, "Voltage", 30_000)
+            .or_else(|| unsigned(values, "AppleRawBatteryVoltage", 30_000)),
+        instant_amperage_ma: signed(values, "InstantAmperage", 100_000)
+            .or_else(|| signed(values, "Amperage", 100_000)),
         design_capacity_mah,
         full_charge_capacity_mah,
         health_percent,
-        time_remaining_minutes: unsigned(values, "TimeRemaining")
-            .or_else(|| unsigned(values, "AvgTimeToEmpty"))
-            .filter(|minutes| *minutes <= 7 * 24 * 60),
-        adapter_watts: adapter.and_then(|details| unsigned(details, "Watts")),
+        time_remaining_minutes: unsigned(values, "TimeRemaining", 7 * 24 * 60)
+            .or_else(|| unsigned(values, "AvgTimeToEmpty", 7 * 24 * 60)),
+        adapter_watts: adapter.and_then(|details| unsigned(details, "Watts", 1_000)),
         adapter_name: adapter
             .and_then(|details| details.get("Name"))
             .and_then(plist::Value::as_string)
-            .map(ToOwned::to_owned),
+            .and_then(normalized_diagnostic_label),
     }
+}
+
+fn normalized_diagnostic_label(value: &str) -> Option<String> {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!value.is_empty()
+        && value.chars().count() <= 64
+        && value
+            .chars()
+            .all(|character| !character.is_control() && !matches!(character, '/' | '\\')))
+    .then_some(value)
 }
 
 fn format_media_start_error(
@@ -6324,7 +6373,12 @@ mod tests {
             product_type: "iPhone11,2".into(),
             product_version: "26.0".into(),
             build_version: None,
+            device_class: None,
+            cpu_architecture: None,
+            model_number: None,
             hardware_model: None,
+            device_color: None,
+            enclosure_color: None,
             serial_number: None,
             ecid: None,
             total_disk_capacity: None,
@@ -6371,6 +6425,14 @@ mod tests {
     fn normalizes_bounded_lockdown_regional_settings() {
         let values = plist::Dictionary::from_iter([
             (
+                String::from("DeviceName"),
+                plist::Value::String(" Boa 的 iPhone ".into()),
+            ),
+            (
+                String::from("ProductType"),
+                plist::Value::String("iPhone14,3".into()),
+            ),
+            (
                 String::from("Language"),
                 plist::Value::String(" zh-Hant ".into()),
             ),
@@ -6381,11 +6443,85 @@ mod tests {
             ),
             (String::from("Uses24HourClock"), plist::Value::Boolean(true)),
         ]);
+        assert_eq!(
+            device_display_name(&values).as_deref(),
+            Some("Boa 的 iPhone")
+        );
+        assert_eq!(
+            device_identity_token(&values, "ProductType", 32).as_deref(),
+            Some("iPhone14,3")
+        );
         let regional = device_regional_settings(&values).unwrap();
         assert_eq!(regional.language.as_deref(), Some("zh-Hant"));
         assert_eq!(regional.locale.as_deref(), Some("zh_TW"));
         assert_eq!(regional.time_zone.as_deref(), Some("Asia/Taipei"));
         assert_eq!(regional.uses_24_hour_clock, Some(true));
+    }
+
+    #[test]
+    fn normalizes_bounded_non_unique_device_identity() {
+        let values = plist::Dictionary::from_iter([
+            (
+                String::from("DeviceClass"),
+                plist::Value::String(" iPhone ".into()),
+            ),
+            (
+                String::from("CPUArchitecture"),
+                plist::Value::String("arm64e".into()),
+            ),
+            (
+                String::from("ModelNumber"),
+                plist::Value::String("MU663CH/A".into()),
+            ),
+            (
+                String::from("DeviceColor"),
+                plist::Value::String("#3b3b3c".into()),
+            ),
+            (
+                String::from("EnclosureColor"),
+                plist::Value::String("black-1".into()),
+            ),
+        ]);
+        assert_eq!(
+            device_identity_token(&values, "DeviceClass", 32).as_deref(),
+            Some("iPhone")
+        );
+        assert_eq!(
+            device_identity_token(&values, "CPUArchitecture", 32).as_deref(),
+            Some("arm64e")
+        );
+        assert_eq!(
+            device_identity_token(&values, "ModelNumber", 32).as_deref(),
+            Some("MU663CH/A")
+        );
+        assert_eq!(
+            device_identity_token(&values, "DeviceColor", 32).as_deref(),
+            Some("#3b3b3c")
+        );
+        assert_eq!(
+            device_identity_token(&values, "EnclosureColor", 32).as_deref(),
+            Some("black-1")
+        );
+
+        let invalid = plist::Dictionary::from_iter([
+            (
+                String::from("DeviceName"),
+                plist::Value::String("phone\nprivate".into()),
+            ),
+            (
+                String::from("Control"),
+                plist::Value::String("phone\nprivate".into()),
+            ),
+            (String::from("Long"), plist::Value::String("x".repeat(33))),
+            (
+                String::from("Unicode"),
+                plist::Value::String("iPhone Pro".into()),
+            ),
+        ]);
+        assert!(device_display_name(&invalid).is_none());
+        assert!(device_identity_token(&invalid, "Control", 32).is_none());
+        assert!(device_identity_token(&invalid, "Long", 32).is_none());
+        assert!(device_identity_token(&invalid, "Unicode", 32).is_none());
     }
 
     #[test]
@@ -6477,6 +6613,10 @@ mod tests {
             ),
             (String::from("Voltage"), plist::Value::Integer(4009.into())),
             (
+                String::from("Temperature"),
+                plist::Value::Integer(3150.into()),
+            ),
+            (
                 String::from("InstantAmperage"),
                 plist::Value::Integer(2153.into()),
             ),
@@ -6499,6 +6639,7 @@ mod tests {
         assert_eq!(battery.is_charging, Some(true));
         assert_eq!(battery.cycle_count, Some(1554));
         assert_eq!(battery.voltage_mv, Some(4009));
+        assert_eq!(battery.temperature_celsius, Some(31.5));
         assert_eq!(battery.instant_amperage_ma, Some(2153));
         assert_eq!(battery.adapter_watts, Some(20));
         assert_eq!(
@@ -6507,6 +6648,57 @@ mod tests {
         );
         assert!((battery.health_percent.unwrap() - 80.508_670_52).abs() < 1e-6);
         assert!(!format!("{battery:?}").contains("must-not-leak"));
+    }
+
+    #[test]
+    fn bounds_untrusted_battery_diagnostics() {
+        let adapter = plist::Dictionary::from_iter([
+            (
+                String::from("Name"),
+                plist::Value::String("private/path\0adapter".into()),
+            ),
+            (String::from("Watts"), plist::Value::Integer(50_000.into())),
+        ]);
+        let values = plist::Dictionary::from_iter([
+            (
+                String::from("CurrentCapacity"),
+                plist::Value::Integer(101.into()),
+            ),
+            (
+                String::from("Temperature"),
+                plist::Value::Integer(12_000.into()),
+            ),
+            (
+                String::from("CycleCount"),
+                plist::Value::Integer(1_000_000.into()),
+            ),
+            (
+                String::from("Voltage"),
+                plist::Value::Integer(100_000.into()),
+            ),
+            (
+                String::from("InstantAmperage"),
+                plist::Value::Integer(1_000_000.into()),
+            ),
+            (
+                String::from("MaximumCapacityPercent"),
+                plist::Value::Integer(96.into()),
+            ),
+            (
+                String::from("AdapterDetails"),
+                plist::Value::Dictionary(adapter),
+            ),
+        ]);
+
+        let battery = device_battery_from_ioregistry(&values);
+        assert_eq!(battery.health_percent, Some(96.0));
+        assert!(battery.level_percent.is_none());
+        assert!(battery.temperature_celsius.is_none());
+        assert!(battery.cycle_count.is_none());
+        assert!(battery.voltage_mv.is_none());
+        assert!(battery.instant_amperage_ma.is_none());
+        assert!(battery.adapter_watts.is_none());
+        assert!(battery.adapter_name.is_none());
     }
 
     #[test]

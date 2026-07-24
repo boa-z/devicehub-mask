@@ -133,6 +133,9 @@ describe("device inspector", () => {
     expect(shouldRefreshDeviceInspector("disk_usage_changed", "info")).toBe(true);
     expect(shouldRefreshDeviceInspector("disk_usage_changed", "apps")).toBe(true);
     expect(shouldRefreshDeviceInspector("activation_state_changed", "info")).toBe(true);
+    expect(shouldRefreshDeviceInspector("regional_settings_changed", "info")).toBe(true);
+    expect(shouldRefreshDeviceInspector("developer_image_mounted", "info")).toBe(true);
+    expect(shouldRefreshDeviceInspector("regional_settings_changed", "apps")).toBe(false);
     expect(shouldRefreshDeviceInspector("lock_state_changed", "info")).toBe(false);
     expect(shouldRefreshDeviceInspector("device_name_changed", "apps")).toBe(false);
   });
