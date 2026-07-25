@@ -1,8 +1,8 @@
 //! Product/build identity and update-channel routing.
 //!
-//! The product version remains independent from Tauri's updater-compatible
-//! package version. Update endpoints are selected from a closed enum so the
-//! frontend cannot turn the updater into an arbitrary network client.
+//! The source product version remains independent from the Nightly prerelease
+//! suffix injected by CI. Update endpoints are selected from a closed enum so
+//! the frontend cannot turn the updater into an arbitrary network client.
 
 use std::time::Duration;
 
@@ -37,7 +37,6 @@ pub(crate) struct BuildInfo {
     version: &'static str,
     build: &'static str,
     commit: &'static str,
-    updater_version: String,
     update_channel: UpdateChannel,
 }
 
@@ -60,12 +59,11 @@ fn compiled_channel() -> UpdateChannel {
 }
 
 #[tauri::command]
-pub(crate) fn build_info(app: tauri::AppHandle) -> BuildInfo {
+pub(crate) fn build_info() -> BuildInfo {
     BuildInfo {
         version: env!("CARGO_PKG_VERSION"),
         build: env!("DEVICEHUB_BUILD_NUMBER"),
         commit: env!("DEVICEHUB_COMMIT"),
-        updater_version: app.package_info().version.to_string(),
         update_channel: compiled_channel(),
     }
 }

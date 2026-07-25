@@ -8,6 +8,8 @@
 
 `.github/workflows/cleanup-nightly.yml` 每周运行，也支持手动触发。默认保留最新 20 次已完成的 nightly workflow 运行，并删除超过 14 天的 nightly artifacts。手动运行可以在受限范围内调整两个保留参数，或使用 dry-run 只查看预计删除内容。它不会删除滚动 `nightly` Release、tag 或 Release assets。
 
+`.github/workflows/release.yml` 只允许手动触发。运行时选择包含确切发布源码的 Git ref，输入与 `v<tauri.conf.json version>` 匹配的标签，并选择是否保留为 Draft。它复用 Nightly 的同一套验证和打包流程，但会注入 Stable 通道和纯产品版本。正式标签和已发布 Release 不可覆盖。工作流会先创建或继续 Draft，上传全部资源；仅当关闭 **Draft** 时，才在上传完成后将其发布为仓库最新正式版。
+
 ## Jobs
 
 - **verify** 使用相互独立失败的 macOS、Windows 和 Linux 矩阵。每个平台运行前端 lint、测试和构建，Rust 格式、测试和 Clippy，以及 Tauri debug 应用构建。
@@ -22,7 +24,9 @@
 
 ## 版本与产物
 
-安装包文件名包含产品版本和 workflow build number。macOS 使用运行编号作为 `CFBundleVersion`。更新产物单独使用统一的 `major.minor.<run-number>` 版本，因为 `0.1.0+12` 这样的 SemVer build metadata 不参与更新顺序比较。因此设置页会独立显示四项信息：**版本**是产品版本，**构建编号**是 workflow 运行编号，**Commit** 是七位源码 revision，**Updater 版本**只用于更新顺序比较。
+`tauri.conf.json` 保存当前目标正式版本。Nightly 构建使用标准 SemVer 预发布版本 `<product-version>-nightly.<run-number>`；例如目标版本为 `0.1.0` 的第 96 次构建是 `0.1.0-nightly.96`。数字预发布标识用于排序 Nightly，最终的 `0.1.0` 正式版高于所有 `0.1.0-nightly.*` 构建。正式版发布后，必须先提升产品版本，再继续生成 Nightly。
+
+安装包文件名包含产品版本和 workflow build number，macOS 也使用运行编号作为 `CFBundleVersion`。设置页分别显示**版本**、**构建编号**和七位 **Commit**；当前更新通道已能识别正式版或 Nightly，不再向用户暴露第二套内部版本。
 
 Release 可以包含：
 
@@ -81,3 +85,12 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 4. 确认三个验证矩阵和全部打包 job。
 5. 确认 release 包含预期原生安装包、签名和 `latest.json`。
 6. 至少安装一个 CI 产物，不要只测试 Cargo target 可执行文件。
+
+## 正式版发布流程
+
+1. 将 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `package.json` 更新为目标正式版本，三处版本必须一致。
+2. 完成本地验证，并推送确切的发布 commit。
+3. 打开 **Actions > Publish Stable Release**，选择该 Git ref，输入 `v<version>`（例如 `v0.1.0`）。
+4. 保持开启 **Draft** 以便检查候选版；关闭后，工作流会在全部产物上传完成后自动公开发布。
+5. 在 macOS、Windows 和 Linux 上验证全新安装和应用内 Stable 更新。
+6. 发布后先提升配置中的产品版本，再生成下一个 Nightly。

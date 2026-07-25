@@ -5,6 +5,20 @@ on:
     branches:
       - "**"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_channel:
+        description: Build channel injected into the application
+        type: string
+        default: nightly
+      release_tag:
+        description: GitHub Release tag used by updater artifact URLs
+        type: string
+        default: nightly
+      release_draft:
+        description: Create the stable GitHub Release as a draft
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,9 +27,65 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  RELEASE_CHANNEL: ${{ inputs.release_channel || 'nightly' }}
+  RELEASE_TAG: ${{ inputs.release_tag || 'nightly' }}
+  RELEASE_DRAFT: ${{ inputs.release_draft || false }}
+
 jobs:
+  validate-release:
+    name: Validate release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate channel and tag
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          NPM_VERSION="$(node -p "require('./package.json').version")"
+          CARGO_VERSION="$(awk '/^\[package\]/{found=1; next} found && /^version = /{gsub(/[\"[:space:]]/, "", $3); print $3; exit}' src-tauri/Cargo.toml)"
+          if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tauri.conf.json version must be a stable major.minor.patch version"
+            exit 1
+          fi
+          if [[ "$NPM_VERSION" != "$APP_VERSION" || "$CARGO_VERSION" != "$APP_VERSION" ]]; then
+            echo "::error::package.json, Cargo.toml, and tauri.conf.json versions must match"
+            exit 1
+          fi
+          case "$RELEASE_CHANNEL" in
+            nightly)
+              test "$RELEASE_TAG" = "nightly" || {
+                echo "::error::Nightly builds must publish to the nightly tag"
+                exit 1
+              }
+              ;;
+            stable)
+              test "$RELEASE_TAG" = "v${APP_VERSION}" || {
+                echo "::error::Stable release tag must be v${APP_VERSION}, got ${RELEASE_TAG}"
+                exit 1
+              }
+              test -n "$TAURI_SIGNING_PRIVATE_KEY" || {
+                echo "::error::Stable releases require TAURI_SIGNING_PRIVATE_KEY"
+                exit 1
+              }
+              ;;
+            *)
+              echo "::error::Unsupported release channel: ${RELEASE_CHANNEL}"
+              exit 1
+              ;;
+          esac
+
   verify:
     name: Verify (${{ matrix.name }})
+    needs: validate-release
     strategy:
       fail-fast: false
       matrix:
@@ -95,7 +165,8 @@ jobs:
 
   build-macos:
     name: Package macOS universal
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: validate-release
+    if: github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: macos-14
     timeout-minutes: 90
     env:
@@ -144,7 +215,11 @@ jobs:
         run: |
           APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
-          UPDATE_VERSION="${APP_VERSION%.*}.${BUILD_NUMBER}"
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            UPDATE_VERSION="$APP_VERSION"
+          else
+            UPDATE_VERSION="${APP_VERSION}-nightly.${BUILD_NUMBER}"
+          fi
           {
             echo "app_version=${APP_VERSION}"
             echo "build_number=${BUILD_NUMBER}"
@@ -160,7 +235,7 @@ jobs:
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
           BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
-          DEVICEHUB_UPDATE_CHANNEL: nightly
+          DEVICEHUB_UPDATE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -215,7 +290,7 @@ jobs:
           cp "$SOURCE" "dist/${UPDATER}"
           cp "${SOURCE}.sig" "dist/${UPDATER}.sig"
           SIGNATURE=$(tr -d '\r\n' < "dist/${UPDATER}.sig")
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/${UPDATER}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${UPDATER}"
           jq -n --arg signature "$SIGNATURE" --arg url "$URL" \
             '{platforms: {"darwin-aarch64": {signature: $signature, url: $url}, "darwin-x86_64": {signature: $signature, url: $url}}}' \
             > dist/update-fragment-macos.json
@@ -223,7 +298,7 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: nightly-macos
+          name: package-macos
           path: |
             dist/*.dmg
             dist/*.sha256
@@ -235,7 +310,8 @@ jobs:
 
   build-windows:
     name: Package Windows x64
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: validate-release
+    if: github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -275,8 +351,7 @@ jobs:
         run: |
           $appVersion = node -p "require('./src-tauri/tauri.conf.json').version"
           $buildNumber = "${env:GITHUB_RUN_NUMBER}"
-          $parts = $appVersion.Split('.')
-          $updateVersion = "$($parts[0]).$($parts[1]).${buildNumber}"
+          $updateVersion = if ($env:RELEASE_CHANNEL -eq 'stable') { $appVersion } else { "${appVersion}-nightly.${buildNumber}" }
           "app_version=${appVersion}" >> $env:GITHUB_OUTPUT
           "build_number=${buildNumber}" >> $env:GITHUB_OUTPUT
           "update_version=${updateVersion}" >> $env:GITHUB_OUTPUT
@@ -289,7 +364,7 @@ jobs:
         timeout-minutes: 20
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
-          DEVICEHUB_UPDATE_CHANNEL: nightly
+          DEVICEHUB_UPDATE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -328,7 +403,7 @@ jobs:
             if (-not (Test-Path $signatureSource)) { throw 'Signed NSIS updater artifact is missing' }
             Copy-Item $signatureSource "dist/$env:NSIS.sig"
             $signature = (Get-Content -Raw "dist/$env:NSIS.sig").Trim()
-            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/nightly/$env:NSIS"
+            $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$env:NSIS"
             @{ platforms = @{ 'windows-x86_64' = @{ signature = $signature; url = $url } } } |
               ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 dist/update-fragment-windows.json
           }
@@ -336,7 +411,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: nightly-windows-x64
+          name: package-windows-x64
           path: |
             dist/*
           if-no-files-found: error
@@ -344,7 +419,8 @@ jobs:
 
   build-linux:
     name: Package Linux x64
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: validate-release
+    if: github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -387,7 +463,11 @@ jobs:
         run: |
           APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
-          UPDATE_VERSION="${APP_VERSION%.*}.${BUILD_NUMBER}"
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            UPDATE_VERSION="$APP_VERSION"
+          else
+            UPDATE_VERSION="${APP_VERSION}-nightly.${BUILD_NUMBER}"
+          fi
           {
             echo "app_version=${APP_VERSION}"
             echo "build_number=${BUILD_NUMBER}"
@@ -402,7 +482,7 @@ jobs:
         timeout-minutes: 20
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
-          DEVICEHUB_UPDATE_CHANNEL: nightly
+          DEVICEHUB_UPDATE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -445,7 +525,7 @@ jobs:
             test -s "${APPIMAGE_SOURCE}.sig"
             cp "${APPIMAGE_SOURCE}.sig" "dist/${APPIMAGE}.sig"
             SIGNATURE=$(tr -d '\r\n' < "dist/${APPIMAGE}.sig")
-            URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/${APPIMAGE}"
+            URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APPIMAGE}"
             jq -n --arg signature "$SIGNATURE" --arg url "$URL" \
               '{platforms: {"linux-x86_64": {signature: $signature, url: $url}}}' \
               > dist/update-fragment-linux.json
@@ -454,15 +534,15 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: nightly-linux-x64
+          name: package-linux-x64
           path: |
             dist/*
           if-no-files-found: error
           retention-days: 14
 
-  publish-nightly:
-    name: Publish rolling nightly
-    needs: [verify, build-macos, build-windows, build-linux]
+  publish-release:
+    name: Publish ${{ inputs.release_channel || 'nightly' }} release
+    needs: [validate-release, verify, build-macos, build-windows, build-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -477,60 +557,99 @@ jobs:
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: nightly-*
+          pattern: package-*
           path: dist
           merge-multiple: true
 
       - name: Generate cross-platform updater manifest
         shell: bash
         env:
-          NOTES: DeviceHub Mask nightly build ${{ github.run_number }} (${{ github.sha }}).
+          NOTES: DeviceHub Mask ${{ inputs.release_channel || 'nightly' }} build ${{ github.run_number }} (${{ github.sha }}).
         run: |
           APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          UPDATE_VERSION="${APP_VERSION%.*}.${GITHUB_RUN_NUMBER}" \
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            UPDATE_VERSION="$APP_VERSION"
+          else
+            UPDATE_VERSION="${APP_VERSION}-nightly.${GITHUB_RUN_NUMBER}"
+          fi
+          UPDATE_VERSION="$UPDATE_VERSION" \
           NOTES="$NOTES" \
             scripts/generate-update-manifest.sh
 
       - name: Upload combined workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: devicehub-mask-nightly-${{ github.run_number }}
+          name: devicehub-mask-${{ inputs.release_channel || 'nightly' }}-${{ github.run_number }}
           path: |
             dist/*
             !dist/update-fragment-*.json
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish rolling nightly release
+      - name: Publish GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          UPDATE_VERSION="${APP_VERSION%.*}.${GITHUB_RUN_NUMBER}"
-          git tag --force nightly "$GITHUB_SHA"
-          git push origin refs/tags/nightly --force
+          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
+            UPDATE_VERSION="$APP_VERSION"
+          else
+            UPDATE_VERSION="${APP_VERSION}-nightly.${GITHUB_RUN_NUMBER}"
+          fi
 
           NOTES=$(cat <<EOF
-          Automated DeviceHub Mask cross-platform nightly build.
+          Automated DeviceHub Mask cross-platform ${RELEASE_CHANNEL} build.
 
-          - Version: ${APP_VERSION}
+          - Version: ${UPDATE_VERSION}
           - Build: ${GITHUB_RUN_NUMBER}
-          - Updater version: ${UPDATE_VERSION}
           - Platforms: macOS universal, Windows x64, Linux x64
           - Commit: ${GITHUB_SHA}
           EOF
           )
 
-          if gh release view nightly >/dev/null 2>&1; then
-            gh release edit nightly --title "DeviceHub Mask Nightly ${APP_VERSION}+${GITHUB_RUN_NUMBER}" --notes "$NOTES" --prerelease --latest=false
-            while IFS= read -r asset; do
-              test -z "$asset" || gh release delete-asset nightly "$asset" --yes
-            done < <(gh release view nightly --json assets --jq '.assets[].name')
+          if [[ "$RELEASE_CHANNEL" == "nightly" ]]; then
+            git tag --force nightly "$GITHUB_SHA"
+            git push origin refs/tags/nightly --force
+            if gh release view nightly >/dev/null 2>&1; then
+              gh release edit nightly --title "DeviceHub Mask Nightly ${UPDATE_VERSION}" --notes "$NOTES" --prerelease --latest=false
+              while IFS= read -r asset; do
+                test -z "$asset" || gh release delete-asset nightly "$asset" --yes
+              done < <(gh release view nightly --json assets --jq '.assets[].name')
+            else
+              gh release create nightly --title "DeviceHub Mask Nightly ${UPDATE_VERSION}" --notes "$NOTES" --prerelease --latest=false
+            fi
           else
-            gh release create nightly --title "DeviceHub Mask Nightly ${APP_VERSION}+${GITHUB_RUN_NUMBER}" --notes "$NOTES" --prerelease --latest=false
+            EXPECTED_TAG="v${APP_VERSION}"
+            if [[ "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then
+              echo "::error::Stable release tag must be ${EXPECTED_TAG}, got ${RELEASE_TAG}"
+              exit 1
+            fi
+            REMOTE_SHA="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')"
+            if [[ -n "$REMOTE_SHA" && "$REMOTE_SHA" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag ${RELEASE_TAG} already points to another commit; stable releases are immutable"
+              exit 1
+            fi
+            if [[ -z "$REMOTE_SHA" ]]; then
+              git tag "$RELEASE_TAG" "$GITHUB_SHA"
+              git push origin "refs/tags/${RELEASE_TAG}"
+            fi
+
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              IS_DRAFT="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+              if [[ "$IS_DRAFT" != "true" ]]; then
+                echo "::error::Release ${RELEASE_TAG} is already published; stable releases are immutable"
+                exit 1
+              fi
+              gh release edit "$RELEASE_TAG" --title "DeviceHub Mask ${APP_VERSION}" --notes "$NOTES"
+            else
+              gh release create "$RELEASE_TAG" --title "DeviceHub Mask ${APP_VERSION}" --notes "$NOTES" --draft
+            fi
           fi
 
           mapfile -d '' ASSETS < <(find dist -maxdepth 1 -type f ! -name 'update-fragment-*.json' -print0)
           test "${#ASSETS[@]}" -gt 0
-          gh release upload nightly "${ASSETS[@]}" --clobber
+          gh release upload "$RELEASE_TAG" "${ASSETS[@]}" --clobber
+          if [[ "$RELEASE_CHANNEL" == "stable" && "$RELEASE_DRAFT" != "true" ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          fi

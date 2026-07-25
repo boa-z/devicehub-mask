@@ -1093,7 +1093,6 @@ export const enUS = {
   update: {
     channel: "Update channel",
     channels: { stable: "Stable", nightly: "Nightly" },
-    updaterVersion: "Updater version",
     automatic: "Automatically check for updates",
     manual: "Manual update check",
     checkNow: "Check now",

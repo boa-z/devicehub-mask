@@ -1,0 +1,30 @@
+name: Publish Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag matching tauri.conf.json, for example v0.1.0
+        required: true
+        type: string
+      draft:
+        description: Create a draft for final inspection before publication
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stable-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: ./.github/workflows/nightly.yml
+    with:
+      release_channel: stable
+      release_tag: ${{ inputs.tag }}
+      release_draft: ${{ inputs.draft }}
+    secrets: inherit

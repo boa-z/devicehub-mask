@@ -244,7 +244,6 @@ export function SettingsPage({
             onChange={setChannel}
           />
         </label>
-        <label><span>{t("update.updaterVersion")}</span><Typography.Text code>{buildInfo?.updaterVersion ?? "-"}</Typography.Text></label>
         <label>
           <span>{t("update.automatic")}</span>
           <Switch checked={automatic} onChange={setAutomatic} />

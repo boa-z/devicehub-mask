@@ -7,7 +7,6 @@ export type BuildInfo = {
   version: string;
   build: string;
   commit: string;
-  updaterVersion: string;
   updateChannel: UpdateChannel;
 };
 

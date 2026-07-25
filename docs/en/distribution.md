@@ -8,6 +8,8 @@
 
 `.github/workflows/cleanup-nightly.yml` runs weekly and can be dispatched manually. It retains the newest 20 completed nightly workflow runs and deletes nightly artifacts older than 14 days by default. Manual runs can change both bounded retention values or use dry-run. It never deletes the rolling `nightly` release, tag, or release assets.
 
+`.github/workflows/release.yml` is manual-only. Select the Git ref containing the exact source to release, enter the tag matching `v<tauri.conf.json version>`, and choose whether to retain a draft. It reuses the same verification and packaging workflow as Nightly, but injects the Stable channel and the plain product version. Stable tags and published releases are immutable. The workflow creates or resumes a draft, uploads all assets, and only then publishes it as the repository's latest release when **Draft** is disabled.
+
 ## Jobs
 
 - **verify** is a fail-independent macOS, Windows, and Linux matrix. Each leg runs frontend lint, tests, and build; Rust format, tests, and Clippy; and a debug Tauri application build.
@@ -22,7 +24,9 @@ Workflow artifacts are retained for 14 days. The rolling public release is:
 
 ## Versions and Artifacts
 
-Installer filenames contain the product version and workflow build number. The run number becomes `CFBundleVersion` on macOS. Updater artifacts use a separate shared `major.minor.<run-number>` version because SemVer build metadata such as `0.1.0+12` does not affect update ordering. Settings therefore reports four independent values: **Version** is the product version, **Build** is the workflow run number, **Commit** is the seven-character source revision, and **Updater version** is the SemVer value used only for update ordering.
+`tauri.conf.json` contains the target stable product version. A Nightly build derives the standard SemVer prerelease `<product-version>-nightly.<run-number>`; for example, build 96 targeting version `0.1.0` is `0.1.0-nightly.96`. Numeric prerelease identifiers order Nightly builds, and the final `0.1.0` release sorts above every `0.1.0-nightly.*` build. After publishing a stable release, increment the product version before producing further Nightly builds.
+
+Installer filenames contain the product version and workflow build number. The run number also becomes `CFBundleVersion` on macOS. Settings reports **Version**, **Build**, and the seven-character **Commit** separately; the selected update channel identifies a Stable or Nightly build without exposing an internal second version.
 
 The release can contain:
 
@@ -81,3 +85,12 @@ Production distribution should configure a Developer ID Application certificate,
 4. Verify all three matrix jobs and all package jobs.
 5. Confirm the release contains the expected native packages, signatures, and `latest.json`.
 6. Install at least one produced package rather than testing only a Cargo target executable.
+
+## Stable Release Procedure
+
+1. Update `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `package.json` to the intended stable version, keeping the three values equal.
+2. Complete local verification and push the exact release commit.
+3. Open **Actions > Publish Stable Release**, select that Git ref, and enter `v<version>` (for example, `v0.1.0`).
+4. Keep **Draft** enabled for a release candidate inspection, or disable it to publish automatically after every package has uploaded.
+5. Verify clean installation and in-app Stable update on macOS, Windows, and Linux.
+6. After publication, increment the configured product version before the next Nightly build.

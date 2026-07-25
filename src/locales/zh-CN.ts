@@ -1082,7 +1082,6 @@ export const zhCN = {
   update: {
     channel: "更新通道",
     channels: { stable: "正式版", nightly: "Nightly" },
-    updaterVersion: "Updater 版本",
     automatic: "自动检查更新",
     manual: "手动检查更新",
     checkNow: "立即检查",
