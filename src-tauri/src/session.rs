@@ -2,6 +2,7 @@
 // stream (which both sources the video AND holds open the HID auth gate), then
 // run the video pipeline and dispatch input commands to the device's HID surfaces.
 
+mod clipboard;
 mod media;
 mod rtcp;
 
@@ -14,16 +15,15 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::ChildStderr;
 use tokio::sync::Notify;
-use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use idevice::{
     IdeviceError, IdeviceService, ReadWrite, RemoteXpcClient, RsdService,
     core_device::{
-        AppServiceClient, CallInfoBlob, CoreDeviceError, DataInclusionPolicy, DisplayServiceClient,
-        GENERAL_PASTEBOARD, HevcDepacketizer, Orientation as DevOrientation,
-        OrientationServiceClient, PasteboardServiceClient, PasteboardSnapshot, RotationDirection,
-        RtpPacket, UTI_PNG, build_frame_ack, build_screen_audio_offer, build_screen_video_offer,
-        build_start_audio_parameters, build_start_video_parameters,
+        AppServiceClient, CallInfoBlob, CoreDeviceError, DisplayServiceClient, HevcDepacketizer,
+        Orientation as DevOrientation, OrientationServiceClient, PasteboardServiceClient,
+        RotationDirection, RtpPacket, build_frame_ack, build_screen_audio_offer,
+        build_screen_video_offer, build_start_audio_parameters, build_start_video_parameters,
         hid::{
             ButtonState, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, IndigoHidClient,
             TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
@@ -58,17 +58,17 @@ use crate::ipa::{
     IpaPreflightIssue,
 };
 use crate::protocol::{
-    ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardContentKind, ClipboardEvent,
-    ClipboardSlot, ConnKind, ControlCmd, DeviceActivationState, DeviceApp, DeviceBattery,
-    DeviceDetails, DeviceInfo, DeviceListSlot, DevicePairingState, DeviceRegionalSettings,
-    DeviceStorage, ErrorSlot, ForgetDeviceOutcome, ForgetDeviceResult, FrameFormat, FrameSlot,
-    InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot, Orientation, OrientationSlot,
-    PairDeviceOutcome, PairDeviceResult, RotateDir, StatusSlot, VideoCounterSnapshot,
-    VideoCounters, clipboard_preview, device_selector,
+    ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardSlot, ConnKind, ControlCmd,
+    DeviceActivationState, DeviceApp, DeviceBattery, DeviceDetails, DeviceInfo, DeviceListSlot,
+    DevicePairingState, DeviceRegionalSettings, DeviceStorage, ErrorSlot, ForgetDeviceOutcome,
+    ForgetDeviceResult, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus,
+    LocationStatusSlot, Orientation, OrientationSlot, PairDeviceOutcome, PairDeviceResult,
+    RotateDir, StatusSlot, VideoCounterSnapshot, VideoCounters, device_selector,
 };
 use crate::wifi_devices::{WifiDiscovery, WifiEndpoint};
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
+use clipboard::ClipboardBridge;
 use media::{
     AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RtpVideoClock,
     RunningStats, audio_decoder_restart_backoff,
@@ -1761,8 +1761,7 @@ async fn run(
             None => std::future::pending::<()>().await,
         }
     };
-    let (clipboard_commands, clipboard_command_rx) = tokio::sync::mpsc::channel(4);
-    let clipboard_bridge = ClipboardBridge(clipboard_commands);
+    let (clipboard_bridge, clipboard_commands) = ClipboardBridge::channel();
     let decode_corruption = corruption.clone();
     let decode_queue = hevc_queue.clone();
     let decode_counters = video.counters.clone();
@@ -1832,11 +1831,11 @@ async fn run(
         _ = rtcp_send_task(
             video_udp, rtcp_udp, rtcp, our_ssrc, cname, &corruption,
         ) => {}
-        _ = clipboard_task(
+        _ = clipboard::run(
             pasteboard,
             video.clipboard_sync_enabled,
             clipboard,
-            clipboard_command_rx,
+            clipboard_commands,
             &mut adapter,
             &mut handshake,
         ) => {}
@@ -3817,440 +3816,6 @@ fn sort_device_apps(mut apps: Vec<DeviceApp>) -> Vec<DeviceApp> {
             .then_with(|| left.bundle_id.cmp(&right.bundle_id))
     });
     apps
-}
-
-/// How often we poll the host clipboard for host -> device changes (arboard has no
-/// change notification). The device -> host direction is push-driven when available.
-const CLIPBOARD_POLL: std::time::Duration = std::time::Duration::from_millis(600);
-/// Max characters in the UI's clipboard-activity preview.
-const CLIPBOARD_PREVIEW_LEN: usize = 48;
-const CLIPBOARD_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
-
-enum ClipboardCommand {
-    SetText {
-        text: String,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-}
-
-enum ClipboardWake {
-    Push(Result<PasteboardSnapshot, IdeviceError>),
-    Tick,
-    Command(Option<ClipboardCommand>),
-}
-
-#[derive(Clone)]
-struct ClipboardBridge(Sender<ClipboardCommand>);
-
-impl ClipboardBridge {
-    async fn set_text(&self, text: String) -> Result<(), String> {
-        let (reply, response) = tokio::sync::oneshot::channel();
-        self.0
-            .try_send(ClipboardCommand::SetText { text, reply })
-            .map_err(|error| match error {
-                tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                    "device clipboard is busy".to_string()
-                }
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                    "device clipboard is unavailable".to_string()
-                }
-            })?;
-        tokio::time::timeout(CLIPBOARD_COMMAND_TIMEOUT, response)
-            .await
-            .map_err(|_| "device clipboard request timed out".to_string())?
-            .map_err(|_| "device clipboard session ended".to_string())?
-    }
-}
-
-/// The contents both clipboards are believed to already share, used to suppress
-/// echoes and break the host⇄device feedback loop. Text and image are mutually
-/// exclusive. Images are tracked by a hash of their raw RGBA bytes.
-struct ClipState {
-    last_text: Option<String>,
-    last_image: Option<u64>,
-    /// Device change counter, to ignore device snapshots that didn't change.
-    last_change_count: Option<i64>,
-}
-
-/// Keep the host and device clipboards in sync (text and images), both directions.
-///
-/// One pasteboard connection (a second one doesn't work - the device tears down
-/// the existing subscriber when a new connection issues a SET), driven by a
-/// `select!`: device -> host is push-driven via `AUTONOTIFY`, host -> device is
-/// polled every [`CLIPBOARD_POLL`] (which also does a fallback `PULL`).
-///
-/// On startup [`ClipState`] is seeded without copying anything, so connecting
-/// never clobbers either clipboard. Best-effort throughout, reconnecting on socket
-/// errors. Never returns (returning would tear down the session via [`run`]'s
-/// `select!`); idles if the host clipboard or pasteboard service is unavailable.
-async fn clipboard_task(
-    pasteboard: Option<PasteboardServiceClient<Box<dyn ReadWrite>>>,
-    sync_enabled: bool,
-    activity: ClipboardSlot,
-    mut commands: Receiver<ClipboardCommand>,
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-) {
-    let Some(mut pb) = pasteboard else {
-        clipboard_command_loop(None, &activity, &mut commands, adapter, handshake).await;
-        return;
-    };
-    if !sync_enabled {
-        clipboard_command_loop(Some(pb), &activity, &mut commands, adapter, handshake).await;
-        return;
-    }
-    let mut clip = match arboard::Clipboard::new() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("no host clipboard; clipboard sync disabled: {e:?}");
-            clipboard_command_loop(Some(pb), &activity, &mut commands, adapter, handshake).await;
-            return;
-        }
-    };
-
-    // Seed the agreed state from current host + device contents so connecting
-    // doesn't push or pull pre-existing content.
-    let mut state = ClipState {
-        last_text: clip.get_text().ok(),
-        last_image: clip.get_image().ok().map(|i| image_hash(&i.bytes)),
-        last_change_count: pb
-            .get(GENERAL_PASTEBOARD)
-            .await
-            .ok()
-            .and_then(|s| s.change_count),
-    };
-
-    subscribe(&mut pb).await;
-
-    let mut tick = tokio::time::interval(CLIPBOARD_POLL);
-    let mut commands_open = true;
-    loop {
-        // The `recv_push` future is dropped when the tick wins - safe because the
-        // XPC read path buffers partial reads. Resolve the borrow of `pb` before
-        // the match body, which reuses it.
-        let wake = tokio::select! {
-            result = pb.recv_push() => ClipboardWake::Push(result),
-            _ = tick.tick() => ClipboardWake::Tick,
-            command = commands.recv(), if commands_open => ClipboardWake::Command(command),
-        };
-
-        match wake {
-            // device -> host (push)
-            ClipboardWake::Push(Ok(snap)) => {
-                apply_device_snapshot(&snap, &mut clip, &activity, &mut state)
-            }
-            ClipboardWake::Push(Err(e)) => {
-                tracing::warn!("clipboard PUSH failed: {e:?}");
-                if let Some(c) = reconnect_pasteboard(adapter, handshake).await {
-                    pb = c;
-                    subscribe(&mut pb).await;
-                    // Re-seed the change counter so post-reconnect state isn't
-                    // mistaken for a fresh device change.
-                    state.last_change_count = pb
-                        .get(GENERAL_PASTEBOARD)
-                        .await
-                        .ok()
-                        .and_then(|s| s.change_count);
-                }
-            }
-            // poll tick
-            ClipboardWake::Tick => {
-                // Fallback device -> host for devices that don't push.
-                match pb.get(GENERAL_PASTEBOARD).await {
-                    Ok(snap) => apply_device_snapshot(&snap, &mut clip, &activity, &mut state),
-                    Err(e) => {
-                        tracing::warn!("clipboard PULL failed: {e:?}");
-                        if let Some(c) = reconnect_pasteboard(adapter, handshake).await {
-                            pb = c;
-                            subscribe(&mut pb).await;
-                        }
-                        continue;
-                    }
-                }
-                // Host -> device.
-                if let Err(e) = push_host_clipboard(&mut pb, &mut clip, &activity, &mut state).await
-                {
-                    tracing::warn!("clipboard host -> device failed: {e:?}");
-                    if let Some(c) = reconnect_pasteboard(adapter, handshake).await {
-                        pb = c;
-                        subscribe(&mut pb).await;
-                    }
-                }
-            }
-            ClipboardWake::Command(Some(command)) => {
-                let prepared_text = match &command {
-                    ClipboardCommand::SetText { text, .. } => text.clone(),
-                };
-                if execute_clipboard_command(&mut pb, &activity, command).await {
-                    state.last_text = Some(prepared_text);
-                    state.last_image = None;
-                    state.last_change_count = pb
-                        .get(GENERAL_PASTEBOARD)
-                        .await
-                        .ok()
-                        .and_then(|snapshot| snapshot.change_count);
-                } else if let Some(client) = reconnect_pasteboard(adapter, handshake).await {
-                    pb = client;
-                    subscribe(&mut pb).await;
-                }
-            }
-            ClipboardWake::Command(None) => commands_open = false,
-        }
-    }
-}
-
-async fn clipboard_command_loop(
-    mut pasteboard: Option<PasteboardServiceClient<Box<dyn ReadWrite>>>,
-    activity: &ClipboardSlot,
-    commands: &mut Receiver<ClipboardCommand>,
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-) {
-    loop {
-        let Some(command) = commands.recv().await else {
-            std::future::pending::<()>().await;
-            return;
-        };
-        if pasteboard.is_none() {
-            pasteboard = reconnect_pasteboard(adapter, handshake).await;
-        }
-        let Some(client) = pasteboard.as_mut() else {
-            reject_clipboard_command(command, "device pasteboard service is unavailable");
-            continue;
-        };
-        if !execute_clipboard_command(client, activity, command).await {
-            pasteboard = None;
-        }
-    }
-}
-
-async fn execute_clipboard_command(
-    pasteboard: &mut PasteboardServiceClient<Box<dyn ReadWrite>>,
-    activity: &ClipboardSlot,
-    command: ClipboardCommand,
-) -> bool {
-    match command {
-        ClipboardCommand::SetText { text, reply } => {
-            let result = pasteboard
-                .set_text(&text, GENERAL_PASTEBOARD)
-                .await
-                .map_err(|error| format!("unable to set device clipboard: {error:?}"));
-            let succeeded = result.is_ok();
-            if succeeded {
-                tracing::info!(
-                    bytes = text.len(),
-                    "clipboard: text prepared for device paste"
-                );
-                activity.set(ClipboardEvent {
-                    from_device: false,
-                    kind: ClipboardContentKind::Text,
-                    preview: clipboard_preview(&text, CLIPBOARD_PREVIEW_LEN),
-                });
-            }
-            let _ = reply.send(result);
-            succeeded
-        }
-    }
-}
-
-fn reject_clipboard_command(command: ClipboardCommand, reason: &str) {
-    match command {
-        ClipboardCommand::SetText { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-/// Subscribe `pb` to device pasteboard change notifications, inlining item bytes
-/// so PUSH snapshots carry text/image data directly. Best-effort.
-async fn subscribe(pb: &mut PasteboardServiceClient<Box<dyn ReadWrite>>) {
-    if let Err(e) = pb
-        .set_change_notifications(
-            true,
-            GENERAL_PASTEBOARD,
-            Some(DataInclusionPolicy::AllResolved),
-        )
-        .await
-    {
-        tracing::warn!("clipboard: failed to subscribe to change notifications: {e:?}");
-    }
-}
-
-/// Apply a device pasteboard snapshot to the host clipboard (device -> host),
-/// preferring text and falling back to an image. No-ops when the snapshot's
-/// change counter hasn't advanced or its content already matches [`ClipState`].
-fn apply_device_snapshot(
-    snap: &PasteboardSnapshot,
-    clip: &mut arboard::Clipboard,
-    activity: &ClipboardSlot,
-    state: &mut ClipState,
-) {
-    if snap.change_count == state.last_change_count {
-        return; // our own SET echoing back, or a no-op notification
-    }
-    state.last_change_count = snap.change_count;
-
-    if let Some(text) = snap.text() {
-        if Some(&text) != state.last_text.as_ref() {
-            match clip.set_text(text.clone()) {
-                Ok(()) => {
-                    tracing::info!("clipboard: device -> host ({} bytes text)", text.len());
-                    activity.set(ClipboardEvent {
-                        from_device: true,
-                        kind: ClipboardContentKind::Text,
-                        preview: clipboard_preview(&text, CLIPBOARD_PREVIEW_LEN),
-                    });
-                    state.last_text = Some(text);
-                    state.last_image = None;
-                }
-                Err(e) => tracing::warn!("failed to set host text: {e:?}"),
-            }
-        }
-    } else if let Some((_uti, bytes)) = snap.image() {
-        match decode_image(&bytes) {
-            Some(img) => {
-                let (w, h) = (img.width, img.height);
-                let hash = image_hash(&img.bytes);
-                if Some(hash) != state.last_image {
-                    match clip.set_image(img) {
-                        Ok(()) => {
-                            tracing::info!("clipboard: device -> host (image {w}×{h})");
-                            activity.set(ClipboardEvent {
-                                from_device: true,
-                                kind: ClipboardContentKind::Image,
-                                preview: format!("{w} x {h}"),
-                            });
-                            state.last_image = Some(hash);
-                            state.last_text = None;
-                        }
-                        Err(e) => tracing::warn!("failed to set host image: {e:?}"),
-                    }
-                }
-            }
-            None => tracing::warn!("clipboard: undecodable device image, skipping"),
-        }
-    }
-}
-
-/// Push the host clipboard to the device (host -> device) if it changed: text
-/// first, otherwise an image (re-encoded to PNG). Returns `Err` only when a
-/// device SET fails, so the caller can reconnect.
-async fn push_host_clipboard(
-    pb: &mut PasteboardServiceClient<Box<dyn ReadWrite>>,
-    clip: &mut arboard::Clipboard,
-    activity: &ClipboardSlot,
-    state: &mut ClipState,
-) -> Result<(), IdeviceError> {
-    // arboard errors on get_text when the host holds a non-text item, which we
-    // treat as "no text" and fall through to the image check.
-    if let Ok(text) = clip.get_text()
-        && !text.is_empty()
-    {
-        if Some(&text) != state.last_text.as_ref() {
-            pb.set_text(&text, GENERAL_PASTEBOARD).await?;
-            tracing::info!("clipboard: host -> device ({} bytes text)", text.len());
-            activity.set(ClipboardEvent {
-                from_device: false,
-                kind: ClipboardContentKind::Text,
-                preview: clipboard_preview(&text, CLIPBOARD_PREVIEW_LEN),
-            });
-            state.last_text = Some(text);
-            state.last_image = None;
-            // Record the new change counter so the echoing PUSH/PULL is ignored.
-            state.last_change_count = pb
-                .get(GENERAL_PASTEBOARD)
-                .await
-                .ok()
-                .and_then(|s| s.change_count);
-        }
-        return Ok(());
-    }
-
-    if let Ok(img) = clip.get_image() {
-        let hash = image_hash(&img.bytes);
-        if Some(hash) != state.last_image {
-            let (w, h) = (img.width, img.height);
-            match encode_png(&img) {
-                Some(png) => {
-                    pb.set_image(&png, UTI_PNG, GENERAL_PASTEBOARD).await?;
-                    tracing::info!(
-                        "clipboard: host -> device (image {w}×{h}, {} bytes png)",
-                        png.len()
-                    );
-                    activity.set(ClipboardEvent {
-                        from_device: false,
-                        kind: ClipboardContentKind::Image,
-                        preview: format!("{w} x {h}"),
-                    });
-                    state.last_image = Some(hash);
-                    state.last_text = None;
-                    state.last_change_count = pb
-                        .get(GENERAL_PASTEBOARD)
-                        .await
-                        .ok()
-                        .and_then(|s| s.change_count);
-                }
-                None => tracing::warn!("clipboard: failed to encode host image to PNG"),
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Hash raw RGBA bytes for image echo suppression.
-fn image_hash(bytes: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
-}
-
-/// Decode an encoded pasteboard image (PNG/JPEG/TIFF) into arboard's raw RGBA.
-/// Returns `None` if the bytes don't decode as a supported image.
-fn decode_image(bytes: &[u8]) -> Option<arboard::ImageData<'static>> {
-    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
-    let (width, height) = (img.width() as usize, img.height() as usize);
-    Some(arboard::ImageData {
-        width,
-        height,
-        bytes: std::borrow::Cow::Owned(img.into_raw()),
-    })
-}
-
-/// Encode arboard's raw RGBA image into PNG bytes for the device pasteboard.
-/// Returns `None` if the buffer is malformed or PNG encoding fails.
-fn encode_png(img: &arboard::ImageData) -> Option<Vec<u8>> {
-    let buf = image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.bytes.to_vec())?;
-    let mut out = std::io::Cursor::new(Vec::new());
-    buf.write_to(&mut out, image::ImageFormat::Png).ok()?;
-    Some(out.into_inner())
-}
-
-/// Re-establish the pasteboard service over the existing tunnel after a dropped
-/// connection. Returns the new client, or `None` to let the next poll tick retry.
-async fn reconnect_pasteboard(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-) -> Option<PasteboardServiceClient<Box<dyn ReadWrite>>> {
-    match tokio::time::timeout(
-        Duration::from_secs(5),
-        PasteboardServiceClient::connect_rsd(adapter, handshake),
-    )
-    .await
-    {
-        Ok(Ok(c)) => {
-            tracing::info!("clipboard: reconnected pasteboard service");
-            Some(c)
-        }
-        Ok(Err(e)) => {
-            tracing::warn!("clipboard reconnect failed: {e:?}");
-            None
-        }
-        Err(_) => {
-            tracing::warn!("clipboard reconnect timed out");
-            None
-        }
-    }
 }
 
 /// Dispatch one [`InputCmd`] to the appropriate HID surface.
