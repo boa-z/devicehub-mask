@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashSet};
+#[cfg(test)]
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
@@ -13,14 +14,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::json;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use crate::protocol::{
-    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, HARDWARE_BUTTON_NAMES,
-    InputCmd, InputSink, LocationStatus, PairDeviceResult, VideoCounters, validate_device_name,
-    validate_paste_text,
+    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, InputCmd, InputSink,
+    LocationStatus, PairDeviceResult, VideoCounters, validate_device_name, validate_paste_text,
 };
 #[cfg(test)]
 use crate::websocket_input::{
@@ -32,6 +33,7 @@ use crate::websocket_input::{
 pub struct AppState {
     pub application: crate::application::ApplicationServices,
     pub performance_http: crate::http_performance::PerformanceHttpState,
+    pub profiles_http: crate::http_profiles::ProfileHttpState,
     pub storage_http: crate::http_storage::StorageHttpState,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
@@ -42,33 +44,6 @@ pub struct AppState {
     pub video_counters: VideoCounters,
     pub app_operation: AppOperationSlot,
     pub input: InputSink,
-    pub profile_dir: Arc<PathBuf>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Profile {
-    version: u8,
-    name: String,
-    mappings: Vec<serde_json::Value>,
-    #[serde(default, rename = "bundleIdentifiers")]
-    bundle_identifiers: Vec<String>,
-    #[serde(default = "default_hardware_bindings", rename = "hardwareBindings")]
-    hardware_bindings: BTreeMap<String, String>,
-}
-
-fn default_hardware_bindings() -> BTreeMap<String, String> {
-    HARDWARE_BUTTON_NAMES
-        .into_iter()
-        .map(|name| (name.to_string(), String::new()))
-        .collect()
-}
-
-#[derive(Serialize)]
-struct ProfileList {
-    profiles: Vec<String>,
-    active: String,
-    app_bindings: BTreeMap<String, String>,
-    binding_conflicts: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -76,10 +51,12 @@ struct ApiToken(Arc<str>);
 
 pub fn router(state: AppState, token: String) -> Router {
     let performance_routes = crate::http_performance::router(state.performance_http.clone());
+    let profile_routes = crate::http_profiles::router(state.profiles_http.clone());
     let storage_routes = crate::http_storage::router(state.storage_http.clone());
     Router::new()
         .route("/api/status", get(status))
         .merge(performance_routes)
+        .merge(profile_routes)
         .merge(storage_routes)
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
@@ -180,10 +157,6 @@ pub fn router(state: AppState, token: String) -> Router {
             "/api/device/provisioning-profiles/{uuid}/trust",
             put(trust_provisioning_profile_signer),
         )
-        .route("/api/profiles", get(list_profiles))
-        .route("/api/profiles/{name}", get(load_profile).put(save_profile))
-        .route("/api/profiles/{name}/activate", put(activate_profile))
-        .route("/api/profiles/{name}/delete", put(delete_profile))
         .route("/api/ws", get(ws_upgrade))
         .layer(from_fn_with_state(
             ApiToken(Arc::from(token)),
@@ -1823,304 +1796,6 @@ fn valid_bundle_identifier(bundle_id: &str) -> bool {
         })
 }
 
-fn profile_path(state: &AppState, name: &str) -> Result<PathBuf, StatusCode> {
-    if name.is_empty()
-        || name.len() > 80
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(state.profile_dir.join(format!("{name}.json")))
-}
-
-fn active_profile_path(state: &AppState) -> PathBuf {
-    state.profile_dir.join(".active-profile")
-}
-
-async fn active_profile_name(state: &AppState) -> String {
-    tokio::fs::read_to_string(active_profile_path(state))
-        .await
-        .ok()
-        .map(|name| name.trim().to_string())
-        .filter(|name| profile_path(state, name).is_ok())
-        .unwrap_or_else(|| "default".into())
-}
-
-async fn list_profiles(State(state): State<AppState>) -> Result<Json<ProfileList>, StatusCode> {
-    tokio::fs::create_dir_all(state.profile_dir.as_ref())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut entries = tokio::fs::read_dir(state.profile_dir.as_ref())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut profiles = Vec::new();
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
-        if let Some(name) = path.file_stem().and_then(|name| name.to_str())
-            && profile_path(&state, name).is_ok()
-        {
-            profiles.push(name.to_string());
-        }
-    }
-    profiles.sort();
-    let requested_active = active_profile_name(&state).await;
-    let active = if profiles.contains(&requested_active) {
-        requested_active
-    } else {
-        profiles
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "default".into())
-    };
-    let mut app_bindings = BTreeMap::new();
-    let mut binding_conflicts = HashSet::new();
-    for name in &profiles {
-        let Ok(bytes) = tokio::fs::read(profile_path(&state, name)?).await else {
-            continue;
-        };
-        let Ok(profile) = serde_json::from_slice::<Profile>(&bytes) else {
-            continue;
-        };
-        if validate_profile(&profile).is_err() {
-            continue;
-        }
-        for bundle_id in profile.bundle_identifiers {
-            if binding_conflicts.contains(&bundle_id) {
-                continue;
-            }
-            if app_bindings
-                .insert(bundle_id.clone(), name.clone())
-                .is_some()
-            {
-                app_bindings.remove(&bundle_id);
-                binding_conflicts.insert(bundle_id);
-            }
-        }
-    }
-    let mut binding_conflicts = binding_conflicts.into_iter().collect::<Vec<_>>();
-    binding_conflicts.sort();
-    Ok(Json(ProfileList {
-        profiles,
-        active,
-        app_bindings,
-        binding_conflicts,
-    }))
-}
-
-async fn load_profile(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Json<Profile>, StatusCode> {
-    let path = profile_path(&state, &name)?;
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        })?;
-    let profile: Profile =
-        serde_json::from_slice(&bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    validate_profile(&profile)?;
-    Ok(Json(profile))
-}
-
-async fn save_profile(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    Json(profile): Json<Profile>,
-) -> Result<StatusCode, StatusCode> {
-    let path = profile_path(&state, &name)?;
-    validate_profile(&profile)?;
-    tokio::fs::create_dir_all(state.profile_dir.as_ref())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let bytes = serde_json::to_vec_pretty(&profile).map_err(|_| StatusCode::BAD_REQUEST)?;
-    tokio::fs::write(path, bytes)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn activate_profile(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    let path = profile_path(&state, &name)?;
-    if !tokio::fs::try_exists(path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    tokio::fs::write(active_profile_path(&state), name)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn delete_profile(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let path = profile_path(&state, &name)?;
-    if active_profile_name(&state).await == name {
-        return Err(StatusCode::CONFLICT);
-    }
-    tokio::fs::remove_file(path)
-        .await
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        })?;
-    Ok(Json(json!({ "deleted": name })))
-}
-
-fn validate_profile(profile: &Profile) -> Result<(), StatusCode> {
-    if profile.version != 1
-        || profile.name.is_empty()
-        || profile.mappings.len() > 512
-        || profile.hardware_bindings.len() != HARDWARE_BUTTON_NAMES.len()
-        || profile.bundle_identifiers.len() > 32
-        || HARDWARE_BUTTON_NAMES
-            .iter()
-            .any(|name| !profile.hardware_bindings.contains_key(*name))
-    {
-        return Err(StatusCode::UNPROCESSABLE_ENTITY);
-    }
-    let mut bundle_identifiers = HashSet::new();
-    if profile.bundle_identifiers.iter().any(|bundle_id| {
-        !valid_bundle_identifier(bundle_id) || !bundle_identifiers.insert(bundle_id.as_str())
-    }) {
-        return Err(StatusCode::UNPROCESSABLE_ENTITY);
-    }
-    let mut ids = HashSet::new();
-    for mapping in &profile.mappings {
-        let Some(mapping) = mapping.as_object() else {
-            return Err(StatusCode::UNPROCESSABLE_ENTITY);
-        };
-        let id = mapping.get("id").and_then(serde_json::Value::as_str);
-        let mapping_type = mapping.get("type").and_then(serde_json::Value::as_str);
-        if id.is_none_or(str::is_empty)
-            || !ids.insert(id.unwrap())
-            || !mapping_type.is_some_and(valid_mapping_type)
-            || !valid_mapping_positions(mapping)
-        {
-            return Err(StatusCode::UNPROCESSABLE_ENTITY);
-        }
-    }
-    let mut mapping_keys = HashSet::new();
-    for mapping in &profile.mappings {
-        collect_mapping_keys(mapping, &mut mapping_keys);
-    }
-    let mut hardware_keys = HashSet::new();
-    for key in profile.hardware_bindings.values() {
-        if key.len() > 64
-            || !key
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric())
-            || (!key.is_empty() && mapping_keys.contains(key.as_str()))
-            || (!key.is_empty() && !hardware_keys.insert(key))
-        {
-            return Err(StatusCode::UNPROCESSABLE_ENTITY);
-        }
-    }
-    Ok(())
-}
-
-fn valid_mapping_type(mapping_type: &str) -> bool {
-    matches!(
-        mapping_type,
-        "touch"
-            | "dpad"
-            | "SingleTap"
-            | "RepeatTap"
-            | "MultipleTap"
-            | "Swipe"
-            | "DirectionPad"
-            | "MouseCastSpell"
-            | "PadCastSpell"
-            | "CancelCast"
-            | "Observation"
-            | "Fps"
-            | "Fire"
-            | "RawInput"
-            | "Script"
-    )
-}
-
-fn valid_mapping_positions(mapping: &serde_json::Map<String, serde_json::Value>) -> bool {
-    fn valid_position(value: &serde_json::Value) -> bool {
-        let Some(point) = value.as_object() else {
-            return false;
-        };
-        let Some(x) = point.get("x").and_then(serde_json::Value::as_f64) else {
-            return false;
-        };
-        let Some(y) = point.get("y").and_then(serde_json::Value::as_f64) else {
-            return false;
-        };
-        x.is_finite() && y.is_finite() && (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)
-    }
-    let primary = if mapping.contains_key("position") {
-        mapping.get("position").is_some_and(valid_position)
-    } else {
-        mapping
-            .get("x")
-            .and_then(serde_json::Value::as_f64)
-            .is_some_and(|x| (0.0..=1.0).contains(&x))
-            && mapping
-                .get("y")
-                .and_then(serde_json::Value::as_f64)
-                .is_some_and(|y| (0.0..=1.0).contains(&y))
-    };
-    primary
-        && mapping.get("center").is_none_or(valid_position)
-        && mapping.get("positions").is_none_or(|values| {
-            values
-                .as_array()
-                .is_some_and(|values| values.iter().all(valid_position))
-        })
-        && mapping.get("items").is_none_or(|values| {
-            values.as_array().is_some_and(|values| {
-                values
-                    .iter()
-                    .all(|item| item.get("position").is_some_and(valid_position))
-            })
-        })
-}
-
-fn collect_mapping_keys<'a>(value: &'a serde_json::Value, keys: &mut HashSet<&'a str>) {
-    match value {
-        serde_json::Value::Array(values) => values
-            .iter()
-            .for_each(|value| collect_mapping_keys(value, keys)),
-        serde_json::Value::Object(values) => {
-            for (name, value) in values {
-                if name == "key"
-                    || name == "bind"
-                    || name.ends_with("_bind")
-                    || matches!(name.as_str(), "up" | "down" | "left" | "right")
-                {
-                    collect_mapping_keys(value, keys);
-                }
-            }
-        }
-        serde_json::Value::String(value) if !value.is_empty() => {
-            keys.insert(value);
-        }
-        _ => {}
-    }
-}
-
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     crate::websocket_transport::upgrade(
         ws,
@@ -2221,6 +1896,7 @@ mod tests {
                     services,
                     input.clone(),
                 ),
+                profiles_http: crate::http_profiles::ProfileHttpState::new(PathBuf::new()),
                 storage_http: crate::http_storage::StorageHttpState::new(
                     input.clone(),
                     app_document_activity,
@@ -2235,7 +1911,6 @@ mod tests {
                 video_counters: VideoCounters::default(),
                 app_operation: AppOperationSlot::default(),
                 input,
-                profile_dir: Arc::new(PathBuf::new()),
             },
             input_rx,
             control_rx,
@@ -2834,57 +2509,6 @@ mod tests {
         let result = validate_contacts(contacts, Orientation::LandscapeRight).unwrap();
         assert_eq!(result[0].x, norm(0.75));
         assert_eq!(result[0].y, norm(0.75));
-    }
-
-    #[test]
-    fn legacy_profile_gets_empty_hardware_bindings() {
-        let profile: Profile = serde_json::from_value(json!({
-            "version": 1,
-            "name": "legacy",
-            "mappings": []
-        }))
-        .unwrap();
-
-        assert_eq!(profile.hardware_bindings, default_hardware_bindings());
-        assert!(validate_profile(&profile).is_ok());
-    }
-
-    #[test]
-    fn profile_rejects_duplicate_hardware_shortcuts() {
-        let mut profile = Profile {
-            version: 1,
-            name: "duplicate".into(),
-            mappings: Vec::new(),
-            bundle_identifiers: Vec::new(),
-            hardware_bindings: default_hardware_bindings(),
-        };
-        profile
-            .hardware_bindings
-            .insert("home".into(), "KeyH".into());
-        profile
-            .hardware_bindings
-            .insert("lock".into(), "KeyH".into());
-
-        assert!(validate_profile(&profile).is_err());
-    }
-
-    #[test]
-    fn profile_rejects_hardware_and_touch_shortcut_conflict() {
-        let mut profile = Profile {
-            version: 1,
-            name: "conflict".into(),
-            mappings: vec![json!({
-                "id": "touch", "type": "touch", "label": "Touch",
-                "contactId": 0, "x": 0.5, "y": 0.5, "key": "KeyH"
-            })],
-            bundle_identifiers: Vec::new(),
-            hardware_bindings: default_hardware_bindings(),
-        };
-        profile
-            .hardware_bindings
-            .insert("home".into(), "KeyH".into());
-
-        assert!(validate_profile(&profile).is_err());
     }
 
     #[test]
@@ -3838,84 +3462,5 @@ mod tests {
         let view = app_operation(State(state)).await.0;
         assert_eq!(view.id, id);
         assert_eq!(view.progress, Some(42));
-    }
-
-    #[tokio::test]
-    async fn profile_management_tracks_active_and_protects_it_from_delete() {
-        let (mut state, _input_rx) = test_state();
-        let directory = std::env::temp_dir().join(format!(
-            "devicehub-mask-profile-test-{}",
-            uuid::Uuid::new_v4()
-        ));
-        state.profile_dir = Arc::new(directory.clone());
-        let profile = |name: &str| Profile {
-            version: 1,
-            name: name.into(),
-            mappings: Vec::new(),
-            bundle_identifiers: if name == "game" {
-                vec!["com.example.game".into()]
-            } else {
-                Vec::new()
-            },
-            hardware_bindings: default_hardware_bindings(),
-        };
-
-        save_profile(
-            State(state.clone()),
-            Path("default".into()),
-            Json(profile("default")),
-        )
-        .await
-        .unwrap();
-        save_profile(
-            State(state.clone()),
-            Path("game".into()),
-            Json(profile("game")),
-        )
-        .await
-        .unwrap();
-        activate_profile(State(state.clone()), Path("game".into()))
-            .await
-            .unwrap();
-
-        let list = list_profiles(State(state.clone())).await.unwrap().0;
-        assert_eq!(list.profiles, vec!["default", "game"]);
-        assert_eq!(list.active, "game");
-        assert_eq!(
-            list.app_bindings
-                .get("com.example.game")
-                .map(String::as_str),
-            Some("game")
-        );
-        assert!(list.binding_conflicts.is_empty());
-
-        let mut duplicate = profile("duplicate");
-        duplicate.bundle_identifiers = vec!["com.example.game".into()];
-        save_profile(
-            State(state.clone()),
-            Path("duplicate".into()),
-            Json(duplicate),
-        )
-        .await
-        .unwrap();
-        let conflicted = list_profiles(State(state.clone())).await.unwrap().0;
-        assert!(!conflicted.app_bindings.contains_key("com.example.game"));
-        assert_eq!(conflicted.binding_conflicts, vec!["com.example.game"]);
-        let _ = delete_profile(State(state.clone()), Path("duplicate".into()))
-            .await
-            .unwrap();
-        assert!(matches!(
-            delete_profile(State(state.clone()), Path("game".into())).await,
-            Err(StatusCode::CONFLICT)
-        ));
-
-        activate_profile(State(state.clone()), Path("default".into()))
-            .await
-            .unwrap();
-        let deleted = delete_profile(State(state.clone()), Path("game".into()))
-            .await
-            .unwrap();
-        assert_eq!(deleted.0["deleted"], "game");
-        let _ = tokio::fs::remove_dir_all(directory).await;
     }
 }

@@ -22,6 +22,7 @@ mod heartbeat;
 mod hid;
 mod home_screen;
 mod http_performance;
+mod http_profiles;
 mod http_storage;
 mod ipa;
 mod location;
@@ -294,6 +295,7 @@ fn spawn_backend(
                             services,
                             input.clone(),
                         ),
+                        profiles_http: http_profiles::ProfileHttpState::new(profile_dir),
                         storage_http: http_storage::StorageHttpState::new(
                             input.clone(),
                             app_document_activity,
@@ -308,7 +310,6 @@ fn spawn_backend(
                         video_counters,
                         app_operation,
                         input,
-                        profile_dir: Arc::new(profile_dir),
                     },
                     server_token,
                 );
