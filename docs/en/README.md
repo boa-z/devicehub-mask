@@ -12,7 +12,7 @@ Use this documentation by task rather than reading it in order.
 - [Architecture](architecture.md): process boundaries, private transport, CoreDevice sessions, video pipeline, HID validation, and data ownership
 - [Development](development.md): repository layout, environment variables, validation, local production builds, and platform packaging
 - [Distribution](distribution.md): GitHub Actions, nightly artifacts, updater signing, Apple signing, and release versioning
-- [Troubleshooting](troubleshooting.md): blank windows, FFmpeg, Windows device preparation, CoreDevice errors, touch coordinates, and updater failures
+- [Troubleshooting](troubleshooting.md): blank windows, device audio, Windows device preparation, CoreDevice errors, touch coordinates, and updater failures
 
 ## Support Matrix
 

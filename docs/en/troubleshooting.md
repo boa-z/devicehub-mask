@@ -31,10 +31,10 @@ Open Settings > Diagnostics and select **Open log directory**. Logs are JSON Lin
 
 If the UI cannot open, use `DEVICEHUB_LOG=devicehub_mask=debug` when launching from a terminal. Do not use an unrestricted global `trace` filter for long captures.
 
-## FFmpeg Is Missing or No Frames Appear
+## FFmpeg Is Missing or Device Audio Is Silent
 
 - Packaged applications include a checksum-verified FFmpeg executable and use it before `PATH`. Development builds can use `brew install ffmpeg` on macOS. They also search `/opt/homebrew/bin/ffmpeg`, `/usr/local/bin/ffmpeg`, and `/opt/local/bin/ffmpeg` because they do not inherit the shell `PATH`.
-- Set `DEVICEHUB_FFMPEG` to an absolute executable path to explicitly override the bundled or system copy while diagnosing decoder behavior.
+- Set `DEVICEHUB_FFMPEG` to an absolute executable path to explicitly override the bundled or system copy while diagnosing AAC-ELD audio decoding.
 - Windows: `winget install --id Gyan.FFmpeg --exact`, then open a new terminal.
 - Custom path: set `DEVICEHUB_FFMPEG` to the executable's absolute path for the application process.
 - Unlock and reconnect the device, close other display sessions, and inspect the status badge and Rust logs for RSD or displayservice failures.

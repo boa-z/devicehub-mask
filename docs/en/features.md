@@ -14,7 +14,7 @@ This page is the concise inventory of functionality already implemented in Devic
 | **Performance** | iPhone CPU/process/memory/energy data, bounded logical/physical core and physical-memory capacity, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, all-device or per-process network PCAP, and Bluetooth HCI PCAP |
 | **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, recovery state, and confirmed 1/6/24-hour offline Unified Log archive export |
 | **Location** | DVT-first virtual location with legacy service fallback, numeric coordinate entry, built-in presets, backend status, and explicit restoration of the real device location |
-| **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, rotation-control lock, device-fullscreen toolbar behavior, decoder and pixel format, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
+| **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, rotation-control lock, device-fullscreen toolbar behavior, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
 
 System fullscreen and device fullscreen are different. System fullscreen changes the desktop window. Device fullscreen hides navigation and the inspector to give the phone picture and essential controls the available window area.
 

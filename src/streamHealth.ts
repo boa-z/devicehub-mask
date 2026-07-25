@@ -7,10 +7,6 @@ export function hasSourceVideoActivity(metrics: StreamMetrics): boolean {
   return Number.isFinite(metrics.source_fps) && metrics.source_fps > 0;
 }
 
-export function hasDecodedVideoActivity(metrics: StreamMetrics): boolean {
-  return Number.isFinite(metrics.decoded_fps) && metrics.decoded_fps > 0;
-}
-
 export function isVideoStreamStalled(
   now: number,
   lastSourceAt: number,

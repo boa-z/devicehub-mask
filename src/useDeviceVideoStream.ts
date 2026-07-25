@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BrowserVideoDecoder, browserVideoSequenceDiscontinuous, parseBrowserVideoPacket } from "./browserVideo";
 import { logFrontend } from "./diagnostics";
-import { hasDecodedVideoActivity, hasSourceVideoActivity, isVideoStreamStalled } from "./streamHealth";
+import { hasSourceVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "./types";
 import type { BackendConnection } from "./usePrivateBackend";
 
@@ -178,7 +178,7 @@ export function useDeviceVideoStream({
     const open = () => {
       const socket = new WebSocket(wsUrl(backend), ["devicehub-mask", backend.token]);
       activeSocket = socket;
-      let browserTransportActive = false;
+      let receivedWebCodecsPacket = false;
       let lastBrowserSequence: bigint | null = null;
       let browserSequenceResync = false;
       let metricsTimer: number | undefined;
@@ -315,17 +315,11 @@ export function useDeviceVideoStream({
           if (data.type === "metrics") {
             const metrics = data.payload as StreamMetrics;
             setStreamMetrics(metrics);
-            if (browserTransportActive && metrics.decoded_fps > 0 && metrics.sent_fps === 0 && socket.readyState === WebSocket.OPEN) {
+            if (receivedWebCodecsPacket && metrics.decoded_fps > 0 && metrics.sent_fps === 0 && socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ type: "browser_video_keyframe" }));
             }
             if (hasSourceVideoActivity(metrics)) {
               lastSourceActivityAtRef.current = performance.now();
-            }
-            // In browser mode the backend decoded counter means an HEVC access
-            // unit was forwarded, not that WebCodecs produced a VideoFrame.
-            if (!browserTransportActive && hasDecodedVideoActivity(metrics)) {
-              lastDecodedActivityAtRef.current = performance.now();
-              setStreamStalled(false);
             }
           }
           return;
@@ -342,7 +336,7 @@ export function useDeviceVideoStream({
           return;
         }
         if (browserPacket) {
-          browserTransportActive = true;
+          receivedWebCodecsPacket = true;
           if (browserSequenceResync && !browserPacket.key) return;
           if (browserVideoSequenceDiscontinuous(lastBrowserSequence, browserPacket)) {
             frontendMetrics.replacedFrames += 1;

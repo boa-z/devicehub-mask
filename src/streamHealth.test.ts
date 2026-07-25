@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasDecodedVideoActivity, hasSourceVideoActivity, isVideoStreamStalled, videoStallTimeoutMs } from "./streamHealth";
+import { hasSourceVideoActivity, isVideoStreamStalled, videoStallTimeoutMs } from "./streamHealth";
 import type { StreamMetrics } from "./types";
 
 const metrics = (decodedFps: number, sourceFps = decodedFps): StreamMetrics => ({
@@ -17,12 +17,7 @@ const metrics = (decodedFps: number, sourceFps = decodedFps): StreamMetrics => (
 });
 
 describe("video stream health", () => {
-  it("treats duplicate decoded frames as activity even when none are published", () => {
-    expect(hasDecodedVideoActivity(metrics(60))).toBe(true);
-  });
-
-  it("does not treat incoming source frames as healthy when decoding has stopped", () => {
-    expect(hasDecodedVideoActivity(metrics(0, 60))).toBe(false);
+  it("reports incoming source frames independently of WebCodecs output", () => {
     expect(hasSourceVideoActivity(metrics(0, 60))).toBe(true);
   });
 
