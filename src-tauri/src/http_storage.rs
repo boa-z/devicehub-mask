@@ -1,0 +1,1054 @@
+//! HTTP adapter for public AFC and per-application storage.
+//!
+//! The active session owns AFC clients and transfer tasks. This module only
+//! validates HTTP requests, dispatches typed commands, and maps responses.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::routing::{get, put};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::oneshot;
+
+use crate::protocol::{InputCmd, InputSink};
+
+const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
+const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);
+
+/// Narrow capability set for storage HTTP routes. Activity cancellation bypasses
+/// the serialized session command queue through the session-owned slots.
+#[derive(Clone, Default)]
+pub(crate) struct StorageHttpState {
+    input: InputSink,
+    app_document_activity: crate::app_documents::AppDocumentActivitySlot,
+    device_file_activity: crate::device_files::DeviceFileActivitySlot,
+}
+
+impl StorageHttpState {
+    pub(crate) fn new(
+        input: InputSink,
+        app_document_activity: crate::app_documents::AppDocumentActivitySlot,
+        device_file_activity: crate::device_files::DeviceFileActivitySlot,
+    ) -> Self {
+        Self {
+            input,
+            app_document_activity,
+            device_file_activity,
+        }
+    }
+}
+
+/// Injects storage-only state before the routes join the private API.
+pub(crate) fn router<S>(state: StorageHttpState) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route(
+            "/api/device/files",
+            get(device_files).delete(delete_device_file),
+        )
+        .route(
+            "/api/device/files/activity",
+            get(device_file_activity).delete(cancel_device_file_activity),
+        )
+        .route("/api/device/files/export", put(export_device_file))
+        .route("/api/device/files/import", put(import_device_file))
+        .route(
+            "/api/device/files/directory",
+            put(create_device_file_directory),
+        )
+        .route("/api/device/files/rename", put(rename_device_file))
+        .route(
+            "/api/device/apps/{bundle_id}/documents",
+            get(app_documents).delete(delete_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/export",
+            put(export_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/import",
+            put(import_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/directory",
+            put(create_app_document_directory),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/documents/rename",
+            put(rename_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage",
+            get(app_documents).delete(delete_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/export",
+            put(export_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/import",
+            put(import_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/directory",
+            put(create_app_document_directory),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/rename",
+            put(rename_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/activity",
+            get(app_document_activity).delete(cancel_app_document_activity),
+        )
+        .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct AppDocumentQuery {
+    #[serde(default = "storage_root")]
+    path: String,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
+    #[serde(default)]
+    recursive: bool,
+}
+
+fn storage_root() -> String {
+    "/".into()
+}
+
+#[derive(Deserialize)]
+struct ExportAppDocumentRequest {
+    path: String,
+    destination: PathBuf,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
+}
+
+#[derive(Deserialize)]
+struct ImportAppDocumentRequest {
+    directory: String,
+    source: PathBuf,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
+}
+
+#[derive(Deserialize)]
+struct CreateAppDocumentDirectoryRequest {
+    directory: String,
+    name: String,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
+}
+
+#[derive(Deserialize)]
+struct RenameAppDocumentRequest {
+    path: String,
+    name: String,
+    #[serde(default)]
+    scope: crate::app_documents::AppStorageScope,
+}
+
+async fn app_documents(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Query(query): Query<AppDocumentQuery>,
+) -> Result<Json<crate::app_documents::AppDocumentList>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::List {
+            bundle_id,
+            scope: query.scope,
+            path: query.path,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_app_document_response(response, "application document listing").await?,
+    ))
+}
+
+async fn app_document_activity(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+) -> Result<Json<crate::app_documents::AppDocumentActivityView>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    Ok(Json(state.app_document_activity.get(&bundle_id)))
+}
+
+async fn cancel_app_document_activity(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    if state.app_document_activity.cancel(&bundle_id) {
+        Ok(StatusCode::ACCEPTED)
+    } else {
+        Err((
+            StatusCode::CONFLICT,
+            "no application storage transfer is running for this app".into(),
+        ))
+    }
+}
+
+async fn export_app_document(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<ExportAppDocumentRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Export {
+            bundle_id,
+            scope: request.scope,
+            path: request.path,
+            destination: request.destination,
+            reply,
+        },
+    )?;
+    let transfer = await_app_document_response(response, "application document export").await?;
+    Ok(Json(json!({
+        "bytes_written": transfer.bytes_transferred,
+        "files_written": transfer.files_transferred,
+        "directories_written": transfer.directories_transferred,
+    })))
+}
+
+async fn import_app_document(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<ImportAppDocumentRequest>,
+) -> Result<Json<crate::app_documents::AppDocumentEntry>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Import {
+            bundle_id,
+            scope: request.scope,
+            directory: request.directory,
+            source: request.source,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_app_document_response(response, "application document upload").await?,
+    ))
+}
+
+async fn create_app_document_directory(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<CreateAppDocumentDirectoryRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::CreateDirectory {
+            bundle_id,
+            scope: request.scope,
+            directory: request.directory,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_app_document_response(response, "application directory creation").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rename_app_document(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Json(request): Json<RenameAppDocumentRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Rename {
+            bundle_id,
+            scope: request.scope,
+            path: request.path,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_app_document_response(response, "application document rename").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_app_document(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Query(query): Query<AppDocumentQuery>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state,
+        crate::app_documents::AppDocumentCommand::Delete {
+            bundle_id,
+            scope: query.scope,
+            path: query.path,
+            recursive: query.recursive,
+            reply,
+        },
+    )?;
+    await_app_document_response(response, "application document deletion").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn validate_app_document_bundle(bundle_id: &str) -> Result<(), (StatusCode, String)> {
+    if valid_bundle_identifier(bundle_id) {
+        Ok(())
+    } else {
+        Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()))
+    }
+}
+
+fn valid_bundle_identifier(bundle_id: &str) -> bool {
+    !bundle_id.is_empty()
+        && bundle_id.len() <= 255
+        && bundle_id.contains('.')
+        && bundle_id.split('.').all(|part| {
+            !part.is_empty()
+                && part.len() <= 63
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+fn dispatch_app_document_command(
+    state: &StorageHttpState,
+    command: crate::app_documents::AppDocumentCommand,
+) -> Result<(), (StatusCode, String)> {
+    if state.input.try_send(InputCmd::AppDocuments(command)) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ))
+    }
+}
+
+async fn await_app_document_response<T>(
+    response: oneshot::Receiver<Result<T, String>>,
+    operation: &str,
+) -> Result<T, (StatusCode, String)> {
+    tokio::time::timeout(APP_DOCUMENT_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| {
+            let status = if crate::app_documents::is_transfer_cancelled(&error)
+                || error.contains("already exists")
+                || error.contains("changed during recursive deletion")
+            {
+                StatusCode::CONFLICT
+            } else if error.contains("too many entries")
+                || error.contains("exceeds the maximum nesting depth")
+            {
+                StatusCode::PAYLOAD_TOO_LARGE
+            } else if error.starts_with("invalid ")
+                || error.contains("root cannot be modified")
+                || error.contains("must be a regular file")
+                || error.contains("only regular application")
+                || error.contains("destination")
+                || error.contains("import source")
+                || error.contains("symbolic link")
+                || error.contains("unsupported")
+                || error.contains("cannot traverse symbolic links")
+                || error.contains("non-directory component")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, error)
+        })
+}
+
+#[derive(Deserialize)]
+struct DeviceFileQuery {
+    #[serde(default = "storage_root")]
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ExportDeviceFileRequest {
+    path: String,
+    destination: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct ImportDeviceFileRequest {
+    directory: String,
+    source: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct CreateDeviceFileDirectoryRequest {
+    directory: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RenameDeviceFileRequest {
+    path: String,
+    name: String,
+}
+
+async fn device_files(
+    State(state): State<StorageHttpState>,
+    Query(query): Query<DeviceFileQuery>,
+) -> Result<Json<crate::device_files::DeviceFileList>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::List {
+            path: query.path,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_device_file_response(response, "device file listing").await?,
+    ))
+}
+
+async fn device_file_activity(
+    State(state): State<StorageHttpState>,
+) -> Json<crate::device_files::DeviceFileActivityView> {
+    Json(state.device_file_activity.get())
+}
+
+async fn cancel_device_file_activity(
+    State(state): State<StorageHttpState>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if state.device_file_activity.cancel() {
+        Ok(StatusCode::ACCEPTED)
+    } else {
+        Err((
+            StatusCode::CONFLICT,
+            "no device file transfer is running".into(),
+        ))
+    }
+}
+
+async fn export_device_file(
+    State(state): State<StorageHttpState>,
+    Json(request): Json<ExportDeviceFileRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Export {
+            path: request.path,
+            destination: request.destination,
+            reply,
+        },
+    )?;
+    let transfer = await_device_file_response(response, "device file export").await?;
+    Ok(Json(json!({
+        "bytes_written": transfer.bytes_transferred,
+        "files_written": transfer.files_transferred,
+        "directories_written": transfer.directories_transferred,
+    })))
+}
+
+async fn import_device_file(
+    State(state): State<StorageHttpState>,
+    Json(request): Json<ImportDeviceFileRequest>,
+) -> Result<Json<crate::device_files::DeviceFileEntry>, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Import {
+            directory: request.directory,
+            source: request.source,
+            reply,
+        },
+    )?;
+    Ok(Json(
+        await_device_file_response(response, "device file import").await?,
+    ))
+}
+
+async fn create_device_file_directory(
+    State(state): State<StorageHttpState>,
+    Json(request): Json<CreateDeviceFileDirectoryRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::CreateDirectory {
+            directory: request.directory,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_device_file_response(response, "device directory creation").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rename_device_file(
+    State(state): State<StorageHttpState>,
+    Json(request): Json<RenameDeviceFileRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Rename {
+            path: request.path,
+            name: request.name,
+            reply,
+        },
+    )?;
+    await_device_file_response(response, "device file rename").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_device_file(
+    State(state): State<StorageHttpState>,
+    Query(query): Query<DeviceFileQuery>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state,
+        crate::device_files::DeviceFileCommand::Delete {
+            path: query.path,
+            reply,
+        },
+    )?;
+    await_device_file_response(response, "device file deletion").await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn dispatch_device_file_command(
+    state: &StorageHttpState,
+    command: crate::device_files::DeviceFileCommand,
+) -> Result<(), (StatusCode, String)> {
+    if state.input.try_send(InputCmd::DeviceFiles(command)) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ))
+    }
+}
+
+async fn await_device_file_response<T>(
+    response: oneshot::Receiver<Result<T, String>>,
+    operation: &str,
+) -> Result<T, (StatusCode, String)> {
+    tokio::time::timeout(DEVICE_FILE_REQUEST_TIMEOUT, response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("{operation} request timed out"),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| {
+            let status = if crate::device_files::is_transfer_cancelled(&error)
+                || error.contains("already exists")
+            {
+                StatusCode::CONFLICT
+            } else if error.starts_with("invalid ")
+                || error.contains("cannot be exported")
+                || error.contains("cannot be modified")
+                || error.contains("only regular device files")
+                || error.contains("destination")
+                || error.contains("import source")
+                || error.contains("symbolic link")
+                || error.contains("unsupported")
+            {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, error)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    fn test_state() -> (StorageHttpState, UnboundedReceiver<InputCmd>) {
+        let input = InputSink::default();
+        let (sender, receiver) = unbounded_channel();
+        input.set(Some(sender));
+        (
+            StorageHttpState::new(
+                input,
+                crate::app_documents::AppDocumentActivitySlot::default(),
+                crate::device_files::DeviceFileActivitySlot::default(),
+            ),
+            receiver,
+        )
+    }
+
+    #[tokio::test]
+    async fn storage_queries_require_an_active_session() {
+        let (state, _) = test_state();
+        state.input.set(None);
+        assert!(matches!(
+            device_files(
+                State(state.clone()),
+                Query(DeviceFileQuery { path: "/".into() }),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+        assert!(matches!(
+            app_documents(
+                State(state),
+                Path("com.example.game".into()),
+                Query(AppDocumentQuery {
+                    path: "/".into(),
+                    scope: crate::app_documents::AppStorageScope::Documents,
+                    recursive: false,
+                }),
+            )
+            .await,
+            Err((StatusCode::SERVICE_UNAVAILABLE, _))
+        ));
+    }
+
+    #[tokio::test]
+    async fn app_storage_endpoints_dispatch_scoped_commands() {
+        use crate::app_documents::{
+            AppDocumentActivityKind, AppDocumentCommand, AppDocumentEntry, AppDocumentKind,
+            AppDocumentList, AppDocumentTransfer, AppStorageScope,
+        };
+
+        let (cancel_state, _) = test_state();
+        assert_eq!(
+            cancel_app_document_activity(
+                State(cancel_state.clone()),
+                Path("com.example.game".into()),
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::CONFLICT
+        );
+        cancel_state.app_document_activity.start(
+            "com.example.game",
+            AppStorageScope::Documents,
+            AppDocumentActivityKind::Export,
+            "/Documents".into(),
+            None,
+        );
+        assert_eq!(
+            cancel_app_document_activity(
+                State(cancel_state.clone()),
+                Path("com.example.other".into()),
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            cancel_app_document_activity(State(cancel_state), Path("com.example.game".into()),)
+                .await
+                .unwrap(),
+            StatusCode::ACCEPTED
+        );
+
+        let (state, mut input_rx) = test_state();
+        let activity = app_document_activity(State(state.clone()), Path("com.example.game".into()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            activity.state,
+            crate::app_documents::AppDocumentActivityState::Idle
+        );
+        assert!(
+            app_document_activity(State(state.clone()), Path("invalid".into()))
+                .await
+                .is_err()
+        );
+        let list = tokio::spawn(app_documents(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Query(AppDocumentQuery {
+                path: "/Saves".into(),
+                scope: AppStorageScope::Container,
+                recursive: false,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::List {
+                bundle_id,
+                scope,
+                path,
+                reply,
+            }) => {
+                assert_eq!(bundle_id, "com.example.game");
+                assert_eq!(scope, AppStorageScope::Container);
+                assert_eq!(path, "/Saves");
+                reply
+                    .send(Ok(AppDocumentList {
+                        path,
+                        entries: Vec::new(),
+                        truncated: false,
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(list.await.unwrap().unwrap().0.path, "/Saves");
+
+        let upload = tokio::spawn(import_app_document(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Json(ImportAppDocumentRequest {
+                directory: "/Saves".into(),
+                source: PathBuf::from("slot.dat"),
+                scope: AppStorageScope::Documents,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Import {
+                directory,
+                source,
+                reply,
+                ..
+            }) => {
+                assert_eq!(directory, "/Saves");
+                assert_eq!(source, PathBuf::from("slot.dat"));
+                reply
+                    .send(Ok(AppDocumentEntry {
+                        name: "slot.dat".into(),
+                        path: "/Saves/slot.dat".into(),
+                        kind: AppDocumentKind::File,
+                        size_bytes: 42,
+                        modified: "2026-07-24T00:00:00Z".into(),
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(upload.await.unwrap().unwrap().0.size_bytes, 42);
+
+        let create = tokio::spawn(create_app_document_directory(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Json(CreateAppDocumentDirectoryRequest {
+                directory: "/".into(),
+                name: "Saves".into(),
+                scope: AppStorageScope::Documents,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::CreateDirectory { name, reply, .. }) => {
+                assert_eq!(name, "Saves");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(create.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let rename = tokio::spawn(rename_app_document(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Json(RenameAppDocumentRequest {
+                path: "/Saves/slot.dat".into(),
+                name: "slot-2.dat".into(),
+                scope: AppStorageScope::Documents,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Rename { name, reply, .. }) => {
+                assert_eq!(name, "slot-2.dat");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(rename.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let delete = tokio::spawn(delete_app_document(
+            State(state.clone()),
+            Path("com.example.game".into()),
+            Query(AppDocumentQuery {
+                path: "/Saves/slot-2.dat".into(),
+                scope: AppStorageScope::Documents,
+                recursive: true,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Delete {
+                path,
+                recursive,
+                reply,
+                ..
+            }) => {
+                assert_eq!(path, "/Saves/slot-2.dat");
+                assert!(recursive);
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(delete.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let export = tokio::spawn(export_app_document(
+            State(state),
+            Path("com.example.game".into()),
+            Json(ExportAppDocumentRequest {
+                path: "/Saves/slot-2.dat".into(),
+                destination: PathBuf::from("slot-2.dat"),
+                scope: AppStorageScope::Documents,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Export {
+                destination, reply, ..
+            }) => {
+                assert_eq!(destination, PathBuf::from("slot-2.dat"));
+                reply
+                    .send(Ok(AppDocumentTransfer {
+                        bytes_transferred: 84,
+                        files_transferred: 2,
+                        directories_transferred: 1,
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let export = export.await.unwrap().unwrap().0;
+        assert_eq!(export["bytes_written"], 84);
+        assert_eq!(export["files_written"], 2);
+        assert_eq!(export["directories_written"], 1);
+    }
+
+    #[tokio::test]
+    async fn device_file_endpoints_dispatch_typed_commands() {
+        use crate::device_files::{
+            DeviceFileActivityKind, DeviceFileCommand, DeviceFileEntry, DeviceFileKind,
+            DeviceFileList, DeviceFileTransfer,
+        };
+
+        let (cancel_state, _) = test_state();
+        assert_eq!(
+            cancel_device_file_activity(State(cancel_state.clone()))
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::CONFLICT
+        );
+        cancel_state
+            .device_file_activity
+            .start(DeviceFileActivityKind::Export, "/DCIM".into());
+        assert_eq!(
+            cancel_device_file_activity(State(cancel_state))
+                .await
+                .unwrap(),
+            StatusCode::ACCEPTED
+        );
+
+        let (state, mut input_rx) = test_state();
+        assert_eq!(
+            device_file_activity(State(state.clone())).await.0.state,
+            crate::device_files::DeviceFileActivityState::Idle
+        );
+        let list = tokio::spawn(device_files(
+            State(state.clone()),
+            Query(DeviceFileQuery {
+                path: "/DCIM".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::List { path, reply }) => {
+                assert_eq!(path, "/DCIM");
+                reply
+                    .send(Ok(DeviceFileList {
+                        path,
+                        entries: Vec::new(),
+                        truncated: false,
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(list.await.unwrap().unwrap().0.path, "/DCIM");
+
+        let export = tokio::spawn(export_device_file(
+            State(state.clone()),
+            Json(ExportDeviceFileRequest {
+                path: "/DCIM/100APPLE/IMG_0001.HEIC".into(),
+                destination: std::env::temp_dir().join("photo.heic"),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Export {
+                path,
+                destination,
+                reply,
+            }) => {
+                assert_eq!(path, "/DCIM/100APPLE/IMG_0001.HEIC");
+                assert_eq!(destination, std::env::temp_dir().join("photo.heic"));
+                reply
+                    .send(Ok(DeviceFileTransfer {
+                        bytes_transferred: 42,
+                        files_transferred: 1,
+                        directories_transferred: 0,
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(
+            export.await.unwrap().unwrap().0,
+            json!({ "bytes_written": 42, "files_written": 1, "directories_written": 0 })
+        );
+
+        let import = tokio::spawn(import_device_file(
+            State(state.clone()),
+            Json(ImportDeviceFileRequest {
+                directory: "/Downloads".into(),
+                source: PathBuf::from("archive.zip"),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Import {
+                directory,
+                source,
+                reply,
+            }) => {
+                assert_eq!(directory, "/Downloads");
+                assert_eq!(source, PathBuf::from("archive.zip"));
+                reply
+                    .send(Ok(DeviceFileEntry {
+                        name: "archive.zip".into(),
+                        path: "/Downloads/archive.zip".into(),
+                        kind: DeviceFileKind::File,
+                        size_bytes: 42,
+                        modified: "2026-07-24T00:00:00Z".into(),
+                    }))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(import.await.unwrap().unwrap().0.size_bytes, 42);
+
+        let create = tokio::spawn(create_device_file_directory(
+            State(state.clone()),
+            Json(CreateDeviceFileDirectoryRequest {
+                directory: "/".into(),
+                name: "Shared".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::CreateDirectory {
+                directory,
+                name,
+                reply,
+            }) => {
+                assert_eq!(directory, "/");
+                assert_eq!(name, "Shared");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(create.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let rename = tokio::spawn(rename_device_file(
+            State(state.clone()),
+            Json(RenameDeviceFileRequest {
+                path: "/Downloads/archive.zip".into(),
+                name: "backup.zip".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Rename { path, name, reply }) => {
+                assert_eq!(path, "/Downloads/archive.zip");
+                assert_eq!(name, "backup.zip");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(rename.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+
+        let delete = tokio::spawn(delete_device_file(
+            State(state),
+            Query(DeviceFileQuery {
+                path: "/Downloads/backup.zip".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Delete { path, reply }) => {
+                assert_eq!(path, "/Downloads/backup.zip");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(delete.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn app_document_conflicts_are_reported_as_http_conflicts() {
+        for error in [
+            "an application document with this name already exists",
+            "directory export destination already exists",
+            "application entry changed during recursive deletion",
+            crate::app_documents::TRANSFER_CANCELLED,
+        ] {
+            let (reply, response) = oneshot::channel::<Result<(), String>>();
+            reply.send(Err(error.into())).unwrap();
+            assert!(matches!(
+                await_app_document_response(response, "transfer").await,
+                Err((StatusCode::CONFLICT, _))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn app_document_recursive_limits_are_reported_as_payload_too_large() {
+        for error in [
+            "application directory deletion contains too many entries",
+            "application directory deletion exceeds the maximum nesting depth",
+        ] {
+            let (reply, response) = oneshot::channel::<Result<(), String>>();
+            reply.send(Err(error.into())).unwrap();
+            assert!(matches!(
+                await_app_document_response(response, "recursive delete").await,
+                Err((StatusCode::PAYLOAD_TOO_LARGE, _))
+            ));
+        }
+    }
+}
