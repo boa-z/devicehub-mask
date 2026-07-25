@@ -237,23 +237,28 @@ fn spawn_backend(
                     browser_frames.clone(),
                     input.clone(),
                 );
-
-                tokio::spawn(mcp::serve(
-                    device_control.clone(),
-                    orientation.clone(),
-                    devices.clone(),
-                    active.clone(),
-                    error.clone(),
-                    status.clone(),
-                    location.clone(),
-                    device_events.clone(),
-                    device_conditions.clone(),
-                    performance.clone(),
-                    performance_demand.clone(),
-                    device_logs.clone(),
-                    device_log_demand.clone(),
+                let application_services = application::ApplicationServices::new(
+                    device_control,
+                    application::DeviceStateSlots {
+                        orientation: orientation.clone(),
+                        devices: devices.clone(),
+                        active: active.clone(),
+                        error: error.clone(),
+                        status: status.clone(),
+                        location: location.clone(),
+                    },
+                    application::ObservabilitySlots {
+                        device_events: device_events.clone(),
+                        device_conditions: device_conditions.clone(),
+                        performance: performance.clone(),
+                        performance_demand: performance_demand.clone(),
+                        device_logs: device_logs.clone(),
+                        device_log_demand: device_log_demand.clone(),
+                    },
                     thread_control.clone(),
-                ));
+                );
+
+                tokio::spawn(mcp::serve(application_services.clone()));
 
                 let manager = session::manage(
                     initial_udid,
@@ -293,35 +298,22 @@ fn spawn_backend(
                 );
                 let app = web::router(
                     web::AppState {
-                        device_control,
+                        application: application_services,
                         frames,
                         browser_frames,
                         clipboard,
-                        device_events,
                         network_capture,
                         bluetooth_capture,
                         device_backup,
                         sysdiagnose,
                         log_archive,
                         developer_image,
-                        device_conditions,
                         video_counters,
-                        status,
-                        orientation,
-                        devices,
-                        active,
-                        error,
                         app_operation,
                         app_document_activity,
                         device_file_activity,
-                        location,
-                        performance,
-                        performance_demand,
-                        device_logs,
-                        device_log_demand,
                         services,
                         input,
-                        control: thread_control.clone(),
                         profile_dir: Arc::new(profile_dir),
                         settings,
                     },

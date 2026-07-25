@@ -16,20 +16,30 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+#[cfg(test)]
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot;
 
-use crate::application::DeviceControlService;
+use crate::application::ApplicationServices;
+#[cfg(test)]
+use crate::application::{DeviceControlService, DeviceStateSlots, ObservabilitySlots};
+#[cfg(test)]
 use crate::device_events::DeviceEventSlot;
-use crate::device_logs::{DeviceLogDemand, DeviceLogEntry, DeviceLogLevel, DeviceLogSlot};
+#[cfg(test)]
+use crate::device_logs::{DeviceLogDemand, DeviceLogSlot};
+use crate::device_logs::{DeviceLogEntry, DeviceLogLevel};
 use crate::hid::TouchContact;
+#[cfg(test)]
 use crate::performance::{PerformanceDemand, PerformanceSlot};
+#[cfg(test)]
 use crate::protocol::{
-    ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameFormat, InputCmd,
-    LocationStatusSlot, Orientation, OrientationSlot, RotateDir, StatusSlot, norm, unrotate_norm,
+    ActiveSlot, DeviceListSlot, ErrorSlot, FrameSlot, InputSink, LocationStatusSlot,
+    OrientationSlot, StatusSlot,
+};
+use crate::protocol::{
+    ControlCmd, Frame, FrameFormat, InputCmd, Orientation, RotateDir, norm, unrotate_norm,
     validate_paste_text,
 };
-#[cfg(test)]
-use crate::protocol::{FrameSlot, InputSink};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
 const DEFAULT_MAX_DIM: u32 = 1024;
@@ -65,6 +75,7 @@ const WDA_RUNNER_START_WAIT: Duration = Duration::from_secs(35);
 const DEVICE_CONDITION_COMMAND_DEADLINE: Duration = Duration::from_secs(7);
 const DEVICE_CONDITION_WAIT: Duration = Duration::from_secs(8);
 
+#[cfg(test)]
 #[derive(Clone, Default)]
 struct McpObservability {
     device_events: DeviceEventSlot,
@@ -77,15 +88,7 @@ struct McpObservability {
 
 #[derive(Clone)]
 struct DeviceHub {
-    device_control: DeviceControlService,
-    orientation: OrientationSlot,
-    devices: DeviceListSlot,
-    active: ActiveSlot,
-    error: ErrorSlot,
-    status: StatusSlot,
-    location: LocationStatusSlot,
-    observability: McpObservability,
-    control: UnboundedSender<ControlCmd>,
+    application: ApplicationServices,
     last_image: Arc<Mutex<Option<(u32, u32)>>>,
     gesture_lock: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<DeviceHub>,
@@ -788,41 +791,39 @@ impl DeviceHub {
         observability: McpObservability,
         control: UnboundedSender<ControlCmd>,
     ) -> Self {
-        Self::new_with_service(
+        let McpObservability {
+            device_events,
+            device_conditions,
+            performance,
+            performance_demand,
+            device_logs,
+            device_log_demand,
+        } = observability;
+        Self::new_with_service(ApplicationServices::new(
             DeviceControlService::new(frames, browser_frames, input),
-            orientation,
-            devices,
-            active,
-            error,
-            status,
-            location,
-            observability,
+            DeviceStateSlots {
+                orientation,
+                devices,
+                active,
+                error,
+                status,
+                location,
+            },
+            ObservabilitySlots {
+                device_events,
+                device_conditions,
+                performance,
+                performance_demand,
+                device_logs,
+                device_log_demand,
+            },
             control,
-        )
+        ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_service(
-        device_control: DeviceControlService,
-        orientation: OrientationSlot,
-        devices: DeviceListSlot,
-        active: ActiveSlot,
-        error: ErrorSlot,
-        status: StatusSlot,
-        location: LocationStatusSlot,
-        observability: McpObservability,
-        control: UnboundedSender<ControlCmd>,
-    ) -> Self {
+    fn new_with_service(application: ApplicationServices) -> Self {
         Self {
-            device_control,
-            orientation,
-            devices,
-            active,
-            error,
-            status,
-            location,
-            observability,
-            control,
+            application,
             last_image: Arc::new(Mutex::new(None)),
             gesture_lock: Arc::new(tokio::sync::Mutex::new(())),
             tool_router: Self::tool_router(),
@@ -830,16 +831,18 @@ impl DeviceHub {
     }
 
     fn to_device(&self, x: f32, y: f32, size: Option<(u32, u32)>) -> Option<(u16, u16)> {
-        let turns = self.orientation.get().quarter_turns_cw();
+        let turns = self.application.orientation.get().quarter_turns_cw();
         let (width, height) = size
             .or_else(|| *self.last_image.lock().unwrap())
             .or_else(|| {
-                self.device_control
+                self.application
+                    .device_control
                     .latest_frame()
                     .map(|(_, frame)| display_dims(&frame, turns))
             })
             .or_else(|| {
-                self.device_control
+                self.application
+                    .device_control
                     .browser_dimensions()
                     .map(|(width, height)| {
                         if turns.is_multiple_of(2) {
@@ -856,17 +859,19 @@ impl DeviceHub {
     }
 
     fn send(&self, command: InputCmd) -> Result<(), McpError> {
-        self.device_control
+        self.application
+            .device_control
             .send(command)
             .map_err(|error| McpError::internal_error(error.to_string(), None))
     }
 
     fn frame_version(&self) -> u64 {
-        self.device_control.frame_version()
+        self.application.device_control.frame_version()
     }
 
     async fn native_screenshot(&self) -> Result<(u32, u32, Vec<u8>), McpError> {
         let png = self
+            .application
             .device_control
             .capture_screenshot(SCREENSHOT_WAIT)
             .await
@@ -882,11 +887,12 @@ impl DeviceHub {
 
     async fn settle(&self) {
         tokio::time::sleep(SETTLE_MIN).await;
-        if self.device_control.latest_frame().is_none() {
+        if self.application.device_control.latest_frame().is_none() {
             return;
         }
         let started = Instant::now();
         let mut previous = self
+            .application
             .device_control
             .latest_frame()
             .map(|(_, frame)| frame_signature(&frame));
@@ -894,6 +900,7 @@ impl DeviceHub {
         while started.elapsed() < SETTLE_MAX {
             tokio::time::sleep(SETTLE_POLL).await;
             let current = self
+                .application
                 .device_control
                 .latest_frame()
                 .map(|(_, frame)| frame_signature(&frame));
@@ -918,11 +925,15 @@ impl DeviceHub {
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> Result<CallToolResult, McpError> {
         let frame_version = self.frame_version();
-        let (width, height, rgb) = if let Some((_, frame)) = self.device_control.latest_frame() {
-            render_upright(&frame, self.orientation.get().quarter_turns_cw())
-        } else {
-            self.native_screenshot().await?
-        };
+        let (width, height, rgb) =
+            if let Some((_, frame)) = self.application.device_control.latest_frame() {
+                render_upright(
+                    &frame,
+                    self.application.orientation.get().quarter_turns_cw(),
+                )
+            } else {
+                self.native_screenshot().await?
+            };
         if rgb.is_empty() {
             return Err(McpError::internal_error("current frame is empty", None));
         }
@@ -1117,7 +1128,11 @@ impl DeviceHub {
     ) -> Result<CallToolResult, McpError> {
         let after = params.after_version.unwrap_or_else(|| self.frame_version());
         let timeout = Duration::from_millis(params.timeout_ms.unwrap_or(2000).clamp(1, 10_000));
-        let changed = self.device_control.wait_for_frame(after, timeout).await;
+        let changed = self
+            .application
+            .device_control
+            .wait_for_frame(after, timeout)
+            .await;
         ok_text(
             json!({
                 "changed": changed,
@@ -2201,14 +2216,14 @@ impl DeviceHub {
         Parameters(params): Parameters<DeviceEventParams>,
     ) -> Result<CallToolResult, McpError> {
         let baseline = params.after_sequence.unwrap_or_else(|| {
-            self.observability
+            self.application
                 .device_events
                 .latest()
                 .map_or(0, |event| event.sequence)
         });
-        let mut receiver = self.observability.device_events.subscribe();
+        let mut receiver = self.application.device_events.subscribe();
         if let Some(event) = self
-            .observability
+            .application
             .device_events
             .latest()
             .filter(|event| event.sequence > baseline)
@@ -2230,7 +2245,7 @@ impl DeviceHub {
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if let Some(event) = self
-                            .observability
+                            .application
                             .device_events
                             .latest()
                             .filter(|event| event.sequence > baseline)
@@ -2258,8 +2273,7 @@ impl DeviceHub {
                 json!({
                     "changed": false,
                     "after_sequence": baseline,
-                    "latest_sequence": self
-                        .observability
+                    "latest_sequence": self.application
                         .device_events
                         .latest()
                         .map(|event| event.sequence),
@@ -2273,8 +2287,8 @@ impl DeviceHub {
         description = "List attached iOS device transports with stable selection ID, UDID, name, connection type, pairing state, and active state. Use the selection ID to distinguish USB from Wi-Fi."
     )]
     async fn list_devices(&self) -> Result<CallToolResult, McpError> {
-        let active = self.active.selection_id();
-        let listed = self.devices.get();
+        let active = self.application.active.selection_id();
+        let listed = self.application.devices.get();
         let devices: Vec<_> = listed
             .into_iter()
             .map(|device| {
@@ -2297,7 +2311,7 @@ impl DeviceHub {
         udid: String,
         reconnect: bool,
     ) -> Result<CallToolResult, McpError> {
-        let devices = self.devices.get();
+        let devices = self.application.devices.get();
         let selected = devices
             .iter()
             .find(|device| device.id == udid)
@@ -2310,30 +2324,31 @@ impl DeviceHub {
             );
         }
         if !reconnect
-            && self.active.get().as_deref() == Some(udid.as_str())
-            && self.device_control.latest_frame().is_some()
+            && self.application.active.get().as_deref() == Some(udid.as_str())
+            && self.application.device_control.latest_frame().is_some()
         {
             return ok_text(format!("Already connected to {udid}; screen is streaming."));
         }
         let previous_version = self.frame_version();
-        let previous_error = self.error.get();
+        let previous_error = self.application.error.get();
         let mut error_was_cleared = previous_error.is_none();
         let command = if reconnect {
             ControlCmd::Reconnect(udid.clone())
         } else {
             ControlCmd::Connect(udid.clone())
         };
-        self.control
+        self.application
+            .control
             .send(command)
             .map_err(|_| McpError::internal_error("device session manager is not running", None))?;
         let started = Instant::now();
         while started.elapsed() < DEVICE_WAIT {
-            if self.active.get().as_deref() == Some(udid.as_str())
+            if self.application.active.get().as_deref() == Some(udid.as_str())
                 && self.frame_version() > previous_version
             {
                 return ok_text(format!("Connected to {udid}; screen is streaming."));
             }
-            match self.error.get() {
+            match self.application.error.get() {
                 None => error_was_cleared = true,
                 Some(error)
                     if error_was_cleared || previous_error.as_deref() != Some(error.as_str()) =>
@@ -2417,7 +2432,7 @@ impl DeviceHub {
     )]
     async fn list_device_conditions(&self) -> Result<CallToolResult, McpError> {
         ok_text(
-            serde_json::to_string(&self.observability.device_conditions.get())
+            serde_json::to_string(&self.application.device_conditions.get())
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         )
     }
@@ -2445,7 +2460,7 @@ impl DeviceHub {
         ))?;
         await_device_condition(response, "apply device condition").await?;
         ok_text(
-            serde_json::to_string(&self.observability.device_conditions.get())
+            serde_json::to_string(&self.application.device_conditions.get())
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         )
     }
@@ -2463,7 +2478,7 @@ impl DeviceHub {
         ))?;
         await_device_condition(response, "clear device condition").await?;
         ok_text(
-            serde_json::to_string(&self.observability.device_conditions.get())
+            serde_json::to_string(&self.application.device_conditions.get())
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         )
     }
@@ -2475,18 +2490,18 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<PerformanceSnapshotParams>,
     ) -> Result<CallToolResult, McpError> {
-        let sampling_continues = self.observability.performance_demand.enabled();
-        let baseline = self.observability.performance.get().captured_at_ms;
+        let sampling_continues = self.application.performance_demand.enabled();
+        let baseline = self.application.performance.get().captured_at_ms;
         let wait = Duration::from_millis(
             params
                 .wait_ms
                 .unwrap_or(PERFORMANCE_WAIT_DEFAULT.as_millis() as u64),
         )
         .min(OBSERVABILITY_WAIT_MAX);
-        let _lease = self.observability.performance_demand.acquire();
+        let _lease = self.application.performance_demand.acquire();
         let deadline = Instant::now() + wait;
         let sample = loop {
-            let sample = self.observability.performance.get();
+            let sample = self.application.performance.get();
             if wait.is_zero()
                 || (sample.captured_at_ms != 0 && sample.captured_at_ms > baseline)
                 || Instant::now() >= deadline
@@ -2530,11 +2545,11 @@ impl DeviceHub {
                 .unwrap_or(DEVICE_LOG_WAIT_DEFAULT.as_millis() as u64),
         )
         .min(OBSERVABILITY_WAIT_MAX);
-        let streaming_continues = self.observability.device_log_demand.enabled();
-        let _lease = self.observability.device_log_demand.acquire();
+        let streaming_continues = self.application.device_log_demand.enabled();
+        let _lease = self.application.device_log_demand.acquire();
         let deadline = Instant::now() + wait;
         let (batch, mut entries) = loop {
-            let batch = self.observability.device_logs.snapshot(
+            let batch = self.application.device_logs.snapshot(
                 params.after,
                 crate::device_logs::MAX_BATCH_ENTRIES,
                 true,
@@ -2581,16 +2596,20 @@ impl DeviceHub {
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         let screen_size = self
+            .application
             .device_control
             .latest_frame()
             .map(|(_, frame)| {
-                let (width, height) =
-                    display_dims(&frame, self.orientation.get().quarter_turns_cw());
+                let (width, height) = display_dims(
+                    &frame,
+                    self.application.orientation.get().quarter_turns_cw(),
+                );
                 json!([width, height])
             })
             .or_else(|| {
-                let turns = self.orientation.get().quarter_turns_cw();
-                self.device_control
+                let turns = self.application.orientation.get().quarter_turns_cw();
+                self.application
+                    .device_control
                     .browser_dimensions()
                     .map(|(width, height)| {
                         let (width, height) = if turns.is_multiple_of(2) {
@@ -2602,7 +2621,7 @@ impl DeviceHub {
                     })
             })
             .unwrap_or(json!(null));
-        let orientation = match self.orientation.get() {
+        let orientation = match self.application.orientation.get() {
             Orientation::Portrait => "portrait",
             Orientation::PortraitUpsideDown => "portrait-upside-down",
             Orientation::LandscapeLeft => "landscape-left",
@@ -2610,13 +2629,13 @@ impl DeviceHub {
         };
         ok_text(
             json!({
-                "active_udid": self.active.get(),
-                "status": self.status.get(),
-                "error": self.error.get(),
-                "streaming": self.device_control.latest_frame().is_some() || self.device_control.browser_dimensions().is_some(),
+                "active_udid": self.application.active.get(),
+                "status": self.application.status.get(),
+                "error": self.application.error.get(),
+                "streaming": self.application.device_control.latest_frame().is_some() || self.application.device_control.browser_dimensions().is_some(),
                 "screen_size": screen_size,
                 "orientation": orientation,
-                "location": self.location.get(),
+                "location": self.application.location.get(),
             })
             .to_string(),
         )
@@ -2632,23 +2651,7 @@ impl ServerHandler for DeviceHub {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn serve(
-    device_control: DeviceControlService,
-    orientation: OrientationSlot,
-    devices: DeviceListSlot,
-    active: ActiveSlot,
-    error: ErrorSlot,
-    status: StatusSlot,
-    location: LocationStatusSlot,
-    device_events: DeviceEventSlot,
-    device_conditions: crate::device_conditions::DeviceConditionSlot,
-    performance: PerformanceSlot,
-    performance_demand: PerformanceDemand,
-    device_logs: DeviceLogSlot,
-    device_log_demand: DeviceLogDemand,
-    control: UnboundedSender<ControlCmd>,
-) {
+pub async fn serve(application: ApplicationServices) {
     let address = std::env::var("DEVICEHUB_MCP_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
     if !address.starts_with("127.0.0.1:")
         && !address.starts_with("[::1]:")
@@ -2659,24 +2662,7 @@ pub async fn serve(
             "MCP has no authentication and is binding beyond loopback"
         );
     }
-    let hub = DeviceHub::new_with_service(
-        device_control,
-        orientation,
-        devices,
-        active,
-        error,
-        status,
-        location,
-        McpObservability {
-            device_events,
-            device_conditions,
-            performance,
-            performance_demand,
-            device_logs,
-            device_log_demand,
-        },
-        control,
-    );
+    let hub = DeviceHub::new_with_service(application);
     let router = service_router(hub);
     match tokio::net::TcpListener::bind(&address).await {
         Ok(listener) => {

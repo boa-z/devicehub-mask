@@ -17,53 +17,35 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot,
-    ForgetDeviceResult, Frame, FrameFormat, FrameSlot, InputCmd, InputSink, LocationStatus,
-    LocationStatusSlot, Orientation, OrientationSlot, PairDeviceResult, RotateDir, StatusSlot,
-    VideoCounters, norm, unrotate_norm, validate_device_name, validate_paste_text,
+    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, Frame, FrameFormat, FrameSlot,
+    InputCmd, InputSink, LocationStatus, Orientation, PairDeviceResult, RotateDir, VideoCounters,
+    norm, unrotate_norm, validate_device_name, validate_paste_text,
 };
-use crate::{
-    performance::{PerformanceDemand, PerformanceSlot},
-    supervisor::ServiceRegistry,
-};
+use crate::supervisor::ServiceRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub device_control: crate::application::DeviceControlService,
+    pub application: crate::application::ApplicationServices,
     pub frames: FrameSlot,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
-    pub device_events: crate::device_events::DeviceEventSlot,
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
     pub bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     pub device_backup: crate::device_backup::DeviceBackupSlot,
     pub sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     pub log_archive: crate::log_archive::LogArchiveSlot,
     pub developer_image: crate::developer_image::DeveloperImageMountSlot,
-    pub device_conditions: crate::device_conditions::DeviceConditionSlot,
     pub video_counters: VideoCounters,
-    pub status: StatusSlot,
-    pub orientation: OrientationSlot,
-    pub devices: DeviceListSlot,
-    pub active: ActiveSlot,
-    pub error: ErrorSlot,
     pub app_operation: AppOperationSlot,
     pub app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     pub device_file_activity: crate::device_files::DeviceFileActivitySlot,
-    pub location: LocationStatusSlot,
-    pub performance: PerformanceSlot,
-    pub performance_demand: PerformanceDemand,
-    pub device_logs: crate::device_logs::DeviceLogSlot,
-    pub device_log_demand: crate::device_logs::DeviceLogDemand,
     pub services: ServiceRegistry,
     pub input: InputSink,
-    pub control: UnboundedSender<ControlCmd>,
     pub profile_dir: Arc<PathBuf>,
     pub settings: Arc<crate::settings::AppSettings>,
 }
@@ -384,13 +366,13 @@ async fn status(State(state): State<AppState>) -> Json<StatusView> {
 
 async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
     Json(PerformanceView {
-        sample: state.performance.get(),
-        app_activity: state.performance.app_activity(),
+        sample: state.application.performance.get(),
+        app_activity: state.application.performance.app_activity(),
         services: state.services.snapshot(),
-        sampling: state.performance_demand.enabled(),
+        sampling: state.application.performance_demand.enabled(),
         network_capture: state.network_capture.get(),
         bluetooth_capture: state.bluetooth_capture.get(),
-        device_conditions: state.device_conditions.get(),
+        device_conditions: state.application.device_conditions.get(),
     })
 }
 
@@ -888,14 +870,14 @@ async fn await_log_archive_command(
 }
 
 async fn start_performance_sampling(State(state): State<AppState>) -> StatusCode {
-    state.performance.reset();
-    state.performance_demand.set(true);
+    state.application.performance.reset();
+    state.application.performance_demand.set(true);
     StatusCode::NO_CONTENT
 }
 
 async fn stop_performance_sampling(State(state): State<AppState>) -> StatusCode {
-    state.performance_demand.set(false);
-    state.performance.reset();
+    state.application.performance_demand.set(false);
+    state.application.performance.reset();
     StatusCode::NO_CONTENT
 }
 
@@ -915,10 +897,10 @@ async fn device_logs(
         .into_iter()
         .find(|service| service.name == "device.logs");
     Json(DeviceLogsView {
-        batch: state.device_logs.snapshot(
+        batch: state.application.device_logs.snapshot(
             query.after,
             query.limit.unwrap_or(crate::device_logs::MAX_BATCH_ENTRIES),
-            state.device_log_demand.enabled(),
+            state.application.device_log_demand.enabled(),
         ),
         service,
     })
@@ -932,28 +914,29 @@ struct DeviceLogsView {
 }
 
 async fn start_device_logs(State(state): State<AppState>) -> StatusCode {
-    state.device_log_demand.set(true);
+    state.application.device_log_demand.set(true);
     StatusCode::NO_CONTENT
 }
 
 async fn stop_device_logs(State(state): State<AppState>) -> StatusCode {
-    state.device_log_demand.set(false);
+    state.application.device_log_demand.set(false);
     StatusCode::NO_CONTENT
 }
 
 async fn clear_device_logs(State(state): State<AppState>) -> StatusCode {
-    state.device_logs.clear();
+    state.application.device_logs.clear();
     StatusCode::NO_CONTENT
 }
 
 fn status_snapshot(state: &AppState) -> StatusView {
     StatusView {
-        status: state.status.get(),
-        active_udid: state.active.get(),
-        active_device_id: state.active.selection_id(),
-        error: state.error.get(),
-        orientation: orientation_name(state.orientation.get()),
+        status: state.application.status.get(),
+        active_udid: state.application.active.get(),
+        active_device_id: state.application.active.selection_id(),
+        error: state.application.error.get(),
+        orientation: orientation_name(state.application.orientation.get()),
         devices: state
+            .application
             .devices
             .get()
             .into_iter()
@@ -965,22 +948,22 @@ fn status_snapshot(state: &AppState) -> StatusView {
                 pairing: device.pairing,
             })
             .collect(),
-        location: state.location.get(),
+        location: state.application.location.get(),
     }
 }
 
 async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
-    let _ = state.control.send(ControlCmd::Refresh);
+    let _ = state.application.control.send(ControlCmd::Refresh);
     StatusCode::ACCEPTED
 }
 
 async fn connect_device(State(state): State<AppState>, Path(udid): Path<String>) -> StatusCode {
-    let _ = state.control.send(ControlCmd::Connect(udid));
+    let _ = state.application.control.send(ControlCmd::Connect(udid));
     StatusCode::ACCEPTED
 }
 
 async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String>) -> StatusCode {
-    let _ = state.control.send(ControlCmd::Reconnect(udid));
+    let _ = state.application.control.send(ControlCmd::Reconnect(udid));
     StatusCode::ACCEPTED
 }
 
@@ -990,6 +973,7 @@ async fn pair_device(
 ) -> Result<Json<PairDeviceResult>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     state
+        .application
         .control
         .send(ControlCmd::Pair {
             selection_id,
@@ -1024,6 +1008,7 @@ async fn forget_device(
 ) -> Result<Json<ForgetDeviceResult>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     state
+        .application
         .control
         .send(ControlCmd::Forget {
             selection_id,
@@ -1093,7 +1078,7 @@ async fn paste_device_text(
 }
 
 async fn device_location(State(state): State<AppState>) -> Json<LocationStatus> {
-    Json(state.location.get())
+    Json(state.application.location.get())
 }
 
 async fn set_device_location(
@@ -1355,6 +1340,7 @@ async fn device_screenshot(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let png = state
+        .application
         .device_control
         .capture_screenshot(SCREENSHOT_REQUEST_TIMEOUT)
         .await
@@ -3194,7 +3180,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
         let mut frame_rx = send_state.frames.subscribe();
         let mut browser_frame_rx = send_state.browser_frames.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
-        let mut device_event_rx = send_state.device_events.subscribe();
+        let mut device_event_rx = send_state.application.device_events.subscribe();
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
@@ -3643,9 +3629,12 @@ fn handle_client_message(
         ClientMessage::BrowserDecoderError { message } => {
             let message = message.chars().take(256).collect::<String>();
             if state.settings.report_browser_decoder_failure(message)
-                && let Some(selection_id) = state.active.selection_id()
+                && let Some(selection_id) = state.application.active.selection_id()
             {
-                let _ = state.control.send(ControlCmd::Reconnect(selection_id));
+                let _ = state
+                    .application
+                    .control
+                    .send(ControlCmd::Reconnect(selection_id));
             }
         }
         ClientMessage::FrontendMetrics {
@@ -3685,7 +3674,8 @@ fn handle_client_message(
             }
         }
         ClientMessage::MultiTouch { contacts } => {
-            if let Some(contacts) = validate_contacts(contacts, state.orientation.get()) {
+            if let Some(contacts) = validate_contacts(contacts, state.application.orientation.get())
+            {
                 state.input.send(InputCmd::MultiTouchFrame(contacts));
             }
         }
@@ -3880,39 +3870,31 @@ mod tests {
         let browser_frames = crate::browser_video::BrowserVideoSlot::default();
         (
             AppState {
-                device_control: crate::application::DeviceControlService::new(
-                    frames.clone(),
-                    browser_frames.clone(),
-                    input.clone(),
+                application: crate::application::ApplicationServices::new(
+                    crate::application::DeviceControlService::new(
+                        frames.clone(),
+                        browser_frames.clone(),
+                        input.clone(),
+                    ),
+                    crate::application::DeviceStateSlots::default(),
+                    crate::application::ObservabilitySlots::default(),
+                    control,
                 ),
                 frames,
                 browser_frames,
                 clipboard: ClipboardSlot::default(),
-                device_events: crate::device_events::DeviceEventSlot::default(),
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),
                 bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot::default(),
                 device_backup: crate::device_backup::DeviceBackupSlot::default(),
                 sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot::default(),
                 log_archive: crate::log_archive::LogArchiveSlot::default(),
                 developer_image: crate::developer_image::DeveloperImageMountSlot::default(),
-                device_conditions: crate::device_conditions::DeviceConditionSlot::default(),
                 video_counters: VideoCounters::default(),
-                status: StatusSlot::default(),
-                orientation: OrientationSlot::default(),
-                devices: DeviceListSlot::default(),
-                active: ActiveSlot::default(),
-                error: ErrorSlot::default(),
                 app_operation: AppOperationSlot::default(),
                 app_document_activity: crate::app_documents::AppDocumentActivitySlot::default(),
                 device_file_activity: crate::device_files::DeviceFileActivitySlot::default(),
-                location: LocationStatusSlot::default(),
-                performance: PerformanceSlot::default(),
-                performance_demand: PerformanceDemand::default(),
-                device_logs: crate::device_logs::DeviceLogSlot::default(),
-                device_log_demand: crate::device_logs::DeviceLogDemand::default(),
                 services: ServiceRegistry::default(),
                 input,
-                control,
                 profile_dir: Arc::new(PathBuf::new()),
                 settings: Arc::new(crate::settings::AppSettings::load(
                     std::env::temp_dir().join(format!(
@@ -4206,12 +4188,12 @@ mod tests {
     #[tokio::test]
     async fn performance_sampling_endpoint_controls_demand() {
         let (state, _) = test_state();
-        assert!(!state.performance_demand.enabled());
+        assert!(!state.application.performance_demand.enabled());
         assert_eq!(
             start_performance_sampling(State(state.clone())).await,
             StatusCode::NO_CONTENT
         );
-        assert!(state.performance_demand.enabled());
+        assert!(state.application.performance_demand.enabled());
         let view = performance(State(state.clone())).await.0;
         assert!(view.sampling);
         assert!(view.app_activity.is_empty());
@@ -4219,7 +4201,7 @@ mod tests {
             stop_performance_sampling(State(state.clone())).await,
             StatusCode::NO_CONTENT
         );
-        assert!(!state.performance_demand.enabled());
+        assert!(!state.application.performance_demand.enabled());
     }
 
     #[tokio::test]
@@ -4508,7 +4490,10 @@ mod tests {
     async fn device_log_endpoints_bound_batches_and_control_demand() {
         let (state, _) = test_state();
         for index in 0..3 {
-            state.device_logs.publish(format!("line {index}"));
+            state
+                .application
+                .device_logs
+                .publish(format!("line {index}"));
         }
         assert_eq!(
             start_device_logs(State(state.clone())).await,
@@ -4535,6 +4520,7 @@ mod tests {
         );
         assert!(
             state
+                .application
                 .device_logs
                 .snapshot(None, 10, true)
                 .entries
@@ -4544,7 +4530,7 @@ mod tests {
             stop_device_logs(State(state.clone())).await,
             StatusCode::NO_CONTENT
         );
-        assert!(!state.device_log_demand.enabled());
+        assert!(!state.application.device_log_demand.enabled());
     }
 
     #[tokio::test]

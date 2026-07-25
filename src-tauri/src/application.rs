@@ -4,8 +4,16 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::browser_video::BrowserVideoSlot;
-use crate::protocol::{Frame, FrameSlot, InputCmd, InputSink};
+use crate::device_events::DeviceEventSlot;
+use crate::device_logs::{DeviceLogDemand, DeviceLogSlot};
+use crate::performance::{PerformanceDemand, PerformanceSlot};
+use crate::protocol::{
+    ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameSlot, InputCmd, InputSink,
+    LocationStatusSlot, OrientationSlot, StatusSlot,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceControlError {
@@ -28,11 +36,100 @@ impl fmt::Display for DeviceControlError {
 
 impl std::error::Error for DeviceControlError {}
 
+/// Stable device identity and connection state shared by every transport
+/// adapter. These slots are created once by the backend composition root.
+#[derive(Clone, Default)]
+pub struct DeviceStateSlots {
+    pub(crate) orientation: OrientationSlot,
+    pub(crate) devices: DeviceListSlot,
+    pub(crate) active: ActiveSlot,
+    pub(crate) error: ErrorSlot,
+    pub(crate) status: StatusSlot,
+    pub(crate) location: LocationStatusSlot,
+}
+
+/// Observability resources shared by HTTP and MCP without either adapter owning
+/// the sampling lifecycle. Demand leases keep expensive probes off while idle.
+#[derive(Clone, Default)]
+pub struct ObservabilitySlots {
+    pub(crate) device_events: DeviceEventSlot,
+    pub(crate) device_conditions: crate::device_conditions::DeviceConditionSlot,
+    pub(crate) performance: PerformanceSlot,
+    pub(crate) performance_demand: PerformanceDemand,
+    pub(crate) device_logs: DeviceLogSlot,
+    pub(crate) device_log_demand: DeviceLogDemand,
+}
+
 #[derive(Clone)]
 pub struct DeviceControlService {
     frames: FrameSlot,
     browser_frames: BrowserVideoSlot,
     input: InputSink,
+}
+
+/// Application-level facade consumed by HTTP, WebSocket, and MCP adapters.
+///
+/// Keeping this composition outside adapters ensures they observe the same
+/// active session and demand counters. Protocol-specific request validation and
+/// response formatting remain in the adapters.
+#[derive(Clone)]
+pub struct ApplicationServices {
+    pub(crate) device_control: DeviceControlService,
+    pub(crate) orientation: OrientationSlot,
+    pub(crate) devices: DeviceListSlot,
+    pub(crate) active: ActiveSlot,
+    pub(crate) error: ErrorSlot,
+    pub(crate) status: StatusSlot,
+    pub(crate) location: LocationStatusSlot,
+    pub(crate) device_events: DeviceEventSlot,
+    pub(crate) device_conditions: crate::device_conditions::DeviceConditionSlot,
+    pub(crate) performance: PerformanceSlot,
+    pub(crate) performance_demand: PerformanceDemand,
+    pub(crate) device_logs: DeviceLogSlot,
+    pub(crate) device_log_demand: DeviceLogDemand,
+    pub(crate) control: UnboundedSender<ControlCmd>,
+}
+
+impl ApplicationServices {
+    pub fn new(
+        device_control: DeviceControlService,
+        state: DeviceStateSlots,
+        observability: ObservabilitySlots,
+        control: UnboundedSender<ControlCmd>,
+    ) -> Self {
+        let DeviceStateSlots {
+            orientation,
+            devices,
+            active,
+            error,
+            status,
+            location,
+        } = state;
+        let ObservabilitySlots {
+            device_events,
+            device_conditions,
+            performance,
+            performance_demand,
+            device_logs,
+            device_log_demand,
+        } = observability;
+        Self {
+            device_control,
+            orientation,
+            devices,
+            active,
+            error,
+            status,
+            location,
+            device_events,
+            device_conditions,
+            performance,
+            performance_demand,
+            device_logs,
+            device_log_demand,
+            control,
+        }
+    }
 }
 
 impl DeviceControlService {
@@ -132,6 +229,34 @@ mod tests {
             DeviceControlService::new(FrameSlot::default(), BrowserVideoSlot::default(), input),
             receiver,
         )
+    }
+
+    #[test]
+    fn application_facade_clones_share_state_and_demand_ownership() {
+        let state = DeviceStateSlots::default();
+        let observability = ObservabilitySlots::default();
+        let (control, mut commands) = unbounded_channel();
+        let services = ApplicationServices::new(
+            DeviceControlService::new(
+                FrameSlot::default(),
+                BrowserVideoSlot::default(),
+                InputSink::default(),
+            ),
+            state.clone(),
+            observability.clone(),
+            control,
+        );
+        let adapter_clone = services.clone();
+
+        state.status.set("connected");
+        assert_eq!(adapter_clone.status.get(), "connected");
+        let demand = services.performance_demand.acquire();
+        assert!(observability.performance_demand.enabled());
+        drop(demand);
+        assert!(!adapter_clone.performance_demand.enabled());
+
+        services.control.send(ControlCmd::Refresh).unwrap();
+        assert!(matches!(commands.try_recv(), Ok(ControlCmd::Refresh)));
     }
 
     #[tokio::test]
