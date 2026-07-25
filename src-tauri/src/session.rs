@@ -3,6 +3,7 @@
 // run the video pipeline and dispatch input commands to the device's HID surfaces.
 
 mod media;
+mod rtcp;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,10 +21,9 @@ use idevice::{
     core_device::{
         AppServiceClient, CallInfoBlob, CoreDeviceError, DataInclusionPolicy, DisplayServiceClient,
         GENERAL_PASTEBOARD, HevcDepacketizer, Orientation as DevOrientation,
-        OrientationServiceClient, PasteboardServiceClient, PasteboardSnapshot, ReportBlock,
-        RotationDirection, RtpPacket, SenderReport, UTI_PNG, build_frame_ack,
-        build_keyframe_request, build_liveness, build_rctl, build_screen_audio_offer,
-        build_screen_video_offer, build_start_audio_parameters, build_start_video_parameters,
+        OrientationServiceClient, PasteboardServiceClient, PasteboardSnapshot, RotationDirection,
+        RtpPacket, UTI_PNG, build_frame_ack, build_screen_audio_offer, build_screen_video_offer,
+        build_start_audio_parameters, build_start_video_parameters,
         hid::{
             ButtonState, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, IndigoHidClient,
             TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
@@ -73,6 +73,7 @@ use media::{
     AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RtpVideoClock,
     RunningStats, audio_decoder_restart_backoff,
 };
+use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
 const CLIENT_SUPPORTED_FEATURES: u64 = 140;
@@ -97,13 +98,6 @@ const KEY_LEFT_ALT: u64 = 0xE2;
 const KEY_LEFT_CMD: u64 = 0xE3;
 const KEY_V: u64 = 0x19;
 
-/// The device's encoder sends a single IDR then only P-frames, so a dropped
-/// packet corrupts the picture permanently; recovery is an RTCP keyframe request
-/// (PLI + FIR) that makes the encoder emit a fresh IDR on the same stream.
-///
-/// After requesting a keyframe, ignore further triggers for this long so a burst
-/// of decode errors yields a single request, not a storm.
-const KEYFRAME_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(1500);
 /// Sample transport/source/decode progress without treating a legitimately static
 /// screen as a decoder failure. A fully silent transport is retried only after
 /// several consecutive samples so normal RTCP sender-report spacing is covered.
@@ -121,28 +115,9 @@ pub(crate) const APP_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(22)
 /// short enough to pick up a real stream restart promptly.
 const SSRC_TAKEOVER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
-/// RTCP Receiver Report interval. AVConference uses RTCP for liveness; if reports
-/// stop, the device's sender eventually stops too and the screen freezes.
-const RTCP_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-/// The local UDP port we tell the device to send video RTP/RTCP *from*. Used as
-/// the default RTCP destination until we observe where the device's RTCP originates.
-const VIDEO_SENDER_PORT: u16 = 50001;
 /// Keep the display rotation in sync when an app switches between portrait and
 /// landscape. The screen stream itself is always native portrait.
 const ORIENTATION_POLL_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Where the device's RTCP arrives, learned at runtime (transport isn't negotiated
-/// explicitly). Until we've seen any, we send to both candidates.
-#[derive(Debug, Clone, Copy, Default)]
-enum RtcpPeer {
-    #[default]
-    Unknown,
-    /// rtcp-mux: device sends RTCP on the RTP port; we reply over the RTP socket
-    /// to this (the device's source) port.
-    Mux(u16),
-    /// Separate RTCP port (RFC 3550): we reply over the dedicated RTCP socket.
-    Separate(u16),
-}
 
 fn orientation_from_interface(orientation: InterfaceOrientation) -> Option<Orientation> {
     match orientation {
@@ -188,148 +163,6 @@ async fn watch_interface_orientation(
             Err(_) => {}
         }
         tokio::time::sleep(ORIENTATION_POLL_INTERVAL).await;
-    }
-}
-
-/// The last Sender Report we received, so a Receiver Report can echo `LSR`/`DLSR`.
-#[derive(Debug, Clone, Copy)]
-struct SrEcho {
-    /// Middle 32 bits of the SR's NTP timestamp.
-    ntp_middle: u32,
-    received_at: Instant,
-}
-
-/// RTP reception statistics for a single source, enough to fill in a Receiver
-/// Report block (RFC 3550, simplified - jitter is not tracked).
-#[derive(Debug, Default)]
-struct RtpStats {
-    initialized: bool,
-    /// Extended sequence number of the first packet seen.
-    base_seq: u32,
-    /// Extended highest sequence number seen (`cycles << 16 | seq`).
-    ext_max: u32,
-    received: u32,
-    /// Snapshots from the previous report, for the per-interval loss fraction.
-    expected_prior: u32,
-    received_prior: u32,
-}
-
-impl RtpStats {
-    /// Fold one packet's 16-bit sequence number into the running stats,
-    /// maintaining the extended (cycle-aware) highest sequence number.
-    fn on_packet(&mut self, seq: u16) {
-        let seq = seq as u32;
-        if !self.initialized {
-            self.initialized = true;
-            self.base_seq = seq;
-            self.ext_max = seq;
-            self.received = 1;
-            return;
-        }
-        let cycles = self.ext_max & !0xffff;
-        let max_lo = self.ext_max & 0xffff;
-        // Resolve `seq` to an extended number nearest the current max, treating a
-        // forward distance ≥ 0x8000 as the short way around the 16-bit wrap.
-        let ext = if seq >= max_lo {
-            if seq - max_lo < 0x8000 {
-                cycles | seq
-            } else {
-                cycles.wrapping_sub(0x10000) | seq
-            }
-        } else if max_lo - seq < 0x8000 {
-            cycles | seq
-        } else {
-            (cycles + 0x10000) | seq
-        };
-        if ext > self.ext_max {
-            self.ext_max = ext;
-        }
-        self.received += 1;
-    }
-
-    /// Produce a Receiver Report block for this source, advancing the per-interval
-    /// loss bookkeeping. `lsr`/`dlsr` come from the last Sender Report (0 if none).
-    fn report_block(&mut self, source_ssrc: u32, lsr: u32, dlsr: u32) -> ReportBlock {
-        let expected = self.ext_max.wrapping_sub(self.base_seq).wrapping_add(1);
-        let cumulative_lost = expected.saturating_sub(self.received);
-        let expected_interval = expected.wrapping_sub(self.expected_prior);
-        let received_interval = self.received.wrapping_sub(self.received_prior);
-        self.expected_prior = expected;
-        self.received_prior = self.received;
-        let lost_interval = expected_interval.saturating_sub(received_interval);
-        let fraction_lost = if expected_interval == 0 || lost_interval == 0 {
-            0
-        } else {
-            ((lost_interval << 8) / expected_interval) as u8
-        };
-        ReportBlock {
-            source_ssrc,
-            fraction_lost,
-            cumulative_lost: cumulative_lost & 0x00ff_ffff,
-            highest_seq: self.ext_max,
-            jitter: 0,
-            lsr,
-            dlsr,
-        }
-    }
-}
-
-/// State shared between the RTP receive loop, the RTCP receive loop(s), and the
-/// RTCP send loop.
-#[derive(Default)]
-struct RtcpShared {
-    /// The device's video SSRC, once we've locked onto the stream.
-    media_ssrc: Option<u32>,
-    stats: RtpStats,
-    sr_echo: Option<SrEcho>,
-    peer: RtcpPeer,
-    /// Count of complete frames received (marker-bit terminated).
-    frames: u32,
-}
-
-impl RtcpShared {
-    /// Highest RTP sequence number received, relative to the first packet's
-    /// sequence number (the form Apple's `RCTL` carries). 0 until any packet.
-    fn highest_seq_rel(&self) -> u16 {
-        if self.stats.initialized {
-            self.stats.ext_max.wrapping_sub(self.stats.base_seq) as u16
-        } else {
-            0
-        }
-    }
-}
-
-impl RtcpShared {
-    /// Record an inbound RTCP datagram: where it came from (so replies go to the
-    /// right place) and, if it's a Sender Report, the echo data.
-    fn note_inbound(&mut self, buf: &[u8], source_port: u16, separate: bool, now: Instant) {
-        self.peer = if separate {
-            RtcpPeer::Separate(source_port)
-        } else {
-            RtcpPeer::Mux(source_port)
-        };
-        if let Some(sr) = SenderReport::parse_first(buf) {
-            self.sr_echo = Some(SrEcho {
-                ntp_middle: sr.ntp_middle,
-                received_at: now,
-            });
-            self.media_ssrc.get_or_insert(sr.ssrc);
-        }
-    }
-
-    /// Report blocks for a Receiver Report (empty until we know the source SSRC).
-    fn report_blocks(&mut self, now: Instant) -> Vec<ReportBlock> {
-        let Some(ssrc) = self.media_ssrc else {
-            return Vec::new();
-        };
-        let (lsr, dlsr) = match self.sr_echo {
-            Some(e) => {
-                let delay = now.saturating_duration_since(e.received_at);
-                (e.ntp_middle, (delay.as_secs_f64() * 65536.0) as u32)
-            }
-            None => (0, 0),
-        };
-        vec![self.stats.report_block(ssrc, lsr, dlsr)]
     }
 }
 
@@ -1995,7 +1828,7 @@ async fn run(
         }
         _ = stall_watchdog(video.counters.clone(), &corruption) => {}
         _ = forward_browser_keyframes(browser_keyframes, corruption.clone()) => {}
-        _ = rtcp_recv_task(rtcp_udp.clone(), rtcp.clone(), video.counters.clone()) => {}
+        _ = rtcp_receive_task(rtcp_udp.clone(), rtcp.clone(), video.counters.clone()) => {}
         _ = rtcp_send_task(
             video_udp, rtcp_udp, rtcp, our_ssrc, cname, &corruption,
         ) => {}
@@ -4718,9 +4551,7 @@ async fn video_task(
                         );
                         locked_ssrc = Some(pkt.ssrc);
                         last_locked = now;
-                        let mut s = rtcp.lock().unwrap();
-                        s.media_ssrc = Some(pkt.ssrc);
-                        s.stats = RtpStats::default();
+                        rtcp.lock().unwrap().reset_media_source(pkt.ssrc);
                     }
                     None => {
                         locked_ssrc = Some(pkt.ssrc);
@@ -4729,14 +4560,9 @@ async fn video_task(
                 }
                 metrics_rtp_packets += 1;
                 metrics_rtp_bytes += dg.data.len() as u64;
-                {
-                    let mut s = rtcp.lock().unwrap();
-                    s.media_ssrc.get_or_insert(pkt.ssrc);
-                    s.stats.on_packet(pkt.sequence_number);
-                    if pkt.marker {
-                        s.frames = s.frames.wrapping_add(1);
-                    }
-                }
+                rtcp.lock()
+                    .unwrap()
+                    .note_rtp_packet(pkt.ssrc, pkt.sequence_number, pkt.marker);
                 // The marker bit ends an access unit. Track packet completeness
                 // even when experimental frame ACKs are disabled: a complete
                 // marker lets us hand the AU to ffmpeg without waiting for the
@@ -4922,134 +4748,6 @@ async fn forward_browser_keyframes(
     loop {
         frames.keyframe_requested().await;
         corruption.notify_one();
-    }
-}
-
-/// Receive inbound RTCP on the dedicated RTCP socket (non-mux case). Records
-/// Sender Reports in the shared state. Idles forever if no separate socket bound.
-async fn rtcp_recv_task(
-    udp: Option<Arc<UdpSocketHandle>>,
-    rtcp: Arc<Mutex<RtcpShared>>,
-    counters: VideoCounters,
-) {
-    let Some(udp) = udp else {
-        std::future::pending::<()>().await;
-        return;
-    };
-    loop {
-        match udp.recv().await {
-            Ok(dg) => {
-                if is_rtcp(&dg.data) {
-                    counters.note_transport_activity();
-                    rtcp.lock().unwrap().note_inbound(
-                        &dg.data,
-                        dg.source_port,
-                        true,
-                        Instant::now(),
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("rtcp udp recv error: {e:?}");
-                break;
-            }
-        }
-    }
-}
-
-/// The RTCP control loop. Periodically sends a Receiver Report + SDES (liveness),
-/// and on `corruption` a keyframe request (RR + SDES + PLI + FIR) for a fresh IDR.
-/// Replies go wherever inbound RTCP was observed (auto-detected mux vs. separate).
-async fn rtcp_send_task(
-    rtp_udp: Arc<UdpSocketHandle>,
-    rtcp_udp: Option<Arc<UdpSocketHandle>>,
-    rtcp: Arc<Mutex<RtcpShared>>,
-    our_ssrc: u32,
-    cname: String,
-    corruption: &Notify,
-) {
-    let send = |peer: RtcpPeer, pkt: Vec<u8>| {
-        let rtp_udp = rtp_udp.clone();
-        let rtcp_udp = rtcp_udp.clone();
-        async move {
-            match peer {
-                RtcpPeer::Mux(port) => {
-                    rtp_udp.send_to(port, pkt).await.ok();
-                }
-                RtcpPeer::Separate(port) => {
-                    if let Some(s) = &rtcp_udp {
-                        s.send_to(port, pkt).await.ok();
-                    }
-                }
-                RtcpPeer::Unknown => {
-                    // No inbound RTCP seen yet: cover both conventions (mux -> RTP
-                    // sender port; separate -> +1).
-                    rtp_udp.send_to(VIDEO_SENDER_PORT, pkt.clone()).await.ok();
-                    if let Some(s) = &rtcp_udp {
-                        s.send_to(VIDEO_SENDER_PORT + 1, pkt).await.ok();
-                    }
-                }
-            }
-        }
-    };
-
-    let mut fir_seq: u8 = 0;
-    let start = Instant::now();
-    // RCTL feedback is DISABLED by default - like the per-frame ACK it desyncs the
-    // encoder and corrupts the picture (and isn't yet byte-correct). `DEVICEHUB_RCTL=1`
-    // re-enables it. Separate intervals so neither tick resets the other.
-    let send_rctl = std::env::var("DEVICEHUB_RCTL").is_ok();
-    let mut rr_tick = tokio::time::interval(RTCP_REPORT_INTERVAL);
-    let mut rctl_tick = tokio::time::interval(std::time::Duration::from_millis(50));
-    loop {
-        tokio::select! {
-            _ = rctl_tick.tick() => {
-                if !send_rctl {
-                    continue;
-                }
-                let (peer, pkt) = {
-                    let s = rtcp.lock().unwrap();
-                    if s.media_ssrc.is_none() {
-                        continue; // no stream yet
-                    }
-                    let clock_ms = start.elapsed().as_millis() as u16;
-                    let frames = s.frames as u16;
-                    let pkt = build_rctl(our_ssrc, clock_ms, frames, s.highest_seq_rel());
-                    (s.peer, pkt)
-                };
-                send(peer, pkt).await;
-            }
-            _ = rr_tick.tick() => {
-                let (peer, pkt) = {
-                    let mut s = rtcp.lock().unwrap();
-                    let blocks = s.report_blocks(Instant::now());
-                    (s.peer, build_liveness(our_ssrc, &cname, &blocks))
-                };
-                send(peer, pkt).await;
-            }
-            _ = corruption.notified() => {
-                let built = {
-                    let mut s = rtcp.lock().unwrap();
-                    match s.media_ssrc {
-                        Some(media_ssrc) => {
-                            let blocks = s.report_blocks(Instant::now());
-                            fir_seq = fir_seq.wrapping_add(1);
-                            Some((s.peer, build_keyframe_request(
-                                our_ssrc, &cname, media_ssrc, &blocks, fir_seq,
-                            )))
-                        }
-                        // No stream locked yet - nothing to ask a keyframe of.
-                        None => None,
-                    }
-                };
-                if let Some((peer, pkt)) = built {
-                    tracing::info!("requesting keyframe via RTCP (PLI+FIR)");
-                    send(peer, pkt).await;
-                }
-                // Coalesce a burst of decode errors; let the fresh IDR arrive first.
-                tokio::time::sleep(KEYFRAME_DEBOUNCE).await;
-            }
-        }
     }
 }
 

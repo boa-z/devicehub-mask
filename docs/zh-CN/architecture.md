@@ -42,7 +42,7 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
-会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。该模块不持有设备客户端、socket、解码进程或应用命令，因此传输与会话编排可以独立于缓冲策略演进。
+会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。独立的 RTCP 传输模块拥有 peer 探测、接收统计、liveness report、RCTL 实验和带防抖的 PLI/FIR 请求；RTP 接收只能记录 packet、重置已替换媒体源或提交复用 RTCP，不能直接修改 RTCP 计数或构造反馈 packet。两个模块都不持有设备客户端、解码进程或应用命令，因此传输与会话编排可以独立于缓冲及反馈策略演进。
 
 显式的单 App 控制台采集由会话拥有的独立监督任务承载。它建立新的 AppService 与 OpenStdioSocket RSD channel，验证请求的 Bundle ID 确实已安装，把 stdio UUID 绑定到显式的终止后启动操作，并在 CoreDevice `LocalSet` 中读取。带序号缓冲最多保留 1,000 行、总计 1 MiB 的规范化 UTF-8 文本，单行限制 8 KiB；私有 API 增量读取会检测已过期游标并返回重置快照。关闭界面会清空缓冲，会话结束也会无条件中止流并清空。控制台字节不会写入日志、持久化或注册为 MCP 能力。
 
