@@ -47,7 +47,7 @@ Development artifacts use `target/tauri-dev` and load Vite from `http://127.0.0.
 
 Keep `DEVICEHUB_ADDR` on a loopback address. Changing it does not remove token authentication, but external binding is outside the supported desktop model.
 
-The MCP endpoint has no authentication and must remain on loopback unless the host is on a trusted, isolated network. A non-loopback bind emits a warning. An MCP bind failure is non-fatal and does not stop the desktop backend or session.
+The MCP endpoint has no authentication and must remain on loopback unless the host is on a trusted, isolated network. A non-loopback bind emits a warning. An MCP bind failure is non-fatal and does not stop the desktop backend or session. Client setup, tool workflows, and security boundaries are documented in the [MCP Automation Guide](mcp.md).
 
 Runtime logs are written as JSON Lines to the platform application log directory, rotate daily, and retain seven files. The active filter, run ID, dropped-line count, Debug switch, and an action to open the directory are in Settings > Diagnostics. The Debug switch affects only the current run. Set an explicit filter when narrower trace logging is required, for example:
 

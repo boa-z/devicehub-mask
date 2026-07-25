@@ -8,6 +8,8 @@ Use this documentation by task rather than reading it in order.
 
 - [Getting Started](getting-started.md): platform prerequisites, source setup, device preparation, and the first development run
 - [User Guide](user-guide.md): device, mapping, application, keyboard, hardware button, screenshot, localization, and update workflows
+- [Key Mapping Guide](key-mapping.md): profile creation, controller behavior, contact ownership, imports, app associations, and troubleshooting
+- [MCP Automation Guide](mcp.md): agent setup, screenshot and semantic control, low-latency game workflows, diagnostics, WDA, security, and tool boundaries
 - [Feature Reference](features.md): current desktop workspaces, device-management operations, idevice service coverage, MCP tools, and intentional boundaries
 - [Architecture](architecture.md): process boundaries, private transport, CoreDevice sessions, video pipeline, HID validation, and data ownership
 - [Development](development.md): repository layout, environment variables, validation, local production builds, and platform packaging

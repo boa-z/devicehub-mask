@@ -93,6 +93,8 @@
 
 ## MCP 工具覆盖
 
+客户端配置、坐标规则、推荐 Agent 工作流、WDA 前置条件和故障排查请查看 [MCP 自动化指南](mcp.md)。
+
 桌面应用运行时，Streamable HTTP MCP 端点提供以下工具：
 
 - 画面与输入：`screenshot`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、 `type_text`、`paste_text`、`press_key`、`press_button`、`rotate`。

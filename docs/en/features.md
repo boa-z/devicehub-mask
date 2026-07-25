@@ -93,6 +93,8 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 
 ## MCP Tool Coverage
 
+For setup, coordinate rules, recommended agent workflows, WDA prerequisites, and troubleshooting, see the [MCP Automation Guide](mcp.md).
+
 The Streamable HTTP MCP endpoint exposes the following tools while the desktop app is running:
 
 - Screen and input: `screenshot`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, and `rotate`.

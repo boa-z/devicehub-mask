@@ -54,6 +54,8 @@ claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
 | Documentation home | [English docs](docs/en/README.md) | [中文文档](docs/zh-CN/README.md) |
 | Installation and first run | [Getting Started](docs/en/getting-started.md) | [快速开始](docs/zh-CN/getting-started.md) |
 | App workflows and controls | [User Guide](docs/en/user-guide.md) | [使用指南](docs/zh-CN/user-guide.md) |
+| Key mapping | [Key Mapping Guide](docs/en/key-mapping.md) | [按键映射使用指南](docs/zh-CN/key-mapping.md) |
+| Agent automation | [MCP Automation Guide](docs/en/mcp.md) | [MCP 自动化指南](docs/zh-CN/mcp.md) |
 | Implemented feature inventory | [Feature Reference](docs/en/features.md) | [功能参考](docs/zh-CN/features.md) |
 | System design and protocols | [Architecture](docs/en/architecture.md) | [架构说明](docs/zh-CN/architecture.md) |
 | Development and local builds | [Development](docs/en/development.md) | [开发与构建](docs/zh-CN/development.md) |

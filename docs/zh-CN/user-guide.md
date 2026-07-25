@@ -26,6 +26,8 @@ App 标签页的 IPA 菜单明确区分“安装 IPA”和“升级已安装 App
 
 ### 键盘映射
 
+完整的配置制作流程、控制器运行状态、导入导出契约和故障排查请查看[按键映射使用指南](key-mapping.md)。
+
 映射页包含放置画布、映射检查器、硬件快捷键和配置管理。编辑器显示源分辨率和按比例 适配后的显示分辨率。背景可选择实时画面或方向正确的冻结截图；截图可以保存为 PNG， 设备断开后仍可用于离线编辑。
 
 可在画布上拖动控件，也可在准确位置右键新增任意 scrcpy-mask 控制器类型。检查器将 控制器与硬件快捷键分栏，支持搜索、复制，以及编辑归一化坐标、组合键、时序、施法中心和 Swipe/MultipleTap 序列点。范围开关可显示全部轨迹和控制范围；编辑时始终显示当前所选 控制器的范围。新建和复制会优先选择当前使用次数最少的 Universal HID 触点身份。编辑后 需要保存配置。即使配置包含更多映射，运行时同时最多选择五个不重复触点身份。
@@ -137,50 +139,6 @@ React 界面和 Ant Design 都使用系统字体。切换语言不会重写已�
 
 ## MCP 自动化
 
-`device_details` 会在现有设备、存储、激活、开发者和电池上下文之外，返回与信息标签页相同的规范化区域设置。
+DeviceHub Mask 通过内置 Streamable HTTP MCP 端点，将当前桌面设备会话提供给 Agent。它支持基于截图的 HID 控制、低延迟多点触控、设备与 App 工作流、事件驱动等待、诊断、虚拟定位、设备条件和可选 WDA 语义自动化，不会再建立一条与手机竞争的连接。
 
-DeviceHub Mask 运行期间，MCP 客户端可以连接 Streamable HTTP 端点 `http://127.0.0.1:8009/mcp`。服务提供截图、点击、滑动、文本与按键输入、硬件按键、 同步多点触控、App 查询、启动/重启与停止、旋转、设备选择与重连、虚拟定位、画面帧同步、 设备条件、单向锁定设备、崩溃诊断和会话状态等工具。`lock_device` 使用 Diagnostics Relay 的休眠请求，不会像硬件锁定按键切换那样唤醒已经锁定的设备。
-
-`list_apps` 会返回与桌面 App 标签页相同的规范化 `signing_kind`、最低 iOS 版本和可空的可调试状态，不会返回 Signer Identity、Team ID 或原始 entitlement。单 App stdout/stderr 控制台仍只面向桌面端，因为应用输出可能包含秘密信息。
-
-`device_details` 会刷新当前设备的产品与系统版本、硬件型号、存储、激活状态、开发者模式和有界的电池诊断，包括电池温度。默认省略 UDID、序列号和 ECID；只有确实需要稳定硬件身份时才应启用 `include_identifiers`。`list_apps` 默认返回用户安装的 App；设置 `include_system=true` 可请求 Apple 默认 App，设置 `include_app_clips=true` 可请求轻 App，也可以同时启用得到合并目录。这些可选范围依赖 CoreDevice AppService，且不会暴露隐藏或内部 App。每个结果都会保留 `is_app_clip`，使 agent 能区分由 iOS 管理的轻 App 与传统已安装 App。`wait_for_device_event` 无需轮询即可等待 App 安装/移除、激活状态、磁盘用量、设备名称、区域设置、开发者磁盘镜像挂载或锁屏状态变化等归一化事件。下一次调用应把返回的 `sequence` 作为 `after_sequence`，避免订阅竞态；工具不会返回原始通知名称或载荷。
-
-设备激活状态、语言/时区和开发者磁盘镜像挂载通知都会刷新“设备信息”标签页。语言和时区通知会合并为 `regional_settings_changed`；应调用 `device_details` 获取新的归一化值。`developer_image_mounted` 只表示收到挂载通知，仍应调用 `device_details` 确认当前挂载状态。收到 SpringBoard 锁屏状态通知时，应用会释放所有活动的桌面输入，并将事件公开为 `lock_state_changed`。Notification Proxy 不携带变化后的锁定值，因此 agent 必须重新截图观察当前画面，不能把该事件本身解释为已锁定或已解锁。
-
-`list_companion_devices` 使用与“设备信息”相同的有界、只读 CompanionProxy 查询，返回 活动 iPhone 已配对 Apple Watch 的可用元数据。空结果是有效状态；该工具不提供 Watch 控制、服务启动或端口转发。配对设备标识符应按敏感设备元数据处理。
-
-`home_screen_layout` 返回与 App 标签页相同的 Dock、页面和文件夹路径。这些位置只用于判断 App 所在区域，不能作为 `tap` 的像素坐标；agent 仍需通过 `screenshot` 进行视觉定位。该工具 在可用时通过 `metrics` 增加设备报告的屏幕布局与图标尺寸、主屏/文件夹行列数、Dock 容量和 页面上限；它们描述 SpringBoard 布局单位，不是当前截图坐标空间。工具不会返回原始 icon-state plist、Widget 配置、Web Clip URL 或 SpringBoard 私有 UUID。
-
-`list_device_conditions` 返回与性能工作台相同的有界 DVT 网络/热状态目录、当前活动配置和 清理状态。`apply_device_condition` 只接受该目录中存在的组与配置组合，并会影响整台设备， 因此既可能中断前台游戏，也可能中断 MCP 连接。测试结束后必须调用 `clear_device_condition`。若传输故障后仍显示清理待确认，请保持设备连接，让监督器在 DVT channel 恢复后还原正常条件。
-
-`performance_snapshot` 会在调用期间临时启用现有 DVT 性能服务，返回有界的 CPU 核心与物理内存容量，以及 CPU、高负载进程、能耗、图形、GPU 内存和网络指标。默认最多等待 2.5 秒获取新样本；将 `wait_ms` 设为 `0` 可立即读取缓存快照。`recent_device_logs` 会临时启用设备日志服务，每次最多返回 500 条； 使用 `after` 序列游标可增量读取，也可按 `level` 或不区分大小写的 `query` 筛选。MCP 的 临时需求不会关闭桌面界面已经启用的性能采样或日志流。
-
-App 意外退出后，可调用 `list_crash_reports` 获取按时间倒序的元数据，并按报告名称或设备路径筛选。将其返回的准确 `device_path` 传给 `read_crash_report`；工具会同时返回归一化摘要与默认 256 KiB 的报告正文，正文硬上限为 1 MiB，并携带 `truncated` 和 `lossy_utf8` 标记。摘要会排除路径、incident 标识符、crash key、线程栈、二进制镜像和原始终止文本。该工具只读，并拒绝相对路径、路径穿越、目录和超限请求。
-
-当 WebDriverAgent 已在活动设备上完成安装、签名并运行时，`wda_status` 可探测设备端口 8100。如果已安装开发者 App 的 Bundle ID 以 `.xctrunner` 结尾，可通过 App 列表行上的 WDA 按钮或 MCP `wda_start` 显式使用 XCTest 启动，启动等待上限为 30 秒。 设备必须已启用开发者模式并挂载匹配的开发者磁盘镜像，“设备信息”会显示当前镜像状态。 未挂载时可点击“挂载镜像”并按原生文件选择器依次选择本地文件。iOS 16 及以前需要 `DeveloperDiskImage.dmg` 和对应 `.signature`；iOS 17 及以后需要来自同一兼容镜像集的 DMG、`.trustcache` 与 `BuildManifest.plist`。只能使用与当前 iOS build 匹配的可信文件； 个性化挂载会在确认后连接 Apple 签名服务。应用不会自动查找或下载镜像，取消上传后可能 需要从头重试完整挂载。 `wda_runner_status` 只报告由 DeviceHub Mask 监督的 Runner，`wda_stop` 也只停止该 Runner， 不会终止外部启动的 WDA。设备会话结束时会自动清理 Runner。DeviceHub Mask 不负责安装、 签名或静默自动启动 WDA。
-
-镜像已挂载时，可通过“设备信息”中的同一控制区显式卸载。卸载可能立即终止正在运行的 XCTest 与 WebDriverAgent 会话，因此应先停止由应用管理的自动化。挂载、卸载和取消请求会 串行执行；切换设备会取消当前镜像操作。
-
-`wda_device_state` 返回 WDA 报告的设备锁定状态、规范化方向、逻辑窗口尺寸，以及当前 WDA build 支持时的 viewport 矩形。WDA 元素矩形使用这些逻辑单位，而不是截图像素；转换坐标空间前不能直接传给坐标 HID 工具。只读状态查询绝不会尝试解锁设备。`wda_unlock` 是独立的显式修改操作：它不接收密码、不能绕过设备认证，并且只有在第二次锁定状态查询确认设备已解锁后才报告成功。`wda_background_app` 会将当前前台 App 切到后台；省略 `restore_after_ms` 时保持后台状态，设置 100 至 5,000 毫秒时则请求 WDA 在延时后恢复该 App。`wda_ui_tree` 返回长度受限的辅助功能 XML 树，`wda_find_elements` 返回带画面矩形的 零基匹配结果。`wda_inspect_element` 会重新解析一个匹配项并返回其矩形、可见/可用/选中状态，以及受限的 `type`、`name`、`label` 和 `value` 标量；元素当前状态会影响操作时，应先执行检查。`wda_wait_for_element` 每 250 毫秒检查一次指定索引的匹配项是否变为 `present`、`absent`、`displayed`、`hidden`、`enabled`、`disabled`、`selected` 或 `unselected`，默认等待 5 秒、最长 10 秒；超时为零时只检查一次。元素缺失可满足 `absent` 和 `hidden`，但不会被视为 `disabled` 或 `unselected`。Agent 应使用这个服务端等待，而不是反复调用查找或检查。`wda_click`、`wda_double_tap` 和 `wda_touch_and_hold` 则在一次请求中查找并操作指定结果。`wda_type_text` 可向当前聚焦元素输入最多 1,024 个 Unicode 字符和 4,096 UTF-8 bytes，日志不会记录文本正文。`wda_touch_and_hold` 接受 100 至 10,000 毫秒，`wda_scroll` 只接受 `up`、`down`、`left` 或 `right`。支持的选择器策略为 `accessibility id`、`name`、`class name`、`xpath`、`-ios predicate string` 和 `-ios class chain`。应优先使用辅助功能 ID 或名称；复杂页面上的宽泛 XPath 查询可能较慢。
-
-首次语义请求按需建立 WDA 会话； 设备断开或请求失败时会丢弃该会话，而不会重启主画面控制会话。语义动作共用 MCP 手势锁，不会与 HID 输入交错。表单和辅助功能驱动流程适合使用 WDA；游戏仍应使用延迟更低的坐标 HID。UI 树可能包含密码、消息及其他可见文本，应按敏感 MCP 输出处理。未提供有效辅助功能元数据的 App 仍需使用截图坐标控制。
-
-`type_text` 用于可打印 ASCII HID 逐键输入；CJK 或其他 Unicode 文本应使用 `paste_text`，它会等待设备剪贴板写入和 Cmd+V 完成后再返回成功。
-
-发送坐标输入前应先截图，并把返回的 `image_width` 和 `image_height` 传给 `tap` 或 `swipe`、`multi_touch`，这样截图缩放后坐标仍然准确。对延迟敏感的游戏操作可关闭动作 的 `wait_for_settle`，再把返回的 `frame_version_after` 传给 `wait_for_frame`，等待新画面 后继续截图。MCP 复用桌面应用当前的设备会话，不会再建立一条与手机竞争的连接。
-
-例如，`multi_touch` 可以在同一段 250ms HID 手势中推动左侧摇杆并按住右侧动作按钮：
-
-```json
-{
-  "contacts": [
-    { "x1": 180, "y1": 700, "x2": 240, "y2": 650 },
-    { "x1": 850, "y1": 680, "x2": 850, "y2": 680 }
-  ],
-  "duration_ms": 250,
-  "image_width": 1024,
-  "image_height": 768
-}
-```
-
-该端点没有鉴权，设备截图、性能进程名称、设备日志和崩溃报告都可能包含敏感信息。除非 主机位于可信隔离网络，否则应保持监听回环地址。开发者可用 `DEVICEHUB_MCP_ADDR` 修改监听地址，详见[开发指南](development.md)。
+客户端配置、坐标规则、完整工具覆盖、WDA 前置条件、安全清理、权限边界和故障排查请查看 [MCP 自动化指南](mcp.md)。该端点没有鉴权；除非主机位于可信隔离网络，否则必须保持监听回环地址。
