@@ -29,6 +29,7 @@ export type StreamMetrics = {
   jpeg_encode_ms: number;
   frame_age_ms: number;
   websocket_send_ms: number;
+  decoder_accept_ms: number;
   presentation_ack_ms: number;
   megabits_per_second: number;
 };

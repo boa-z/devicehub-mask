@@ -1,6 +1,7 @@
 const packetMagic = [0x44, 0x48, 0x56, 0x31] as const;
 const packetHeaderBytes = 28;
 const decoderOutputTimeoutMs = 3_000;
+const maxPendingPackets = 8;
 
 export type BrowserVideoPacket = {
   key: boolean;
@@ -95,7 +96,7 @@ function reverseBits32(value: number): number {
 }
 
 type Callbacks = {
-  output: (frame: VideoFrame, decodeMs: number) => void;
+  output: (frame: VideoFrame, decodeMs: number, sequence: bigint) => void;
   requestKeyframe: () => void;
   congestion?: (decodeQueueSize: number) => void;
   fatal: (error: unknown) => void;
@@ -110,17 +111,32 @@ export class BrowserVideoDecoder {
   private failures = 0;
   private closed = false;
   private queue = Promise.resolve();
-  private submitted = new Map<number, number>();
+  private pendingPackets = 0;
+  private generation = 0;
+  private submitted = new Map<number, { submittedAt: number; sequence: bigint }>();
   private outputTimer: number | undefined;
 
   constructor(private readonly callbacks: Callbacks) {}
 
-  enqueue(packet: BrowserVideoPacket) {
-    this.queue = this.queue.then(() => this.decode(packet)).catch((error) => this.fail(error));
+  enqueue(packet: BrowserVideoPacket): boolean {
+    if (this.closed) return false;
+    if (this.pendingPackets >= maxPendingPackets) {
+      this.callbacks.congestion?.(this.pendingPackets);
+      this.resync();
+      return false;
+    }
+    const generation = this.generation;
+    this.pendingPackets += 1;
+    this.queue = this.queue
+      .then(() => this.decode(packet, generation))
+      .catch((error) => this.fail(error))
+      .finally(() => { this.pendingPackets = Math.max(0, this.pendingPackets - 1); });
+    return true;
   }
 
   close() {
     this.closed = true;
+    this.generation += 1;
     this.decoder?.close();
     this.decoder = null;
     this.submitted.clear();
@@ -130,6 +146,9 @@ export class BrowserVideoDecoder {
 
   resync() {
     if (this.closed) return;
+    // Invalidate work waiting on asynchronous capability probes. Those tasks
+    // may finish, but must never configure or feed the new decoder generation.
+    this.generation += 1;
     this.waitingForKeyframe = true;
     this.submitted.clear();
     if (this.outputTimer !== undefined) window.clearTimeout(this.outputTimer);
@@ -144,8 +163,9 @@ export class BrowserVideoDecoder {
     this.callbacks.requestKeyframe();
   }
 
-  private async configure(width: number, height: number, codec: string) {
-    if (this.decoder?.state === "configured" && width === this.width && height === this.height && codec === this.codec) return;
+  private async configure(width: number, height: number, codec: string, generation: number): Promise<boolean> {
+    if (generation !== this.generation || this.closed) return false;
+    if (this.decoder?.state === "configured" && width === this.width && height === this.height && codec === this.codec) return true;
     if (this.decoder) {
       try {
         this.decoder.close();
@@ -160,14 +180,19 @@ export class BrowserVideoDecoder {
       let decoder: VideoDecoder | null = null;
       try {
         const support = await VideoDecoder.isConfigSupported(candidate);
+        if (generation !== this.generation || this.closed) return false;
         if (!support.supported) continue;
         decoder = new VideoDecoder({
           output: (frame) => {
-            const submittedAt = this.submitted.get(frame.timestamp);
+            const submission = this.submitted.get(frame.timestamp);
             this.submitted.delete(frame.timestamp);
             this.scheduleOutputTimeout();
             this.failures = 0;
-            this.callbacks.output(frame, submittedAt === undefined ? 0 : performance.now() - submittedAt);
+            this.callbacks.output(
+              frame,
+              submission === undefined ? 0 : performance.now() - submission.submittedAt,
+              submission?.sequence ?? 0n,
+            );
           },
           error: (error) => this.recover(error),
         });
@@ -187,10 +212,11 @@ export class BrowserVideoDecoder {
     this.height = height;
     this.codec = codec;
     this.waitingForKeyframe = true;
+    return true;
   }
 
-  private async decode(packet: BrowserVideoPacket) {
-    if (this.closed) return;
+  private async decode(packet: BrowserVideoPacket, generation: number) {
+    if (this.closed || generation !== this.generation) return;
     const configurationChanged = packet.width !== this.width || packet.height !== this.height;
     const codec = (!this.codec || packet.key || configurationChanged
       ? hevcCodecFromAnnexB(packet.data)
@@ -199,7 +225,8 @@ export class BrowserVideoDecoder {
       this.callbacks.requestKeyframe();
       return;
     }
-    await this.configure(packet.width, packet.height, codec);
+    if (!await this.configure(packet.width, packet.height, codec, generation)) return;
+    if (this.closed || generation !== this.generation) return;
     if (this.waitingForKeyframe && !packet.key) {
       this.callbacks.requestKeyframe();
       return;
@@ -215,7 +242,7 @@ export class BrowserVideoDecoder {
       return;
     }
     this.waitingForKeyframe = false;
-    this.submitted.set(packet.timestamp, performance.now());
+    this.submitted.set(packet.timestamp, { submittedAt: performance.now(), sequence: packet.sequence });
     this.decoder.decode(new EncodedVideoChunk({
       type: packet.key ? "key" : "delta",
       timestamp: packet.timestamp,
@@ -228,7 +255,7 @@ export class BrowserVideoDecoder {
     if (this.outputTimer !== undefined) window.clearTimeout(this.outputTimer);
     this.outputTimer = undefined;
     if (this.closed || this.submitted.size === 0) return;
-    const oldestSubmission = Math.min(...this.submitted.values());
+    const oldestSubmission = Math.min(...[...this.submitted.values()].map(({ submittedAt }) => submittedAt));
     const remaining = Math.max(0, decoderOutputTimeoutMs - (performance.now() - oldestSubmission));
     this.outputTimer = window.setTimeout(() => {
       this.outputTimer = undefined;

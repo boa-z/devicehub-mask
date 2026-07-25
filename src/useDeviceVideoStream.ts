@@ -15,6 +15,7 @@ const emptyMetrics: StreamMetrics = {
   jpeg_encode_ms: 0,
   frame_age_ms: 0,
   websocket_send_ms: 0,
+  decoder_accept_ms: 0,
   presentation_ack_ms: 0,
   megabits_per_second: 0,
 };
@@ -223,14 +224,14 @@ export function useDeviceVideoStream({
         setFrameSize((current) => current.width === size.width && current.height === size.height ? current : size);
       };
       const browserDecoder = new BrowserVideoDecoder({
-        output: (frame, decodeMs) => {
+        output: (frame, decodeMs, sequence) => {
           try {
             frontendMetrics.jpegDecodeMs += decodeMs;
             presentFrame(frame, frame.codedWidth, frame.codedHeight);
           } finally {
             frame.close();
             if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify({ type: "frame_presented" }));
+              socket.send(JSON.stringify({ type: "frame_presented", sequence: sequence.toString() }));
             }
           }
         },
@@ -382,7 +383,13 @@ export function useDeviceVideoStream({
           }
           if (browserPacket.key) browserSequenceResync = false;
           lastBrowserSequence = browserPacket.sequence;
-          browserDecoder.enqueue(browserPacket);
+          const accepted = browserDecoder.enqueue(browserPacket);
+          if (accepted && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+              type: "browser_frame_accepted",
+              sequence: browserPacket.sequence.toString(),
+            }));
+          }
           return;
         }
         browserTransportActive = false;

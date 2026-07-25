@@ -12,6 +12,7 @@ const metrics = (decodedFps: number, sourceFps = decodedFps): StreamMetrics => (
   jpeg_encode_ms: 0,
   frame_age_ms: 0,
   websocket_send_ms: 0,
+  decoder_accept_ms: 0,
   presentation_ack_ms: 0,
   megabits_per_second: 0,
 });

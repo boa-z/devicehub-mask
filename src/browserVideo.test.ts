@@ -55,6 +55,53 @@ describe("HEVC codec configuration", () => {
 });
 
 describe("browser video decoder recovery", () => {
+  it("bounds packets waiting for asynchronous decoder configuration", async () => {
+    let resolveSupport: ((value: VideoDecoderSupport) => void) | undefined;
+    class SlowVideoDecoder {
+      static isConfigSupported(config: VideoDecoderConfig) {
+        return new Promise<VideoDecoderSupport>((resolve) => {
+          resolveSupport = () => resolve({ supported: true, config });
+        });
+      }
+      state: CodecState = "unconfigured";
+      decodeQueueSize = 0;
+      constructor() {}
+      configure() { this.state = "configured"; }
+      decode() {}
+      reset() { this.state = "unconfigured"; }
+      close() { this.state = "closed"; }
+    }
+
+    vi.stubGlobal("VideoDecoder", SlowVideoDecoder);
+    vi.stubGlobal("EncodedVideoChunk", class {});
+    vi.stubGlobal("window", { VideoDecoder: SlowVideoDecoder, setTimeout, clearTimeout });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const congestion = vi.fn();
+    const requestKeyframe = vi.fn();
+    const decoder = new BrowserVideoDecoder({ output: vi.fn(), requestKeyframe, congestion, fatal: vi.fn() });
+    const packet: BrowserVideoPacket = {
+      key: true,
+      timestamp: 1,
+      sequence: 1n,
+      width: 1290,
+      height: 2796,
+      data: Uint8Array.from([
+        0, 0, 0, 1, 0x42, 0x01,
+        0x01, 0x01, 0x60, 0, 0, 0, 0xb0, 0, 0, 0, 0, 0, 153,
+      ]),
+    };
+
+    for (let index = 0; index < 8; index += 1) {
+      expect(decoder.enqueue({ ...packet, timestamp: index + 1, sequence: BigInt(index + 1) })).toBe(true);
+    }
+    expect(decoder.enqueue({ ...packet, timestamp: 9, sequence: 9n })).toBe(false);
+    expect(congestion).toHaveBeenCalledWith(8);
+    expect(requestKeyframe).toHaveBeenCalledOnce();
+
+    resolveSupport?.({ supported: false });
+    decoder.close();
+  });
+
   it("treats queue saturation as recoverable congestion instead of a fatal decoder failure", async () => {
     class SaturatedVideoDecoder {
       static instances: SaturatedVideoDecoder[] = [];
