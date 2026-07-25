@@ -23,6 +23,7 @@ mod heartbeat;
 mod hid;
 mod home_screen;
 mod http_apps;
+mod http_crash_reports;
 mod http_diagnostics;
 mod http_performance;
 mod http_profiles;
@@ -321,6 +322,9 @@ fn spawn_backend(
                             log_archive,
                         ),
                         apps_http: http_apps::AppHttpState::new(input.clone(), app_operation),
+                        crash_reports_http: http_crash_reports::CrashReportHttpState::new(
+                            input.clone(),
+                        ),
                         browser_frames,
                         clipboard,
                         developer_image,

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use axum::extract::{Path, Query, Request, State, WebSocketUpgrade};
+#[cfg(test)]
+use axum::extract::Query;
+use axum::extract::{Path, Request, State, WebSocketUpgrade};
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
@@ -37,6 +39,7 @@ pub struct AppState {
     pub storage_http: crate::http_storage::StorageHttpState,
     pub diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState,
     pub apps_http: crate::http_apps::AppHttpState,
+    pub crash_reports_http: crate::http_crash_reports::CrashReportHttpState,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
     pub developer_image: crate::developer_image::DeveloperImageMountSlot,
@@ -53,6 +56,7 @@ pub fn router(state: AppState, token: String) -> Router {
     let storage_routes = crate::http_storage::router(state.storage_http.clone());
     let diagnostics_routes = crate::http_diagnostics::router(state.diagnostics_http.clone());
     let app_routes = crate::http_apps::router(state.apps_http.clone());
+    let crash_report_routes = crate::http_crash_reports::router(state.crash_reports_http.clone());
     Router::new()
         .route("/api/status", get(status))
         .merge(performance_routes)
@@ -60,6 +64,7 @@ pub fn router(state: AppState, token: String) -> Router {
         .merge(storage_routes)
         .merge(diagnostics_routes)
         .merge(app_routes)
+        .merge(crash_report_routes)
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
@@ -103,15 +108,6 @@ pub fn router(state: AppState, token: String) -> Router {
                 .put(set_device_location)
                 .delete(clear_device_location),
         )
-        .route(
-            "/api/device/crash-reports",
-            get(device_crash_reports).delete(delete_crash_report),
-        )
-        .route(
-            "/api/device/crash-reports/summary",
-            get(crash_report_summary),
-        )
-        .route("/api/device/crash-reports/export", put(export_crash_report))
         .route(
             "/api/device/provisioning-profiles",
             get(device_provisioning_profiles).put(install_provisioning_profile),
@@ -253,7 +249,6 @@ const FORGET_DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const WDA_RUNNER_START_TIMEOUT: Duration = Duration::from_secs(35);
 const PROVISIONING_REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
 const SCREENSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
-const CRASH_REPORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]
 struct SetLocationRequest {
@@ -970,150 +965,6 @@ async fn await_provisioning_response<T>(
         })
 }
 
-async fn device_crash_reports(
-    State(state): State<AppState>,
-) -> Result<Json<crate::protocol::DeviceCrashReportList>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::ListCrashReports(reply)) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let reports = tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "crash report list request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(reports))
-}
-
-#[derive(Deserialize)]
-struct CrashReportSummaryQuery {
-    device_path: String,
-}
-
-async fn crash_report_summary(
-    State(state): State<AppState>,
-    Query(query): Query<CrashReportSummaryQuery>,
-) -> Result<Json<crate::protocol::DeviceCrashReportSummary>, (StatusCode, String)> {
-    crate::crash_reports::validate_device_path(&query.device_path)
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::ReadCrashReport {
-        device_path: query.device_path,
-        max_bytes: crate::crash_reports::MAX_READ_BYTES,
-        reply,
-    }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let report = tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "crash report summary request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(report.summary))
-}
-
-#[derive(Deserialize)]
-struct ExportCrashReportRequest {
-    device_path: String,
-    destination: PathBuf,
-}
-
-async fn export_crash_report(
-    State(state): State<AppState>,
-    Json(request): Json<ExportCrashReportRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::ExportCrashReport {
-        device_path: request.device_path,
-        destination: request.destination,
-        reply,
-    }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let bytes_written = tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "crash report export timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(serde_json::json!({ "bytes_written": bytes_written })))
-}
-
-#[derive(Deserialize)]
-struct DeleteCrashReportRequest {
-    device_path: String,
-}
-
-async fn delete_crash_report(
-    State(state): State<AppState>,
-    Json(request): Json<DeleteCrashReportRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeleteCrashReport {
-        device_path: request.device_path,
-        reply,
-    }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    tokio::time::timeout(CRASH_REPORT_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "crash report delete timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(serde_json::json!({ "deleted": true })))
-}
-
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     crate::websocket_transport::upgrade(
         ws,
@@ -1131,6 +982,10 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http_crash_reports::{
+        CrashReportSummaryQuery, DeleteCrashReportRequest, ExportCrashReportRequest,
+        crash_report_summary, delete_crash_report, export_crash_report,
+    };
     use crate::protocol::{Orientation, norm};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -1208,6 +1063,9 @@ mod tests {
                 apps_http: crate::http_apps::AppHttpState::new(
                     input.clone(),
                     crate::protocol::AppOperationSlot::default(),
+                ),
+                crash_reports_http: crate::http_crash_reports::CrashReportHttpState::new(
+                    input.clone(),
                 ),
                 browser_frames,
                 clipboard: ClipboardSlot::default(),
@@ -1968,7 +1826,10 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            device_crash_reports(State(state.clone())).await,
+            crate::http_crash_reports::device_crash_reports(State(
+                state.crash_reports_http.clone(),
+            ))
+            .await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }
@@ -2141,7 +2002,9 @@ mod tests {
     #[tokio::test]
     async fn crash_report_list_export_and_delete_use_the_device_session() {
         let (state, mut input_rx) = test_state();
-        let list_request = tokio::spawn(device_crash_reports(State(state.clone())));
+        let list_request = tokio::spawn(crate::http_crash_reports::device_crash_reports(State(
+            state.crash_reports_http.clone(),
+        )));
         match input_rx.recv().await.unwrap() {
             InputCmd::ListCrashReports(reply) => {
                 reply
@@ -2163,7 +2026,7 @@ mod tests {
         assert!(!list.truncated);
 
         let export_request = tokio::spawn(export_crash_report(
-            State(state.clone()),
+            State(state.crash_reports_http.clone()),
             Json(ExportCrashReportRequest {
                 device_path: "/Report.ips".into(),
                 destination: PathBuf::from("/tmp/Report.ips"),
@@ -2185,7 +2048,7 @@ mod tests {
         assert_eq!(result, serde_json::json!({ "bytes_written": 42 }));
 
         let delete_request = tokio::spawn(delete_crash_report(
-            State(state),
+            State(state.crash_reports_http),
             Json(DeleteCrashReportRequest {
                 device_path: "/Report.ips".into(),
             }),
@@ -2205,7 +2068,7 @@ mod tests {
     async fn crash_report_summary_is_validated_bounded_and_summary_only() {
         let (state, mut input_rx) = test_state();
         let invalid = crash_report_summary(
-            State(state.clone()),
+            State(state.crash_reports_http.clone()),
             Query(CrashReportSummaryQuery {
                 device_path: "/../private/report.ips".into(),
             }),
@@ -2215,7 +2078,7 @@ mod tests {
         assert!(input_rx.try_recv().is_err());
 
         let request = tokio::spawn(crash_report_summary(
-            State(state),
+            State(state.crash_reports_http),
             Query(CrashReportSummaryQuery {
                 device_path: "/Report.ips".into(),
             }),
