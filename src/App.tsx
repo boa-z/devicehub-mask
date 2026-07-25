@@ -32,7 +32,7 @@ import {
 } from "@ant-design/icons";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button, Dropdown, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceFullscreenToolbar } from "./components/DeviceFullscreenToolbar";
@@ -45,12 +45,13 @@ import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { showErrorMessage } from "./errorMessage";
-import { buildMappingRuntimeFrame, buildTouchFrame, isBoundKey, isUiControl, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
+import { isBoundKey, isUiControl } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
 import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type PairDeviceResult, type Position, type Profile, type ScrcpyMappingType } from "./types";
+import { useDeviceInput, type ControlMode } from "./useDeviceInput";
 import { useDeviceVideoStream } from "./useDeviceVideoStream";
 import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
@@ -86,8 +87,6 @@ function containSize(containerWidth: number, containerHeight: number, contentWid
   const scale = Math.min(containerWidth / contentWidth, containerHeight / contentHeight);
   return { width: contentWidth * scale, height: contentHeight * scale };
 }
-
-type ControlMode = "mapping" | "keyboard";
 
 function createLocalizedDefaultProfile(t: (key: string, options?: Record<string, unknown>) => string): Profile {
   const labels = ["mapping.defaults.move", "mapping.defaults.skill1", "mapping.defaults.skill2", "mapping.defaults.skill3"];
@@ -157,8 +156,6 @@ export default function App() {
   const [audioOutputState, setAudioOutputState] = useState<AudioOutputStatus["state"] | null>(null);
   const [clipboardEvent, setClipboardEvent] = useState<ClipboardEvent | null>(null);
   const [deviceEvent, setDeviceEvent] = useState<DeviceEvent | null>(null);
-  const [activeMappingIds, setActiveMappingIds] = useState<Set<string>>(new Set());
-  const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const [textInputOpen, setTextInputOpen] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [textInputBusy, setTextInputBusy] = useState(false);
@@ -173,16 +170,6 @@ export default function App() {
   const fullscreenToolbarTimerRef = useRef<number | null>(null);
   const selectedDeviceIntentRef = useRef<string | null>(null);
   const profileSwitchingRef = useRef(false);
-  const heldRef = useRef(new Set<string>());
-  const heldSinceRef = useRef(new Map<string, number>());
-  const mappingOffsetsRef = useRef(new Map<string, { x: number; y: number }>());
-  const heldHardwareRef = useRef(new Map<string, HardwareButtonName>());
-  const forwardedKeyboardRef = useRef(new Map<string, number>());
-  const directTouchesRef = useRef(new Map<number, TouchContact>());
-  const directTouchStartedAtRef = useRef(new Map<number, number>());
-  const directTouchReleaseTimersRef = useRef(new Map<number, number>());
-  const activeMappingIdsRef = useRef(new Set<string>());
-  const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
 
   useEffect(() => {
     const intended = selectedDeviceIntentRef.current;
@@ -322,11 +309,6 @@ export default function App() {
   }, [canRedoProfile, canUndoProfile, page, redoProfile, undoProfile]);
   const videoDemand = documentVisible
     && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
-  const handleVideoDisconnect = useCallback(() => {
-    lastSentTouchFrameRef.current = null;
-    activeMappingIdsRef.current = new Set();
-    setActiveMappingIds(new Set());
-  }, []);
   const {
     connected,
     streamMetrics,
@@ -348,7 +330,31 @@ export default function App() {
     onStatus: setStatus,
     onClipboard: setClipboardEvent,
     onDeviceEvent: setDeviceEvent,
-    onDisconnect: handleVideoDisconnect,
+  });
+  const handleControlModeChange = useCallback((mode: ControlMode) => {
+    setControlMode(mode);
+    setEditing(false);
+  }, []);
+  const handleContactLimit = useCallback(() => {
+    void message.warning(translateRef.current("mapping.allContactsUsed"));
+  }, []);
+  const {
+    activeMappingIds,
+    directTouches,
+    releaseAllControls,
+    handlePointerDown,
+    handlePointerMove,
+    handlePointerUp,
+  } = useDeviceInput({
+    connected,
+    command,
+    mappings: controlProfile.mappings,
+    hardwareBindings: controlProfile.hardwareBindings,
+    frameSize,
+    mappingEditing,
+    controlMode,
+    onControlModeChange: handleControlModeChange,
+    onContactLimit: handleContactLimit,
   });
   const activeDeviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
   const useCapturedMappingBackground = useCallback(() => setMappingBackgroundMode("screenshot"), []);
@@ -414,80 +420,6 @@ export default function App() {
   const deviceLogStreamingRequired = Boolean(status.active_udid) && page === "logs";
   useDeviceLogDemand({ backendReady: backend !== null, enabled: deviceLogStreamingRequired, request });
 
-  const sendFrame = useCallback((nextHeld = heldRef.current, released: TouchContact[] = []) => {
-    const mappedFrame = buildMappingRuntimeFrame(
-      controlProfile.mappings,
-      nextHeld,
-      frameSize,
-      performance.now(),
-      heldSinceRef.current,
-      mappingOffsetsRef.current,
-    );
-    const mappedContacts = mappedFrame.contacts;
-    const contacts = mergeTouchContacts(
-      mappedContacts,
-      [...directTouchesRef.current.values()],
-      released,
-    );
-    const nextActiveMappingIds = mappedFrame.activeMappingIds;
-    if (nextActiveMappingIds.size !== activeMappingIdsRef.current.size || [...nextActiveMappingIds].some((mappingId) => !activeMappingIdsRef.current.has(mappingId))) {
-      activeMappingIdsRef.current = nextActiveMappingIds;
-      setActiveMappingIds(nextActiveMappingIds);
-    }
-    if (!connected || touchFramesEqual(lastSentTouchFrameRef.current, contacts)) return;
-    command({ type: "multi_touch", contacts });
-    lastSentTouchFrameRef.current = contacts;
-  }, [command, connected, controlProfile.mappings, frameSize]);
-
-  const releaseAllControls = useCallback(() => {
-    const released = [...directTouchesRef.current.values()].map((contact) => ({ ...contact, touching: false }));
-    for (const timer of directTouchReleaseTimersRef.current.values()) window.clearTimeout(timer);
-    directTouchReleaseTimersRef.current.clear();
-    directTouchStartedAtRef.current.clear();
-    directTouchesRef.current.clear();
-    heldRef.current.clear();
-    heldSinceRef.current.clear();
-    mappingOffsetsRef.current.clear();
-    for (const name of heldHardwareRef.current.values()) {
-      command({ type: "button_up", name });
-    }
-    heldHardwareRef.current.clear();
-    for (const usage of forwardedKeyboardRef.current.values()) {
-      command({ type: "keyboard_up", usage });
-    }
-    forwardedKeyboardRef.current.clear();
-    setDirectTouches([]);
-    sendFrame(heldRef.current, released);
-  }, [command, sendFrame]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => { if (heldRef.current.size) sendFrame(); }, 16);
-    return () => clearInterval(timer);
-  }, [sendFrame]);
-
-  useEffect(() => {
-    const move = (event: PointerEvent) => {
-      if (mappingEditing || controlMode !== "mapping" || (!event.movementX && !event.movementY)) return;
-      let changed = false;
-      for (const mapping of controlProfile.mappings) {
-        if (!(mapping.type === "Observation" || mapping.type === "Fps" || mapping.type === "Fire" || mapping.type === "MouseCastSpell")) continue;
-        const keys = mappingBindings(mapping);
-        if (!keys.length || !keys.every((key) => heldRef.current.has(key))) continue;
-        const current = mappingOffsetsRef.current.get(mapping.id) ?? mapping.position;
-        const sensitivityX = "sensitivity_x" in mapping ? mapping.sensitivity_x : mapping.horizontal_scale_factor;
-        const sensitivityY = "sensitivity_y" in mapping ? mapping.sensitivity_y : mapping.vertical_scale_factor;
-        mappingOffsetsRef.current.set(mapping.id, {
-          x: Math.max(0, Math.min(1, current.x + event.movementX * sensitivityX / frameSize.width)),
-          y: Math.max(0, Math.min(1, current.y + event.movementY * sensitivityY / frameSize.height)),
-        });
-        changed = true;
-      }
-      if (changed) sendFrame();
-    };
-    window.addEventListener("pointermove", move);
-    return () => window.removeEventListener("pointermove", move);
-  }, [controlMode, controlProfile.mappings, frameSize, mappingEditing, sendFrame]);
-
   useEffect(() => {
     Promise.all([appWindow.isAlwaysOnTop(), appWindow.isFullscreen()])
       .then(([top, full]) => { setAlwaysOnTop(top); setSystemFullscreen(full); })
@@ -547,84 +479,6 @@ export default function App() {
     }
     if (deviceEvent?.kind === "lock_state_changed") releaseAllControls();
   }, [deviceEvent, releaseAllControls, request]);
-
-  useEffect(() => {
-    const down = (event: KeyboardEvent) => {
-      if (event.ctrlKey && event.shiftKey && event.code === "KeyK") {
-        event.preventDefault();
-        releaseAllControls();
-        setControlMode((current) => current === "mapping" ? "keyboard" : "mapping");
-        setEditing(false);
-        return;
-      }
-      if (controlMode === "keyboard") {
-        if (event.repeat || isUiControl(event.target)) return;
-        const usage = keyboardUsage(event.code);
-        if (usage === undefined) return;
-        event.preventDefault();
-        forwardedKeyboardRef.current.set(event.code, usage);
-        command({ type: "keyboard_down", usage });
-        return;
-      }
-      if (mappingEditing || event.repeat || isUiControl(event.target)) return;
-      const hardware = hardwareButtons.find((button) => controlProfile.hardwareBindings[button.name] === event.code);
-      if (hardware) {
-        event.preventDefault();
-        heldHardwareRef.current.set(event.code, hardware.name);
-        command({ type: "button_down", name: hardware.name });
-        return;
-      }
-      if (!isBoundKey(controlProfile.mappings, event.code)) return;
-      event.preventDefault();
-      const triggered = controlProfile.mappings.filter((mapping) => mappingBindings(mapping).includes(event.code));
-      if (triggered.some((mapping) => mapping.type === "RawInput")) {
-        releaseAllControls();
-        setControlMode("keyboard");
-        setEditing(false);
-        return;
-      }
-      if (triggered.some((mapping) => mapping.type === "CancelCast")) {
-        for (const mapping of controlProfile.mappings) {
-          if (mapping.type === "MouseCastSpell" || mapping.type === "PadCastSpell") {
-            for (const key of mappingBindings(mapping)) { heldRef.current.delete(key); heldSinceRef.current.delete(key); }
-          }
-        }
-        sendFrame();
-        return;
-      }
-      for (const mapping of triggered) {
-        if (mapping.type === "Observation" || mapping.type === "Fps" || mapping.type === "Fire" || mapping.type === "MouseCastSpell") mappingOffsetsRef.current.set(mapping.id, mapping.position);
-      }
-      heldRef.current.add(event.code);
-      heldSinceRef.current.set(event.code, performance.now());
-      sendFrame();
-    };
-    const up = (event: KeyboardEvent) => {
-      const forwardedUsage = forwardedKeyboardRef.current.get(event.code);
-      if (forwardedUsage !== undefined) {
-        event.preventDefault();
-        forwardedKeyboardRef.current.delete(event.code);
-        command({ type: "keyboard_up", usage: forwardedUsage });
-        return;
-      }
-      const hardware = heldHardwareRef.current.get(event.code);
-      if (hardware) {
-        event.preventDefault();
-        heldHardwareRef.current.delete(event.code);
-        command({ type: "button_up", name: hardware });
-        return;
-      }
-      if (!heldRef.current.delete(event.code)) return;
-      heldSinceRef.current.delete(event.code);
-      for (const mapping of controlProfile.mappings) if (mappingBindings(mapping).includes(event.code)) mappingOffsetsRef.current.delete(mapping.id);
-      event.preventDefault();
-      sendFrame();
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    window.addEventListener("blur", releaseAllControls);
-    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); window.removeEventListener("blur", releaseAllControls); };
-  }, [command, controlMode, controlProfile.hardwareBindings, controlProfile.mappings, mappingEditing, releaseAllControls, sendFrame]);
 
   const readProfile = useCallback(async (name: string) => {
     const response = await request(`/api/profiles/${encodeURIComponent(name)}`);
@@ -990,68 +844,6 @@ export default function App() {
       logFrontend("error", "audio", "enable_failed", error);
     } finally {
       setDeviceAudioBusy(false);
-    }
-  };
-  const pointFromPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
-      y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
-    };
-  };
-  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (mappingEditing || event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
-    const used = new Set([
-      ...buildTouchFrame(controlProfile.mappings, heldRef.current, frameSize).filter((contact) => contact.touching).map((contact) => contact.identity),
-      ...[...directTouchesRef.current.values()].map((contact) => contact.identity),
-    ]);
-    const identity = [0, 1, 2, 3, 4].find((candidate) => !used.has(candidate));
-    if (identity === undefined) {
-      void message.warning(t("mapping.allContactsUsed"));
-      return;
-    }
-    event.preventDefault();
-    event.currentTarget.focus();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const contact = { identity, touching: true, ...pointFromPointer(event) };
-    directTouchesRef.current.set(event.pointerId, contact);
-    directTouchStartedAtRef.current.set(event.pointerId, performance.now());
-    setDirectTouches([...directTouchesRef.current.values()]);
-    sendFrame();
-  };
-  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const contact = directTouchesRef.current.get(event.pointerId);
-    if (!contact) return;
-    event.preventDefault();
-    const moved = { ...contact, ...pointFromPointer(event) };
-    directTouchesRef.current.set(event.pointerId, moved);
-    setDirectTouches([...directTouchesRef.current.values()]);
-    sendFrame();
-  };
-  const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const contact = directTouchesRef.current.get(event.pointerId);
-    if (!contact || directTouchReleaseTimersRef.current.has(event.pointerId)) return;
-    event.preventDefault();
-    const pointerId = event.pointerId;
-    const finalContact = { ...contact, ...pointFromPointer(event) };
-    directTouchesRef.current.set(pointerId, finalContact);
-    const finish = () => {
-      const current = directTouchesRef.current.get(pointerId);
-      if (!current || current.identity !== finalContact.identity) return;
-      directTouchReleaseTimersRef.current.delete(pointerId);
-      directTouchStartedAtRef.current.delete(pointerId);
-      directTouchesRef.current.delete(pointerId);
-      setDirectTouches([...directTouchesRef.current.values()]);
-      sendFrame(heldRef.current, [{ ...finalContact, touching: false }]);
-    };
-    const delay = remainingTapDuration(
-      directTouchStartedAtRef.current.get(pointerId) ?? performance.now(),
-      performance.now(),
-    );
-    if (delay > 0) {
-      directTouchReleaseTimersRef.current.set(pointerId, window.setTimeout(finish, delay));
-    } else {
-      finish();
     }
   };
   const handleDeviceContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {

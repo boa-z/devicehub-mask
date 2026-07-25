@@ -439,7 +439,7 @@ export type DeviceLogsView = {
   source: DeviceLogSource | null;
   service: ServiceHealth | null;
 };
-export type AppOperationKind = "install" | "upgrade" | "uninstall";
+export type AppOperationKind = "uninstall";
 export type AppOperationState = "idle" | "running" | "succeeded" | "failed" | "cancelled";
 export type AppOperation = {
   id: number;
@@ -449,29 +449,6 @@ export type AppOperation = {
   progress: number | null;
   label: string | null;
   error: string | null;
-};
-export type IpaOperation = "install" | "upgrade";
-export type IpaPreflightIssue = "already_installed" | "not_installed" | "minimum_os_unsupported" | "device_family_unsupported" | "required_capabilities_unsupported";
-export type IpaPreflight = {
-  operation: IpaOperation;
-  file_name: string;
-  file_size_bytes: number;
-  bundle_id: string;
-  name: string;
-  version: string | null;
-  bundle_version: string | null;
-  minimum_os_version: string | null;
-  device_families: number[];
-  required_capabilities: string[];
-  prohibited_capabilities: string[];
-  installed_app: { name: string; version: string | null; bundle_version: string | null } | null;
-  compatibility: {
-    minimum_os_supported: boolean | null;
-    device_family_supported: boolean | null;
-    capabilities_supported: boolean | null;
-  };
-  blocking_issues: IpaPreflightIssue[];
-  operation_allowed: boolean;
 };
 export type ProvisioningProfile = {
   name: string;

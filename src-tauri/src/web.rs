@@ -122,9 +122,6 @@ pub fn router(state: AppState, token: String) -> Router {
         .route("/api/device/apps", get(device_apps))
         .route("/api/device/apps/{bundle_id}/icon", get(device_app_icon))
         .route("/api/device/apps/operation", get(app_operation))
-        .route("/api/device/apps/preflight", put(preflight_app))
-        .route("/api/device/apps/install", put(install_app))
-        .route("/api/device/apps/upgrade", put(upgrade_app))
         .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
         .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
         .route(
@@ -1190,95 +1187,6 @@ async fn device_app_icon(
 
 async fn app_operation(State(state): State<AppState>) -> Json<crate::protocol::AppOperationView> {
     Json(state.app_operation.get())
-}
-
-#[derive(Deserialize)]
-struct InstallAppRequest {
-    path: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct PreflightAppRequest {
-    path: PathBuf,
-    operation: crate::ipa::IpaOperation,
-}
-
-async fn preflight_app(
-    State(state): State<AppState>,
-    Json(request): Json<PreflightAppRequest>,
-) -> Result<Json<crate::ipa::IpaPreflight>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::PreflightApp {
-        path: request.path,
-        operation: request.operation,
-        reply,
-    }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let result = tokio::time::timeout(Duration::from_secs(15), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "IPA preflight request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    result.map(Json).map_err(|error| {
-        let status = if error.contains("installation proxy")
-            || error.contains("installed app")
-            || error.contains("device returned")
-        {
-            StatusCode::BAD_GATEWAY
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        (status, error)
-    })
-}
-
-async fn install_app(
-    State(state): State<AppState>,
-    Json(request): Json<InstallAppRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::InstallApp {
-        path: request.path,
-        reply,
-    }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_app_operation_acceptance(response, "app install").await?;
-    Ok(StatusCode::ACCEPTED)
-}
-
-async fn upgrade_app(
-    State(state): State<AppState>,
-    Json(request): Json<InstallAppRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::UpgradeApp {
-        path: request.path,
-        reply,
-    }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_app_operation_acceptance(response, "app upgrade").await?;
-    Ok(StatusCode::ACCEPTED)
 }
 
 async fn uninstall_app(
@@ -2878,37 +2786,6 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            preflight_app(
-                State(state.clone()),
-                Json(PreflightAppRequest {
-                    path: PathBuf::from("Example.ipa"),
-                    operation: crate::ipa::IpaOperation::Install,
-                }),
-            )
-            .await,
-            Err((StatusCode::SERVICE_UNAVAILABLE, _))
-        ));
-        assert!(matches!(
-            install_app(
-                State(state.clone()),
-                Json(InstallAppRequest {
-                    path: PathBuf::from("Example.ipa"),
-                }),
-            )
-            .await,
-            Err((StatusCode::SERVICE_UNAVAILABLE, _))
-        ));
-        assert!(matches!(
-            upgrade_app(
-                State(state.clone()),
-                Json(InstallAppRequest {
-                    path: PathBuf::from("Example.ipa"),
-                }),
-            )
-            .await,
-            Err((StatusCode::SERVICE_UNAVAILABLE, _))
-        ));
-        assert!(matches!(
             uninstall_app(State(state), Path("com.example.app".into())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
@@ -3375,89 +3252,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_install_reports_operation_conflicts() {
-        let (state, mut input_rx) = test_state();
-        let request = install_app(
-            State(state),
-            Json(InstallAppRequest {
-                path: PathBuf::from("Example.ipa"),
-            }),
-        );
-        let respond = async move {
-            let command = input_rx.recv().await.unwrap();
-            let InputCmd::InstallApp { path, reply } = command else {
-                panic!("expected install command");
-            };
-            assert_eq!(path, PathBuf::from("Example.ipa"));
-            let _ = reply.send(Err("another app operation is already running".into()));
-        };
-
-        let (result, ()) = tokio::join!(request, respond);
-        assert!(matches!(result, Err((StatusCode::CONFLICT, _))));
-    }
-
-    #[tokio::test]
-    async fn app_preflight_dispatches_path_and_explicit_operation() {
-        let (state, mut input_rx) = test_state();
-        let request = preflight_app(
-            State(state),
-            Json(PreflightAppRequest {
-                path: PathBuf::from("Example.ipa"),
-                operation: crate::ipa::IpaOperation::Upgrade,
-            }),
-        );
-        let respond = async move {
-            let command = input_rx.recv().await.unwrap();
-            let InputCmd::PreflightApp {
-                path,
-                operation,
-                reply,
-            } = command
-            else {
-                panic!("expected IPA preflight command");
-            };
-            assert_eq!(path, PathBuf::from("Example.ipa"));
-            assert_eq!(operation, crate::ipa::IpaOperation::Upgrade);
-            let _ = reply.send(Err("invalid archive".into()));
-        };
-
-        let (result, ()) = tokio::join!(request, respond);
-        assert!(matches!(result, Err((StatusCode::BAD_REQUEST, _))));
-    }
-
-    #[tokio::test]
-    async fn app_upgrade_dispatches_a_distinct_operation() {
-        let (state, mut input_rx) = test_state();
-        let request = upgrade_app(
-            State(state),
-            Json(InstallAppRequest {
-                path: PathBuf::from("Example.ipa"),
-            }),
-        );
-        let respond = async move {
-            let command = input_rx.recv().await.unwrap();
-            let InputCmd::UpgradeApp { path, reply } = command else {
-                panic!("expected upgrade command");
-            };
-            assert_eq!(path, PathBuf::from("Example.ipa"));
-            let _ = reply.send(Ok(()));
-        };
-
-        let (result, ()) = tokio::join!(request, respond);
-        assert_eq!(result.unwrap(), StatusCode::ACCEPTED);
-    }
-
-    #[tokio::test]
     async fn app_operation_endpoint_returns_shared_state() {
         let (state, _input_rx) = test_state();
         let id = state
             .app_operation
             .start(
-                crate::protocol::AppOperationKind::Install,
-                "Example.ipa".into(),
+                crate::protocol::AppOperationKind::Uninstall,
+                "com.example.app".into(),
             )
             .unwrap();
-        state.app_operation.update(id, "installing", Some(42));
+        state.app_operation.update(id, "uninstalling", Some(42));
 
         let view = app_operation(State(state)).await.0;
         assert_eq!(view.id, id);

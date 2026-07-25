@@ -12,7 +12,7 @@ The project uses neither iPhone Mirroring nor scrcpy's Android transport. Its pr
 - Lossless native screenshots through a bounded CoreDevice, screenshotr, and final DVT Screenshot fallback chain
 - Up to five concurrent Universal HID touch contacts, direct pointer gestures, keyboard passthrough, and configurable hardware-button shortcuts
 - Complete scrcpy-mask `0.0.1` controller profile import/export and a visual mapping editor with live or captured-screen backgrounds
-- Editable device identity, bounded model/architecture/color metadata, activation readiness and bounded battery health/temperature diagnostics, regular/system/App Clip browsing, running-state detection, launch, restart and stop controls, native app icons, device-aware IPA install/upgrade preflight, safe app removal, unified public AFC/App storage/crash-report browsing with privacy-bounded summaries, bounded file and directory management, hardware-button lock, confirmed device restart and shutdown, and provisioning profile inspection, validated installation and confirmed removal, plus cancellable CoreDevice sysdiagnose collection
+- Editable device identity, bounded model/architecture/color metadata, activation readiness and bounded battery health/temperature diagnostics, regular/system/App Clip browsing, running-state detection, launch, restart and stop controls, native app icons, safe app removal, unified public AFC/App storage/crash-report browsing with privacy-bounded summaries, bounded file and directory management, hardware-button lock, confirmed device restart and shutdown, and provisioning profile inspection, validated profile installation and confirmed removal, plus cancellable CoreDevice sysdiagnose collection
 - One-shot Unicode text paste and optional bidirectional text/image clipboard synchronization through the CoreDevice Pasteboard Service
 - On-demand structured iPhone Unified Log console with level/context filtering, supervised SyslogRelay fallback, bounded buffering, copy and recovery status
 - Explicit per-app launch console for developer and third-party apps, with bounded session-only stdout/stderr capture
@@ -20,6 +20,8 @@ The project uses neither iPhone Mirroring nor scrcpy's Android transport. Its pr
 - Read-only, bounded DVT network-interface inventory without IP or MAC addresses for connection diagnostics
 - Built-in Streamable HTTP MCP server for screenshots, low-latency multi-touch, bounded WDA logical device state, verified unlock, foreground-app backgrounding, element inspection/waiting and semantic typing/double-tap/hold/scroll actions, app lifecycle control with bundle-aware state waits, frame synchronization, device switching, DVT virtual location, bounded process inspection and server-side process-state waits, performance inspection, filtered device logs, and crash report diagnosis, with refreshed device details and event-driven app, storage, regional-setting, developer-image, name, activation, and lock waits
 - Native Tauri 2 desktop controls, Simplified Chinese and English UI, and signed nightly updates
+
+DeviceHub Mask deliberately does not install, sideload, sign, or upgrade iOS applications. App installation is outside the project scope and must not be added as part of future feature work. Use a dedicated signing and deployment tool before managing an app here.
 - macOS, Windows, and Linux verification and packaging through GitHub Actions
 
 ## Quick Start

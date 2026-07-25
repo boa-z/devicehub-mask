@@ -40,7 +40,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 - Lists user apps and, on request, Apple default apps through CoreDevice AppService, with Installation Proxy fallback for the user-app catalog.
 - Explicitly launches developer and third-party apps with a bounded, session-only stdout/stderr console through CoreDevice OpenStdioSocket.
 - Shows native icons, versions, signing type, removable state, reported storage, running state, and SpringBoard Dock/page/folder placement when available.
-- Launches, restarts, stops, installs new IPA files, explicitly upgrades installed apps from IPA files, and safely uninstalls eligible user apps. Before upload, IPA preflight displays bounded app metadata and checks the selected operation, minimum OS, device family, and declared required capabilities against the active device. Operations are session-owned and report progress or failure.
+- Launches, restarts, stops, and safely uninstalls eligible user apps. Uninstall authorization is re-checked against current device metadata and the session reports progress or failure.
 - Opens Documents or the full container through House Arrest when iOS permits that scope, with bounded file and directory mutation and transfer.
 - Associates an app with a saved key-mapping profile so launching it from the App list activates that profile.
 - Explicitly starts and stops an installed developer-signed WebDriverAgent `.xctrunner`; DeviceHub Mask does not install or sign WDA.
@@ -72,7 +72,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | App list, process state, stop; launch fallback | CoreDevice AppService |
 | App launch | DVT ProcessControl, with pre-dispatch CoreDevice fallback |
 | Explicit per-app console launch | CoreDevice AppService + OpenStdioSocket |
-| IPA installation and user-app fallback | Installation Proxy |
+| User-app metadata fallback and safe removal | Installation Proxy |
 | App Documents/container | House Arrest and AFC |
 | Public media files | Standard AFC / remote AFC shim |
 | Bounded battery health/temperature and power actions | Diagnostics Relay |
@@ -103,10 +103,11 @@ The Streamable HTTP MCP endpoint exposes the following tools while the desktop a
 - Location and conditions: `set_location`, `clear_location`, `list_device_conditions`, `apply_device_condition`, and `clear_device_condition`.
 - WDA: `wda_runner_status`, `wda_start`, `wda_stop`, `wda_status`, `wda_device_state`, `wda_unlock`, `wda_ui_tree`, `wda_find_elements`, `wda_inspect_element`, `wda_wait_for_element`, `wda_click`, `wda_type_text`, `wda_double_tap`, `wda_touch_and_hold`, `wda_scroll`, and `wda_background_app`.
 
-MCP currently exposes one-way device locking, but not device restart or shutdown. Restart and shutdown are available in the desktop Device Info tab and require an interactive confirmation. MCP also does not expose IPA installation, upgrade, or removal; AMFI signer trust; AFC mutation; backup; sysdiagnose; Unified Log archive export; provisioning-profile mutation; packet capture; or Developer Disk Image mutation.
+MCP currently exposes one-way device locking, but not device restart or shutdown. Restart and shutdown are available in the desktop Device Info tab and require an interactive confirmation. App installation and upgrades do not exist anywhere in DeviceHub Mask; MCP additionally does not expose App removal, AMFI signer trust, AFC mutation, backup, sysdiagnose, Unified Log archive export, provisioning-profile mutation, packet capture, or Developer Disk Image mutation.
 
 ## Intentional Boundaries
 
+- App installation, sideloading, signing, and IPA-based upgrades are explicit non-goals. Future feature work must not add them; prepare and deploy applications with a dedicated tool.
 - No device restore, erase, backup-password management, or background backup.
 - No AFC2/root filesystem access and no traversal of symbolic links.
 - No Apple Watch control or port forwarding.

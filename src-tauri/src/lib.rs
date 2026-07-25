@@ -25,7 +25,6 @@ mod home_screen;
 mod http_performance;
 mod http_profiles;
 mod http_storage;
-mod ipa;
 mod location;
 mod log_archive;
 mod mcp;

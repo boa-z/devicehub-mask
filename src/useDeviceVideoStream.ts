@@ -27,7 +27,7 @@ type Options = {
   onStatus: (status: DeviceStatus) => void;
   onClipboard: (event: ClipboardEvent) => void;
   onDeviceEvent: (event: DeviceEvent) => void;
-  onDisconnect: () => void;
+  onDisconnect?: () => void;
 };
 
 type FrontendMetrics = {
@@ -294,7 +294,7 @@ export function useDeviceVideoStream({
         );
         if (metricsTimer !== undefined) window.clearInterval(metricsTimer);
         browserDecoder.close();
-        callbacksRef.current.onDisconnect();
+        callbacksRef.current.onDisconnect?.();
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
         lastSourceActivityAtRef.current = 0;

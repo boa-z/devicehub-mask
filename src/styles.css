@@ -175,17 +175,11 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-trust-actions > div { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .device-trust-actions > div .ant-typography { margin: 0; font-size: 11px; }
 .device-apps-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
-.device-app-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 32px); gap: 6px; }
+.device-app-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, 32px); gap: 6px; }
 .device-app-toolbar .ant-btn { width: 32px; padding-inline: 0; }
 .device-app-operation { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid #3b4345; background: #202628; }
 .device-app-operation-label { min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 11px; }
 .device-app-operation .ant-progress { grid-column: 1 / -1; margin: 0; line-height: 1; }
-.ipa-preflight { display: grid; gap: 10px; padding-top: 4px; }
-.ipa-preflight-summary { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.ipa-preflight-summary .ant-typography { margin: 0; overflow-wrap: anywhere; }
-.ipa-preflight-details { margin: 0; display: grid; grid-template-columns: minmax(120px, auto) minmax(0, 1fr); gap: 6px 12px; font-size: 12px; }
-.ipa-preflight-details dt { color: #899493; }
-.ipa-preflight-details dd { min-width: 0; margin: 0; color: #d8dedc; overflow-wrap: anywhere; }
 .device-app-count { color: #7f8a89; font-size: 11px; font-variant-numeric: tabular-nums; }
 .device-app-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
 .device-app-row { min-height: 72px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; content-visibility: auto; contain-intrinsic-size: auto 90px; }

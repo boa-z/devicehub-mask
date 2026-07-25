@@ -4,12 +4,10 @@ import {
   DatabaseOutlined,
   FilterOutlined,
   InfoCircleOutlined,
-  ReloadOutlined,
   SearchOutlined,
   SortAscendingOutlined,
   SortDescendingOutlined,
   ThunderboltOutlined,
-  UploadOutlined,
 } from "@ant-design/icons";
 import { Alert, Button, Dropdown, Empty, Input, Progress, Spin, Tooltip, Typography } from "antd";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +19,7 @@ import {
   sortDeviceApps,
 } from "../../../deviceInspector";
 import type { DeviceAppSort } from "../../../deviceInspector";
-import type { AppOperation, DeviceApp, HomeScreenLayout, IpaOperation, WdaRunnerStatus } from "../../../types";
+import type { AppOperation, DeviceApp, HomeScreenLayout, WdaRunnerStatus } from "../../../types";
 import { DeviceAppRow } from "./DeviceAppRow";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
@@ -36,7 +34,6 @@ type Props = {
   loading: boolean;
   appScopesLoading: boolean;
   appOperation: AppOperation | null;
-  ipaPreflightBusy: boolean;
   homeScreenLayout: HomeScreenLayout | null;
   homeScreenLoading: boolean;
   homeScreenError: string | null;
@@ -52,7 +49,6 @@ type Props = {
   onQueryChange: (query: string) => void;
   onSortChange: (sort: DeviceAppSort) => void;
   onToggleScope: (scope: "system" | "clips") => void;
-  onInstall: (operation: IpaOperation) => void;
   onChangeProfileBinding: (bundleId: string, bind: boolean) => void;
   onCopyBundleId: (bundleId: string) => void;
   onOpenDocuments: (app: DeviceApp) => void;
@@ -74,7 +70,6 @@ export const AppsPane = memo(function AppsPane({
   loading,
   appScopesLoading,
   appOperation,
-  ipaPreflightBusy,
   homeScreenLayout,
   homeScreenLoading,
   homeScreenError,
@@ -90,7 +85,6 @@ export const AppsPane = memo(function AppsPane({
   onQueryChange,
   onSortChange,
   onToggleScope,
-  onInstall,
   onChangeProfileBinding,
   onCopyBundleId,
   onOpenDocuments,
@@ -215,20 +209,6 @@ export const AppsPane = memo(function AppsPane({
               loading={appScopesLoading}
               disabled={loading || appScopesLoading}
             />
-          </Tooltip>
-        </Dropdown>
-        <Dropdown
-          trigger={["click"]}
-          menu={{
-            items: [
-              { key: "install", icon: <UploadOutlined />, label: t("deviceInspector.installApp") },
-              { key: "upgrade", icon: <ReloadOutlined />, label: t("deviceInspector.upgradeApp") },
-            ],
-            onClick: ({ key }) => onInstall(key as IpaOperation),
-          }}
-        >
-          <Tooltip title={t("deviceInspector.installOrUpgradeApp")}>
-            <Button aria-label={t("deviceInspector.installOrUpgradeApp")} icon={<UploadOutlined />} loading={ipaPreflightBusy} disabled={appMutationRunning} />
           </Tooltip>
         </Dropdown>
       </div>

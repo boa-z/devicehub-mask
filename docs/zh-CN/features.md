@@ -40,7 +40,7 @@
 - 通过 CoreDevice AppService 列出用户 App，并可按需列出 Apple 默认 App；用户 App 目录可 回退 Installation Proxy。
 - 可通过 CoreDevice OpenStdioSocket 显式启动开发者 App 或第三方 App，并在当前会话内有界采集 stdout/stderr。
 - 在设备允许时显示原生图标、版本、签名类型、可移除状态、上报存储、运行状态，以及 SpringBoard Dock/页面/文件夹位置。
-- 支持启动、重新启动、停止、安装新 IPA、通过 IPA 显式升级已安装 App，以及安全卸载符合条件的用户 App。上传前会显示经过限制的 IPA 元数据，并针对活动设备核对操作类型、最低系统版本、设备族和声明的所需能力；操作由当前会话持有，并报告进度或失败。
+- 支持启动、重新启动、停止，以及安全卸载符合条件的用户 App。卸载前会根据设备当前元数据重新鉴权，操作由当前会话持有，并报告进度或失败。
 - iOS 允许时通过 House Arrest 打开 Documents 或完整 Container，执行有界的文件与目录 传输和修改。
 - 可将 App 关联到已保存的按键映射配置；从 App 列表启动时会激活对应配置。
 - 可显式启动和停止已安装、开发者签名的 WebDriverAgent `.xctrunner`；应用不会安装或签名 WDA。
@@ -72,7 +72,7 @@
 | App 列表、进程状态、停止与启动后备 | CoreDevice AppService |
 | App 启动 | DVT ProcessControl，并提供仅限发送前的 CoreDevice 回退 |
 | 显式带控制台启动 App | CoreDevice AppService + OpenStdioSocket |
-| IPA 安装与用户 App 回退 | Installation Proxy |
+| 用户 App 元数据回退与安全卸载 | Installation Proxy |
 | App Documents/Container | House Arrest 和 AFC |
 | 公共媒体文件 | 标准 AFC / remote AFC shim |
 | 有界的电池健康/温度与设备电源操作 | Diagnostics Relay |
@@ -103,10 +103,11 @@
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。
 - WDA：`wda_runner_status`、`wda_start`、`wda_stop`、`wda_status`、 `wda_device_state`、`wda_unlock`、`wda_ui_tree`、`wda_find_elements`、 `wda_inspect_element`、`wda_wait_for_element`、`wda_click`、 `wda_type_text`、`wda_double_tap`、`wda_touch_and_hold`、`wda_scroll` 和 `wda_background_app`。
 
-MCP 当前开放单向锁屏，但不开放设备重启或关机。重启与关机已经在桌面“设备信息”页实现，并要求交互式确认。MCP 也不开放 IPA 安装、升级或卸载、AMFI 签名者信任、AFC 修改、备份、sysdiagnose、统一日志归档导出、描述文件修改、抓包或开发者磁盘镜像修改。
+MCP 当前开放单向锁屏，但不开放设备重启或关机。重启与关机已经在桌面“设备信息”页实现，并要求交互式确认。App 安装和升级在 DeviceHub Mask 的任何界面都不存在；MCP 另外不开放 App 卸载、AMFI 签名者信任、AFC 修改、备份、sysdiagnose、统一日志归档导出、描述文件修改、抓包或开发者磁盘镜像修改。
 
 ## 有意保留的边界
 
+- App 安装、sideloading、签名和基于 IPA 的升级是明确的非目标。后续功能完善不得加入这些能力；请使用专门工具准备和部署 App。
 - 不提供设备恢复、抹除、备份密码管理或后台自动备份。
 - 不提供 AFC2/root 文件系统访问，不跟随符号链接。
 - 不提供 Apple Watch 控制或端口转发。

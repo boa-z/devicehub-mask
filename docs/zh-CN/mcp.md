@@ -95,7 +95,7 @@ DeviceHub Mask 提供三种不同的坐标概念，它们不能互换。
 
 `list_processes` 返回有界的 DVT 进程清单，包括 PID、净化后的进程/App 名称和 Apple 的应用分类。使用 `process_status` 或 `wait_for_process` 前应获取最新清单，因为操作系统可能复用 PID。进程等待与 App 等待一样，默认五秒、最长十秒，超时为零时只检查一次。MCP 不能终止任意 PID，也不能检查进程内存。
 
-单 App stdout/stderr 捕获仍只面向桌面端，因为控制台输出可能包含凭据和个人数据。MCP 也不负责 IPA 安装、升级或卸载。
+单 App stdout/stderr 捕获仍只面向桌面端，因为控制台输出可能包含凭据和个人数据。App 安装、sideloading、签名和升级是项目的长期非目标，不得加入 MCP 或 DeviceHub Mask 的其他界面。MCP 也不开放 App 卸载。
 
 ## 事件驱动等待
 
@@ -164,7 +164,7 @@ WDA 是需要单独准备的可选能力，DeviceHub Mask 不负责安装或签�
 
 ## 有意保留的边界
 
-MCP 不开放设备重启、关机、恢复或抹除，IPA 安装、升级或卸载，AMFI 签名者信任，AFC 或 App 容器修改，备份或备份密码管理，sysdiagnose 采集，统一日志归档导出，描述文件修改，抓包，开发者磁盘镜像挂载/卸载，Apple Watch 控制，以及 WDA 自动安装与签名。
+MCP 不开放设备重启、关机、恢复或抹除，App 卸载，AMFI 签名者信任，AFC 或 App 容器修改，备份或备份密码管理，sysdiagnose 采集，统一日志归档导出，描述文件修改，抓包，开发者磁盘镜像挂载/卸载，Apple Watch 控制，以及 WDA 自动安装与签名。App 安装、sideloading、签名和升级依据长期产品策略在整个 DeviceHub Mask 中均不可用，而不只是未向 MCP 开放。
 
 重启和关机只能通过桌面“设备信息”中要求确认的操作执行。文件修改、签名信任、镜像管理、抓包和破坏性操作保持交互式，避免 Agent 静默扩大操作权限。
 

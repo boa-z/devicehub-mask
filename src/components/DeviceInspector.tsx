@@ -30,8 +30,9 @@ import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
 import { canTrustProvisioningProfileSigner, filterCrashReports, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isSysdiagnoseActive, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
+import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 import { useActivePolling } from "../hooks/useActivePolling";
+import { useLatestRequestOwner } from "../hooks/latestRequest";
 import { AppsPane } from "../features/device-inspector/apps/AppsPane";
 import { useDeviceAppCatalog } from "../features/device-inspector/apps/useDeviceAppCatalog";
 
@@ -95,7 +96,6 @@ export function DeviceInspector({
   const [summaryReport, setSummaryReport] = useState<DeviceCrashReport | null>(null);
   const [bindingApp, setBindingApp] = useState<string | null>(null);
   const [appOperation, setAppOperation] = useState<AppOperation | null>(null);
-  const [ipaPreflightBusy, setIpaPreflightBusy] = useState(false);
   const [devicePowerAction, setDevicePowerAction] = useState<"restart" | "shutdown" | null>(null);
   const [forgettingTrust, setForgettingTrust] = useState(false);
   const [backupStatus, setBackupStatus] = useState<DeviceBackupStatus | null>(null);
@@ -125,102 +125,115 @@ export function DeviceInspector({
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
   const handledDeveloperImageState = useRef<string>("");
-  const homeScreenRequest = useRef(0);
-  const inspectorLoadRequest = useRef(0);
+  const homeScreenRequest = useLatestRequestOwner();
+  const inspectorLoadRequest = useLatestRequestOwner();
   const homeScreenLoaded = useRef(false);
-  const backupStatusRequest = useRef(0);
-  const sysdiagnoseStatusRequest = useRef(0);
-  const developerImageStatusRequest = useRef(0);
-  const appOperationRequest = useRef(0);
-  const wallpaperRequest = useRef(0);
+  const backupStatusRequest = useLatestRequestOwner();
+  const sysdiagnoseStatusRequest = useLatestRequestOwner();
+  const developerImageStatusRequest = useLatestRequestOwner();
+  const appOperationRequest = useLatestRequestOwner();
+  const wallpaperRequest = useLatestRequestOwner();
+  const wdaRunnerStatusRequest = useLatestRequestOwner();
 
   const loadHomeScreen = useCallback(async () => {
-    const requestId = ++homeScreenRequest.current;
+    const ticket = homeScreenRequest.begin();
     setHomeScreenLoading(true);
     setHomeScreenError(null);
     try {
-      const layout = await readJson<HomeScreenLayout>(await request("/api/device/home-screen"));
-      if (homeScreenRequest.current === requestId) {
+      const layout = await readJson<HomeScreenLayout>(await request("/api/device/home-screen", {
+        signal: ticket.signal,
+      }));
+      if (ticket.isCurrent()) {
         homeScreenLoaded.current = true;
         setHomeScreenLayout(layout);
       }
     } catch (layoutError) {
-      if (homeScreenRequest.current === requestId) {
+      if (ticket.isCurrent()) {
         setHomeScreenLayout(null);
         setHomeScreenError(String(layoutError));
       }
     } finally {
-      if (homeScreenRequest.current === requestId) setHomeScreenLoading(false);
+      if (ticket.isCurrent()) setHomeScreenLoading(false);
     }
-  }, [request]);
+  }, [homeScreenRequest, request]);
 
   const loadWallpaper = useCallback(async (kind: WallpaperKind) => {
-    const requestId = ++wallpaperRequest.current;
+    const ticket = wallpaperRequest.begin();
     setWallpaperLoading(kind);
     try {
-      const response = await request(`/api/device/wallpaper/${kind}`);
+      const response = await request(`/api/device/wallpaper/${kind}`, { signal: ticket.signal });
       if (!response.ok) {
         throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
       }
       const source = URL.createObjectURL(await response.blob());
-      if (wallpaperRequest.current !== requestId) {
+      if (!ticket.isCurrent()) {
         URL.revokeObjectURL(source);
         return;
       }
       setWallpaperPreview({ kind, source });
     } catch (wallpaperError) {
-      if (wallpaperRequest.current === requestId) {
+      if (ticket.isCurrent()) {
         void showErrorMessage(t("deviceInspector.wallpaperLoadFailed", { error: String(wallpaperError) }));
       }
     } finally {
-      if (wallpaperRequest.current === requestId) setWallpaperLoading(null);
+      if (ticket.isCurrent()) setWallpaperLoading(null);
     }
-  }, [request, t]);
+  }, [request, t, wallpaperRequest]);
 
   const loadWdaRunnerStatus = useCallback(async () => {
+    const ticket = wdaRunnerStatusRequest.begin();
     try {
-      setWdaRunnerStatus(await readJson<WdaRunnerStatus>(await request("/api/device/wda-runner")));
+      const status = await readJson<WdaRunnerStatus>(await request("/api/device/wda-runner", {
+        signal: ticket.signal,
+      }));
+      if (ticket.isCurrent()) setWdaRunnerStatus(status);
     } catch {
-      setWdaRunnerStatus(null);
+      if (ticket.isCurrent()) setWdaRunnerStatus(null);
     }
-  }, [request]);
+  }, [request, wdaRunnerStatusRequest]);
 
   const loadBackupStatus = useCallback(async () => {
-    const requestId = ++backupStatusRequest.current;
-    const status = await readJson<DeviceBackupStatus>(await request("/api/device/backup"));
-    if (backupStatusRequest.current === requestId) setBackupStatus(status);
+    const ticket = backupStatusRequest.begin();
+    const status = await readJson<DeviceBackupStatus>(await request("/api/device/backup", {
+      signal: ticket.signal,
+    }));
+    if (ticket.isCurrent()) setBackupStatus(status);
     return status;
-  }, [request]);
+  }, [backupStatusRequest, request]);
 
   const loadSysdiagnoseStatus = useCallback(async () => {
-    const requestId = ++sysdiagnoseStatusRequest.current;
-    const status = await readJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose"));
-    if (sysdiagnoseStatusRequest.current === requestId) setSysdiagnoseStatus(status);
+    const ticket = sysdiagnoseStatusRequest.begin();
+    const status = await readJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose", {
+      signal: ticket.signal,
+    }));
+    if (ticket.isCurrent()) setSysdiagnoseStatus(status);
     return status;
-  }, [request]);
+  }, [request, sysdiagnoseStatusRequest]);
 
   const loadDeveloperImageStatus = useCallback(async () => {
-    const requestId = ++developerImageStatusRequest.current;
-    const status = await readJson<DeveloperImageMountStatus>(await request("/api/device/developer-image"));
-    if (developerImageStatusRequest.current === requestId) setDeveloperImageStatus(status);
+    const ticket = developerImageStatusRequest.begin();
+    const status = await readJson<DeveloperImageMountStatus>(await request("/api/device/developer-image", {
+      signal: ticket.signal,
+    }));
+    if (ticket.isCurrent()) setDeveloperImageStatus(status);
     return status;
-  }, [request]);
+  }, [developerImageStatusRequest, request]);
 
   const readAppOperation = useCallback(
-    async () => readJson<AppOperation>(await request("/api/device/apps/operation")),
+    async (signal?: AbortSignal) => readJson<AppOperation>(await request("/api/device/apps/operation", { signal })),
     [request],
   );
 
   const refreshAppOperation = useCallback(async () => {
-    const requestId = ++appOperationRequest.current;
-    const operation = await readAppOperation();
-    if (appOperationRequest.current === requestId) setAppOperation(operation);
+    const ticket = appOperationRequest.begin();
+    const operation = await readAppOperation(ticket.signal);
+    if (ticket.isCurrent()) setAppOperation(operation);
     return operation;
-  }, [readAppOperation]);
+  }, [appOperationRequest, readAppOperation]);
 
   const load = useCallback(async (force = false) => {
     if (!activeUdid) return;
-    const requestId = ++inspectorLoadRequest.current;
+    const ticket = inspectorLoadRequest.begin();
     setLoading(true);
     setError(null);
     try {
@@ -230,18 +243,24 @@ export function DeviceInspector({
           loadSysdiagnoseStatus(),
           loadDeveloperImageStatus(),
         ]);
-        const nextDetails = await readJson<DeviceDetails>(await request("/api/device/details"));
+        const nextDetails = await readJson<DeviceDetails>(await request("/api/device/details", {
+          signal: ticket.signal,
+        }));
+        if (!ticket.isCurrent()) return;
         setDetails(nextDetails);
         setCompanions([]);
         setCompanionError(null);
         if (nextDetails.product_type.startsWith("iPhone")) {
           setCompanionLoading(true);
           try {
-            setCompanions(await readJson<CompanionDevice[]>(await request("/api/device/companions")));
+            const nextCompanions = await readJson<CompanionDevice[]>(await request("/api/device/companions", {
+              signal: ticket.signal,
+            }));
+            if (ticket.isCurrent()) setCompanions(nextCompanions);
           } catch (companionLoadError) {
-            setCompanionError(String(companionLoadError));
+            if (ticket.isCurrent()) setCompanionError(String(companionLoadError));
           } finally {
-            setCompanionLoading(false);
+            if (ticket.isCurrent()) setCompanionLoading(false);
           }
         }
       } else if (tab === "apps") {
@@ -252,28 +271,36 @@ export function DeviceInspector({
           void refreshAppOperation();
         }
       } else if (tab === "profiles") {
-        setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
+        const nextProfiles = await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles", {
+          signal: ticket.signal,
+        }));
+        if (ticket.isCurrent()) setProfiles(nextProfiles);
       } else if (tab === "crashes") {
-        const result = await readJson<DeviceCrashReportList>(await request("/api/device/crash-reports"));
-        setCrashReports(result.reports);
-        setCrashReportsTruncated(result.truncated);
+        const result = await readJson<DeviceCrashReportList>(await request("/api/device/crash-reports", {
+          signal: ticket.signal,
+        }));
+        if (ticket.isCurrent()) {
+          setCrashReports(result.reports);
+          setCrashReportsTruncated(result.truncated);
+        }
       }
     } catch (loadError) {
-      if (inspectorLoadRequest.current === requestId) setError(String(loadError));
+      if (ticket.isCurrent()) setError(String(loadError));
     } finally {
-      if (inspectorLoadRequest.current === requestId) setLoading(false);
+      if (ticket.isCurrent()) setLoading(false);
     }
-  }, [activeUdid, loadApps, loadBackupStatus, loadDeveloperImageStatus, loadHomeScreen, loadSysdiagnoseStatus, loadWdaRunnerStatus, refreshAppOperation, request, tab]);
+  }, [activeUdid, inspectorLoadRequest, loadApps, loadBackupStatus, loadDeveloperImageStatus, loadHomeScreen, loadSysdiagnoseStatus, loadWdaRunnerStatus, refreshAppOperation, request, tab]);
 
   useEffect(() => {
-    inspectorLoadRequest.current += 1;
-    homeScreenRequest.current += 1;
+    inspectorLoadRequest.cancel();
+    homeScreenRequest.cancel();
     homeScreenLoaded.current = false;
-    backupStatusRequest.current += 1;
-    sysdiagnoseStatusRequest.current += 1;
-    developerImageStatusRequest.current += 1;
-    appOperationRequest.current += 1;
-    wallpaperRequest.current += 1;
+    backupStatusRequest.cancel();
+    sysdiagnoseStatusRequest.cancel();
+    developerImageStatusRequest.cancel();
+    appOperationRequest.cancel();
+    wallpaperRequest.cancel();
+    wdaRunnerStatusRequest.cancel();
     setDetails(null);
     setCompanions([]);
     setCompanionError(null);
@@ -290,7 +317,6 @@ export function DeviceInspector({
     setDeletingReport(null);
     setSummaryReport(null);
     setAppOperation(null);
-    setIpaPreflightBusy(false);
     setProfileMutation(null);
     setDocumentsApp(null);
     setConsoleApp(null);
@@ -308,7 +334,7 @@ export function DeviceInspector({
     setSysdiagnoseStatus(null);
     setSysdiagnoseAction(null);
     setError(null);
-  }, [activeUdid]);
+  }, [activeUdid, appOperationRequest, backupStatusRequest, developerImageStatusRequest, homeScreenRequest, inspectorLoadRequest, sysdiagnoseStatusRequest, wallpaperRequest, wdaRunnerStatusRequest]);
 
   useEffect(() => {
     const source = wallpaperPreview?.source;
@@ -362,7 +388,7 @@ export function DeviceInspector({
     if (handledOperation.current === appOperation.id) return;
     handledOperation.current = appOperation.id;
     if (appOperation.state === "succeeded") {
-      void message.success(t(`deviceInspector.appOperationResult.${appOperation.kind ?? "install"}`));
+      void message.success(t("deviceInspector.appOperationResult.uninstall"));
       if (tab === "apps") void load(true);
     } else if (appOperation.state === "failed") {
       void showErrorMessage(t("deviceInspector.appOperationFailed", { error: appOperation.error ?? "" }));
@@ -562,83 +588,6 @@ export function DeviceInspector({
       setBindingApp(null);
     }
   }, [activeProfile, onAppProfileBindingChange, t]);
-
-  const installApp = useCallback(async (operation: IpaOperation) => {
-    if (ipaPreflightBusy || appOperation?.state === "running") return;
-    try {
-      const selected = await open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: t("deviceInspector.ipaFile"), extensions: ["ipa"] }],
-      });
-      if (!selected || Array.isArray(selected)) return;
-      setIpaPreflightBusy(true);
-      const preflight = await readJson<IpaPreflight>(await request("/api/device/apps/preflight", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: selected, operation }),
-      }));
-      setIpaPreflightBusy(false);
-      const version = [preflight.version, preflight.bundle_version].filter(Boolean).join(" (") + (preflight.version && preflight.bundle_version ? ")" : "");
-      const installedVersion = preflight.installed_app
-        ? [preflight.installed_app.version, preflight.installed_app.bundle_version].filter(Boolean).join(" (") + (preflight.installed_app.version && preflight.installed_app.bundle_version ? ")" : "")
-        : t("deviceInspector.notInstalled");
-      const deviceFamilies = preflight.device_families.length === 0
-        ? t("deviceInspector.notDeclared")
-        : preflight.device_families.map((family) => t(`deviceInspector.ipaDeviceFamilies.${family}`, { defaultValue: `#${family}` })).join(", ");
-      const capabilities = preflight.required_capabilities.length === 0
-        ? t("deviceInspector.noneRequired")
-        : preflight.required_capabilities.join(", ");
-      const hasUnknownCompatibility = Object.values(preflight.compatibility).some((value) => value === null)
-        || preflight.prohibited_capabilities.length > 0;
-      Modal.confirm({
-        title: t(operation === "upgrade" ? "deviceInspector.confirmAppUpgrade" : "deviceInspector.confirmAppInstall"),
-        width: 560,
-        content: (
-          <div className="ipa-preflight">
-            <div className="ipa-preflight-summary">
-              <Typography.Text strong>{preflight.name}</Typography.Text>
-              <Typography.Text type="secondary" copyable={{ text: preflight.bundle_id }}>{preflight.bundle_id}</Typography.Text>
-            </div>
-            <dl className="ipa-preflight-details">
-              <dt>{t("deviceInspector.ipaVersion")}</dt><dd>{version || "-"}</dd>
-              <dt>{t("deviceInspector.installedVersion")}</dt><dd>{installedVersion || "-"}</dd>
-              <dt>{t("deviceInspector.ipaSize")}</dt><dd>{formatFileSize(preflight.file_size_bytes)}</dd>
-              <dt>{t("deviceInspector.minimumOs")}</dt><dd>{preflight.minimum_os_version ?? t("deviceInspector.notDeclared")}</dd>
-              <dt>{t("deviceInspector.deviceFamilies")}</dt><dd>{deviceFamilies}</dd>
-              <dt>{t("deviceInspector.requiredCapabilities")}</dt><dd>{capabilities}</dd>
-            </dl>
-            {preflight.blocking_issues.map((issue) => (
-              <Alert key={issue} type="error" showIcon message={t(`deviceInspector.ipaPreflightIssues.${issue}`)} />
-            ))}
-            {preflight.operation_allowed && hasUnknownCompatibility && (
-              <Alert type="warning" showIcon message={t("deviceInspector.ipaCompatibilityIncomplete")} />
-            )}
-          </div>
-        ),
-        okText: t(operation === "upgrade" ? "deviceInspector.upgrade" : "deviceInspector.install"),
-        cancelText: t("common.cancel"),
-        okButtonProps: { disabled: !preflight.operation_allowed },
-        async onOk() {
-          const response = await request(`/api/device/apps/${operation}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path: selected }),
-          });
-          if (!response.ok) {
-            const failure = new Error((await response.text()) || response.statusText);
-            void showErrorMessage(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(failure) }));
-            throw failure;
-          }
-          await refreshAppOperation();
-        },
-      });
-    } catch (installError) {
-      void showErrorMessage(t(operation === "upgrade" ? "deviceInspector.appUpgradeFailed" : "deviceInspector.appInstallFailed", { error: String(installError) }));
-    } finally {
-      setIpaPreflightBusy(false);
-    }
-  }, [appOperation?.state, ipaPreflightBusy, refreshAppOperation, request, t]);
 
   const uninstallApp = useCallback((app: DeviceApp) => {
     Modal.confirm({
@@ -1471,7 +1420,6 @@ export function DeviceInspector({
           loading={loading}
           appScopesLoading={appScopesLoading}
           appOperation={appOperation}
-          ipaPreflightBusy={ipaPreflightBusy}
           homeScreenLayout={homeScreenLayout}
           homeScreenLoading={homeScreenLoading}
           homeScreenError={homeScreenError}
@@ -1487,7 +1435,6 @@ export function DeviceInspector({
           onQueryChange={setQuery}
           onSortChange={setAppSort}
           onToggleScope={toggleAppScope}
-          onInstall={installApp}
           onChangeProfileBinding={changeAppProfileBinding}
           onCopyBundleId={copyBundleId}
           onOpenDocuments={openAppDocuments}

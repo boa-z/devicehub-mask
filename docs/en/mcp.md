@@ -95,7 +95,7 @@ Use `launch_app` and `stop_app` for lifecycle changes. Both wait for visual stab
 
 `list_processes` returns a bounded DVT inventory with PID, sanitized process/app names, and Apple's application classification. Use a fresh result before `process_status` or `wait_for_process`: operating systems can reuse PIDs. Process waits use the same five-second default, ten-second maximum, and zero-time single-check behavior as app waits. MCP cannot terminate an arbitrary PID or inspect process memory.
 
-Per-app stdout/stderr capture remains desktop-only because console output can contain credentials and personal data. MCP also does not install, upgrade, or uninstall IPA files.
+Per-app stdout/stderr capture remains desktop-only because console output can contain credentials and personal data. App installation, sideloading, signing, and upgrades are permanent project non-goals and must not be added to MCP or any other DeviceHub Mask interface. MCP also does not expose App removal.
 
 ## Event-Driven Waiting
 
@@ -164,7 +164,7 @@ Supported selector strategies are `accessibility id`, `name`, `class name`, `xpa
 
 ## Intentional Boundaries
 
-MCP does not expose device restart, shutdown, restore, or erase; IPA install, upgrade, or removal; AMFI signer trust; AFC or App-container mutation; backup or backup-password management; sysdiagnose collection; Unified Log archive export; provisioning-profile mutation; packet capture; Developer Disk Image mount/unmount; Apple Watch control; or automatic WDA installation and signing.
+MCP does not expose device restart, shutdown, restore, or erase; App removal; AMFI signer trust; AFC or App-container mutation; backup or backup-password management; sysdiagnose collection; Unified Log archive export; provisioning-profile mutation; packet capture; Developer Disk Image mount/unmount; Apple Watch control; or automatic WDA installation and signing. App installation, sideloading, signing, and upgrades are unavailable throughout DeviceHub Mask by permanent product policy, rather than merely omitted from MCP.
 
 Restart and shutdown are available only through the confirmed desktop Device Info actions. File mutation, signing trust, image management, captures, and destructive operations remain interactive so an agent cannot silently broaden its authority.
 

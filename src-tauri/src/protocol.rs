@@ -332,22 +332,6 @@ pub enum InputCmd {
         device_path: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// Parse and validate a local IPA against the active device without uploading it.
-    PreflightApp {
-        path: PathBuf,
-        operation: crate::ipa::IpaOperation,
-        reply: oneshot::Sender<Result<crate::ipa::IpaPreflight, String>>,
-    },
-    /// Validate and install a local IPA without blocking the HID dispatch loop.
-    InstallApp {
-        path: PathBuf,
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-    /// Validate and upgrade an installed app from a local IPA without blocking HID dispatch.
-    UpgradeApp {
-        path: PathBuf,
-        reply: oneshot::Sender<Result<(), String>>,
-    },
     /// Uninstall a removable user application without blocking HID dispatch.
     UninstallApp {
         bundle_id: String,
@@ -718,8 +702,6 @@ pub struct ProvisioningProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppOperationKind {
-    Install,
-    Upgrade,
     Uninstall,
 }
 
@@ -987,13 +969,13 @@ mod tests {
     fn app_operation_tracks_progress_and_success() {
         let slot = AppOperationSlot::default();
         let id = slot
-            .start(AppOperationKind::Install, "Example.ipa".into())
+            .start(AppOperationKind::Uninstall, "com.example.app".into())
             .unwrap();
 
-        slot.update(id, "installing", Some(101));
+        slot.update(id, "uninstalling", Some(101));
         let running = slot.get();
         assert_eq!(running.state, AppOperationState::Running);
-        assert_eq!(running.stage.as_deref(), Some("installing"));
+        assert_eq!(running.stage.as_deref(), Some("uninstalling"));
         assert_eq!(running.progress, Some(100));
 
         slot.succeed(id);
@@ -1004,24 +986,10 @@ mod tests {
     }
 
     #[test]
-    fn app_upgrade_has_a_distinct_public_operation_kind() {
-        let slot = AppOperationSlot::default();
-        let id = slot
-            .start(AppOperationKind::Upgrade, "Example.ipa".into())
-            .unwrap();
-        slot.update(id, "upgrading", Some(40));
-
-        let view = slot.get();
-        assert_eq!(view.kind, Some(AppOperationKind::Upgrade));
-        assert_eq!(view.stage.as_deref(), Some("upgrading"));
-        assert_eq!(serde_json::to_value(view.kind).unwrap(), "upgrade");
-    }
-
-    #[test]
     fn app_operation_rejects_concurrency_and_ignores_stale_updates() {
         let slot = AppOperationSlot::default();
         let first = slot
-            .start(AppOperationKind::Install, "first.ipa".into())
+            .start(AppOperationKind::Uninstall, "com.example.first".into())
             .unwrap();
         assert!(
             slot.start(AppOperationKind::Uninstall, "com.example.app".into())
@@ -1032,7 +1000,7 @@ mod tests {
         let second = slot
             .start(AppOperationKind::Uninstall, "com.example.app".into())
             .unwrap();
-        slot.update(first, "installing", Some(50));
+        slot.update(first, "uninstalling", Some(50));
         slot.succeed(first);
         let view = slot.get();
         assert_eq!(view.id, second);
@@ -1044,7 +1012,7 @@ mod tests {
     fn app_operation_can_be_cancelled() {
         let slot = AppOperationSlot::default();
         let id = slot
-            .start(AppOperationKind::Install, "Example.ipa".into())
+            .start(AppOperationKind::Uninstall, "com.example.app".into())
             .unwrap();
         slot.cancel(id);
 
