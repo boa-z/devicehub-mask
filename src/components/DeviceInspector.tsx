@@ -2,7 +2,6 @@ import {
   AppstoreOutlined,
   BugOutlined,
   CheckOutlined,
-  CodeOutlined,
   CopyOutlined,
   DatabaseOutlined,
   DeleteOutlined,
@@ -11,13 +10,10 @@ import {
   EditOutlined,
   FileTextOutlined,
   FilterOutlined,
-  FolderOpenOutlined,
   InfoCircleOutlined,
-  LinkOutlined,
   LockOutlined,
   MobileOutlined,
   PictureOutlined,
-  PlayCircleOutlined,
   PoweroffOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
@@ -37,10 +33,11 @@ import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
-import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isEligibleWdaRunner, isSysdiagnoseActive, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import { APP_RENDER_BATCH_SIZE, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isSysdiagnoseActive, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 import { useActivePolling } from "../hooks/useActivePolling";
+import { DeviceAppRow } from "../features/device-inspector/apps/DeviceAppRow";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type WallpaperKind = "home" | "lock";
@@ -64,69 +61,6 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<T>;
-}
-
-function DeviceAppIcon({ app, request }: { app: DeviceApp; request: Request }) {
-  const container = useRef<HTMLDivElement>(null);
-  const [nearViewport, setNearViewport] = useState(false);
-  const [source, setSource] = useState<string | null>(null);
-
-  useEffect(() => {
-    const element = container.current;
-    if (!element || nearViewport) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setNearViewport(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setNearViewport(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "160px" },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [nearViewport]);
-
-  useEffect(() => {
-    if (!nearViewport) return;
-    const controller = new AbortController();
-    let objectUrl: string | null = null;
-    void request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/icon`, {
-      signal: controller.signal,
-    }).then(async (response) => {
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      objectUrl = URL.createObjectURL(await response.blob());
-      setSource(objectUrl);
-    }).catch(() => {
-      // An unavailable icon is non-fatal; keep the deterministic fallback.
-    });
-    return () => {
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [app.bundle_id, nearViewport, request]);
-
-  const fallback = Array.from(app.name.trim())[0]?.toLocaleUpperCase() ?? "?";
-  return (
-    <div ref={container} className="device-app-icon" aria-hidden="true">
-      {source ? <img src={source} alt="" draggable={false} /> : fallback}
-    </div>
-  );
-}
-
-function appSigningTagColor(kind: DeviceApp["signing_kind"]): string | undefined {
-  switch (kind) {
-    case "system": return "gold";
-    case "development": return "blue";
-    case "test_flight": return "cyan";
-    case "distribution": return "orange";
-    case "app_store": return "green";
-    case "unknown": return undefined;
-  }
 }
 
 export function DeviceInspector({
@@ -571,7 +505,7 @@ export function DeviceInspector({
     [crashReports, query],
   );
 
-  const launch = async (app: DeviceApp) => {
+  const launch = useCallback(async (app: DeviceApp) => {
     setAppProcessAction({ bundleId: app.bundle_id, kind: "launch" });
     try {
       const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/launch`, { method: "PUT" });
@@ -584,9 +518,9 @@ export function DeviceInspector({
     } finally {
       setAppProcessAction(null);
     }
-  };
+  }, [loadApps, onAppLaunched, request, t]);
 
-  const stopApp = async (app: DeviceApp) => {
+  const stopApp = useCallback(async (app: DeviceApp) => {
     setAppProcessAction({ bundleId: app.bundle_id, kind: "stop" });
     try {
       const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/stop`, { method: "PUT" });
@@ -599,9 +533,9 @@ export function DeviceInspector({
     } finally {
       setAppProcessAction(null);
     }
-  };
+  }, [loadApps, request, t]);
 
-  const startWdaRunner = (app: DeviceApp) => {
+  const startWdaRunner = useCallback((app: DeviceApp) => {
     Modal.confirm({
       title: t("deviceInspector.startWdaRunner"),
       content: t("deviceInspector.startWdaRunnerConfirm", { name: app.name, bundleId: app.bundle_id }),
@@ -627,9 +561,9 @@ export function DeviceInspector({
         }
       },
     });
-  };
+  }, [loadWdaRunnerStatus, request, t]);
 
-  const stopWdaRunner = async () => {
+  const stopWdaRunner = useCallback(async () => {
     const bundleId = wdaRunnerStatus?.runner_bundle_id;
     setWdaRunnerAction(bundleId ?? "stop");
     try {
@@ -641,7 +575,7 @@ export function DeviceInspector({
     } finally {
       setWdaRunnerAction(null);
     }
-  };
+  }, [request, t, wdaRunnerStatus?.runner_bundle_id]);
 
   const startDeviceBackup = async () => {
     try {
@@ -729,17 +663,20 @@ export function DeviceInspector({
     }
   };
 
-  const copyBundleId = async (bundleId: string) => {
+  const copyBundleId = useCallback(async (bundleId: string) => {
     await navigator.clipboard.writeText(bundleId);
     void message.success(t("deviceInspector.bundleIdCopied"));
-  };
+  }, [t]);
+
+  const openAppDocuments = useCallback((app: DeviceApp) => setDocumentsApp(app), []);
+  const openAppConsole = useCallback((app: DeviceApp) => setConsoleApp(app), []);
 
   const copyCompanionIdentifier = async (identifier: string) => {
     await navigator.clipboard.writeText(identifier);
     void message.success(t("deviceInspector.companionIdentifierCopied"));
   };
 
-  const changeAppProfileBinding = async (bundleId: string, bind: boolean) => {
+  const changeAppProfileBinding = useCallback(async (bundleId: string, bind: boolean) => {
     setBindingApp(bundleId);
     try {
       await onAppProfileBindingChange(bundleId, bind);
@@ -749,7 +686,7 @@ export function DeviceInspector({
     } finally {
       setBindingApp(null);
     }
-  };
+  }, [activeProfile, onAppProfileBindingChange, t]);
 
   const installApp = async (operation: IpaOperation) => {
     if (ipaPreflightBusy || appOperation?.state === "running") return;
@@ -828,7 +765,7 @@ export function DeviceInspector({
     }
   };
 
-  const uninstallApp = (app: DeviceApp) => {
+  const uninstallApp = useCallback((app: DeviceApp) => {
     Modal.confirm({
       title: t("deviceInspector.uninstallApp"),
       content: t("deviceInspector.uninstallConfirm", { name: app.name, bundleId: app.bundle_id }),
@@ -845,7 +782,7 @@ export function DeviceInspector({
         await refreshAppOperation();
       },
     });
-  };
+  }, [refreshAppOperation, request, t]);
 
   const installProvisioningProfile = async () => {
     try {
@@ -1772,153 +1709,32 @@ export function DeviceInspector({
           )}
           <div className="device-app-count">{t("deviceInspector.appCount", { count: visibleApps.length })}</div>
           <div className="device-app-list" ref={appListContainer}>
-            {renderedApps.map((app) => {
-              const location = homeScreenLocations.get(app.bundle_id);
-              const folder = location?.folders.at(-1);
-              const locationLabel = folder
-                ? t("deviceInspector.homeScreenFolder", { name: folder.name ?? t("deviceInspector.homeScreenUnnamedFolder") })
-                : location?.container === "dock"
-                  ? t("deviceInspector.homeScreenDock")
-                  : location?.page
-                    ? t("deviceInspector.homeScreenPage", { page: location.page })
-                    : null;
-              const rootPosition = location
-                ? t("deviceInspector.homeScreenPosition", {
-                    page: location.page ?? t("deviceInspector.homeScreenDock"),
-                    position: location.position,
-                  })
-                : null;
-              const folderRoute = location?.folders.map((step) => t("deviceInspector.homeScreenFolderStep", {
-                name: step.name ?? t("deviceInspector.homeScreenUnnamedFolder"),
-                page: step.page,
-                position: step.position,
-              })) ?? [];
-              const locationTooltip = location
-                ? [rootPosition, ...folderRoute].join(" > ")
-                : undefined;
-              const bindingState = appProfileBindingState(app.bundle_id, activeProfile, appProfileBindings, bindingConflicts);
-              const boundProfile = appProfileBindings[app.bundle_id];
-              const eligibleWdaRunner = isEligibleWdaRunner(app);
-              const activeWdaRunner = wdaRunnerStatus?.runner_bundle_id === app.bundle_id;
-              const bindingTooltip = bindingState === "conflict"
-                ? t("deviceInspector.appProfileConflict")
-                : bindingState === "other"
-                  ? t("deviceInspector.appProfileBoundOther", { profile: boundProfile })
-                  : t(bindingState === "active" ? "deviceInspector.unbindAppProfile" : "deviceInspector.bindAppProfile", { profile: activeProfile });
-              const signingTooltip = [
-                t(`deviceInspector.appSigningKinds.${app.signing_kind}`),
-                app.minimum_os_version ? t("deviceInspector.appMinimumOs", { version: app.minimum_os_version }) : null,
-                app.debuggable === null
-                  ? null
-                  : t(app.debuggable ? "deviceInspector.appDebuggable" : "deviceInspector.appNotDebuggable"),
-              ].filter(Boolean).join(" · ");
-              return <div className="device-app-row" key={app.bundle_id}>
-                <DeviceAppIcon app={app} request={request} />
-                <div className="device-app-meta">
-                  <Typography.Text strong ellipsis={{ tooltip: app.name }}>{app.name}</Typography.Text>
-                  <Typography.Text type="secondary" ellipsis={{ tooltip: app.bundle_id }}>{app.bundle_id}</Typography.Text>
-                  <div className="device-app-tags">
-                    {app.version && <Tag>{app.version}</Tag>}
-                    {app.total_disk_usage_bytes !== null && (
-                      <Tooltip title={t("deviceInspector.appStorageBreakdown", {
-                        installed: app.static_disk_usage_bytes === null ? "-" : formatFileSize(app.static_disk_usage_bytes),
-                        data: app.dynamic_disk_usage_bytes === null ? "-" : formatFileSize(app.dynamic_disk_usage_bytes),
-                      })}>
-                        <Tag icon={<DatabaseOutlined />}>{formatFileSize(app.total_disk_usage_bytes)}</Tag>
-                      </Tooltip>
-                    )}
-                    {locationLabel && <Tooltip title={locationTooltip}><Tag color="cyan">{locationLabel}</Tag></Tooltip>}
-                    {app.is_running === true && <Tag color="success">{t("deviceInspector.runningApp")}</Tag>}
-                    <Tooltip title={signingTooltip}>
-                      <Tag color={appSigningTagColor(app.signing_kind)}>{t(`deviceInspector.appSigningKinds.${app.signing_kind}`)}</Tag>
-                    </Tooltip>
-                    {app.is_app_clip && <Tag color="processing">{t("deviceInspector.appClip")}</Tag>}
-                    {activeWdaRunner && wdaRunnerStatus?.phase === "starting" && <Tag color="processing">{t("deviceInspector.wdaRunnerStarting")}</Tag>}
-                    {activeWdaRunner && wdaRunnerStatus?.phase === "running" && <Tag color="success">{t("deviceInspector.wdaRunnerRunning")}</Tag>}
-                    {activeWdaRunner && wdaRunnerStatus?.phase === "failed" && <Tooltip title={wdaRunnerStatus.last_error}><Tag color="error">{t("deviceInspector.wdaRunnerFailed")}</Tag></Tooltip>}
-                    {bindingState === "conflict"
-                      ? <Tag color="error">{t("deviceInspector.appProfileConflictTag")}</Tag>
-                      : boundProfile && <Tag color={bindingState === "active" ? "success" : "default"}>{t("deviceInspector.appProfileTag", { profile: boundProfile })}</Tag>}
-                  </div>
-                </div>
-                <div className="device-app-actions">
-                  <Tooltip title={bindingTooltip}>
-                    <Button
-                      size="small"
-                      type={bindingState === "active" ? "primary" : "default"}
-                      icon={bindingState === "active" ? <DisconnectOutlined /> : <LinkOutlined />}
-                      loading={bindingApp === app.bundle_id}
-                      disabled={bindingState === "conflict" || bindingState === "other"}
-                      onClick={() => void changeAppProfileBinding(app.bundle_id, bindingState !== "active")}
-                    />
-                  </Tooltip>
-                  <Tooltip title={t("deviceInspector.copyBundleId")}>
-                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copyBundleId(app.bundle_id)} />
-                  </Tooltip>
-                  {(app.documents_available || app.is_developer_app) && (
-                    <Tooltip title={t("deviceInspector.appDocuments")}>
-                      <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setDocumentsApp(app)} />
-                    </Tooltip>
-                  )}
-                  {eligibleWdaRunner && (
-                    <Tooltip title={t(activeWdaRunner && wdaRunnerStatus?.managed ? "deviceInspector.stopWdaRunner" : "deviceInspector.startWdaRunner")}>
-                      <Button
-                        size="small"
-                        danger={activeWdaRunner && wdaRunnerStatus?.managed}
-                        type={activeWdaRunner && wdaRunnerStatus?.managed ? "default" : "primary"}
-                        icon={activeWdaRunner && wdaRunnerStatus?.managed ? <StopOutlined /> : <BugOutlined />}
-                        loading={wdaRunnerAction === app.bundle_id}
-                        disabled={wdaRunnerAction !== null || (wdaRunnerStatus?.managed === true && !activeWdaRunner)}
-                        onClick={() => activeWdaRunner && wdaRunnerStatus?.managed ? void stopWdaRunner() : startWdaRunner(app)}
-                      />
-                    </Tooltip>
-                  )}
-                  {(!app.is_first_party || app.is_developer_app) && !app.is_app_clip && (
-                    <Tooltip title={t("deviceInspector.launchWithConsole")}>
-                      <Button
-                        size="small"
-                        icon={<CodeOutlined />}
-                        disabled={appProcessAction !== null || consoleApp !== null}
-                        onClick={() => setConsoleApp(app)}
-                      />
-                    </Tooltip>
-                  )}
-                  <Tooltip title={t(app.is_running ? "deviceInspector.restartApp" : "deviceInspector.launchApp")}>
-                    <Button
-                      size="small"
-                      type={app.is_running ? "default" : "primary"}
-                      icon={app.is_running ? <ReloadOutlined /> : <PlayCircleOutlined />}
-                      loading={appProcessAction?.bundleId === app.bundle_id && appProcessAction.kind === "launch"}
-                      disabled={appProcessAction !== null}
-                      onClick={() => void launch(app)}
-                    />
-                  </Tooltip>
-                  {app.is_running === true && (
-                    <Tooltip title={t("deviceInspector.stopApp")}>
-                      <Button
-                        danger
-                        size="small"
-                        icon={<StopOutlined />}
-                        loading={appProcessAction?.bundleId === app.bundle_id && appProcessAction.kind === "stop"}
-                        disabled={appProcessAction !== null}
-                        onClick={() => void stopApp(app)}
-                      />
-                    </Tooltip>
-                  )}
-                  {app.is_removable && !app.is_first_party && !app.is_app_clip && (
-                    <Tooltip title={t("deviceInspector.uninstallApp")}>
-                      <Button
-                        danger
-                        size="small"
-                        icon={<DeleteOutlined />}
-                        disabled={appMutationRunning}
-                        onClick={() => uninstallApp(app)}
-                      />
-                    </Tooltip>
-                  )}
-                </div>
-              </div>;
-            })}
+            {renderedApps.map((app) => (
+              <DeviceAppRow
+                key={app.bundle_id}
+                app={app}
+                request={request}
+                location={homeScreenLocations.get(app.bundle_id)}
+                activeProfile={activeProfile}
+                appProfileBindings={appProfileBindings}
+                bindingConflicts={bindingConflicts}
+                bindingApp={bindingApp}
+                appProcessAction={appProcessAction}
+                appMutationRunning={appMutationRunning}
+                consoleOpen={consoleApp !== null}
+                wdaRunnerStatus={wdaRunnerStatus}
+                wdaRunnerAction={wdaRunnerAction}
+                onChangeProfileBinding={changeAppProfileBinding}
+                onCopyBundleId={copyBundleId}
+                onOpenDocuments={openAppDocuments}
+                onStartWdaRunner={startWdaRunner}
+                onStopWdaRunner={stopWdaRunner}
+                onOpenConsole={openAppConsole}
+                onLaunch={launch}
+                onStop={stopApp}
+                onUninstall={uninstallApp}
+              />
+            ))}
             {renderedApps.length < visibleApps.length && <div ref={appListSentinel} className="device-app-list-sentinel" />}
             {visibleApps.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noApps")} />}
           </div>
