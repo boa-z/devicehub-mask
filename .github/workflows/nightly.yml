@@ -160,6 +160,7 @@ jobs:
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
           BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          DEVICEHUB_UPDATE_CHANNEL: nightly
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -288,6 +289,7 @@ jobs:
         timeout-minutes: 20
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
+          DEVICEHUB_UPDATE_CHANNEL: nightly
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -400,6 +402,7 @@ jobs:
         timeout-minutes: 20
         env:
           UPDATE_VERSION: ${{ steps.version.outputs.update_version }}
+          DEVICEHUB_UPDATE_CHANNEL: nightly
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |

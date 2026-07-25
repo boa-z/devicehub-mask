@@ -1,9 +1,13 @@
 import { createContext, useContext } from "react";
+import type { BuildInfo, UpdateChannel } from "./buildInfo";
 
 export type UpdateContextValue = {
   automatic: boolean;
   checking: boolean;
+  buildInfo: BuildInfo | null;
+  channel: UpdateChannel;
   setAutomatic: (enabled: boolean) => void;
+  setChannel: (channel: UpdateChannel) => void;
   checkNow: () => void;
 };
 

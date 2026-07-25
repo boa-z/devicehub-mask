@@ -6,6 +6,8 @@
 
 `.github/workflows/nightly.yml` runs on commits and manual dispatches only. It has no scheduled trigger, does not use GitHub Environments, and therefore does not create Deployment records that obstruct history cleanup.
 
+`.github/workflows/cleanup-nightly.yml` runs weekly and can be dispatched manually. It retains the newest 20 completed nightly workflow runs and deletes nightly artifacts older than 14 days by default. Manual runs can change both bounded retention values or use dry-run. It never deletes the rolling `nightly` release, tag, or release assets.
+
 ## Jobs
 
 - **verify** is a fail-independent macOS, Windows, and Linux matrix. Each leg runs frontend lint, tests, and build; Rust format, tests, and Clippy; and a debug Tauri application build.
@@ -20,7 +22,7 @@ Workflow artifacts are retained for 14 days. The rolling public release is:
 
 ## Versions and Artifacts
 
-Installer filenames contain the base version and workflow build number. The run number becomes `CFBundleVersion` on macOS. Updater artifacts use a shared `major.minor.<run-number>` version because SemVer build metadata such as `0.1.0+12` does not affect update ordering.
+Installer filenames contain the product version and workflow build number. The run number becomes `CFBundleVersion` on macOS. Updater artifacts use a separate shared `major.minor.<run-number>` version because SemVer build metadata such as `0.1.0+12` does not affect update ordering. Settings therefore reports four independent values: **Version** is the product version, **Build** is the workflow run number, **Commit** is the seven-character source revision, and **Updater version** is the SemVer value used only for update ordering.
 
 The release can contain:
 
@@ -63,7 +65,7 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 Without the private key, CI can still publish native installers but skips updater signatures and `latest.json`. Losing or replacing the key prevents existing installations from accepting future updates.
 
-At runtime, automatic nightly checks can be disabled in Settings. The setting is stored as `devicehub-mask.updates.automatic`; the manual check remains available. Accepted updates are downloaded, verified, installed, and followed by restart.
+At runtime, Settings can select the **Stable** or **Nightly** update channel and disable automatic checks. The preferences are stored as `devicehub-mask.updates.channel` and `devicehub-mask.updates.automatic`; the manual check remains available. Stable checks use `releases/latest/download/latest.json`, while nightly checks use the rolling `releases/download/nightly/latest.json`. Both routes accept the same signed Tauri manifest format. Accepted updates are downloaded, verified, installed, and followed by restart. Until a stable release publishes a signed `latest.json`, checking Stable reports the missing manifest instead of silently falling back to Nightly.
 
 ## Apple Signing and Notarization
 

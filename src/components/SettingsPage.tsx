@@ -1,9 +1,9 @@
 import { BugOutlined, FolderOpenOutlined, GithubOutlined } from "@ant-design/icons";
-import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Checkbox, Select, Slider, Space, Switch, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { UpdateChannel } from "../buildInfo";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
 import { showErrorMessage } from "../errorMessage";
 import type { DeviceAudioPreferences } from "../deviceAudio";
@@ -48,14 +48,12 @@ export function SettingsPage({
 }: Props) {
   const { t, i18n } = useTranslation();
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language);
-  const { automatic, setAutomatic } = useUpdates();
-  const [version, setVersion] = useState("-");
+  const { automatic, buildInfo, channel, setAutomatic, setChannel } = useUpdates();
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettingsStatus | null>(null);
   const [appSettingsBusy, setAppSettingsBusy] = useState(false);
   const [audioVolumeDraft, setAudioVolumeDraft] = useState<number | null>(null);
-  useEffect(() => { void getVersion().then(setVersion); }, []);
   useEffect(() => {
     void readDiagnosticsStatus()
       .then(setDiagnostics)
@@ -236,6 +234,18 @@ export function SettingsPage({
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.updates")}</Typography.Title>
         <label>
+          <span>{t("update.channel")}</span>
+          <Select<UpdateChannel>
+            value={channel}
+            options={[
+              { value: "stable", label: t("update.channels.stable") },
+              { value: "nightly", label: t("update.channels.nightly") },
+            ]}
+            onChange={setChannel}
+          />
+        </label>
+        <label><span>{t("update.updaterVersion")}</span><Typography.Text code>{buildInfo?.updaterVersion ?? "-"}</Typography.Text></label>
+        <label>
           <span>{t("update.automatic")}</span>
           <Switch checked={automatic} onChange={setAutomatic} />
         </label>
@@ -276,7 +286,9 @@ export function SettingsPage({
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.about")}</Typography.Title>
-        <label><span>{t("settings.version")}</span><Typography.Text code>{version}</Typography.Text></label>
+        <label><span>{t("settings.version")}</span><Typography.Text code>{buildInfo?.version ?? "-"}</Typography.Text></label>
+        <label><span>{t("settings.build")}</span><Typography.Text code>{buildInfo?.build ?? "-"}</Typography.Text></label>
+        <label><span>{t("settings.commit")}</span><Typography.Text code copyable={Boolean(buildInfo?.commit)}>{buildInfo?.commit ?? "-"}</Typography.Text></label>
         <label><span>{t("settings.repository")}</span><Button icon={<GithubOutlined />} onClick={() => void openRepository()}>{t("settings.openGithub")}</Button></label>
       </div>
     </section>

@@ -34,7 +34,7 @@ Drag controls on the canvas or right-click an exact position to add any scrcpy-m
 
 ### Application Settings
 
-Settings contains appearance, language, window behavior, device audio, clipboard synchronization, automatic update checking, a manual **Check now** command, the installed app version, and the GitHub repository link. Device audio is disabled by default; enabling it takes effect after reconnecting the device. Playback mute and volume apply immediately through the host's native default audio output, and mute is also available in the Device toolbar. Playback does not depend on WebView autoplay permission or page visibility. Clipboard synchronization is also disabled by default and takes effect after reconnecting. When enabled, text and images copied on either the host or device replace the clipboard on the other side. A transient message identifies the direction and content type; text previews are whitespace-collapsed and limited to 48 characters.
+Settings contains appearance, language, window behavior, device audio, clipboard synchronization, update channel selection, automatic update checking, a manual **Check now** command, product/build/commit identity, updater version, and the GitHub repository link. Device audio is disabled by default; enabling it takes effect after reconnecting the device. Playback mute and volume apply immediately through the host's native default audio output, and mute is also available in the Device toolbar. Playback does not depend on WebView autoplay permission or page visibility. Clipboard synchronization is also disabled by default and takes effect after reconnecting. When enabled, text and images copied on either the host or device replace the clipboard on the other side. A transient message identifies the direction and content type; text previews are whitespace-collapsed and limited to 48 characters.
 
 The Device Info tab includes confirmed **Restart device** and **Shut down device** actions. Both end the current control session; restart reconnects only after iOS and the USB services are available again, while a shut-down device must be turned on manually. The device-view toolbar's Lock control simulates the hardware button and can wake an already locked device. Agents can instead use the one-way MCP `lock_device` tool when they must not wake it.
 
@@ -135,7 +135,7 @@ Both the React UI and Ant Design use the native system font stack. Existing prof
 
 ## Updates
 
-Automatic nightly checks can be disabled in Settings. The manual check remains available. An accepted update is downloaded, signature-verified, installed, and followed by an application restart. See [Distribution](distribution.md) for signing and release details.
+Automatic checks can be disabled and routed to Stable or Nightly in Settings. The manual check remains available. An accepted update is downloaded, signature-verified, installed, and followed by an application restart. See [Distribution](distribution.md) for version identity, channel routes, signing, and release details.
 
 ## MCP Automation
 

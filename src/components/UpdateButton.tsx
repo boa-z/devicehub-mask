@@ -1,14 +1,20 @@
 import { CloudDownloadOutlined } from "@ant-design/icons";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { Button, Modal, message } from "antd";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { UpdateContext, type UpdateContextValue, useUpdates } from "../updateContext";
-import { readAutomaticUpdatePreference, writeAutomaticUpdatePreference } from "../updatePreferences";
+import { checkUpdateChannel, readBuildInfo, type BuildInfo, type UpdateChannel } from "../buildInfo";
 import { logFrontend } from "../diagnostics";
 import { showErrorMessage } from "../errorMessage";
+import { UpdateContext, type UpdateContextValue, useUpdates } from "../updateContext";
+import {
+  readAutomaticUpdatePreference,
+  readUpdateChannelPreference,
+  writeAutomaticUpdatePreference,
+  writeUpdateChannelPreference,
+} from "../updatePreferences";
 
 const progressMessageKey = "app-update-progress";
 
@@ -17,12 +23,27 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const translateRef = useRef(t);
   translateRef.current = t;
   const [automatic, setAutomaticState] = useState(readAutomaticUpdatePreference);
+  const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
+  const [channel, setChannelState] = useState<UpdateChannel>(() => readUpdateChannelPreference() ?? "nightly");
   const [checking, setChecking] = useState(false);
   const checkingRef = useRef(false);
 
   const setAutomatic = useCallback((enabled: boolean) => {
     setAutomaticState(enabled);
     writeAutomaticUpdatePreference(enabled);
+  }, []);
+  const setChannel = useCallback((value: UpdateChannel) => {
+    setChannelState(value);
+    writeUpdateChannelPreference(value);
+  }, []);
+
+  useEffect(() => {
+    void readBuildInfo()
+      .then((info) => {
+        setBuildInfo(info);
+        if (readUpdateChannelPreference() === null) setChannelState(info.updateChannel);
+      })
+      .catch((error) => logFrontend("warn", "updater", "read_build_info", error));
   }, []);
 
   const install = useCallback(async (update: Update) => {
@@ -49,7 +70,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     checkingRef.current = true;
     setChecking(true);
     try {
-      const update = await check({ timeout: 15_000 });
+      const update = await checkUpdateChannel(channel);
       if (!update) {
         if (manual) void message.success(translateRef.current("update.latest"));
         return;
@@ -69,18 +90,21 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       checkingRef.current = false;
       setChecking(false);
     }
-  }, [install]);
+  }, [channel, install]);
 
   useEffect(() => {
-    if (!automatic || !isTauri()) return;
+    if (!automatic || !buildInfo || !isTauri()) return;
     const timer = window.setTimeout(() => void checkForUpdate(false), 3_000);
     return () => clearTimeout(timer);
-  }, [automatic, checkForUpdate]);
+  }, [automatic, buildInfo, checkForUpdate]);
 
   const value: UpdateContextValue = {
     automatic,
     checking,
+    buildInfo,
+    channel,
     setAutomatic,
+    setChannel,
     checkNow: () => void checkForUpdate(true),
   };
 

@@ -1,0 +1,88 @@
+name: Cleanup nightly history
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_runs:
+        description: Completed nightly workflow runs to retain
+        required: true
+        default: "20"
+        type: string
+      artifact_days:
+        description: Delete nightly artifacts older than this many days
+        required: true
+        default: "14"
+        type: string
+      dry_run:
+        description: Report deletions without changing GitHub state
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cleanup-nightly-history
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Remove old nightly runs and artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEEP_RUNS: ${{ inputs.keep_runs || '20' }}
+      ARTIFACT_DAYS: ${{ inputs.artifact_days || '14' }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
+    steps:
+      - name: Validate retention settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$KEEP_RUNS" =~ ^[0-9]+$ ]] && (( KEEP_RUNS >= 1 && KEEP_RUNS <= 100 ))
+          [[ "$ARTIFACT_DAYS" =~ ^[0-9]+$ ]] && (( ARTIFACT_DAYS >= 1 && ARTIFACT_DAYS <= 365 ))
+
+      - name: Delete completed nightly workflow runs beyond retention
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t RUN_IDS < <(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?status=completed&per_page=100" \
+              --jq '.workflow_runs[].id'
+          )
+          echo "Found ${#RUN_IDS[@]} completed nightly runs; retaining newest ${KEEP_RUNS}."
+          for ((index = KEEP_RUNS; index < ${#RUN_IDS[@]}; index += 1)); do
+            run_id="${RUN_IDS[$index]}"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "Would delete nightly workflow run ${run_id}."
+            else
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+              echo "Deleted nightly workflow run ${run_id}."
+            fi
+          done
+
+      - name: Delete expired nightly artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cutoff_epoch="$(date -u -d "${ARTIFACT_DAYS} days ago" +%s)"
+          while IFS=$'\t' read -r artifact_id artifact_name created_at; do
+            [[ -n "$artifact_id" ]] || continue
+            created_epoch="$(date -u -d "$created_at" +%s)"
+            (( created_epoch < cutoff_epoch )) || continue
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "Would delete artifact ${artifact_name} (${artifact_id}), created ${created_at}."
+            else
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+              echo "Deleted artifact ${artifact_name} (${artifact_id}), created ${created_at}."
+            fi
+          done < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.name | startswith("nightly-") or startswith("devicehub-mask-nightly-")) | [.id, .name, .created_at] | @tsv'
+          )

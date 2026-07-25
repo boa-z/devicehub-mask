@@ -6,6 +6,8 @@
 
 `.github/workflows/nightly.yml` 只在 commit 和手动触发时运行。没有定时任务，也不使用 GitHub Environments，因此不会创建妨碍清理历史的 Deployment 记录。
 
+`.github/workflows/cleanup-nightly.yml` 每周运行，也支持手动触发。默认保留最新 20 次已完成的 nightly workflow 运行，并删除超过 14 天的 nightly artifacts。手动运行可以在受限范围内调整两个保留参数，或使用 dry-run 只查看预计删除内容。它不会删除滚动 `nightly` Release、tag 或 Release assets。
+
 ## Jobs
 
 - **verify** 使用相互独立失败的 macOS、Windows 和 Linux 矩阵。每个平台运行前端 lint、测试和构建，Rust 格式、测试和 Clippy，以及 Tauri debug 应用构建。
@@ -20,7 +22,7 @@
 
 ## 版本与产物
 
-安装包文件名包含基础版本和 workflow build number。macOS 使用运行编号作为 `CFBundleVersion`。更新产物统一使用 `major.minor.<run-number>`，因为 `0.1.0+12` 这样的 SemVer build metadata 不参与更新顺序比较。
+安装包文件名包含产品版本和 workflow build number。macOS 使用运行编号作为 `CFBundleVersion`。更新产物单独使用统一的 `major.minor.<run-number>` 版本，因为 `0.1.0+12` 这样的 SemVer build metadata 不参与更新顺序比较。因此设置页会独立显示四项信息：**版本**是产品版本，**构建编号**是 workflow 运行编号，**Commit** 是七位源码 revision，**Updater 版本**只用于更新顺序比较。
 
 Release 可以包含：
 
@@ -63,7 +65,7 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 缺少私钥时，CI 仍可发布原生安装包，但会跳过更新签名和 `latest.json`。私钥丢失或替换 后，已有安装将无法接受新密钥签名的更新。
 
-运行时可在设置页关闭自动 nightly 检查，选项保存在 `devicehub-mask.updates.automatic`，手动检查始终可用。接受更新后会下载、验证、安装 并重启应用。
+运行时可在设置页选择**正式版**或 **Nightly** 更新通道，并关闭自动检查。偏好分别保存在 `devicehub-mask.updates.channel` 和 `devicehub-mask.updates.automatic`，手动检查始终可用。正式版使用 `releases/latest/download/latest.json`，Nightly 使用滚动发布的 `releases/download/nightly/latest.json`，两条路径采用相同的 Tauri 签名 manifest 格式。接受更新后会下载、验证、安装并重启应用。在正式版发布签名 `latest.json` 之前，检查正式版通道会明确报告 manifest 不存在，不会静默回退到 Nightly。
 
 ## Apple 签名与公证
 

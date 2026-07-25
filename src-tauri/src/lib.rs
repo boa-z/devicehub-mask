@@ -6,6 +6,7 @@ mod application;
 mod audio_output;
 mod bluetooth_capture;
 mod browser_video;
+mod build_info;
 mod companion_devices;
 mod crash_reports;
 mod decode;
@@ -397,6 +398,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             backend_connection,
+            build_info::build_info,
+            build_info::check_for_update,
             diagnostics_status,
             set_debug_logging,
             open_log_directory,
