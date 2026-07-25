@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 pub(super) const HEVC_AUD: &[u8] = b"\0\0\0\x01\x46\x01\x50";
-/// Bound compressed video waiting for ffmpeg. This is deliberately byte-based:
-/// access-unit sizes vary dramatically between static P-frames and an IRAP.
+/// Bound compressed video waiting for the WebSocket/WebCodecs publisher.
+/// This is deliberately byte-based: access-unit sizes vary dramatically
+/// between static P-frames and an IRAP.
 pub(super) const HEVC_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]

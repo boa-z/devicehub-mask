@@ -319,8 +319,8 @@ async fn run(
     let video_udp = Arc::new(media.video_udp);
     let rtcp_udp = media.rtcp_udp.map(Arc::new);
 
-    // Pulsed by the ffmpeg-stderr watcher and the stall watchdog; the RTCP send
-    // loop reacts by requesting a fresh keyframe (PLI + FIR) on the same stream.
+    // Pulsed when the HEVC publisher loses synchronization or the stream stalls;
+    // the RTCP loop reacts with PLI + FIR on the same stream.
     let corruption = Arc::new(Notify::new());
 
     let rtcp = Arc::new(Mutex::new(RtcpShared::default()));
@@ -328,10 +328,10 @@ async fn run(
     // `udp.recv()` holds a non-Send MutexGuard across an await, so these loops
     // can't be spawned; we run them concurrently on this task via `select!`. The
     // input loop is the only one that returns normally (Shutdown / channel close);
-    // when it does, the others drop, closing ffmpeg's stdin.
+    // when it does, the other session-owned futures are dropped as one unit.
     //
-    // Complete access units wait in a byte-bounded queue so ffmpeg backpressure
-    // cannot stall RTP/RTCP or grow memory without limit.
+    // Complete access units wait in a byte-bounded queue so WebSocket/WebCodecs
+    // backpressure cannot stall RTP/RTCP or grow memory without limit.
     let hevc_queue = Arc::new(HevcQueue::new(HEVC_QUEUE_MAX_BYTES));
     let orientation_watch_view = views.orientation.clone();
     let orientation_task = async move {
@@ -2526,8 +2526,8 @@ async fn type_key(
     Ok(())
 }
 
-/// Pump video RTP into ffmpeg: receive datagrams, depacketize HEVC, hand the
-/// resulting Annex-B to the ffmpeg writer. This socket also carries inbound RTCP
+/// Receive video RTP, depacketize HEVC, and queue complete Annex-B access units
+/// for the WebSocket/WebCodecs publisher. This socket also carries inbound RTCP
 /// under rtcp-mux; those datagrams are split off to [`RtcpShared::note_inbound`].
 async fn video_task(
     udp: Arc<UdpSocketHandle>,
@@ -2568,8 +2568,8 @@ async fn video_task(
     let mut rtp_timestamp_deltas = RunningStats::default();
     let mut source_frame_intervals_ms = RunningStats::default();
 
-    // DIAGNOSTIC: if `DEVICEHUB_DUMP_HEVC` is set, tee the Annex-B bytes we feed
-    // ffmpeg to that path for offline decoding.
+    // DIAGNOSTIC: if `DEVICEHUB_DUMP_HEVC` is set, tee the published Annex-B
+    // bytes to that path for offline inspection.
     let mut dump = match std::env::var("DEVICEHUB_DUMP_HEVC") {
         Ok(path) => match tokio::fs::File::create(&path).await {
             Ok(f) => {
@@ -2656,7 +2656,7 @@ async fn video_task(
                     .note_rtp_packet(pkt.ssrc, pkt.sequence_number, pkt.marker);
                 // The marker bit ends an access unit. Track packet completeness
                 // even when experimental frame ACKs are disabled: a complete
-                // marker lets us hand the AU to ffmpeg without waiting for the
+                // marker lets us publish the AU without waiting for the
                 // following frame's AUD. An early/out-of-order marker does not.
                 let belongs_to_current_au = prev_marker_seq.is_none_or(|previous| {
                     let distance = pkt.sequence_number.wrapping_sub(previous);
