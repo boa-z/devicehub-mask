@@ -28,6 +28,7 @@ System fullscreen and device fullscreen are different. System fullscreen changes
 - Explicitly revokes USB Lockdown trust and removes the host pairing record, with confirmation and partial-success reporting.
 - Shows Developer Mode and Developer Disk Image state; it can reveal the Developer Mode setting and explicitly mount, cancel, or unmount a compatible local image set.
 - Lists paired Apple Watch metadata through CompanionProxy without controlling the Watch.
+- Opens read-only home-screen and lock-screen wallpaper previews from SpringBoardServices only after an explicit click; previews are not persisted or exposed through MCP.
 - Creates or resumes an unencrypted local MobileBackup2 backup, with progress, cancellation, and an optional forced full pass.
 - Collects a bounded, cancellable CoreDevice sysdiagnose archive.
 - Provides confirmed **Restart device** and **Shut down device** commands through Diagnostics Relay. Both intentionally terminate the current device session; shutdown requires manually turning the device on again.
@@ -87,7 +88,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | All-device/per-process network and Bluetooth capture | pcapd packet PID/effective PID metadata and BTPacketLogger |
 | Watch metadata | CompanionProxy |
 | App icons | CoreDevice AppService with SpringBoardServices fallback |
-| Home-screen layout | SpringBoardServices |
+| Home-screen layout and on-demand wallpaper previews | SpringBoardServices |
 | Crash reports and normalized summaries | CrashReportCopyMobile |
 | Semantic automation | WebDriverAgent and XCTest runner services |
 

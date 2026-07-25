@@ -326,6 +326,10 @@ pub enum InputCmd {
     ),
     /// Read normalized, ordinal home-screen app locations through SpringBoardServices.
     GetHomeScreenLayout(oneshot::Sender<Result<crate::home_screen::HomeScreenLayout, String>>),
+    GetWallpaper {
+        kind: crate::home_screen::WallpaperKind,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
     /// Execute a bounded, read-only DVT DeviceInfo process query.
     RunningProcess(crate::running_processes::RunningProcessCommand),
     /// Execute a bounded, bundle-aware CoreDevice application lifecycle query.

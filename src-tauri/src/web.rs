@@ -210,6 +210,7 @@ pub fn router(state: AppState, token: String) -> Router {
         )
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
+        .route("/api/device/wallpaper/{kind}", get(device_wallpaper))
         .route(
             "/api/device/wda-runner",
             get(wda_runner_status)
@@ -1641,6 +1642,44 @@ async fn device_home_screen(
         })?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(layout))
+}
+
+async fn device_wallpaper(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let kind = crate::home_screen::WallpaperKind::parse(&kind).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "wallpaper kind must be home or lock".into(),
+        )
+    })?;
+    let (reply, response) = oneshot::channel();
+    if !state.input.try_send(InputCmd::GetWallpaper { kind, reply }) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no active device session".into(),
+        ));
+    }
+    let image = tokio::time::timeout(Duration::from_secs(12), response)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "wallpaper preview request timed out".into(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device session ended".into(),
+            )
+        })?
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    Ok((
+        [(CONTENT_TYPE, "image/png"), (CACHE_CONTROL, "no-store")],
+        image,
+    ))
 }
 
 async fn device_app_icon(
@@ -5010,6 +5049,30 @@ mod tests {
         assert_eq!(response.0.apps[0].bundle_id, "com.example.game");
         assert_eq!(response.0.metrics.unwrap().columns, Some(5));
         assert_eq!(response.0.apps[0].page, Some(2));
+    }
+
+    #[tokio::test]
+    async fn wallpaper_endpoint_accepts_only_bounded_read_only_kinds() {
+        let (state, mut input_rx) = test_state();
+        let invalid = match device_wallpaper(State(state.clone()), Path("desktop".into())).await {
+            Err(error) => error,
+            Ok(_) => panic!("invalid wallpaper kind should be rejected"),
+        };
+        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+        assert!(input_rx.try_recv().is_err());
+
+        let request = tokio::spawn(device_wallpaper(State(state), Path("lock".into())));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::GetWallpaper { kind, reply } => {
+                assert_eq!(kind, crate::home_screen::WallpaperKind::Lock);
+                reply.send(Ok(vec![1, 2, 3])).unwrap();
+            }
+            _ => panic!("expected lock-screen wallpaper query"),
+        }
+        let response = request.await.unwrap().unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
+        assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-store");
     }
 
     #[tokio::test]

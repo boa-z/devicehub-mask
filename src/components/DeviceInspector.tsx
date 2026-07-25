@@ -14,7 +14,9 @@ import {
   FolderOpenOutlined,
   InfoCircleOutlined,
   LinkOutlined,
+  LockOutlined,
   MobileOutlined,
+  PictureOutlined,
   PlayCircleOutlined,
   PoweroffOutlined,
   ReloadOutlined,
@@ -40,6 +42,7 @@ import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
+type WallpaperKind = "home" | "lock";
 
 type Props = {
   activeUdid: string | null;
@@ -182,12 +185,15 @@ export function DeviceInspector({
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const [consoleApp, setConsoleApp] = useState<DeviceApp | null>(null);
+  const [wallpaperLoading, setWallpaperLoading] = useState<WallpaperKind | null>(null);
+  const [wallpaperPreview, setWallpaperPreview] = useState<{ kind: WallpaperKind; source: string } | null>(null);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
   const handledDeveloperImageState = useRef<string>("");
   const homeScreenRequest = useRef(0);
   const appListRequest = useRef(0);
   const appScopesRequest = useRef(0);
+  const wallpaperRequest = useRef(0);
   const showSystemAppsRef = useRef(false);
   const showAppClipsRef = useRef(false);
 
@@ -207,6 +213,29 @@ export function DeviceInspector({
       if (homeScreenRequest.current === requestId) setHomeScreenLoading(false);
     }
   }, [request]);
+
+  const loadWallpaper = useCallback(async (kind: WallpaperKind) => {
+    const requestId = ++wallpaperRequest.current;
+    setWallpaperLoading(kind);
+    try {
+      const response = await request(`/api/device/wallpaper/${kind}`);
+      if (!response.ok) {
+        throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
+      }
+      const source = URL.createObjectURL(await response.blob());
+      if (wallpaperRequest.current !== requestId) {
+        URL.revokeObjectURL(source);
+        return;
+      }
+      setWallpaperPreview({ kind, source });
+    } catch (wallpaperError) {
+      if (wallpaperRequest.current === requestId) {
+        void showErrorMessage(t("deviceInspector.wallpaperLoadFailed", { error: String(wallpaperError) }));
+      }
+    } finally {
+      if (wallpaperRequest.current === requestId) setWallpaperLoading(null);
+    }
+  }, [request, t]);
 
   const loadApps = useCallback(async (
     includeSystem = showSystemAppsRef.current,
@@ -286,6 +315,7 @@ export function DeviceInspector({
     homeScreenRequest.current += 1;
     appListRequest.current += 1;
     appScopesRequest.current += 1;
+    wallpaperRequest.current += 1;
     showSystemAppsRef.current = false;
     showAppClipsRef.current = false;
     setShowSystemApps(false);
@@ -312,6 +342,8 @@ export function DeviceInspector({
     setProfileMutation(null);
     setDocumentsApp(null);
     setConsoleApp(null);
+    setWallpaperLoading(null);
+    setWallpaperPreview(null);
     setRenameOpen(false);
     setRenameValue("");
     setRenameBusy(false);
@@ -325,6 +357,13 @@ export function DeviceInspector({
     setSysdiagnoseAction(null);
     setError(null);
   }, [activeUdid]);
+
+  useEffect(() => {
+    const source = wallpaperPreview?.source;
+    return () => {
+      if (source) URL.revokeObjectURL(source);
+    };
+  }, [wallpaperPreview?.source]);
 
   useEffect(() => {
     void load();
@@ -1375,6 +1414,30 @@ export function DeviceInspector({
                 <Typography.Text type="secondary" ellipsis={{ tooltip: value }}>{value}</Typography.Text>
               </div>
             ))}
+            <section className="device-wallpaper-section">
+              <div className="device-wallpaper-heading">
+                <Typography.Text strong>{t("deviceInspector.wallpaperTitle")}</Typography.Text>
+                <Typography.Text type="secondary">{t("deviceInspector.wallpaperHint")}</Typography.Text>
+              </div>
+              <div className="device-wallpaper-actions">
+                <Button
+                  icon={<PictureOutlined />}
+                  loading={wallpaperLoading === "home"}
+                  disabled={wallpaperLoading !== null}
+                  onClick={() => void loadWallpaper("home")}
+                >
+                  {t("deviceInspector.homeWallpaper")}
+                </Button>
+                <Button
+                  icon={<LockOutlined />}
+                  loading={wallpaperLoading === "lock"}
+                  disabled={wallpaperLoading !== null}
+                  onClick={() => void loadWallpaper("lock")}
+                >
+                  {t("deviceInspector.lockWallpaper")}
+                </Button>
+              </div>
+            </section>
             {details?.product_type.startsWith("iPhone") && <div className="device-companion-section">
               <div className="device-companion-heading">
                 <Typography.Text strong>{t("deviceInspector.companions")}</Typography.Text>
@@ -2025,6 +2088,28 @@ export function DeviceInspector({
       request={request}
       onClose={() => setSummaryReport(null)}
     />
+    <Modal
+      title={wallpaperPreview?.kind === "lock"
+        ? t("deviceInspector.lockWallpaperPreview")
+        : t("deviceInspector.homeWallpaperPreview")}
+      open={wallpaperPreview !== null}
+      footer={null}
+      width={460}
+      centered
+      destroyOnHidden
+      onCancel={() => setWallpaperPreview(null)}
+    >
+      {wallpaperPreview && (
+        <div className="device-wallpaper-preview">
+          <img
+            src={wallpaperPreview.source}
+            alt={wallpaperPreview.kind === "lock"
+              ? t("deviceInspector.lockWallpaperPreview")
+              : t("deviceInspector.homeWallpaperPreview")}
+          />
+        </div>
+      )}
+    </Modal>
     <Modal
       title={t("deviceInspector.renameDevice")}
       open={renameOpen}

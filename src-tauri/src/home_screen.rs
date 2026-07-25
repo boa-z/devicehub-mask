@@ -25,6 +25,32 @@ const MAX_NAME_CHARS: usize = 128;
 const MAX_LAYOUT_DIMENSION: u64 = 65_535;
 const MAX_GRID_COUNT: u64 = 64;
 const MAX_PAGE_COUNT: u64 = 255;
+const MAX_WALLPAPER_BYTES: usize = 32 * 1024 * 1024;
+const MAX_WALLPAPER_DIMENSION: u32 = 16_384;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallpaperKind {
+    Home,
+    Lock,
+}
+
+impl WallpaperKind {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "home" => Some(Self::Home),
+            "lock" => Some(Self::Lock),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Home => "home screen",
+            Self::Lock => "lock screen",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +104,23 @@ pub enum HomeScreenCommand {
     Get {
         reply: oneshot::Sender<Result<HomeScreenLayout, String>>,
     },
+    Wallpaper {
+        kind: WallpaperKind,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
+}
+
+impl HomeScreenCommand {
+    pub fn reject(self, reason: &str) {
+        match self {
+            Self::Get { reply } => {
+                let _ = reply.send(Err(reason.into()));
+            }
+            Self::Wallpaper { reply, .. } => {
+                let _ = reply.send(Err(reason.into()));
+            }
+        }
+    }
 }
 
 pub async fn serve(
@@ -98,43 +141,89 @@ pub async fn serve(
                 }
             }
             command = commands.recv() => {
-                let Some(HomeScreenCommand::Get { reply }) = command else { return };
+                let Some(command) = command else { return };
                 attempt += 1;
                 reporter.connecting(attempt);
-                let result = tokio::time::timeout(
-                    REQUEST_TIMEOUT,
-                    load_layout(&mut client, &mut adapter, &mut handshake),
-                )
-                .await
-                .map_err(|_| "home screen layout request timed out".to_string())
-                .and_then(|result| result);
-                match &result {
-                    Ok(layout) => {
-                        reporter.ready(attempt);
-                        tracing::info!(
-                            apps = layout.apps.len(),
-                            pages = layout.page_count,
-                            metrics_available = layout.metrics.is_some(),
-                            truncated = layout.truncated,
-                            "home screen application locations listed"
-                        );
+                match command {
+                    HomeScreenCommand::Get { reply } => {
+                        let result = tokio::time::timeout(
+                            REQUEST_TIMEOUT,
+                            load_layout(&mut client, &mut adapter, &mut handshake),
+                        )
+                        .await
+                        .map_err(|_| "home screen layout request timed out".to_string())
+                        .and_then(|result| result);
+                        match &result {
+                            Ok(layout) => {
+                                reporter.ready(attempt);
+                                tracing::info!(
+                                    apps = layout.apps.len(),
+                                    pages = layout.page_count,
+                                    metrics_available = layout.metrics.is_some(),
+                                    truncated = layout.truncated,
+                                    "home screen application locations listed"
+                                );
+                            }
+                            Err(error) => {
+                                client.take();
+                                reporter.unavailable(attempt, error.clone());
+                            }
+                        }
+                        let _ = reply.send(result);
                     }
-                    Err(error) => {
-                        client.take();
-                        reporter.unavailable(attempt, error.clone());
+                    HomeScreenCommand::Wallpaper { kind, reply } => {
+                        let result = tokio::time::timeout(
+                            REQUEST_TIMEOUT,
+                            load_wallpaper(kind, &mut client, &mut adapter, &mut handshake),
+                        )
+                        .await
+                        .map_err(|_| format!("{} wallpaper request timed out", kind.label()))
+                        .and_then(|result| result);
+                        match &result {
+                            Ok(image) => {
+                                reporter.ready(attempt);
+                                tracing::info!(
+                                    wallpaper = kind.label(),
+                                    bytes = image.len(),
+                                    "device wallpaper preview loaded"
+                                );
+                            }
+                            Err(error) => {
+                                client.take();
+                                reporter.unavailable(attempt, error.clone());
+                            }
+                        }
+                        let _ = reply.send(result);
                     }
                 }
-                let _ = reply.send(result);
             }
         }
     }
 }
 
-async fn load_layout(
+async fn load_wallpaper(
+    kind: WallpaperKind,
     client: &mut Option<SpringBoardServicesClient>,
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
-) -> Result<HomeScreenLayout, String> {
+) -> Result<Vec<u8>, String> {
+    ensure_client(client, adapter, handshake).await?;
+    let client = client
+        .as_mut()
+        .expect("SpringBoard home screen client initialized");
+    let image = match kind {
+        WallpaperKind::Home => client.get_home_screen_wallpaper_preview_pngdata().await,
+        WallpaperKind::Lock => client.get_lock_screen_wallpaper_preview_pngdata().await,
+    }
+    .map_err(|error| format!("unable to read {} wallpaper: {error:?}", kind.label()))?;
+    validate_wallpaper_png(image)
+}
+
+async fn ensure_client(
+    client: &mut Option<SpringBoardServicesClient>,
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+) -> Result<(), String> {
     if client.is_none() {
         *client = Some(
             tokio::time::timeout(
@@ -146,6 +235,15 @@ async fn load_layout(
             .map_err(|error| format!("SpringBoard home screen service unavailable: {error:?}"))?,
         );
     }
+    Ok(())
+}
+
+async fn load_layout(
+    client: &mut Option<SpringBoardServicesClient>,
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+) -> Result<HomeScreenLayout, String> {
+    ensure_client(client, adapter, handshake).await?;
     let value = client
         .as_mut()
         .expect("SpringBoard home screen client initialized")
@@ -155,6 +253,30 @@ async fn load_layout(
     let mut layout = parse_layout(&value)?;
     layout.metrics = load_metrics(adapter, handshake).await;
     Ok(layout)
+}
+
+fn validate_wallpaper_png(image: Vec<u8>) -> Result<Vec<u8>, String> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if image.len() > MAX_WALLPAPER_BYTES {
+        return Err("device wallpaper exceeds the 32 MiB limit".into());
+    }
+    if image.len() < 24
+        || &image[..8] != PNG_SIGNATURE
+        || &image[12..16] != b"IHDR"
+        || u32::from_be_bytes(image[8..12].try_into().unwrap()) != 13
+    {
+        return Err("device returned an invalid PNG wallpaper".into());
+    }
+    let width = u32::from_be_bytes(image[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(image[20..24].try_into().unwrap());
+    if width == 0
+        || height == 0
+        || width > MAX_WALLPAPER_DIMENSION
+        || height > MAX_WALLPAPER_DIMENSION
+    {
+        return Err("device returned unsupported wallpaper dimensions".into());
+    }
+    Ok(image)
 }
 
 async fn load_metrics(
@@ -455,5 +577,26 @@ mod tests {
             ("homeScreenIconMaxPages", Value::from(256_u64)),
         ]);
         assert_eq!(normalize_metrics(&invalid), None);
+    }
+
+    #[test]
+    fn wallpaper_previews_are_png_and_dimension_bounded() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&430_u32.to_be_bytes());
+        png.extend_from_slice(&932_u32.to_be_bytes());
+        assert_eq!(validate_wallpaper_png(png.clone()).unwrap(), png);
+
+        let mut oversized = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        oversized.extend_from_slice(&(MAX_WALLPAPER_DIMENSION + 1).to_be_bytes());
+        oversized.extend_from_slice(&932_u32.to_be_bytes());
+        assert!(validate_wallpaper_png(oversized).is_err());
+        assert!(validate_wallpaper_png(vec![0; 24]).is_err());
+    }
+
+    #[test]
+    fn wallpaper_kind_accepts_only_public_route_values() {
+        assert_eq!(WallpaperKind::parse("home"), Some(WallpaperKind::Home));
+        assert_eq!(WallpaperKind::parse("lock"), Some(WallpaperKind::Lock));
+        assert_eq!(WallpaperKind::parse("homescreen"), None);
     }
 }

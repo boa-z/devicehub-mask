@@ -3183,8 +3183,22 @@ impl DeviceManagement {
                             ("home screen service is unavailable", command)
                         }
                     };
-                    let crate::home_screen::HomeScreenCommand::Get { reply } = command;
-                    let _ = reply.send(Err(reason.into()));
+                    command.reject(reason);
+                }
+                None
+            }
+            InputCmd::GetWallpaper { kind, reply } => {
+                let command = crate::home_screen::HomeScreenCommand::Wallpaper { kind, reply };
+                if let Err(error) = self.services.home_screen.try_send(command) {
+                    let (reason, command) = match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
+                            ("home screen service is busy", command)
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
+                            ("home screen service is unavailable", command)
+                        }
+                    };
+                    command.reject(reason);
                 }
                 None
             }
@@ -4860,6 +4874,7 @@ async fn dispatch(
         | InputCmd::ListApps { .. }
         | InputCmd::ListCompanionDevices(_)
         | InputCmd::GetHomeScreenLayout(_)
+        | InputCmd::GetWallpaper { .. }
         | InputCmd::RunningProcess(_)
         | InputCmd::AppLifecycle(_)
         | InputCmd::WdaAutomation(_)

@@ -28,6 +28,7 @@
 - 可经二次确认显式撤销 USB Lockdown 信任并删除电脑配对记录，同时报告部分成功状态。
 - 显示开发者模式与开发者磁盘镜像状态；可显示开发者模式设置入口，并显式挂载、取消或卸载 匹配的本地镜像文件集。
 - 通过 CompanionProxy 读取已配对 Apple Watch 元数据，但不控制 Watch。
+- 仅在用户显式点击后通过 SpringBoardServices 打开主屏幕或锁定屏幕的只读壁纸预览；预览不会持久化，也不通过 MCP 开放。
 - 创建或续传未加密的本地 MobileBackup2 备份，支持进度、取消和可选强制完整备份。
 - 采集有界且可取消的 CoreDevice sysdiagnose 归档。
 - 通过 Diagnostics Relay 提供需要确认的**重启设备**和**关闭设备**。两者都会主动结束当前 设备会话；关机后必须手动重新开机。
@@ -87,7 +88,7 @@
 | 全设备/按进程网络抓包与蓝牙抓包 | pcapd 数据包 PID/effective PID 元数据和 BTPacketLogger |
 | Watch 元数据 | CompanionProxy |
 | App 图标 | CoreDevice AppService，回退 SpringBoardServices |
-| 主屏幕布局 | SpringBoardServices |
+| 主屏幕布局与按需壁纸预览 | SpringBoardServices |
 | 崩溃报告与归一化摘要 | CrashReportCopyMobile |
 | 语义自动化 | WebDriverAgent 和 XCTest runner 服务 |
 
