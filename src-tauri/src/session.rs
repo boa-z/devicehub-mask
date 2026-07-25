@@ -4,6 +4,7 @@
 
 mod clipboard;
 mod media;
+mod orientation;
 mod rtcp;
 
 use std::collections::HashMap;
@@ -42,7 +43,6 @@ use idevice::{
         RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
     },
     rsd::RsdHandshake,
-    springboardservices::{InterfaceOrientation, SpringBoardServicesClient},
     tcp::handle::{AdapterHandle, UdpSocketHandle},
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
     utils::installation::{install_package_with_callback, upgrade_package_with_callback},
@@ -73,6 +73,7 @@ use media::{
     AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RtpVideoClock,
     RunningStats, audio_decoder_restart_backoff,
 };
+use orientation::OrientationWatcher;
 use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -115,57 +116,6 @@ pub(crate) const APP_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(22)
 /// short enough to pick up a real stream restart promptly.
 const SSRC_TAKEOVER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
-/// Keep the display rotation in sync when an app switches between portrait and
-/// landscape. The screen stream itself is always native portrait.
-const ORIENTATION_POLL_INTERVAL: Duration = Duration::from_millis(500);
-
-fn orientation_from_interface(orientation: InterfaceOrientation) -> Option<Orientation> {
-    match orientation {
-        InterfaceOrientation::Portrait => Some(Orientation::Portrait),
-        InterfaceOrientation::PortraitUpsideDown => Some(Orientation::PortraitUpsideDown),
-        // SpringBoard's interface labels describe the opposite landscape edge
-        // from CoreDevice's screen-stream orientation labels.
-        InterfaceOrientation::LandscapeLeft => Some(Orientation::LandscapeRight),
-        InterfaceOrientation::LandscapeRight => Some(Orientation::LandscapeLeft),
-        InterfaceOrientation::Unknown => None,
-    }
-}
-
-async fn refresh_interface_orientation(
-    springboard: &mut SpringBoardServicesClient,
-    orientation_view: &OrientationSlot,
-) -> Result<(), IdeviceError> {
-    let Some(orientation) =
-        orientation_from_interface(springboard.get_interface_orientation().await?)
-    else {
-        return Ok(());
-    };
-
-    if orientation_view.get() != orientation {
-        tracing::info!(?orientation, "device interface orientation changed");
-        orientation_view.set(orientation);
-    }
-    Ok(())
-}
-
-async fn watch_interface_orientation(
-    mut springboard: SpringBoardServicesClient,
-    orientation_view: OrientationSlot,
-) {
-    let mut reported_error = false;
-    loop {
-        match refresh_interface_orientation(&mut springboard, &orientation_view).await {
-            Ok(()) => reported_error = false,
-            Err(error) if !reported_error => {
-                tracing::warn!("could not refresh device interface orientation: {error:?}");
-                reported_error = true;
-            }
-            Err(_) => {}
-        }
-        tokio::time::sleep(ORIENTATION_POLL_INTERVAL).await;
-    }
-}
-
 /// How often to re-scan for attached devices while idle, so the picker reflects
 /// devices coming and going without a manual refresh.
 const IDLE_RESCAN: Duration = Duration::from_secs(2);
@@ -1695,23 +1645,8 @@ async fn run(
     // The media stream always exposes a native portrait framebuffer, including
     // when a landscape-only game has rotated its content inside that frame.
     // SpringBoard provides the current interface orientation without changing it.
-    let springboard = match SpringBoardServicesClient::connect_rsd(&mut adapter, &mut handshake)
-        .await
-    {
-        Ok(mut client) => {
-            if let Err(error) = refresh_interface_orientation(&mut client, &views.orientation).await
-            {
-                tracing::warn!("could not read initial device interface orientation: {error:?}");
-            }
-            Some(client)
-        }
-        Err(error) => {
-            tracing::warn!(
-                "no SpringBoard orientation service; using rotation command state: {error:?}"
-            );
-            None
-        }
-    };
+    let orientation_watcher =
+        OrientationWatcher::connect(&mut adapter, &mut handshake, &views.orientation).await;
 
     let app_service = match AppServiceClient::connect_rsd(&mut adapter, &mut handshake).await {
         Ok(client) => Some(client),
@@ -1756,8 +1691,8 @@ async fn run(
     let hevc_queue = Arc::new(HevcQueue::new(HEVC_QUEUE_MAX_BYTES));
     let orientation_watch_view = views.orientation.clone();
     let orientation_task = async move {
-        match springboard {
-            Some(client) => watch_interface_orientation(client, orientation_watch_view).await,
+        match orientation_watcher {
+            Some(watcher) => watcher.run(orientation_watch_view).await,
             None => std::future::pending::<()>().await,
         }
     };
@@ -5615,30 +5550,6 @@ mod tests {
         oversized.resize(12 + 0x2000, 0);
         assert!(add_rfc3640_au_header(&oversized).is_err());
         assert!(add_rfc3640_au_header(&[0x90, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4]).is_err());
-    }
-
-    #[test]
-    fn maps_springboard_interface_orientations() {
-        assert_eq!(
-            orientation_from_interface(InterfaceOrientation::Portrait),
-            Some(Orientation::Portrait)
-        );
-        assert_eq!(
-            orientation_from_interface(InterfaceOrientation::PortraitUpsideDown),
-            Some(Orientation::PortraitUpsideDown)
-        );
-        assert_eq!(
-            orientation_from_interface(InterfaceOrientation::LandscapeLeft),
-            Some(Orientation::LandscapeRight)
-        );
-        assert_eq!(
-            orientation_from_interface(InterfaceOrientation::LandscapeRight),
-            Some(Orientation::LandscapeLeft)
-        );
-        assert_eq!(
-            orientation_from_interface(InterfaceOrientation::Unknown),
-            None
-        );
     }
 
     #[test]
