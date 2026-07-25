@@ -3,6 +3,11 @@ import type { DeviceApp, DeviceCrashReport, DeviceEvent, DeviceRegionalSettings,
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
 export type DeviceAppSort = "name" | "storage";
+export const APP_RENDER_BATCH_SIZE = 30;
+
+export function nextAppRenderLimit(current: number, total: number): number {
+  return Math.min(total, Math.max(APP_RENDER_BATCH_SIZE, current + APP_RENDER_BATCH_SIZE));
+}
 
 export function deviceAppScopeQuery(includeSystem: boolean, includeAppClips: boolean): string {
   const params = new URLSearchParams();

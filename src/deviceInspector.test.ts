@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
+import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -40,6 +40,15 @@ const apps: DeviceApp[] = [
     is_running: null,
   },
 ];
+
+describe("incremental app rendering", () => {
+  it("grows in bounded batches and stops at the result count", () => {
+    expect(nextAppRenderLimit(0, 150)).toBe(APP_RENDER_BATCH_SIZE);
+    expect(nextAppRenderLimit(APP_RENDER_BATCH_SIZE, 150)).toBe(APP_RENDER_BATCH_SIZE * 2);
+    expect(nextAppRenderLimit(140, 150)).toBe(150);
+    expect(nextAppRenderLimit(0, 12)).toBe(12);
+  });
+});
 
 const profiles: ProvisioningProfile[] = [
   {

@@ -3078,6 +3078,10 @@ impl DeviceManagement {
                 include_app_clips,
                 reply,
             } => {
+                if reply.is_closed() {
+                    tracing::debug!("discarding cancelled app list request");
+                    return None;
+                }
                 let started = Instant::now();
                 let mut recovered = false;
                 let extended_scope = extended_app_scope(include_system, include_app_clips);
@@ -3096,6 +3100,10 @@ impl DeviceManagement {
                 let result = match first {
                     Ok(apps) => Ok(apps),
                     Err(first_error) => {
+                        if reply.is_closed() {
+                            tracing::debug!("app list caller disconnected before recovery");
+                            return None;
+                        }
                         tracing::warn!(
                             error = %first_error,
                             extended_scope,

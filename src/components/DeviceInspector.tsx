@@ -37,12 +37,13 @@ import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
-import { appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type WallpaperKind = "home" | "lock";
+const APP_CATALOG_CACHE_MS = 30_000;
 
 type Props = {
   activeUdid: string | null;
@@ -146,6 +147,7 @@ export function DeviceInspector({
   const [companionError, setCompanionError] = useState<string | null>(null);
   const [companionLoading, setCompanionLoading] = useState(false);
   const [apps, setApps] = useState<DeviceApp[]>([]);
+  const [appRenderLimit, setAppRenderLimit] = useState(APP_RENDER_BATCH_SIZE);
   const [wdaRunnerStatus, setWdaRunnerStatus] = useState<WdaRunnerStatus | null>(null);
   const [homeScreenLayout, setHomeScreenLayout] = useState<HomeScreenLayout | null>(null);
   const [homeScreenError, setHomeScreenError] = useState<string | null>(null);
@@ -192,6 +194,12 @@ export function DeviceInspector({
   const handledDeveloperImageState = useRef<string>("");
   const homeScreenRequest = useRef(0);
   const appListRequest = useRef(0);
+  const inspectorLoadRequest = useRef(0);
+  const appListAbort = useRef<AbortController | null>(null);
+  const appCatalogCache = useRef(new Map<string, { loadedAt: number; apps: DeviceApp[] }>());
+  const appListContainer = useRef<HTMLDivElement>(null);
+  const appListSentinel = useRef<HTMLDivElement>(null);
+  const homeScreenLoaded = useRef(false);
   const appScopesRequest = useRef(0);
   const wallpaperRequest = useRef(0);
   const showSystemAppsRef = useRef(false);
@@ -203,7 +211,10 @@ export function DeviceInspector({
     setHomeScreenError(null);
     try {
       const layout = await readJson<HomeScreenLayout>(await request("/api/device/home-screen"));
-      if (homeScreenRequest.current === requestId) setHomeScreenLayout(layout);
+      if (homeScreenRequest.current === requestId) {
+        homeScreenLoaded.current = true;
+        setHomeScreenLayout(layout);
+      }
     } catch (layoutError) {
       if (homeScreenRequest.current === requestId) {
         setHomeScreenLayout(null);
@@ -240,13 +251,33 @@ export function DeviceInspector({
   const loadApps = useCallback(async (
     includeSystem = showSystemAppsRef.current,
     includeAppClips = showAppClipsRef.current,
+    force = false,
   ) => {
+    const cacheKey = `${includeSystem}:${includeAppClips}`;
+    const cached = appCatalogCache.current.get(cacheKey);
+    if (!force && cached && performance.now() - cached.loadedAt < APP_CATALOG_CACHE_MS) {
+      setApps(cached.apps);
+      return true;
+    }
+    appListAbort.current?.abort();
+    const controller = new AbortController();
+    appListAbort.current = controller;
     const requestId = ++appListRequest.current;
     const suffix = deviceAppScopeQuery(includeSystem, includeAppClips);
-    const nextApps = await readJson<DeviceApp[]>(await request(`/api/device/apps${suffix}`));
-    if (appListRequest.current !== requestId) return false;
-    setApps(nextApps);
-    return true;
+    try {
+      const nextApps = await readJson<DeviceApp[]>(await request(`/api/device/apps${suffix}`, {
+        signal: controller.signal,
+      }));
+      if (appListRequest.current !== requestId) return false;
+      appCatalogCache.current.set(cacheKey, { loadedAt: performance.now(), apps: nextApps });
+      setApps(nextApps);
+      return true;
+    } catch (loadError) {
+      if (controller.signal.aborted) return false;
+      throw loadError;
+    } finally {
+      if (appListAbort.current === controller) appListAbort.current = null;
+    }
   }, [request]);
 
   const loadWdaRunnerStatus = useCallback(async () => {
@@ -275,8 +306,9 @@ export function DeviceInspector({
     return status;
   }, [request]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     if (!activeUdid) return;
+    const requestId = ++inspectorLoadRequest.current;
     setLoading(true);
     setError(null);
     try {
@@ -296,7 +328,11 @@ export function DeviceInspector({
           }
         }
       } else if (tab === "apps") {
-        await Promise.all([loadApps(), loadHomeScreen(), loadWdaRunnerStatus()]);
+        const loaded = await loadApps(undefined, undefined, force);
+        if (loaded) {
+          if (force || !homeScreenLoaded.current) void loadHomeScreen();
+          void loadWdaRunnerStatus();
+        }
       } else if (tab === "profiles") {
         setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
       } else if (tab === "crashes") {
@@ -305,15 +341,20 @@ export function DeviceInspector({
         setCrashReportsTruncated(result.truncated);
       }
     } catch (loadError) {
-      setError(String(loadError));
+      if (inspectorLoadRequest.current === requestId) setError(String(loadError));
     } finally {
-      setLoading(false);
+      if (inspectorLoadRequest.current === requestId) setLoading(false);
     }
   }, [activeUdid, loadApps, loadHomeScreen, loadWdaRunnerStatus, request, tab]);
 
   useEffect(() => {
+    inspectorLoadRequest.current += 1;
     homeScreenRequest.current += 1;
     appListRequest.current += 1;
+    appListAbort.current?.abort();
+    appListAbort.current = null;
+    appCatalogCache.current.clear();
+    homeScreenLoaded.current = false;
     appScopesRequest.current += 1;
     wallpaperRequest.current += 1;
     showSystemAppsRef.current = false;
@@ -366,8 +407,12 @@ export function DeviceInspector({
   }, [wallpaperPreview?.source]);
 
   useEffect(() => {
-    void load();
+    void load(false);
   }, [load]);
+
+  useEffect(() => {
+    if (tab !== "apps") appListAbort.current?.abort();
+  }, [tab]);
 
   useEffect(() => {
     if (!activeUdid) return;
@@ -460,7 +505,7 @@ export function DeviceInspector({
   useEffect(() => {
     if (!deviceEvent || deviceEvent.sequence <= handledDeviceEvent.current) return;
     handledDeviceEvent.current = deviceEvent.sequence;
-    if (shouldRefreshDeviceInspector(deviceEvent.kind, tab)) void load();
+    if (shouldRefreshDeviceInspector(deviceEvent.kind, tab)) void load(true);
   }, [deviceEvent, load, tab]);
 
   const readAppOperation = useCallback(
@@ -524,7 +569,7 @@ export function DeviceInspector({
     handledOperation.current = appOperation.id;
     if (appOperation.state === "succeeded") {
       void message.success(t(`deviceInspector.appOperationResult.${appOperation.kind ?? "install"}`));
-      if (tab === "apps") void load();
+      if (tab === "apps") void load(true);
     } else if (appOperation.state === "failed") {
       void showErrorMessage(t("deviceInspector.appOperationFailed", { error: appOperation.error ?? "" }));
     } else {
@@ -540,6 +585,32 @@ export function DeviceInspector({
     ),
     [appSort, apps, i18n.language, i18n.resolvedLanguage, query],
   );
+  const renderedApps = useMemo(
+    () => visibleApps.slice(0, appRenderLimit),
+    [appRenderLimit, visibleApps],
+  );
+
+  useEffect(() => {
+    setAppRenderLimit(Math.min(APP_RENDER_BATCH_SIZE, visibleApps.length));
+    appListContainer.current?.scrollTo({ top: 0 });
+  }, [appSort, apps, query, showAppClips, showSystemApps, visibleApps.length]);
+
+  useEffect(() => {
+    const root = appListContainer.current;
+    const sentinel = appListSentinel.current;
+    if (tab !== "apps" || !root || !sentinel || appRenderLimit >= visibleApps.length) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setAppRenderLimit(visibleApps.length);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setAppRenderLimit((current) => nextAppRenderLimit(current, visibleApps.length));
+      }
+    }, { root, rootMargin: "400px 0px" });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [appRenderLimit, tab, visibleApps.length]);
   const homeScreenLocations = useMemo(
     () => new Map(homeScreenLayout?.apps.map((location) => [location.bundle_id, location]) ?? []),
     [homeScreenLayout],
@@ -578,7 +649,7 @@ export function DeviceInspector({
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       void message.success(t(app.is_running ? "deviceInspector.appRestarted" : "deviceInspector.appLaunched", { name: app.name }));
       onAppLaunched?.(app.bundle_id);
-      await loadApps();
+      await loadApps(undefined, undefined, true);
     } catch (launchError) {
       void showErrorMessage(t("deviceInspector.appLaunchFailed", { error: String(launchError) }));
     } finally {
@@ -593,7 +664,7 @@ export function DeviceInspector({
       if (!response.ok) throw new Error((await response.text()) || response.statusText);
       const result = await response.json() as { was_running: boolean };
       void message.success(t(result.was_running ? "deviceInspector.appStopped" : "deviceInspector.appAlreadyStopped", { name: app.name }));
-      await loadApps();
+      await loadApps(undefined, undefined, true);
     } catch (stopError) {
       void showErrorMessage(t("deviceInspector.appStopFailed", { error: String(stopError) }));
     } finally {
@@ -1283,7 +1354,7 @@ export function DeviceInspector({
             icon={<ReloadOutlined />}
             loading={loading}
             disabled={!activeUdid}
-            onClick={() => void load()}
+            onClick={() => void load(true)}
           />
         </Tooltip>
       </div>
@@ -1773,8 +1844,8 @@ export function DeviceInspector({
             </div>
           )}
           <div className="device-app-count">{t("deviceInspector.appCount", { count: visibleApps.length })}</div>
-          <div className="device-app-list">
-            {visibleApps.map((app) => {
+          <div className="device-app-list" ref={appListContainer}>
+            {renderedApps.map((app) => {
               const location = homeScreenLocations.get(app.bundle_id);
               const folder = location?.folders.at(-1);
               const locationLabel = folder
@@ -1921,6 +1992,7 @@ export function DeviceInspector({
                 </div>
               </div>;
             })}
+            {renderedApps.length < visibleApps.length && <div ref={appListSentinel} className="device-app-list-sentinel" />}
             {visibleApps.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noApps")} />}
           </div>
         </div>

@@ -188,7 +188,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .ipa-preflight-details dd { min-width: 0; margin: 0; color: #d8dedc; overflow-wrap: anywhere; }
 .device-app-count { color: #7f8a89; font-size: 11px; font-variant-numeric: tabular-nums; }
 .device-app-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
-.device-app-row { min-height: 72px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.device-app-row { min-height: 72px; padding: 9px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 10px; content-visibility: auto; contain-intrinsic-size: auto 90px; }
+.device-app-list-sentinel { height: 1px; }
 .device-app-icon { width: 40px; height: 40px; border-radius: 8px; background: #2c5550; color: #edf2f0; display: grid; place-items: center; font-size: 16px; font-weight: 700; }
 .device-app-icon img { width: 40px; height: 40px; border-radius: inherit; object-fit: cover; }
 .device-app-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
