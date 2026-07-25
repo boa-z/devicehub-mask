@@ -1,11 +1,10 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Query, Request, State, WebSocketUpgrade};
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
@@ -13,19 +12,22 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
-use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
-use crate::hid::TouchContact;
 use crate::protocol::{
-    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, InputCmd, InputSink,
-    LocationStatus, Orientation, PairDeviceResult, RotateDir, VideoCounters, norm, unrotate_norm,
-    validate_device_name, validate_paste_text,
+    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, HARDWARE_BUTTON_NAMES,
+    InputCmd, InputSink, LocationStatus, PairDeviceResult, VideoCounters, validate_device_name,
+    validate_paste_text,
 };
 use crate::supervisor::ServiceRegistry;
+#[cfg(test)]
+use crate::websocket_input::{
+    ClientVideoFeedback, WebContact, handle_client_message, send_all_up, valid_frontend_metrics,
+    valid_keyboard_usage, validate_contacts,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -45,41 +47,6 @@ pub struct AppState {
     pub services: ServiceRegistry,
     pub input: InputSink,
     pub profile_dir: Arc<PathBuf>,
-}
-
-#[derive(Serialize)]
-struct DeviceView {
-    id: String,
-    udid: String,
-    name: String,
-    connection: &'static str,
-    pairing: crate::protocol::DevicePairingState,
-}
-
-#[derive(Serialize)]
-struct StatusView {
-    status: String,
-    active_udid: Option<String>,
-    active_device_id: Option<String>,
-    error: Option<String>,
-    orientation: &'static str,
-    devices: Vec<DeviceView>,
-    location: LocationStatus,
-}
-
-#[derive(Serialize)]
-struct StreamMetricsView {
-    transport_active: bool,
-    source_fps: f64,
-    decoded_fps: f64,
-    published_fps: f64,
-    sent_fps: f64,
-    backend_dropped_fps: f64,
-    frame_age_ms: f64,
-    websocket_send_ms: f64,
-    decoder_accept_ms: f64,
-    presentation_ack_ms: f64,
-    megabits_per_second: f64,
 }
 
 #[derive(Serialize)]
@@ -103,16 +70,6 @@ struct Profile {
     #[serde(default = "default_hardware_bindings", rename = "hardwareBindings")]
     hardware_bindings: BTreeMap<String, String>,
 }
-
-const HARDWARE_BUTTON_NAMES: [&str; 7] = [
-    "home",
-    "lock",
-    "volume-up",
-    "volume-down",
-    "mute",
-    "siri",
-    "action",
-];
 
 fn default_hardware_bindings() -> BTreeMap<String, String> {
     HARDWARE_BUTTON_NAMES
@@ -357,8 +314,8 @@ fn private_api_authorized(headers: &HeaderMap, token: &str) -> bool {
     bearer_matches || websocket_protocol_matches
 }
 
-async fn status(State(state): State<AppState>) -> Json<StatusView> {
-    Json(status_snapshot(&state))
+async fn status(State(state): State<AppState>) -> Json<crate::web_status::StatusView> {
+    Json(crate::web_status::snapshot(&state.application))
 }
 
 async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
@@ -923,30 +880,6 @@ async fn stop_device_logs(State(state): State<AppState>) -> StatusCode {
 async fn clear_device_logs(State(state): State<AppState>) -> StatusCode {
     state.application.device_logs.clear();
     StatusCode::NO_CONTENT
-}
-
-fn status_snapshot(state: &AppState) -> StatusView {
-    StatusView {
-        status: state.application.status.get(),
-        active_udid: state.application.active.get(),
-        active_device_id: state.application.active.selection_id(),
-        error: state.application.error.get(),
-        orientation: orientation_name(state.application.orientation.get()),
-        devices: state
-            .application
-            .devices
-            .get()
-            .into_iter()
-            .map(|device| DeviceView {
-                id: device.id,
-                udid: device.udid,
-                name: device.name,
-                connection: device.connection.label(),
-                pairing: device.pairing,
-            })
-            .collect(),
-        location: state.application.location.get(),
-    }
 }
 
 async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
@@ -3091,739 +3024,23 @@ fn collect_mapping_keys<'a>(value: &'a serde_json::Value, keys: &mut HashSet<&'a
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.protocols(["devicehub-mask"])
-        .on_upgrade(move |socket| websocket(socket, state))
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMessage {
-    MultiTouch {
-        contacts: Vec<WebContact>,
-    },
-    Button {
-        name: String,
-    },
-    ButtonDown {
-        name: String,
-    },
-    ButtonUp {
-        name: String,
-    },
-    KeyboardDown {
-        usage: u64,
-    },
-    KeyboardUp {
-        usage: u64,
-    },
-    Text {
-        text: String,
-    },
-    Rotate {
-        direction: RotateRequest,
-    },
-    VideoDemand {
-        active: bool,
-    },
-    BrowserFrameAccepted {
-        sequence: String,
-    },
-    FramePresented {
-        sequence: String,
-    },
-    BrowserVideoKeyframe,
-    BrowserDecoderError {
-        message: String,
-    },
-    FrontendMetrics {
-        window_ms: f64,
-        received_frames: u64,
-        replaced_frames: u64,
-        presented_frames: u64,
-        decoder_output_ms: f64,
-        canvas_draw_ms: f64,
-        decoder_congestions: u64,
-        decode_errors: u64,
-    },
-}
-
-#[derive(Deserialize)]
-struct WebContact {
-    identity: u8,
-    touching: bool,
-    x: f32,
-    y: f32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum RotateRequest {
-    Left,
-    Right,
-}
-
-async fn websocket(socket: WebSocket, state: AppState) {
-    let (mut sender, mut receiver) = socket.split();
-    let send_state = state.clone();
-    let max_in_flight_frames = configured_in_flight_frames(
-        std::env::var_os("DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES").as_deref(),
-    );
-    tracing::debug!(max_in_flight_frames, "configured video frame pipeline");
-    let frame_pacer = Arc::new(FramePacer::new(max_in_flight_frames));
-    // A newly connected WebView must opt into video. Control/status messages stay
-    // available on pages that do not render the device stream.
-    let video_active = Arc::new(AtomicBool::new(false));
-    let browser_resync = Arc::new(AtomicBool::new(true));
-    let send_pacer = frame_pacer.clone();
-    let send_video_active = video_active.clone();
-    let send_browser_resync = browser_resync.clone();
-    let send_task = tokio::spawn(async move {
-        let mut last_status = String::new();
-        let mut browser_frame_rx = send_state.browser_frames.subscribe();
-        let mut clipboard_rx = send_state.clipboard.subscribe();
-        let mut device_event_rx = send_state.application.device_events.subscribe();
-        let mut status_tick = tokio::time::interval(Duration::from_millis(250));
-        status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
-        metrics_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut browser_resync_tick = tokio::time::interval(Duration::from_secs(1));
-        browser_resync_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        browser_resync_tick.tick().await;
-        let mut metrics_started = Instant::now();
-        let mut metrics_counters = send_state.video_counters.snapshot();
-        let mut metrics_browser_frame_version = send_state.browser_frames.version();
-        let mut sent_frames = 0_u64;
-        let mut sent_bytes = 0_u64;
-        let mut frame_age = Duration::ZERO;
-        let mut websocket_send_time = Duration::ZERO;
-        let mut skipped_for_backpressure = 0_u64;
-        let mut metrics_log_windows = 0_u8;
-        loop {
-            tokio::select! {
-                _ = status_tick.tick() => {
-                    let snapshot = status_snapshot(&send_state);
-                    if let Ok(text) = serde_json::to_string(
-                        &json!({"type": "status", "payload": snapshot}),
-                    ) && text != last_status {
-                        last_status = text.clone();
-                        if sender.send(Message::Text(text.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                browser_frame = browser_frame_rx.recv() => {
-                    match browser_frame {
-                        Ok(frame) => {
-                            if !send_video_active.load(Ordering::Acquire) {
-                                continue;
-                            }
-                            let completes_resync = match browser_frame_decision(
-                                frame.key,
-                                frame.sequence,
-                                &send_browser_resync,
-                                &send_pacer,
-                            ) {
-                                BrowserFrameDecision::Send { completes_resync } => completes_resync,
-                                BrowserFrameDecision::SkipForResync => continue,
-                                BrowserFrameDecision::Backpressured { entered_resync } => {
-                                    skipped_for_backpressure += 1;
-                                    if entered_resync {
-                                        tracing::warn!(
-                                            max_in_flight_frames,
-                                            "browser decoder ingress credits exhausted; resyncing from a keyframe"
-                                        );
-                                        send_state.browser_frames.request_keyframe();
-                                    }
-                                    continue;
-                                }
-                            };
-                            let packet = crate::browser_video::encode_packet(&frame);
-                            frame_age += Instant::now().saturating_duration_since(frame.published_at);
-                            sent_frames += 1;
-                            sent_bytes += packet.len() as u64;
-                            let send_started = Instant::now();
-                            if sender.send(Message::Binary(packet.into())).await.is_err() {
-                                send_pacer.release(FrameCredit::BrowserAccepted(frame.sequence));
-                                break;
-                            }
-                            if completes_resync {
-                                send_browser_resync.store(false, Ordering::Release);
-                            }
-                            websocket_send_time += send_started.elapsed();
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            tracing::warn!(skipped, "browser video client lagged; requesting keyframe");
-                            send_browser_resync.store(true, Ordering::Release);
-                            browser_frame_rx = browser_frame_rx.resubscribe();
-                            send_state.browser_frames.request_keyframe();
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-                _ = browser_resync_tick.tick(), if send_video_active.load(Ordering::Acquire)
-                    && send_browser_resync.load(Ordering::Acquire) => {
-                    tracing::debug!("browser video resync still waiting; requesting another keyframe");
-                    send_state.browser_frames.request_keyframe();
-                }
-                clipboard = clipboard_rx.recv() => {
-                    match clipboard {
-                        Ok(event) => {
-                            let Ok(text) = serde_json::to_string(
-                                &json!({"type": "clipboard", "payload": event}),
-                            ) else {
-                                continue;
-                            };
-                            if sender.send(Message::Text(text.into())).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            tracing::debug!(skipped, "WebSocket clipboard receiver skipped stale events");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-                device_event = device_event_rx.recv() => {
-                    match device_event {
-                        Ok(event) => {
-                            let Ok(text) = serde_json::to_string(
-                                &json!({"type": "device_event", "payload": event}),
-                            ) else {
-                                continue;
-                            };
-                            if sender.send(Message::Text(text.into())).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            tracing::debug!(skipped, "WebSocket device event receiver skipped stale events");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-                _ = metrics_tick.tick() => {
-                    let elapsed = metrics_started.elapsed().as_secs_f64().max(f64::EPSILON);
-                    let counters = send_state.video_counters.snapshot();
-                    let browser_version = send_state.browser_frames.version();
-                    let source_frames = counters.source_frames.wrapping_sub(metrics_counters.source_frames);
-                    let decoded_frames = counters.decoded_frames.wrapping_sub(metrics_counters.decoded_frames);
-                    let transport_active = counters.transport_events != metrics_counters.transport_events;
-                    let published_frames = browser_version.wrapping_sub(metrics_browser_frame_version);
-                    let pacer = send_pacer.take_metrics();
-                    let metrics = StreamMetricsView {
-                        transport_active,
-                        source_fps: source_frames as f64 / elapsed,
-                        decoded_fps: decoded_frames as f64 / elapsed,
-                        published_fps: published_frames as f64 / elapsed,
-                        sent_fps: sent_frames as f64 / elapsed,
-                        backend_dropped_fps: published_frames.saturating_sub(sent_frames) as f64 / elapsed,
-                        frame_age_ms: duration_average_ms(frame_age, sent_frames),
-                        websocket_send_ms: duration_average_ms(websocket_send_time, sent_frames),
-                        decoder_accept_ms: pacer.decoder_accept_average_ms,
-                        presentation_ack_ms: pacer.presentation_average_ms,
-                        megabits_per_second: sent_bytes as f64 * 8.0 / elapsed / 1_000_000.0,
-                    };
-                    metrics_log_windows += 1;
-                    if metrics_log_windows >= 5 {
-                        tracing::debug!(
-                            target: "devicehub_mask::perf",
-                            decoded_fps = metrics.decoded_fps,
-                            source_fps = metrics.source_fps,
-                            transport_active = metrics.transport_active,
-                            published_fps = metrics.published_fps,
-                            sent_fps = metrics.sent_fps,
-                            backend_dropped_fps = metrics.backend_dropped_fps,
-                            skipped_for_backpressure,
-                            frame_age_ms = metrics.frame_age_ms,
-                            websocket_send_ms = metrics.websocket_send_ms,
-                            decoder_accept_ms = metrics.decoder_accept_ms,
-                            decoder_accept_max_ms = pacer.decoder_accept_max_ms,
-                            presentation_ack_ms = metrics.presentation_ack_ms,
-                            presentation_ack_max_ms = pacer.presentation_max_ms,
-                            expired_frame_credits = pacer.expired_credits,
-                            megabits_per_second = metrics.megabits_per_second,
-                            "video output performance"
-                        );
-                        metrics_log_windows = 0;
-                    }
-                    let Ok(text) = serde_json::to_string(
-                        &json!({"type": "metrics", "payload": metrics}),
-                    ) else {
-                        continue;
-                    };
-                    if sender.send(Message::Text(text.into())).await.is_err() {
-                        break;
-                    }
-                    metrics_started = Instant::now();
-                    metrics_counters = counters;
-                    metrics_browser_frame_version = browser_version;
-                    sent_frames = 0;
-                    sent_bytes = 0;
-                    frame_age = Duration::ZERO;
-                    websocket_send_time = Duration::ZERO;
-                    skipped_for_backpressure = 0;
-                }
-            }
-        }
-    });
-
-    let mut pressed_keyboard = HashSet::new();
-    while let Some(Ok(message)) = receiver.next().await {
-        match message {
-            Message::Text(text) => {
-                match handle_client_message(
-                    &state,
-                    &text,
-                    &mut pressed_keyboard,
-                    &video_active,
-                    &browser_resync,
-                ) {
-                    ClientVideoFeedback::None => {}
-                    ClientVideoFeedback::BrowserAccepted(sequence) => {
-                        frame_pacer.release(FrameCredit::BrowserAccepted(sequence));
-                    }
-                    ClientVideoFeedback::FramePresented(sequence) => {
-                        frame_pacer.presented(sequence);
-                    }
-                    ClientVideoFeedback::ResetBrowser => frame_pacer.clear_browser(),
-                    ClientVideoFeedback::ResetAll => frame_pacer.clear(),
-                }
-            }
-            Message::Close(_) => break,
-            _ => {}
-        }
-    }
-    send_task.abort();
-    send_all_up(&state, &pressed_keyboard);
-}
-
-const FRAME_CREDIT_LEASE: Duration = Duration::from_millis(500);
-const PRESENTATION_SAMPLE_LEASE: Duration = Duration::from_secs(5);
-// Match the frontend decoder's eight-packet hard limit. Missing ingress ACKs
-// then indicate real queue saturation rather than a normal access-unit burst.
-const DEFAULT_IN_FLIGHT_FRAMES: usize = 8;
-const MAX_IN_FLIGHT_FRAMES: usize = 8;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrameCredit {
-    BrowserAccepted(u64),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClientVideoFeedback {
-    None,
-    BrowserAccepted(u64),
-    FramePresented(u64),
-    ResetBrowser,
-    ResetAll,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BrowserFrameDecision {
-    Send { completes_resync: bool },
-    SkipForResync,
-    Backpressured { entered_resync: bool },
-}
-
-fn browser_frame_decision(
-    key: bool,
-    sequence: u64,
-    resync: &AtomicBool,
-    pacer: &FramePacer,
-) -> BrowserFrameDecision {
-    let completes_resync = resync.load(Ordering::Acquire);
-    if completes_resync && !key {
-        return BrowserFrameDecision::SkipForResync;
-    }
-    if !pacer.try_acquire(FrameCredit::BrowserAccepted(sequence)) {
-        return BrowserFrameDecision::Backpressured {
-            entered_resync: !resync.swap(true, Ordering::AcqRel),
-        };
-    }
-    BrowserFrameDecision::Send { completes_resync }
-}
-
-fn configured_in_flight_frames(value: Option<&std::ffi::OsStr>) -> usize {
-    let Some(value) = value.and_then(|value| value.to_str()).filter(|value| !value.is_empty()) else {
-        return DEFAULT_IN_FLIGHT_FRAMES;
-    };
-    match value.parse::<usize>() {
-        Ok(value) if (1..=MAX_IN_FLIGHT_FRAMES).contains(&value) => value,
-        _ => {
-            tracing::warn!(value, "ignoring invalid DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES");
-            DEFAULT_IN_FLIGHT_FRAMES
-        }
-    }
-}
-
-fn duration_average_ms(total: Duration, samples: u64) -> f64 {
-    if samples == 0 {
-        0.0
-    } else {
-        total.as_secs_f64() * 1000.0 / samples as f64
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PendingFrameCredit {
-    kind: FrameCredit,
-    acquired_at: Instant,
-}
-
-#[derive(Default)]
-struct AckStats {
-    samples: u64,
-    total: Duration,
-    max: Duration,
-}
-
-impl AckStats {
-    fn record(&mut self, elapsed: Duration) {
-        self.samples = self.samples.saturating_add(1);
-        self.total += elapsed;
-        self.max = self.max.max(elapsed);
-    }
-
-    fn snapshot_and_reset(&mut self) -> (f64, f64) {
-        let average_ms = duration_average_ms(self.total, self.samples);
-        let max_ms = self.max.as_secs_f64() * 1000.0;
-        *self = Self::default();
-        (average_ms, max_ms)
-    }
-}
-
-#[derive(Default)]
-struct FramePacerState {
-    pending: VecDeque<PendingFrameCredit>,
-    browser_presentations: HashMap<u64, Instant>,
-    decoder_accept: AckStats,
-    presentation: AckStats,
-    expired_credits: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct FramePacerMetrics {
-    decoder_accept_average_ms: f64,
-    decoder_accept_max_ms: f64,
-    presentation_average_ms: f64,
-    presentation_max_ms: f64,
-    expired_credits: u64,
-}
-
-struct FramePacer {
-    max_in_flight: usize,
-    state: Mutex<FramePacerState>,
-}
-
-impl FramePacer {
-    fn new(max_in_flight: usize) -> Self {
-        Self {
-            max_in_flight,
-            state: Mutex::new(FramePacerState::default()),
-        }
-    }
-
-    fn try_acquire(&self, kind: FrameCredit) -> bool {
-        let mut state = self.state.lock().expect("frame pacer lock poisoned");
-        while state
-            .pending
-            .front()
-            .is_some_and(|credit| credit.acquired_at.elapsed() >= FRAME_CREDIT_LEASE)
-        {
-            let expired = state.pending.pop_front().expect("pending credit exists");
-            let FrameCredit::BrowserAccepted(sequence) = expired.kind;
-            state.browser_presentations.remove(&sequence);
-            state.expired_credits = state.expired_credits.saturating_add(1);
-        }
-        state
-            .browser_presentations
-            .retain(|_, sent_at| sent_at.elapsed() < PRESENTATION_SAMPLE_LEASE);
-        if state.pending.len() >= self.max_in_flight {
-            return false;
-        }
-        let acquired_at = Instant::now();
-        state
-            .pending
-            .push_back(PendingFrameCredit { kind, acquired_at });
-        let FrameCredit::BrowserAccepted(sequence) = kind;
-        state.browser_presentations.insert(sequence, acquired_at);
-        true
-    }
-
-    fn release(&self, kind: FrameCredit) {
-        let mut state = self.state.lock().expect("frame pacer lock poisoned");
-        let Some(index) = state.pending.iter().position(|credit| credit.kind == kind) else {
-            return;
-        };
-        let credit = state.pending.remove(index).expect("matched credit exists");
-        let elapsed = credit.acquired_at.elapsed();
-        state.decoder_accept.record(elapsed);
-    }
-
-    fn presented(&self, sequence: u64) {
-        let mut state = self.state.lock().expect("frame pacer lock poisoned");
-        if let Some(sent_at) = state.browser_presentations.remove(&sequence) {
-            state.presentation.record(sent_at.elapsed());
-        }
-    }
-
-    fn clear_browser(&self) {
-        let mut state = self.state.lock().expect("frame pacer lock poisoned");
-        state.pending.clear();
-        state.browser_presentations.clear();
-    }
-
-    fn clear(&self) {
-        let mut state = self.state.lock().expect("frame pacer lock poisoned");
-        state.pending.clear();
-        state.browser_presentations.clear();
-    }
-
-    fn take_metrics(&self) -> FramePacerMetrics {
-        let mut state = self.state.lock().expect("frame pacer lock poisoned");
-        let (decoder_accept_average_ms, decoder_accept_max_ms) =
-            state.decoder_accept.snapshot_and_reset();
-        let (presentation_average_ms, presentation_max_ms) =
-            state.presentation.snapshot_and_reset();
-        let metrics = FramePacerMetrics {
-            decoder_accept_average_ms,
-            decoder_accept_max_ms,
-            presentation_average_ms,
-            presentation_max_ms,
-            expired_credits: state.expired_credits,
-        };
-        state.expired_credits = 0;
-        metrics
-    }
-}
-
-/// Separates decoder ingress acknowledgements from presentation telemetry.
-/// A browser credit is released only by the matching sequence, so a late
-/// acknowledgement cannot accidentally admit a newer frame.
-fn handle_client_message(
-    state: &AppState,
-    text: &str,
-    pressed_keyboard: &mut HashSet<u64>,
-    video_active: &AtomicBool,
-    browser_resync: &AtomicBool,
-) -> ClientVideoFeedback {
-    let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
-        return ClientVideoFeedback::None;
-    };
-    match message {
-        ClientMessage::BrowserFrameAccepted { sequence } => {
-            return sequence
-                .parse::<u64>()
-                .map(ClientVideoFeedback::BrowserAccepted)
-                .unwrap_or(ClientVideoFeedback::None);
-        }
-        ClientMessage::FramePresented { sequence } => {
-            return sequence
-                .parse::<u64>()
-                .map(ClientVideoFeedback::FramePresented)
-                .unwrap_or(ClientVideoFeedback::None);
-        }
-        ClientMessage::VideoDemand { active } => {
-            let was_active = video_active.load(Ordering::Relaxed);
-            if active != was_active {
-                if active {
-                    browser_resync.store(true, Ordering::Release);
-                    video_active.store(true, Ordering::Release);
-                    state.browser_frames.request_keyframe();
-                } else {
-                    video_active.store(false, Ordering::Release);
-                    return ClientVideoFeedback::ResetAll;
-                }
-            }
-            tracing::debug!(active, "updated WebView video demand");
-        }
-        ClientMessage::BrowserVideoKeyframe => {
-            browser_resync.store(true, Ordering::Release);
-            state.browser_frames.request_keyframe();
-            return ClientVideoFeedback::ResetBrowser;
-        }
-        ClientMessage::BrowserDecoderError { message } => {
-            let message = message.chars().take(256).collect::<String>();
-            tracing::error!(%message, "WebCodecs video decoder stopped; no native video fallback is configured");
-        }
-        ClientMessage::FrontendMetrics {
-            window_ms,
-            received_frames,
-            replaced_frames,
-            presented_frames,
-            decoder_output_ms,
-            canvas_draw_ms,
-            decoder_congestions,
-            decode_errors,
-        } => {
-            if valid_frontend_metrics(
-                window_ms,
-                received_frames,
-                replaced_frames,
-                presented_frames,
-                decoder_output_ms,
-                canvas_draw_ms,
-                decoder_congestions,
-                decode_errors,
-            ) {
-                let elapsed = (window_ms / 1000.0).max(f64::EPSILON);
-                tracing::debug!(
-                    target: "devicehub_mask::perf",
-                    received_fps = received_frames as f64 / elapsed,
-                    presented_fps = presented_frames as f64 / elapsed,
-                    received_frames,
-                    replaced_frames,
-                    presented_frames,
-                    decoder_output_ms = decoder_output_ms / received_frames.max(1) as f64,
-                    canvas_draw_ms = canvas_draw_ms / presented_frames.max(1) as f64,
-                    decoder_congestions,
-                    decode_errors,
-                    "frontend video performance"
-                );
-            }
-        }
-        ClientMessage::MultiTouch { contacts } => {
-            if let Some(contacts) = validate_contacts(contacts, state.application.orientation.get())
-            {
-                state.input.send(InputCmd::MultiTouchFrame(contacts));
-            }
-        }
-        ClientMessage::Button { name } => {
-            if let Some(name) = hardware_button_name(&name) {
-                state.input.send(InputCmd::Button(name));
-            }
-        }
-        ClientMessage::ButtonDown { name } => {
-            if let Some(name) = hardware_button_name(&name) {
-                state.input.send(InputCmd::ButtonDown(name));
-            }
-        }
-        ClientMessage::ButtonUp { name } => {
-            if let Some(name) = hardware_button_name(&name) {
-                state.input.send(InputCmd::ButtonUp(name));
-            }
-        }
-        ClientMessage::KeyboardDown { usage } => {
-            if valid_keyboard_usage(usage) && pressed_keyboard.insert(usage) {
-                state.input.send(InputCmd::KeyboardDown(usage));
-            }
-        }
-        ClientMessage::KeyboardUp { usage } => {
-            if valid_keyboard_usage(usage) && pressed_keyboard.remove(&usage) {
-                state.input.send(InputCmd::KeyboardUp(usage));
-            }
-        }
-        ClientMessage::Text { text } => {
-            if !text.is_empty() && text.len() <= 512 && text.chars().count() <= 128 {
-                state.input.send(InputCmd::Text(text));
-            }
-        }
-        ClientMessage::Rotate { direction } => {
-            state.input.send(InputCmd::Rotate(match direction {
-                RotateRequest::Left => RotateDir::Left,
-                RotateRequest::Right => RotateDir::Right,
-            }))
-        }
-    }
-    ClientVideoFeedback::None
-}
-
-#[allow(clippy::too_many_arguments)]
-fn valid_frontend_metrics(
-    window_ms: f64,
-    received_frames: u64,
-    replaced_frames: u64,
-    presented_frames: u64,
-    decoder_output_ms: f64,
-    canvas_draw_ms: f64,
-    decoder_congestions: u64,
-    decode_errors: u64,
-) -> bool {
-    (500.0..=60_000.0).contains(&window_ms)
-        && decoder_output_ms.is_finite()
-        && canvas_draw_ms.is_finite()
-        && (0.0..=window_ms * 10.0).contains(&decoder_output_ms)
-        && (0.0..=window_ms * 10.0).contains(&canvas_draw_ms)
-        && received_frames <= 10_000
-        && replaced_frames <= received_frames
-        && presented_frames <= received_frames
-        && decoder_congestions <= 10_000
-        && decode_errors <= received_frames
-}
-
-fn validate_contacts(
-    contacts: Vec<WebContact>,
-    orientation: Orientation,
-) -> Option<Vec<TouchContact>> {
-    if contacts.len() > 5 {
-        return None;
-    }
-    let mut identities = HashSet::new();
-    let turns = orientation.quarter_turns_cw();
-    contacts
-        .into_iter()
-        .map(|contact| {
-            if contact.identity >= 5
-                || !identities.insert(contact.identity)
-                || !contact.x.is_finite()
-                || !contact.y.is_finite()
-                || !(0.0..=1.0).contains(&contact.x)
-                || !(0.0..=1.0).contains(&contact.y)
-            {
-                return None;
-            }
-            let (x, y) = unrotate_norm(contact.x, contact.y, turns);
-            Some(TouchContact {
-                identity: contact.identity,
-                touching: contact.touching,
-                x: norm(x),
-                y: norm(y),
-            })
-        })
-        .collect()
-}
-
-fn send_all_up(state: &AppState, pressed_keyboard: &HashSet<u64>) {
-    state.input.send(InputCmd::MultiTouchFrame(
-        (0..5)
-            .map(|identity| TouchContact {
-                identity,
-                touching: false,
-                x: 0,
-                y: 0,
-            })
-            .collect(),
-    ));
-    for name in HARDWARE_BUTTON_NAMES {
-        state.input.send(InputCmd::ButtonUp(name));
-    }
-    for usage in pressed_keyboard {
-        state.input.send(InputCmd::KeyboardUp(*usage));
-    }
-}
-
-fn valid_keyboard_usage(usage: u64) -> bool {
-    matches!(usage, 0x04..=0x73 | 0x85 | 0x87 | 0x89 | 0xe0..=0xe7)
-}
-
-fn hardware_button_name(name: &str) -> Option<&'static str> {
-    HARDWARE_BUTTON_NAMES
-        .into_iter()
-        .find(|candidate| *candidate == name)
-}
-
-fn orientation_name(orientation: Orientation) -> &'static str {
-    match orientation {
-        Orientation::Portrait => "portrait",
-        Orientation::PortraitUpsideDown => "portrait_upside_down",
-        Orientation::LandscapeLeft => "landscape_left",
-        Orientation::LandscapeRight => "landscape_right",
-    }
+    crate::websocket_transport::upgrade(
+        ws,
+        crate::websocket_transport::WebSocketState::new(
+            state.application,
+            state.browser_frames,
+            state.clipboard,
+            state.video_counters,
+            state.input,
+        ),
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{Orientation, norm};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     fn test_state() -> (AppState, UnboundedReceiver<InputCmd>) {
@@ -3858,7 +3075,9 @@ mod tests {
         pressed_keyboard: &mut HashSet<u64>,
     ) -> ClientVideoFeedback {
         handle_client_message(
-            state,
+            &state.input,
+            state.application.orientation.get(),
+            &state.browser_frames,
             text,
             pressed_keyboard,
             &AtomicBool::new(true),
@@ -4601,113 +3820,6 @@ mod tests {
     }
 
     #[test]
-    fn frame_pacer_bounds_browser_decoder_ingress() {
-        let pacer = FramePacer::new(2);
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(1)));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
-        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
-
-        pacer.release(FrameCredit::BrowserAccepted(1));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
-
-        pacer.release(FrameCredit::BrowserAccepted(2));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(4)));
-        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(5)));
-    }
-
-    #[test]
-    fn browser_credit_requires_matching_acceptance_and_presentation_is_telemetry_only() {
-        let pacer = FramePacer::new(1);
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(7)));
-        pacer.release(FrameCredit::BrowserAccepted(6));
-        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
-
-        pacer.presented(7);
-        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
-        pacer.release(FrameCredit::BrowserAccepted(7));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
-    }
-
-    #[test]
-    fn browser_reset_clears_all_video_credits() {
-        let pacer = FramePacer::new(2);
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(1)));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
-        pacer.clear_browser();
-
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(4)));
-    }
-
-    #[test]
-    fn browser_backpressure_resyncs_and_resumes_only_from_a_keyframe() {
-        let pacer = FramePacer::new(1);
-        let resync = AtomicBool::new(false);
-
-        assert_eq!(
-            browser_frame_decision(false, 1, &resync, &pacer),
-            BrowserFrameDecision::Send {
-                completes_resync: false
-            }
-        );
-        assert_eq!(
-            browser_frame_decision(false, 2, &resync, &pacer),
-            BrowserFrameDecision::Backpressured {
-                entered_resync: true
-            }
-        );
-        pacer.release(FrameCredit::BrowserAccepted(1));
-        assert_eq!(
-            browser_frame_decision(false, 3, &resync, &pacer),
-            BrowserFrameDecision::SkipForResync
-        );
-        assert_eq!(
-            browser_frame_decision(true, 4, &resync, &pacer),
-            BrowserFrameDecision::Send {
-                completes_resync: true
-            }
-        );
-    }
-
-    #[test]
-    fn frame_pipeline_depth_accepts_only_bounded_diagnostic_values() {
-        assert_eq!(configured_in_flight_frames(None), 8);
-        assert_eq!(
-            configured_in_flight_frames(Some(std::ffi::OsStr::new("1"))),
-            1
-        );
-        assert_eq!(
-            configured_in_flight_frames(Some(std::ffi::OsStr::new("8"))),
-            8
-        );
-        assert_eq!(
-            configured_in_flight_frames(Some(std::ffi::OsStr::new("16"))),
-            8
-        );
-        assert_eq!(
-            configured_in_flight_frames(Some(std::ffi::OsStr::new("0"))),
-            8
-        );
-    }
-
-    #[test]
-    fn expired_frame_credit_does_not_stall_stream() {
-        let pacer = FramePacer {
-            max_in_flight: 2,
-            state: Mutex::new(FramePacerState {
-                pending: VecDeque::from([PendingFrameCredit {
-                    kind: FrameCredit::BrowserAccepted(1),
-                    acquired_at: Instant::now() - FRAME_CREDIT_LEASE,
-                }]),
-                ..FramePacerState::default()
-            }),
-        };
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
-        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(4)));
-    }
-
-    #[test]
     fn browser_feedback_messages_keep_acceptance_and_presentation_distinct() {
         let (state, _input_rx) = test_state();
         let mut pressed = HashSet::new();
@@ -4739,7 +3851,9 @@ mod tests {
 
         assert_eq!(
             handle_client_message(
-                &state,
+                &state.input,
+                state.application.orientation.get(),
+                &state.browser_frames,
                 r#"{"type":"video_demand","active":false}"#,
                 &mut pressed,
                 &active,
@@ -4750,7 +3864,9 @@ mod tests {
         assert!(!active.load(Ordering::Relaxed));
         assert_eq!(
             handle_client_message(
-                &state,
+                &state.input,
+                state.application.orientation.get(),
+                &state.browser_frames,
                 r#"{"type":"video_demand","active":true}"#,
                 &mut pressed,
                 &active,
@@ -4774,7 +3890,9 @@ mod tests {
 
         assert_eq!(
             handle_client_message(
-                &state,
+                &state.input,
+                state.application.orientation.get(),
+                &state.browser_frames,
                 r#"{"type":"browser_video_keyframe"}"#,
                 &mut HashSet::new(),
                 &active,
@@ -4967,7 +4085,7 @@ mod tests {
     #[test]
     fn websocket_cleanup_releases_pressed_keyboard_usages() {
         let (state, mut input_rx) = test_state();
-        send_all_up(&state, &HashSet::from([0x04, 0xe1]));
+        send_all_up(&state.input, &HashSet::from([0x04, 0xe1]));
 
         let commands: Vec<_> = std::iter::from_fn(|| input_rx.try_recv().ok()).collect();
         assert!(

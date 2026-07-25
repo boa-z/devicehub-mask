@@ -39,6 +39,10 @@ mod sysdiagnose;
 mod wda_automation;
 mod wda_runner;
 mod web;
+mod web_status;
+mod websocket_flow;
+mod websocket_input;
+mod websocket_transport;
 mod wifi_devices;
 
 use std::path::PathBuf;

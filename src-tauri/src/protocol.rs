@@ -1,5 +1,16 @@
 // Shared types passed between the web server and the async device session.
 
+/// Hardware controls accepted by every input adapter and mapping profile.
+pub const HARDWARE_BUTTON_NAMES: [&str; 7] = [
+    "home",
+    "lock",
+    "volume-up",
+    "volume-down",
+    "mute",
+    "siri",
+    "action",
+];
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
