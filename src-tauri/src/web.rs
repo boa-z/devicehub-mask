@@ -20,8 +20,8 @@ use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use crate::protocol::{
-    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, InputCmd, InputSink,
-    LocationStatus, PairDeviceResult, VideoCounters, validate_device_name, validate_paste_text,
+    ClipboardSlot, ControlCmd, ForgetDeviceResult, InputCmd, InputSink, LocationStatus,
+    PairDeviceResult, VideoCounters, validate_device_name, validate_paste_text,
 };
 #[cfg(test)]
 use crate::websocket_input::{
@@ -36,11 +36,11 @@ pub struct AppState {
     pub profiles_http: crate::http_profiles::ProfileHttpState,
     pub storage_http: crate::http_storage::StorageHttpState,
     pub diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState,
+    pub apps_http: crate::http_apps::AppHttpState,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
     pub developer_image: crate::developer_image::DeveloperImageMountSlot,
     pub video_counters: VideoCounters,
-    pub app_operation: AppOperationSlot,
     pub input: InputSink,
 }
 
@@ -52,12 +52,14 @@ pub fn router(state: AppState, token: String) -> Router {
     let profile_routes = crate::http_profiles::router(state.profiles_http.clone());
     let storage_routes = crate::http_storage::router(state.storage_http.clone());
     let diagnostics_routes = crate::http_diagnostics::router(state.diagnostics_http.clone());
+    let app_routes = crate::http_apps::router(state.apps_http.clone());
     Router::new()
         .route("/api/status", get(status))
         .merge(performance_routes)
         .merge(profile_routes)
         .merge(storage_routes)
         .merge(diagnostics_routes)
+        .merge(app_routes)
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
@@ -100,20 +102,6 @@ pub fn router(state: AppState, token: String) -> Router {
             get(device_location)
                 .put(set_device_location)
                 .delete(clear_device_location),
-        )
-        .route("/api/device/apps", get(device_apps))
-        .route("/api/device/apps/{bundle_id}/icon", get(device_app_icon))
-        .route("/api/device/apps/operation", get(app_operation))
-        .route("/api/device/apps/{bundle_id}", delete(uninstall_app))
-        .route("/api/device/apps/{bundle_id}/launch", put(launch_app))
-        .route(
-            "/api/device/apps/{bundle_id}/console",
-            put(start_app_console),
-        )
-        .route("/api/device/apps/{bundle_id}/stop", put(stop_app))
-        .route(
-            "/api/device/app-console",
-            get(app_console_snapshot).delete(stop_app_console),
         )
         .route(
             "/api/device/crash-reports",
@@ -646,47 +634,6 @@ async fn dispatch_device_power_command(
         })
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct DeviceAppsQuery {
-    #[serde(default)]
-    include_system: bool,
-    #[serde(default)]
-    include_app_clips: bool,
-}
-
-async fn device_apps(
-    State(state): State<AppState>,
-    Query(query): Query<DeviceAppsQuery>,
-) -> Result<Json<Vec<crate::protocol::DeviceApp>>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::ListApps {
-        include_system: query.include_system,
-        include_app_clips: query.include_app_clips,
-        reply,
-    }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let apps = tokio::time::timeout(crate::session::APP_LIST_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "app list request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(apps))
-}
-
 #[derive(Deserialize)]
 struct StartWdaRunnerRequest {
     bundle_id: String,
@@ -888,100 +835,6 @@ async fn device_wallpaper(
     ))
 }
 
-async fn device_app_icon(
-    State(state): State<AppState>,
-    Path(bundle_id): Path<String>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    if !valid_bundle_identifier(&bundle_id) {
-        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
-    }
-    let (reply, response) = oneshot::channel();
-    if !state
-        .input
-        .try_send(InputCmd::GetAppIcon { bundle_id, reply })
-    {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let icon = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "app icon request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok((
-        [
-            (CONTENT_TYPE, "image/png"),
-            (CACHE_CONTROL, "private, max-age=300"),
-        ],
-        icon,
-    ))
-}
-
-async fn app_operation(State(state): State<AppState>) -> Json<crate::protocol::AppOperationView> {
-    Json(state.app_operation.get())
-}
-
-async fn uninstall_app(
-    State(state): State<AppState>,
-    Path(bundle_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    if !valid_bundle_identifier(&bundle_id) {
-        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
-    }
-    let (reply, response) = oneshot::channel();
-    if !state
-        .input
-        .try_send(InputCmd::UninstallApp { bundle_id, reply })
-    {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_app_operation_acceptance(response, "app uninstall").await?;
-    Ok(StatusCode::ACCEPTED)
-}
-
-async fn await_app_operation_acceptance(
-    response: oneshot::Receiver<Result<(), String>>,
-    operation: &str,
-) -> Result<(), (StatusCode, String)> {
-    let result = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                format!("{operation} request timed out"),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    result.map_err(|error| {
-        let status = if error == "another app operation is already running" {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        (status, error)
-    })
-}
-
 async fn device_provisioning_profiles(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<crate::protocol::ProvisioningProfile>>, (StatusCode, String)> {
@@ -1115,180 +968,6 @@ async fn await_provisioning_response<T>(
             };
             (status, error.to_string())
         })
-}
-
-async fn launch_app(
-    State(state): State<AppState>,
-    Path(bundle_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    if !valid_bundle_identifier(&bundle_id) {
-        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
-    }
-    let (reply, response) = oneshot::channel();
-    if !state
-        .input
-        .try_send(InputCmd::LaunchApp { bundle_id, reply })
-    {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "app launch request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct AppConsoleQuery {
-    after: Option<u64>,
-    #[serde(default)]
-    clear: bool,
-}
-
-async fn start_app_console(
-    State(state): State<AppState>,
-    Path(bundle_id): Path<String>,
-) -> Result<Json<crate::app_console::AppConsoleSnapshot>, (StatusCode, String)> {
-    if !valid_bundle_identifier(&bundle_id) {
-        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
-    }
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::AppConsole(
-        crate::app_console::AppConsoleCommand::Start { bundle_id, reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let snapshot = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "application console startup timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(snapshot))
-}
-
-async fn app_console_snapshot(
-    State(state): State<AppState>,
-    Query(query): Query<AppConsoleQuery>,
-) -> Result<Json<crate::app_console::AppConsoleSnapshot>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::AppConsole(
-        crate::app_console::AppConsoleCommand::Snapshot {
-            after: query.after,
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let snapshot = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "application console request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    Ok(Json(snapshot))
-}
-
-async fn stop_app_console(
-    State(state): State<AppState>,
-    Query(query): Query<AppConsoleQuery>,
-) -> Result<Json<crate::app_console::AppConsoleSnapshot>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::AppConsole(
-        crate::app_console::AppConsoleCommand::Stop {
-            clear: query.clear,
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let snapshot = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "application console stop timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    Ok(Json(snapshot))
-}
-
-async fn stop_app(
-    State(state): State<AppState>,
-    Path(bundle_id): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if !valid_bundle_identifier(&bundle_id) {
-        return Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()));
-    }
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::StopApp { bundle_id, reply }) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let was_running = tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "app stop request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(serde_json::json!({ "was_running": was_running })))
 }
 
 async fn device_crash_reports(
@@ -1435,19 +1114,6 @@ async fn delete_crash_report(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-fn valid_bundle_identifier(bundle_id: &str) -> bool {
-    !bundle_id.is_empty()
-        && bundle_id.len() <= 255
-        && bundle_id.contains('.')
-        && bundle_id.split('.').all(|part| {
-            !part.is_empty()
-                && part.len() <= 63
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-}
-
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     crate::websocket_transport::upgrade(
         ws,
@@ -1471,27 +1137,6 @@ mod tests {
     fn test_state() -> (AppState, UnboundedReceiver<InputCmd>) {
         let (state, input_rx, _control_rx) = test_state_with_control();
         (state, input_rx)
-    }
-
-    fn console_snapshot_fixture(
-        phase: crate::app_console::AppConsolePhase,
-    ) -> crate::app_console::AppConsoleSnapshot {
-        crate::app_console::AppConsoleSnapshot {
-            phase,
-            bundle_id: Some("com.example.game".into()),
-            started_at_ms: Some(1),
-            ended_at_ms: None,
-            total_bytes: 5,
-            total_lines: 1,
-            dropped_lines: 0,
-            next_sequence: 2,
-            reset: false,
-            lines: vec![crate::app_console::AppConsoleLine {
-                sequence: 1,
-                text: "ready".into(),
-            }],
-            last_error: None,
-        }
     }
 
     fn handle_test_client_message(
@@ -1560,11 +1205,14 @@ mod tests {
                     crate::sysdiagnose::SysdiagnoseSlot::default(),
                     crate::log_archive::LogArchiveSlot::default(),
                 ),
+                apps_http: crate::http_apps::AppHttpState::new(
+                    input.clone(),
+                    crate::protocol::AppOperationSlot::default(),
+                ),
                 browser_frames,
                 clipboard: ClipboardSlot::default(),
                 developer_image: crate::developer_image::DeveloperImageMountSlot::default(),
                 video_counters: VideoCounters::default(),
-                app_operation: AppOperationSlot::default(),
                 input,
             },
             input_rx,
@@ -2265,31 +1913,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_list_scope_is_dispatched_to_the_device_session() {
-        let (state, mut input_rx) = test_state();
-        let request = tokio::spawn(device_apps(
-            State(state),
-            Query(DeviceAppsQuery {
-                include_system: true,
-                include_app_clips: true,
-            }),
-        ));
-
-        let InputCmd::ListApps {
-            include_system,
-            include_app_clips,
-            reply,
-        } = input_rx.recv().await.unwrap()
-        else {
-            panic!("expected app list command");
-        };
-        assert!(include_system);
-        assert!(include_app_clips);
-        reply.send(Ok(Vec::new())).unwrap();
-        assert!(request.await.unwrap().unwrap().0.is_empty());
-    }
-
-    #[tokio::test]
     async fn device_queries_require_an_active_session() {
         let (state, _input_rx) = test_state();
         state.input.set(None);
@@ -2313,19 +1936,11 @@ mod tests {
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            device_apps(State(state.clone()), Query(DeviceAppsQuery::default())).await,
-            Err((StatusCode::SERVICE_UNAVAILABLE, _))
-        ));
-        assert!(matches!(
             device_companions(State(state.clone())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
             device_home_screen(State(state.clone())).await,
-            Err((StatusCode::SERVICE_UNAVAILABLE, _))
-        ));
-        assert!(matches!(
-            device_app_icon(State(state.clone()), Path("com.example.game".into())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
@@ -2354,10 +1969,6 @@ mod tests {
         ));
         assert!(matches!(
             device_crash_reports(State(state.clone())).await,
-            Err((StatusCode::SERVICE_UNAVAILABLE, _))
-        ));
-        assert!(matches!(
-            uninstall_app(State(state), Path("com.example.app".into())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }
@@ -2471,133 +2082,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_launch_rejects_invalid_bundle_identifiers_before_dispatch() {
-        let (state, mut input_rx) = test_state();
-
-        for bundle_id in ["", "no-domain", "com.example.bad value", "com/example/app"] {
-            assert!(matches!(
-                launch_app(State(state.clone()), Path(bundle_id.into())).await,
-                Err((StatusCode::BAD_REQUEST, _))
-            ));
-        }
-        assert!(input_rx.try_recv().is_err());
-
-        let request = tokio::spawn(launch_app(State(state), Path("com.example.game".into())));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::LaunchApp { bundle_id, reply } => {
-                assert_eq!(bundle_id, "com.example.game");
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(request.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn app_console_endpoints_validate_and_dispatch_session_commands() {
-        let (state, mut input_rx) = test_state();
-        assert!(matches!(
-            start_app_console(State(state.clone()), Path("bad value".into())).await,
-            Err((StatusCode::BAD_REQUEST, _))
-        ));
-        assert!(input_rx.try_recv().is_err());
-
-        let start = tokio::spawn(start_app_console(
-            State(state.clone()),
-            Path("com.example.game".into()),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::AppConsole(crate::app_console::AppConsoleCommand::Start {
-                bundle_id,
-                reply,
-            }) => {
-                assert_eq!(bundle_id, "com.example.game");
-                reply
-                    .send(Ok(console_snapshot_fixture(
-                        crate::app_console::AppConsolePhase::Running,
-                    )))
-                    .unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(
-            start.await.unwrap().unwrap().0.phase,
-            crate::app_console::AppConsolePhase::Running
-        );
-
-        let snapshot = tokio::spawn(app_console_snapshot(
-            State(state.clone()),
-            Query(AppConsoleQuery {
-                after: Some(7),
-                clear: false,
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::AppConsole(crate::app_console::AppConsoleCommand::Snapshot {
-                after,
-                reply,
-            }) => {
-                assert_eq!(after, Some(7));
-                reply
-                    .send(console_snapshot_fixture(
-                        crate::app_console::AppConsolePhase::Running,
-                    ))
-                    .unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(snapshot.await.unwrap().unwrap().0.lines[0].text, "ready");
-
-        let stop = tokio::spawn(stop_app_console(
-            State(state),
-            Query(AppConsoleQuery {
-                after: None,
-                clear: true,
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::AppConsole(crate::app_console::AppConsoleCommand::Stop { clear, reply }) => {
-                assert!(clear);
-                reply
-                    .send(console_snapshot_fixture(
-                        crate::app_console::AppConsolePhase::Stopped,
-                    ))
-                    .unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(
-            stop.await.unwrap().unwrap().0.phase,
-            crate::app_console::AppConsolePhase::Stopped
-        );
-    }
-
-    #[tokio::test]
-    async fn app_icon_validates_and_dispatches_bundle_identifier() {
-        let (state, mut input_rx) = test_state();
-        assert!(matches!(
-            device_app_icon(State(state.clone()), Path("bad value".into())).await,
-            Err((StatusCode::BAD_REQUEST, _))
-        ));
-        assert!(input_rx.try_recv().is_err());
-
-        let request = tokio::spawn(device_app_icon(
-            State(state),
-            Path("com.example.game".into()),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::GetAppIcon { bundle_id, reply } => {
-                assert_eq!(bundle_id, "com.example.game");
-                reply.send(Ok(vec![1, 2, 3])).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        let response = request.await.unwrap().unwrap().into_response();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), "image/png");
-    }
-
-    #[tokio::test]
     async fn native_screenshot_endpoint_dispatches_and_disables_caching() {
         let (state, mut input_rx) = test_state();
         let request = tokio::spawn(device_screenshot(State(state)));
@@ -2652,35 +2136,6 @@ mod tests {
             request.await.unwrap(),
             Err((StatusCode::CONFLICT, _))
         ));
-    }
-
-    #[tokio::test]
-    async fn app_stop_rejects_invalid_bundle_identifiers_before_dispatch() {
-        let (state, mut input_rx) = test_state();
-
-        for bundle_id in ["", "no-domain", "com.example.bad value", "com/example/app"] {
-            assert!(matches!(
-                stop_app(State(state.clone()), Path(bundle_id.into())).await,
-                Err((StatusCode::BAD_REQUEST, _))
-            ));
-        }
-        assert!(input_rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn app_stop_dispatches_only_a_validated_bundle_identifier() {
-        let (state, mut input_rx) = test_state();
-        let request = tokio::spawn(stop_app(State(state), Path("com.example.game".into())));
-
-        match input_rx.recv().await.unwrap() {
-            InputCmd::StopApp { bundle_id, reply } => {
-                assert_eq!(bundle_id, "com.example.game");
-                reply.send(Ok(true)).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        let Json(result) = request.await.unwrap().unwrap();
-        assert_eq!(result, serde_json::json!({ "was_running": true }));
     }
 
     #[tokio::test]
@@ -2807,35 +2262,5 @@ mod tests {
         let serialized = serde_json::to_string(&summary).unwrap();
         assert!(serialized.contains("com.example.game"));
         assert!(!serialized.contains("PRIVATE RAW CRASH CONTENT"));
-    }
-
-    #[tokio::test]
-    async fn app_uninstall_rejects_invalid_bundle_identifiers_before_dispatch() {
-        let (state, mut input_rx) = test_state();
-
-        for bundle_id in ["", "no-domain", "com.example.bad value", "com/example/app"] {
-            assert!(matches!(
-                uninstall_app(State(state.clone()), Path(bundle_id.into())).await,
-                Err((StatusCode::BAD_REQUEST, _))
-            ));
-        }
-        assert!(input_rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn app_operation_endpoint_returns_shared_state() {
-        let (state, _input_rx) = test_state();
-        let id = state
-            .app_operation
-            .start(
-                crate::protocol::AppOperationKind::Uninstall,
-                "com.example.app".into(),
-            )
-            .unwrap();
-        state.app_operation.update(id, "uninstalling", Some(42));
-
-        let view = app_operation(State(state)).await.0;
-        assert_eq!(view.id, id);
-        assert_eq!(view.progress, Some(42));
     }
 }
