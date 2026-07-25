@@ -1,4 +1,4 @@
-import { EnvironmentOutlined } from "@ant-design/icons";
+import EnvironmentOutlined from "@ant-design/icons/es/icons/EnvironmentOutlined";
 import { Button, InputNumber, Space, Tag, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";

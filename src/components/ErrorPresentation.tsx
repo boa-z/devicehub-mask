@@ -1,4 +1,4 @@
-import { CopyOutlined } from "@ant-design/icons";
+import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
 import { Alert, Button, Tooltip, message, type AlertProps } from "antd";
 import type { ReactNode } from "react";
 import { copyErrorText, errorText } from "../errorPresentation";

@@ -1,17 +1,15 @@
-import {
-  CheckOutlined,
-  CopyOutlined,
-  DeleteOutlined,
-  DownloadOutlined,
-  EditOutlined,
-  FolderOpenOutlined,
-  LinkOutlined,
-  PlusOutlined,
-  RedoOutlined,
-  SaveOutlined,
-  UndoOutlined,
-  UploadOutlined,
-} from "@ant-design/icons";
+import CheckOutlined from "@ant-design/icons/es/icons/CheckOutlined";
+import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
+import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
+import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
+import EditOutlined from "@ant-design/icons/es/icons/EditOutlined";
+import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
+import LinkOutlined from "@ant-design/icons/es/icons/LinkOutlined";
+import PlusOutlined from "@ant-design/icons/es/icons/PlusOutlined";
+import RedoOutlined from "@ant-design/icons/es/icons/RedoOutlined";
+import SaveOutlined from "@ant-design/icons/es/icons/SaveOutlined";
+import UndoOutlined from "@ant-design/icons/es/icons/UndoOutlined";
+import UploadOutlined from "@ant-design/icons/es/icons/UploadOutlined";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";

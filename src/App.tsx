@@ -1,35 +1,33 @@
-import {
-  AimOutlined,
-  ApiOutlined,
-  AudioMutedOutlined,
-  CameraOutlined,
-  CustomerServiceOutlined,
-  EditOutlined,
-  ExpandOutlined,
-  EyeInvisibleOutlined,
-  EyeOutlined,
-  FullscreenExitOutlined,
-  FullscreenOutlined,
-  HomeOutlined,
-  LockOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
-  MinusOutlined,
-  PushpinFilled,
-  PushpinOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  RotateLeftOutlined,
-  RotateRightOutlined,
-  SaveOutlined,
-  SafetyCertificateOutlined,
-  SendOutlined,
-  SoundOutlined,
-  StopOutlined,
-  SyncOutlined,
-  ThunderboltOutlined,
-  VideoCameraOutlined,
-} from "@ant-design/icons";
+import AimOutlined from "@ant-design/icons/es/icons/AimOutlined";
+import ApiOutlined from "@ant-design/icons/es/icons/ApiOutlined";
+import AudioMutedOutlined from "@ant-design/icons/es/icons/AudioMutedOutlined";
+import CameraOutlined from "@ant-design/icons/es/icons/CameraOutlined";
+import CustomerServiceOutlined from "@ant-design/icons/es/icons/CustomerServiceOutlined";
+import EditOutlined from "@ant-design/icons/es/icons/EditOutlined";
+import ExpandOutlined from "@ant-design/icons/es/icons/ExpandOutlined";
+import EyeInvisibleOutlined from "@ant-design/icons/es/icons/EyeInvisibleOutlined";
+import EyeOutlined from "@ant-design/icons/es/icons/EyeOutlined";
+import FullscreenExitOutlined from "@ant-design/icons/es/icons/FullscreenExitOutlined";
+import FullscreenOutlined from "@ant-design/icons/es/icons/FullscreenOutlined";
+import HomeOutlined from "@ant-design/icons/es/icons/HomeOutlined";
+import LockOutlined from "@ant-design/icons/es/icons/LockOutlined";
+import MenuFoldOutlined from "@ant-design/icons/es/icons/MenuFoldOutlined";
+import MenuUnfoldOutlined from "@ant-design/icons/es/icons/MenuUnfoldOutlined";
+import MinusOutlined from "@ant-design/icons/es/icons/MinusOutlined";
+import PushpinFilled from "@ant-design/icons/es/icons/PushpinFilled";
+import PushpinOutlined from "@ant-design/icons/es/icons/PushpinOutlined";
+import PlusOutlined from "@ant-design/icons/es/icons/PlusOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import RotateLeftOutlined from "@ant-design/icons/es/icons/RotateLeftOutlined";
+import RotateRightOutlined from "@ant-design/icons/es/icons/RotateRightOutlined";
+import SaveOutlined from "@ant-design/icons/es/icons/SaveOutlined";
+import SafetyCertificateOutlined from "@ant-design/icons/es/icons/SafetyCertificateOutlined";
+import SendOutlined from "@ant-design/icons/es/icons/SendOutlined";
+import SoundOutlined from "@ant-design/icons/es/icons/SoundOutlined";
+import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
+import SyncOutlined from "@ant-design/icons/es/icons/SyncOutlined";
+import ThunderboltOutlined from "@ant-design/icons/es/icons/ThunderboltOutlined";
+import VideoCameraOutlined from "@ant-design/icons/es/icons/VideoCameraOutlined";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button, Dropdown, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";

@@ -1,4 +1,6 @@
-import { ClearOutlined, ReloadOutlined, StopOutlined } from "@ant-design/icons";
+import ClearOutlined from "@ant-design/icons/es/icons/ClearOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
 import { Button, Input, Modal, Spin, Tag, Tooltip, Typography } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";

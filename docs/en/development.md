@@ -67,6 +67,8 @@ Run the source gates before committing:
 npm run verify
 ```
 
+The production frontend build also checks the Vite manifest against committed budgets for initial JavaScript, initial CSS, total JavaScript, and the largest asynchronous chunk. Run `npm run budget:check` to inspect an existing `dist/` build. Do not raise a budget to hide a regression; first reduce or split the dependency graph and document any intentional baseline change.
+
 This is the same cross-platform source gate used by GitHub Actions: documentation, frontend lint/tests/build, Rust formatting/tests, and Clippy with warnings denied. Run the full local gate before pushing a substantial change:
 
 ```sh

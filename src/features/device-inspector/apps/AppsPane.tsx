@@ -1,14 +1,12 @@
-import {
-  AppstoreOutlined,
-  CheckOutlined,
-  DatabaseOutlined,
-  FilterOutlined,
-  InfoCircleOutlined,
-  SearchOutlined,
-  SortAscendingOutlined,
-  SortDescendingOutlined,
-  ThunderboltOutlined,
-} from "@ant-design/icons";
+import AppstoreOutlined from "@ant-design/icons/es/icons/AppstoreOutlined";
+import CheckOutlined from "@ant-design/icons/es/icons/CheckOutlined";
+import DatabaseOutlined from "@ant-design/icons/es/icons/DatabaseOutlined";
+import FilterOutlined from "@ant-design/icons/es/icons/FilterOutlined";
+import InfoCircleOutlined from "@ant-design/icons/es/icons/InfoCircleOutlined";
+import SearchOutlined from "@ant-design/icons/es/icons/SearchOutlined";
+import SortAscendingOutlined from "@ant-design/icons/es/icons/SortAscendingOutlined";
+import SortDescendingOutlined from "@ant-design/icons/es/icons/SortDescendingOutlined";
+import ThunderboltOutlined from "@ant-design/icons/es/icons/ThunderboltOutlined";
 import { Alert, Button, Dropdown, Empty, Input, Progress, Spin, Tooltip, Typography } from "antd";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";

@@ -1,10 +1,8 @@
-import {
-  AppstoreOutlined,
-  FileTextOutlined,
-  FolderOpenOutlined,
-  HddOutlined,
-  ReloadOutlined,
-} from "@ant-design/icons";
+import AppstoreOutlined from "@ant-design/icons/es/icons/AppstoreOutlined";
+import FileTextOutlined from "@ant-design/icons/es/icons/FileTextOutlined";
+import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
+import HddOutlined from "@ant-design/icons/es/icons/HddOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
 import { Button, Empty, Segmented, Select, Spin, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";

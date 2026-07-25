@@ -1,14 +1,12 @@
-import {
-  AimOutlined,
-  CompressOutlined,
-  EyeInvisibleOutlined,
-  EyeOutlined,
-  HolderOutlined,
-  MoreOutlined,
-  RotateLeftOutlined,
-  RotateRightOutlined,
-  SyncOutlined,
-} from "@ant-design/icons";
+import AimOutlined from "@ant-design/icons/es/icons/AimOutlined";
+import CompressOutlined from "@ant-design/icons/es/icons/CompressOutlined";
+import EyeInvisibleOutlined from "@ant-design/icons/es/icons/EyeInvisibleOutlined";
+import EyeOutlined from "@ant-design/icons/es/icons/EyeOutlined";
+import HolderOutlined from "@ant-design/icons/es/icons/HolderOutlined";
+import MoreOutlined from "@ant-design/icons/es/icons/MoreOutlined";
+import RotateLeftOutlined from "@ant-design/icons/es/icons/RotateLeftOutlined";
+import RotateRightOutlined from "@ant-design/icons/es/icons/RotateRightOutlined";
+import SyncOutlined from "@ant-design/icons/es/icons/SyncOutlined";
 import { Button, Popover, Segmented, Tooltip } from "antd";
 import { useLayoutEffect, useRef, useState, type CSSProperties, type FocusEvent, type PointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";

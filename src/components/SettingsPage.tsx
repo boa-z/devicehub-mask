@@ -1,4 +1,6 @@
-import { BugOutlined, FolderOpenOutlined, GithubOutlined } from "@ant-design/icons";
+import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
+import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
+import GithubOutlined from "@ant-design/icons/es/icons/GithubOutlined";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Checkbox, Select, Slider, Space, Switch, Typography, message } from "antd";
 import { useEffect, useState } from "react";

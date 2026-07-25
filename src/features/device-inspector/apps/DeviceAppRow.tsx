@@ -1,16 +1,14 @@
-import {
-  BugOutlined,
-  CodeOutlined,
-  CopyOutlined,
-  DatabaseOutlined,
-  DeleteOutlined,
-  DisconnectOutlined,
-  FolderOpenOutlined,
-  LinkOutlined,
-  PlayCircleOutlined,
-  ReloadOutlined,
-  StopOutlined,
-} from "@ant-design/icons";
+import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
+import CodeOutlined from "@ant-design/icons/es/icons/CodeOutlined";
+import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
+import DatabaseOutlined from "@ant-design/icons/es/icons/DatabaseOutlined";
+import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
+import DisconnectOutlined from "@ant-design/icons/es/icons/DisconnectOutlined";
+import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
+import LinkOutlined from "@ant-design/icons/es/icons/LinkOutlined";
+import PlayCircleOutlined from "@ant-design/icons/es/icons/PlayCircleOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
 import { Button, Tag, Tooltip, Typography } from "antd";
 import { memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";

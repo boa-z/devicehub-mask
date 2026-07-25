@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run budget:check",
+    "budget:check": "node scripts/check-frontend-budget.mjs",
     "docs:check": "node scripts/check-docs.mjs",
     "netmuxd:prepare": "node scripts/prepare-netmuxd.mjs",
     "ffmpeg:prepare": "node scripts/prepare-ffmpeg.mjs",

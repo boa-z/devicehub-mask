@@ -1,24 +1,22 @@
-import {
-  AppstoreOutlined,
-  BugOutlined,
-  CopyOutlined,
-  DatabaseOutlined,
-  DeleteOutlined,
-  DisconnectOutlined,
-  DownloadOutlined,
-  EditOutlined,
-  FileTextOutlined,
-  InfoCircleOutlined,
-  LockOutlined,
-  MobileOutlined,
-  PictureOutlined,
-  PoweroffOutlined,
-  ReloadOutlined,
-  SafetyCertificateOutlined,
-  SearchOutlined,
-  StopOutlined,
-  UploadOutlined,
-} from "@ant-design/icons";
+import AppstoreOutlined from "@ant-design/icons/es/icons/AppstoreOutlined";
+import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
+import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
+import DatabaseOutlined from "@ant-design/icons/es/icons/DatabaseOutlined";
+import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
+import DisconnectOutlined from "@ant-design/icons/es/icons/DisconnectOutlined";
+import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
+import EditOutlined from "@ant-design/icons/es/icons/EditOutlined";
+import FileTextOutlined from "@ant-design/icons/es/icons/FileTextOutlined";
+import InfoCircleOutlined from "@ant-design/icons/es/icons/InfoCircleOutlined";
+import LockOutlined from "@ant-design/icons/es/icons/LockOutlined";
+import MobileOutlined from "@ant-design/icons/es/icons/MobileOutlined";
+import PictureOutlined from "@ant-design/icons/es/icons/PictureOutlined";
+import PoweroffOutlined from "@ant-design/icons/es/icons/PoweroffOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import SafetyCertificateOutlined from "@ant-design/icons/es/icons/SafetyCertificateOutlined";
+import SearchOutlined from "@ant-design/icons/es/icons/SearchOutlined";
+import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
+import UploadOutlined from "@ant-design/icons/es/icons/UploadOutlined";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

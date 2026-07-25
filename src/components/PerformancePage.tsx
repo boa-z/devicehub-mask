@@ -1,4 +1,11 @@
-import { DashboardOutlined, DownloadOutlined, ExperimentOutlined, LeftOutlined, ReloadOutlined, RightOutlined, SearchOutlined, StopOutlined } from "@ant-design/icons";
+import DashboardOutlined from "@ant-design/icons/es/icons/DashboardOutlined";
+import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
+import ExperimentOutlined from "@ant-design/icons/es/icons/ExperimentOutlined";
+import LeftOutlined from "@ant-design/icons/es/icons/LeftOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import RightOutlined from "@ant-design/icons/es/icons/RightOutlined";
+import SearchOutlined from "@ant-design/icons/es/icons/SearchOutlined";
+import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Input, Modal, Segmented, Select, Space, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

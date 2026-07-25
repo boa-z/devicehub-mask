@@ -1,4 +1,4 @@
-import { CloudDownloadOutlined } from "@ant-design/icons";
+import CloudDownloadOutlined from "@ant-design/icons/es/icons/CloudDownloadOutlined";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { Update } from "@tauri-apps/plugin-updater";

@@ -1,9 +1,7 @@
-import {
-  CopyOutlined,
-  DeleteOutlined,
-  PlusOutlined,
-  SearchOutlined,
-} from "@ant-design/icons";
+import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
+import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
+import PlusOutlined from "@ant-design/icons/es/icons/PlusOutlined";
+import SearchOutlined from "@ant-design/icons/es/icons/SearchOutlined";
 import { Button, Dropdown, Empty, Input, InputNumber, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";

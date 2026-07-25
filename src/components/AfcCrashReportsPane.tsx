@@ -1,4 +1,9 @@
-import { DeleteOutlined, DownloadOutlined, FileTextOutlined, InfoCircleOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
+import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
+import FileTextOutlined from "@ant-design/icons/es/icons/FileTextOutlined";
+import InfoCircleOutlined from "@ant-design/icons/es/icons/InfoCircleOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import SearchOutlined from "@ant-design/icons/es/icons/SearchOutlined";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

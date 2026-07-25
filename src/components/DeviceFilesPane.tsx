@@ -1,21 +1,19 @@
-import {
-  ArrowLeftOutlined,
-  CheckOutlined,
-  DeleteOutlined,
-  DownloadOutlined,
-  EditOutlined,
-  FileAddOutlined,
-  FileOutlined,
-  FolderAddOutlined,
-  FolderOpenOutlined,
-  FolderOutlined,
-  HomeOutlined,
-  ReloadOutlined,
-  SortAscendingOutlined,
-  SortDescendingOutlined,
-  StopOutlined,
-  UploadOutlined,
-} from "@ant-design/icons";
+import ArrowLeftOutlined from "@ant-design/icons/es/icons/ArrowLeftOutlined";
+import CheckOutlined from "@ant-design/icons/es/icons/CheckOutlined";
+import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
+import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
+import EditOutlined from "@ant-design/icons/es/icons/EditOutlined";
+import FileAddOutlined from "@ant-design/icons/es/icons/FileAddOutlined";
+import FileOutlined from "@ant-design/icons/es/icons/FileOutlined";
+import FolderAddOutlined from "@ant-design/icons/es/icons/FolderAddOutlined";
+import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
+import FolderOutlined from "@ant-design/icons/es/icons/FolderOutlined";
+import HomeOutlined from "@ant-design/icons/es/icons/HomeOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import SortAscendingOutlined from "@ant-design/icons/es/icons/SortAscendingOutlined";
+import SortDescendingOutlined from "@ant-design/icons/es/icons/SortDescendingOutlined";
+import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
+import UploadOutlined from "@ant-design/icons/es/icons/UploadOutlined";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Progress, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

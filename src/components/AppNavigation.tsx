@@ -1,4 +1,9 @@
-import { DashboardOutlined, EnvironmentOutlined, FileTextOutlined, FolderOpenOutlined, MobileOutlined, SettingOutlined } from "@ant-design/icons";
+import DashboardOutlined from "@ant-design/icons/es/icons/DashboardOutlined";
+import EnvironmentOutlined from "@ant-design/icons/es/icons/EnvironmentOutlined";
+import FileTextOutlined from "@ant-design/icons/es/icons/FileTextOutlined";
+import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
+import MobileOutlined from "@ant-design/icons/es/icons/MobileOutlined";
+import SettingOutlined from "@ant-design/icons/es/icons/SettingOutlined";
 import { Menu } from "antd";
 import { useTranslation } from "react-i18next";
 import { KeyboardIcon } from "./KeyboardIcon";

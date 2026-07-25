@@ -1,10 +1,8 @@
-import {
-  CameraOutlined,
-  DownloadOutlined,
-  EyeOutlined,
-  PictureOutlined,
-  VideoCameraOutlined,
-} from "@ant-design/icons";
+import CameraOutlined from "@ant-design/icons/es/icons/CameraOutlined";
+import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
+import EyeOutlined from "@ant-design/icons/es/icons/EyeOutlined";
+import PictureOutlined from "@ant-design/icons/es/icons/PictureOutlined";
+import VideoCameraOutlined from "@ant-design/icons/es/icons/VideoCameraOutlined";
 import { Button, Segmented, Space, Tag, Tooltip, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 

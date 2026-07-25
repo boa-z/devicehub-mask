@@ -1,13 +1,11 @@
-import {
-  CaretRightOutlined,
-  ClearOutlined,
-  CopyOutlined,
-  DownloadOutlined,
-  FileTextOutlined,
-  PauseOutlined,
-  SearchOutlined,
-  StopOutlined,
-} from "@ant-design/icons";
+import CaretRightOutlined from "@ant-design/icons/es/icons/CaretRightOutlined";
+import ClearOutlined from "@ant-design/icons/es/icons/ClearOutlined";
+import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
+import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
+import FileTextOutlined from "@ant-design/icons/es/icons/FileTextOutlined";
+import PauseOutlined from "@ant-design/icons/es/icons/PauseOutlined";
+import SearchOutlined from "@ant-design/icons/es/icons/SearchOutlined";
+import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Select, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
