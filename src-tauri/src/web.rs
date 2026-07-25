@@ -22,7 +22,6 @@ use crate::protocol::{
     InputCmd, InputSink, LocationStatus, PairDeviceResult, VideoCounters, validate_device_name,
     validate_paste_text,
 };
-use crate::supervisor::ServiceRegistry;
 #[cfg(test)]
 use crate::websocket_input::{
     ClientVideoFeedback, WebContact, handle_client_message, send_all_up, valid_frontend_metrics,
@@ -32,10 +31,9 @@ use crate::websocket_input::{
 #[derive(Clone)]
 pub struct AppState {
     pub application: crate::application::ApplicationServices,
+    pub performance_http: crate::http_performance::PerformanceHttpState,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
-    pub network_capture: crate::network_capture::NetworkCaptureSlot,
-    pub bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     pub device_backup: crate::device_backup::DeviceBackupSlot,
     pub sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     pub log_archive: crate::log_archive::LogArchiveSlot,
@@ -44,20 +42,8 @@ pub struct AppState {
     pub app_operation: AppOperationSlot,
     pub app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     pub device_file_activity: crate::device_files::DeviceFileActivitySlot,
-    pub services: ServiceRegistry,
     pub input: InputSink,
     pub profile_dir: Arc<PathBuf>,
-}
-
-#[derive(Serialize)]
-struct PerformanceView {
-    sample: crate::performance::PerformanceSnapshot,
-    app_activity: Vec<crate::performance::AppActivityEvent>,
-    services: Vec<crate::supervisor::ServiceHealth>,
-    sampling: bool,
-    network_capture: crate::network_capture::NetworkCaptureStatus,
-    bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureStatus,
-    device_conditions: crate::device_conditions::DeviceConditionStatus,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,34 +76,10 @@ struct ProfileList {
 struct ApiToken(Arc<str>);
 
 pub fn router(state: AppState, token: String) -> Router {
+    let performance_routes = crate::http_performance::router(state.performance_http.clone());
     Router::new()
         .route("/api/status", get(status))
-        .route("/api/performance", get(performance))
-        .route("/api/performance/processes", get(running_processes))
-        .route(
-            "/api/performance/sampling",
-            put(start_performance_sampling).delete(stop_performance_sampling),
-        )
-        .route(
-            "/api/performance/network-capture",
-            put(start_network_capture).delete(stop_network_capture),
-        )
-        .route(
-            "/api/performance/bluetooth-capture",
-            put(start_bluetooth_capture).delete(stop_bluetooth_capture),
-        )
-        .route(
-            "/api/performance/device-condition",
-            put(apply_device_condition).delete(clear_device_condition),
-        )
-        .route(
-            "/api/device/logs",
-            get(device_logs).delete(clear_device_logs),
-        )
-        .route(
-            "/api/device/logs/streaming",
-            put(start_device_logs).delete(stop_device_logs),
-        )
+        .merge(performance_routes)
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
@@ -316,273 +278,6 @@ fn private_api_authorized(headers: &HeaderMap, token: &str) -> bool {
 
 async fn status(State(state): State<AppState>) -> Json<crate::web_status::StatusView> {
     Json(crate::web_status::snapshot(&state.application))
-}
-
-async fn performance(State(state): State<AppState>) -> Json<PerformanceView> {
-    Json(PerformanceView {
-        sample: state.application.performance.get(),
-        app_activity: state.application.performance.app_activity(),
-        services: state.services.snapshot(),
-        sampling: state.application.performance_demand.enabled(),
-        network_capture: state.network_capture.get(),
-        bluetooth_capture: state.bluetooth_capture.get(),
-        device_conditions: state.application.device_conditions.get(),
-    })
-}
-
-async fn running_processes(
-    State(state): State<AppState>,
-) -> Result<Json<crate::running_processes::RunningProcessList>, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::RunningProcess(
-        crate::running_processes::RunningProcessCommand::List { reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    let processes = tokio::time::timeout(Duration::from_secs(12), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "running process request timed out".into(),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    Ok(Json(processes))
-}
-
-#[derive(Deserialize)]
-struct ApplyDeviceConditionRequest {
-    group_identifier: String,
-    profile_identifier: String,
-}
-
-async fn apply_device_condition(
-    State(state): State<AppState>,
-    Json(request): Json<ApplyDeviceConditionRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    crate::device_conditions::validate_identifiers(
-        &request.group_identifier,
-        &request.profile_identifier,
-    )
-    .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceCondition(
-        crate::device_conditions::DeviceConditionCommand::Apply {
-            group_identifier: request.group_identifier,
-            profile_identifier: request.profile_identifier,
-            expires_at: tokio::time::Instant::now() + Duration::from_secs(7),
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_device_condition_command(response, "apply device condition").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn clear_device_condition(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceCondition(
-        crate::device_conditions::DeviceConditionCommand::Clear {
-            expires_at: tokio::time::Instant::now() + Duration::from_secs(7),
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_device_condition_command(response, "clear device condition").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn await_device_condition_command(
-    response: oneshot::Receiver<Result<(), String>>,
-    operation: &str,
-) -> Result<(), (StatusCode, String)> {
-    let result = tokio::time::timeout(Duration::from_secs(8), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                format!("{operation} timed out"),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("{operation} service stopped"),
-            )
-        })?;
-    result.map_err(|error| (StatusCode::CONFLICT, error))
-}
-
-#[derive(Deserialize)]
-struct StartNetworkCaptureRequest {
-    destination: PathBuf,
-    duration_seconds: u64,
-    #[serde(default)]
-    process_id: Option<u32>,
-}
-
-async fn start_network_capture(
-    State(state): State<AppState>,
-    Json(request): Json<StartNetworkCaptureRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    crate::network_capture::validate_request(&request.destination, request.duration_seconds)
-        .await
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::NetworkCapture(
-        crate::network_capture::NetworkCaptureCommand::Start {
-            destination: request.destination,
-            duration_seconds: request.duration_seconds,
-            process_id: request.process_id,
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_network_capture_command(response, "start packet capture").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn stop_network_capture(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::NetworkCapture(
-        crate::network_capture::NetworkCaptureCommand::Stop { reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_network_capture_command(response, "stop packet capture").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn await_network_capture_command(
-    response: oneshot::Receiver<Result<(), String>>,
-    operation: &str,
-) -> Result<(), (StatusCode, String)> {
-    let result = tokio::time::timeout(Duration::from_secs(15), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                format!("{operation} request timed out"),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    result.map_err(|error| {
-        let status = if error.contains("already running") || error.contains("no packet capture") {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-        (status, error)
-    })
-}
-
-#[derive(Deserialize)]
-struct StartBluetoothCaptureRequest {
-    destination: PathBuf,
-    duration_seconds: u64,
-}
-
-async fn start_bluetooth_capture(
-    State(state): State<AppState>,
-    Json(request): Json<StartBluetoothCaptureRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    crate::bluetooth_capture::validate_request(&request.destination, request.duration_seconds)
-        .await
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::BluetoothCapture(
-        crate::bluetooth_capture::BluetoothCaptureCommand::Start {
-            destination: request.destination,
-            duration_seconds: request.duration_seconds,
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_bluetooth_capture_command(response, "start Bluetooth capture").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn stop_bluetooth_capture(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::BluetoothCapture(
-        crate::bluetooth_capture::BluetoothCaptureCommand::Stop { reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_bluetooth_capture_command(response, "stop Bluetooth capture").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn await_bluetooth_capture_command(
-    response: oneshot::Receiver<Result<(), String>>,
-    operation: &str,
-) -> Result<(), (StatusCode, String)> {
-    let result = tokio::time::timeout(Duration::from_secs(15), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                format!("{operation} request timed out"),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    result.map_err(|error| {
-        let status = if error.contains("already running") || error.contains("no Bluetooth capture")
-        {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-        (status, error)
-    })
 }
 
 async fn device_backup_status(
@@ -821,65 +516,6 @@ async fn await_log_archive_command(
         };
         (status, error)
     })
-}
-
-async fn start_performance_sampling(State(state): State<AppState>) -> StatusCode {
-    state.application.performance.reset();
-    state.application.performance_demand.set(true);
-    StatusCode::NO_CONTENT
-}
-
-async fn stop_performance_sampling(State(state): State<AppState>) -> StatusCode {
-    state.application.performance_demand.set(false);
-    state.application.performance.reset();
-    StatusCode::NO_CONTENT
-}
-
-#[derive(Deserialize)]
-struct DeviceLogQuery {
-    after: Option<u64>,
-    limit: Option<usize>,
-}
-
-async fn device_logs(
-    State(state): State<AppState>,
-    axum::extract::Query(query): axum::extract::Query<DeviceLogQuery>,
-) -> Json<DeviceLogsView> {
-    let service = state
-        .services
-        .snapshot()
-        .into_iter()
-        .find(|service| service.name == "device.logs");
-    Json(DeviceLogsView {
-        batch: state.application.device_logs.snapshot(
-            query.after,
-            query.limit.unwrap_or(crate::device_logs::MAX_BATCH_ENTRIES),
-            state.application.device_log_demand.enabled(),
-        ),
-        service,
-    })
-}
-
-#[derive(Serialize)]
-struct DeviceLogsView {
-    #[serde(flatten)]
-    batch: crate::device_logs::DeviceLogBatch,
-    service: Option<crate::supervisor::ServiceHealth>,
-}
-
-async fn start_device_logs(State(state): State<AppState>) -> StatusCode {
-    state.application.device_log_demand.set(true);
-    StatusCode::NO_CONTENT
-}
-
-async fn stop_device_logs(State(state): State<AppState>) -> StatusCode {
-    state.application.device_log_demand.set(false);
-    StatusCode::NO_CONTENT
-}
-
-async fn clear_device_logs(State(state): State<AppState>) -> StatusCode {
-    state.application.device_logs.clear();
-    StatusCode::NO_CONTENT
 }
 
 async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
@@ -3095,6 +2731,10 @@ mod tests {
         input.set(Some(input_tx));
         let (control, control_rx) = unbounded_channel();
         let browser_frames = crate::browser_video::BrowserVideoSlot::default();
+        let observability = crate::application::ObservabilitySlots::default();
+        let network_capture = crate::network_capture::NetworkCaptureSlot::default();
+        let bluetooth_capture = crate::bluetooth_capture::BluetoothCaptureSlot::default();
+        let services = crate::supervisor::ServiceRegistry::default();
         (
             AppState {
                 application: crate::application::ApplicationServices::new(
@@ -3103,13 +2743,22 @@ mod tests {
                         input.clone(),
                     ),
                     crate::application::DeviceStateSlots::default(),
-                    crate::application::ObservabilitySlots::default(),
+                    observability.clone(),
                     control,
+                ),
+                performance_http: crate::http_performance::PerformanceHttpState::new(
+                    observability.performance.clone(),
+                    observability.performance_demand.clone(),
+                    observability.device_logs.clone(),
+                    observability.device_log_demand.clone(),
+                    observability.device_conditions.clone(),
+                    network_capture,
+                    bluetooth_capture,
+                    services,
+                    input.clone(),
                 ),
                 browser_frames,
                 clipboard: ClipboardSlot::default(),
-                network_capture: crate::network_capture::NetworkCaptureSlot::default(),
-                bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot::default(),
                 device_backup: crate::device_backup::DeviceBackupSlot::default(),
                 sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot::default(),
                 log_archive: crate::log_archive::LogArchiveSlot::default(),
@@ -3118,7 +2767,6 @@ mod tests {
                 app_operation: AppOperationSlot::default(),
                 app_document_activity: crate::app_documents::AppDocumentActivitySlot::default(),
                 device_file_activity: crate::device_files::DeviceFileActivitySlot::default(),
-                services: ServiceRegistry::default(),
                 input,
                 profile_dir: Arc::new(PathBuf::new()),
             },
@@ -3181,62 +2829,6 @@ mod tests {
         };
         reply.send(Ok(())).unwrap();
         assert_eq!(request.await.unwrap().unwrap(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn device_condition_endpoints_dispatch_to_the_supervised_service() {
-        let (state, mut input_rx) = test_state();
-        let apply_state = state.clone();
-        let apply = tokio::spawn(async move {
-            apply_device_condition(
-                State(apply_state),
-                Json(ApplyDeviceConditionRequest {
-                    group_identifier: "Network".into(),
-                    profile_identifier: "Lossy LTE".into(),
-                }),
-            )
-            .await
-        });
-        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Apply {
-            group_identifier,
-            profile_identifier,
-            reply,
-            ..
-        }) = input_rx.recv().await.unwrap()
-        else {
-            panic!("expected apply device condition command");
-        };
-        assert_eq!(group_identifier, "Network");
-        assert_eq!(profile_identifier, "Lossy LTE");
-        reply.send(Ok(())).unwrap();
-        assert_eq!(apply.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-
-        let clear = tokio::spawn(clear_device_condition(State(state)));
-        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Clear {
-            reply,
-            ..
-        }) = input_rx.recv().await.unwrap()
-        else {
-            panic!("expected clear device condition command");
-        };
-        reply.send(Ok(())).unwrap();
-        assert_eq!(clear.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn device_condition_endpoint_rejects_invalid_identifiers_before_dispatch() {
-        let (state, mut input_rx) = test_state();
-        let error = apply_device_condition(
-            State(state),
-            Json(ApplyDeviceConditionRequest {
-                group_identifier: "Network\nInjected".into(),
-                profile_identifier: "LTE".into(),
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert!(input_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -3402,131 +2994,6 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.0, expected);
         }
-    }
-
-    #[tokio::test]
-    async fn performance_sampling_endpoint_controls_demand() {
-        let (state, _) = test_state();
-        assert!(!state.application.performance_demand.enabled());
-        assert_eq!(
-            start_performance_sampling(State(state.clone())).await,
-            StatusCode::NO_CONTENT
-        );
-        assert!(state.application.performance_demand.enabled());
-        let view = performance(State(state.clone())).await.0;
-        assert!(view.sampling);
-        assert!(view.app_activity.is_empty());
-        assert_eq!(
-            stop_performance_sampling(State(state.clone())).await,
-            StatusCode::NO_CONTENT
-        );
-        assert!(!state.application.performance_demand.enabled());
-    }
-
-    #[tokio::test]
-    async fn network_capture_endpoints_validate_and_dispatch_commands() {
-        let (state, mut input_rx) = test_state();
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-web-test-{}.pcap",
-            uuid::Uuid::new_v4()
-        ));
-        let invalid = start_network_capture(
-            State(state.clone()),
-            Json(StartNetworkCaptureRequest {
-                destination: destination.clone(),
-                duration_seconds: 0,
-                process_id: None,
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
-        assert!(input_rx.try_recv().is_err());
-
-        let start = tokio::spawn(start_network_capture(
-            State(state.clone()),
-            Json(StartNetworkCaptureRequest {
-                destination: destination.clone(),
-                duration_seconds: 30,
-                process_id: Some(42),
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::NetworkCapture(crate::network_capture::NetworkCaptureCommand::Start {
-                destination: actual,
-                duration_seconds,
-                process_id,
-                reply,
-            }) => {
-                assert_eq!(actual, destination);
-                assert_eq!(duration_seconds, 30);
-                assert_eq!(process_id, Some(42));
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-
-        let stop = tokio::spawn(stop_network_capture(State(state)));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::NetworkCapture(crate::network_capture::NetworkCaptureCommand::Stop {
-                reply,
-            }) => reply.send(Ok(())).unwrap(),
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn bluetooth_capture_endpoints_validate_and_dispatch_commands() {
-        let (state, mut input_rx) = test_state();
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-bluetooth-web-test-{}.pcap",
-            uuid::Uuid::new_v4()
-        ));
-        let invalid = start_bluetooth_capture(
-            State(state.clone()),
-            Json(StartBluetoothCaptureRequest {
-                destination: destination.clone(),
-                duration_seconds: 0,
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
-        assert!(input_rx.try_recv().is_err());
-
-        let start = tokio::spawn(start_bluetooth_capture(
-            State(state.clone()),
-            Json(StartBluetoothCaptureRequest {
-                destination: destination.clone(),
-                duration_seconds: 30,
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::BluetoothCapture(
-                crate::bluetooth_capture::BluetoothCaptureCommand::Start {
-                    destination: actual,
-                    duration_seconds,
-                    reply,
-                },
-            ) => {
-                assert_eq!(actual, destination);
-                assert_eq!(duration_seconds, 30);
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-
-        let stop = tokio::spawn(stop_bluetooth_capture(State(state)));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::BluetoothCapture(
-                crate::bluetooth_capture::BluetoothCaptureCommand::Stop { reply },
-            ) => reply.send(Ok(())).unwrap(),
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -3703,53 +3170,6 @@ mod tests {
             _ => panic!("unexpected command"),
         }
         assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn device_log_endpoints_bound_batches_and_control_demand() {
-        let (state, _) = test_state();
-        for index in 0..3 {
-            state
-                .application
-                .device_logs
-                .publish(format!("line {index}"));
-        }
-        assert_eq!(
-            start_device_logs(State(state.clone())).await,
-            StatusCode::NO_CONTENT
-        );
-        let view = device_logs(
-            State(state.clone()),
-            axum::extract::Query(DeviceLogQuery {
-                after: Some(1),
-                limit: Some(1),
-            }),
-        )
-        .await
-        .0;
-        assert!(view.batch.streaming);
-        assert_eq!(view.batch.entries.len(), 1);
-        assert_eq!(view.batch.entries[0].sequence, 2);
-        assert!(!view.batch.cursor_lagged);
-        assert!(view.batch.has_more);
-
-        assert_eq!(
-            clear_device_logs(State(state.clone())).await,
-            StatusCode::NO_CONTENT
-        );
-        assert!(
-            state
-                .application
-                .device_logs
-                .snapshot(None, 10, true)
-                .entries
-                .is_empty()
-        );
-        assert_eq!(
-            stop_device_logs(State(state.clone())).await,
-            StatusCode::NO_CONTENT
-        );
-        assert!(!state.application.device_log_demand.enabled());
     }
 
     #[tokio::test]
@@ -4147,35 +3567,6 @@ mod tests {
         let response = request.await.unwrap().unwrap();
         assert_eq!(response.0.len(), 1);
         assert_eq!(response.0[0].name.as_deref(), Some("Test Watch"));
-    }
-
-    #[tokio::test]
-    async fn running_process_endpoint_dispatches_a_bounded_read_only_query() {
-        let (state, mut input_rx) = test_state();
-        let request = tokio::spawn(running_processes(State(state)));
-        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::List {
-            reply,
-        }) = input_rx.recv().await.unwrap()
-        else {
-            panic!("expected running process query");
-        };
-        reply
-            .send(Ok(crate::running_processes::RunningProcessList {
-                processes: vec![crate::running_processes::RunningProcess {
-                    pid: 42,
-                    name: "Example".into(),
-                    app_name: Some("Example App".into()),
-                    is_application: true,
-                }],
-                truncated: false,
-            }))
-            .unwrap();
-        let response = request.await.unwrap().unwrap();
-        assert_eq!(response.0.processes[0].pid, 42);
-        assert_eq!(
-            response.0.processes[0].app_name.as_deref(),
-            Some("Example App")
-        );
     }
 
     #[tokio::test]

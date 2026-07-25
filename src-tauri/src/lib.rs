@@ -21,6 +21,7 @@ mod diagnostics;
 mod heartbeat;
 mod hid;
 mod home_screen;
+mod http_performance;
 mod ipa;
 mod location;
 mod log_archive;
@@ -281,10 +282,19 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         application: application_services,
+                        performance_http: http_performance::PerformanceHttpState::new(
+                            performance,
+                            performance_demand,
+                            device_logs,
+                            device_log_demand,
+                            device_conditions,
+                            network_capture,
+                            bluetooth_capture,
+                            services,
+                            input.clone(),
+                        ),
                         browser_frames,
                         clipboard,
-                        network_capture,
-                        bluetooth_capture,
                         device_backup,
                         sysdiagnose,
                         log_archive,
@@ -293,7 +303,6 @@ fn spawn_backend(
                         app_operation,
                         app_document_activity,
                         device_file_activity,
-                        services,
                         input,
                         profile_dir: Arc::new(profile_dir),
                     },
