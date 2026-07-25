@@ -387,6 +387,12 @@ struct WdaScrollParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WdaBackgroundAppParams {
+    /// Restore the foreground app after this many milliseconds (100..5000). Omit to leave it backgrounded.
+    restore_after_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WdaStartParams {
     /// Installed developer application bundle ID ending in .xctrunner, discovered with list_apps.
     runner_bundle_id: String,
@@ -1593,6 +1599,31 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Explicitly ask an already-running WebDriverAgent to unlock the device, then verify the resulting lock state. This accepts no passcode and cannot bypass device authentication."
+    )]
+    async fn wda_unlock(&self) -> Result<CallToolResult, McpError> {
+        let (reply, response) = oneshot::channel();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::Unlock {
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        let result = tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA unlock request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(serde_json::to_string(&result).map_err(|error| {
+            McpError::internal_error(
+                format!("WDA unlock result serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
         description = "Read a size-bounded XML accessibility tree from an already-running WebDriverAgent. The tree may contain sensitive on-screen text."
     )]
     async fn wda_ui_tree(
@@ -1939,6 +1970,38 @@ impl DeviceHub {
             .map_err(|_| McpError::internal_error("device session ended", None))?
             .map_err(|error| McpError::internal_error(error, None))?;
         ok_text(json!({ "scrolled": true, "direction": params.direction }).to_string())
+    }
+
+    #[tool(
+        description = "Move the current foreground app to the background through an already-running WebDriverAgent. Omit restore_after_ms to leave it backgrounded, or restore it after 100 to 5000 milliseconds."
+    )]
+    async fn wda_background_app(
+        &self,
+        Parameters(params): Parameters<WdaBackgroundAppParams>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::wda_automation::validate_background_duration(params.restore_after_ms)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let (reply, response) = oneshot::channel();
+        let _gesture = self.gesture_lock.lock().await;
+        self.send(InputCmd::WdaAutomation(
+            crate::wda_automation::WdaAutomationCommand::BackgroundApp {
+                restore_after_ms: params.restore_after_ms,
+                expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
+                reply,
+            },
+        ))?;
+        tokio::time::timeout(WDA_WAIT, response)
+            .await
+            .map_err(|_| McpError::internal_error("WDA app background request timed out", None))?
+            .map_err(|_| McpError::internal_error("device session ended", None))?
+            .map_err(|error| McpError::internal_error(error, None))?;
+        ok_text(
+            json!({
+                "backgrounded": true,
+                "restore_after_ms": params.restore_after_ms,
+            })
+            .to_string(),
+        )
     }
 
     #[tool(
@@ -2565,7 +2628,7 @@ impl ServerHandler for DeviceHub {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_device_state, wda_ui_tree, wda_find_elements, wda_inspect_element, wda_wait_for_element, wda_click, wda_type_text, wda_double_tap, wda_touch_and_hold, and wda_scroll. WDA element rectangles use the logical coordinate space reported by wda_device_state, not screenshot pixels. Inspect a match before acting when visibility, enabled, or selected state matters, and use wda_wait_for_element instead of repeatedly polling for presence, visibility, enabled, or selected state. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, then app_status or wait_for_app for bundle-aware lifecycle checks. Use home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes for a current PID snapshot, then process_status or wait_for_process only when PID-level diagnosis is required. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_device_state, wda_ui_tree, wda_find_elements, wda_inspect_element, wda_wait_for_element, wda_click, wda_type_text, wda_double_tap, wda_touch_and_hold, and wda_scroll. WDA element rectangles use the logical coordinate space reported by wda_device_state, not screenshot pixels. Inspect a match before acting when visibility, enabled, or selected state matters, and use wda_wait_for_element instead of repeatedly polling for presence, visibility, enabled, or selected state. wda_unlock accepts no passcode and succeeds only after WDA confirms the unlocked state. wda_background_app affects only the current foreground app and can use a bounded automatic restore delay. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, then app_status or wait_for_app for bundle-aware lifecycle checks. Use home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes for a current PID snapshot, then process_status or wait_for_process only when PID-level diagnosis is required. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
@@ -2723,6 +2786,7 @@ mod tests {
             "wda_stop",
             "wda_status",
             "wda_device_state",
+            "wda_unlock",
             "wda_ui_tree",
             "wda_find_elements",
             "wda_inspect_element",
@@ -2732,6 +2796,7 @@ mod tests {
             "wda_double_tap",
             "wda_touch_and_hold",
             "wda_scroll",
+            "wda_background_app",
             "launch_app",
             "stop_app",
             "list_crash_reports",
@@ -3363,6 +3428,30 @@ mod tests {
                 })
         );
 
+        let unlock_hub = hub.clone();
+        let unlock_task = tokio::spawn(async move { unlock_hub.wda_unlock().await.unwrap() });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Unlock {
+            reply,
+            expires_at,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA unlock command");
+        };
+        assert!(expires_at > tokio::time::Instant::now());
+        reply
+            .send(Ok(crate::wda_automation::WdaUnlockResult {
+                was_locked: true,
+                unlocked: true,
+            }))
+            .unwrap();
+        assert!(unlock_task.await.unwrap().content.iter().any(|content| {
+            content.as_text().is_some_and(|text| {
+                text.text.contains(r#""was_locked":true"#)
+                    && text.text.contains(r#""unlocked":true"#)
+                    && !text.text.contains("session_id")
+            })
+        }));
+
         let source_hub = hub.clone();
         let source_task = tokio::spawn(async move {
             source_hub
@@ -3696,6 +3785,40 @@ mod tests {
             })
         }));
 
+        let background_hub = hub.clone();
+        let background_task = tokio::spawn(async move {
+            background_hub
+                .wda_background_app(Parameters(WdaBackgroundAppParams {
+                    restore_after_ms: Some(1_500),
+                }))
+                .await
+                .unwrap()
+        });
+        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::BackgroundApp {
+            restore_after_ms,
+            reply,
+            expires_at,
+        }) = input_rx.recv().await.unwrap()
+        else {
+            panic!("expected WDA app background command");
+        };
+        assert_eq!(restore_after_ms, Some(1_500));
+        assert!(expires_at > tokio::time::Instant::now());
+        reply.send(Ok(())).unwrap();
+        assert!(
+            background_task
+                .await
+                .unwrap()
+                .content
+                .iter()
+                .any(|content| {
+                    content.as_text().is_some_and(|text| {
+                        text.text.contains(r#""backgrounded":true"#)
+                            && text.text.contains(r#""restore_after_ms":1500"#)
+                    })
+                })
+        );
+
         assert!(
             hub.wda_find_elements(Parameters(WdaFindParams {
                 using: "css selector".into(),
@@ -3747,6 +3870,13 @@ mod tests {
                 index: None,
                 state: None,
                 timeout_ms: Some(crate::wda_automation::MAX_WAIT_TIMEOUT_MS + 1),
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.wda_background_app(Parameters(WdaBackgroundAppParams {
+                restore_after_ms: Some(crate::wda_automation::MAX_BACKGROUND_DURATION_MS + 1,),
             }))
             .await
             .is_err()

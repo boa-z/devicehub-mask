@@ -25,6 +25,8 @@ pub const MAX_ATTRIBUTE_BYTES: usize = 4096;
 pub const MIN_HOLD_DURATION_MS: u64 = 100;
 pub const MAX_HOLD_DURATION_MS: u64 = 10_000;
 pub const MAX_WAIT_TIMEOUT_MS: u64 = 10_000;
+pub const MIN_BACKGROUND_DURATION_MS: u64 = 100;
+pub const MAX_BACKGROUND_DURATION_MS: u64 = 5_000;
 const MAX_LOGICAL_DIMENSION: f64 = 100_000.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -77,6 +79,12 @@ pub struct WdaDeviceState {
     pub orientation: WdaOrientation,
     pub window: WdaSize,
     pub viewport: Option<WdaRect>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WdaUnlockResult {
+    pub was_locked: bool,
+    pub unlocked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -147,6 +155,10 @@ pub enum WdaAutomationCommand {
         expires_at: tokio::time::Instant,
         reply: oneshot::Sender<Result<WdaDeviceState, String>>,
     },
+    Unlock {
+        expires_at: tokio::time::Instant,
+        reply: oneshot::Sender<Result<WdaUnlockResult, String>>,
+    },
     Find {
         using: String,
         value: String,
@@ -202,6 +214,11 @@ pub enum WdaAutomationCommand {
         expires_at: tokio::time::Instant,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    BackgroundApp {
+        restore_after_ms: Option<u64>,
+        expires_at: tokio::time::Instant,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 impl WdaAutomationCommand {
@@ -210,6 +227,7 @@ impl WdaAutomationCommand {
             Self::Status { expires_at, .. }
             | Self::Source { expires_at, .. }
             | Self::DeviceState { expires_at, .. }
+            | Self::Unlock { expires_at, .. }
             | Self::Find { expires_at, .. }
             | Self::Inspect { expires_at, .. }
             | Self::WaitForElement { expires_at, .. }
@@ -217,7 +235,8 @@ impl WdaAutomationCommand {
             | Self::TypeText { expires_at, .. }
             | Self::DoubleTap { expires_at, .. }
             | Self::TouchAndHold { expires_at, .. }
-            | Self::Scroll { expires_at, .. } => *expires_at,
+            | Self::Scroll { expires_at, .. }
+            | Self::BackgroundApp { expires_at, .. } => *expires_at,
         }
     }
 
@@ -231,6 +250,9 @@ impl WdaAutomationCommand {
                 let _ = reply.send(Err(reason));
             }
             Self::DeviceState { reply, .. } => {
+                let _ = reply.send(Err(reason));
+            }
+            Self::Unlock { reply, .. } => {
                 let _ = reply.send(Err(reason));
             }
             Self::Find { reply, .. } => {
@@ -255,6 +277,9 @@ impl WdaAutomationCommand {
                 let _ = reply.send(Err(reason));
             }
             Self::Scroll { reply, .. } => {
+                let _ = reply.send(Err(reason));
+            }
+            Self::BackgroundApp { reply, .. } => {
                 let _ = reply.send(Err(reason));
             }
         }
@@ -313,6 +338,16 @@ pub fn validate_wait_timeout(timeout_ms: u64) -> Result<(), &'static str> {
         Ok(())
     } else {
         Err("WDA element wait timeout must be between 0 and 10000 milliseconds")
+    }
+}
+
+pub fn validate_background_duration(duration_ms: Option<u64>) -> Result<(), &'static str> {
+    if duration_ms.is_none_or(|duration_ms| {
+        (MIN_BACKGROUND_DURATION_MS..=MAX_BACKGROUND_DURATION_MS).contains(&duration_ms)
+    }) {
+        Ok(())
+    } else {
+        Err("WDA background duration must be between 100 and 5000 milliseconds")
     }
 }
 
@@ -404,6 +439,10 @@ async fn handle_command(
         }
         WdaAutomationCommand::DeviceState { expires_at, reply } => {
             let result = read_device_state(client, expires_at).await;
+            finish(reply, result)
+        }
+        WdaAutomationCommand::Unlock { expires_at, reply } => {
+            let result = unlock_device(client, expires_at).await;
             finish(reply, result)
         }
         WdaAutomationCommand::Find {
@@ -585,6 +624,34 @@ async fn handle_command(
             .await;
             finish(reply, result)
         }
+        WdaAutomationCommand::BackgroundApp {
+            restore_after_ms,
+            expires_at,
+            reply,
+        } => {
+            let result = async {
+                validate_background_duration(restore_after_ms).map_err(str::to_string)?;
+                ensure_session(client, expires_at).await?;
+                let seconds = restore_after_ms
+                    .map(|duration_ms| duration_ms as f64 / 1_000.0)
+                    .unwrap_or(-1.0);
+                within(
+                    expires_at,
+                    client.background_app(Some(seconds), None),
+                    "WDA app backgrounding",
+                )
+                .await?;
+                tracing::info!(
+                    component = "wda_automation",
+                    operation = "background_app",
+                    restore_after_ms,
+                    "backgrounded the foreground app through WebDriverAgent"
+                );
+                Ok(())
+            }
+            .await;
+            finish(reply, result)
+        }
     }
 }
 
@@ -644,6 +711,39 @@ async fn read_device_state(
         orientation,
         window,
         viewport,
+    })
+}
+
+async fn unlock_device(
+    client: &mut WdaClient<'_>,
+    expires_at: tokio::time::Instant,
+) -> Result<WdaUnlockResult, String> {
+    ensure_session(client, expires_at).await?;
+    let was_locked = within(expires_at, client.is_locked(None), "WDA device lock state").await?;
+    if was_locked {
+        within(expires_at, client.unlock(None), "WDA device unlock").await?;
+    }
+    let locked = within(
+        expires_at,
+        client.is_locked(None),
+        "WDA post-unlock device lock state",
+    )
+    .await?;
+    if locked {
+        return Err(
+            "WDA unlock request completed but the device remains locked; unlock it on-device"
+                .into(),
+        );
+    }
+    tracing::info!(
+        component = "wda_automation",
+        operation = "unlock",
+        was_locked,
+        "confirmed device unlock through WebDriverAgent"
+    );
+    Ok(WdaUnlockResult {
+        was_locked,
+        unlocked: true,
     })
 }
 
@@ -1064,6 +1164,11 @@ mod tests {
         assert!(validate_wait_timeout(0).is_ok());
         assert!(validate_wait_timeout(MAX_WAIT_TIMEOUT_MS).is_ok());
         assert!(validate_wait_timeout(MAX_WAIT_TIMEOUT_MS + 1).is_err());
+        assert!(validate_background_duration(None).is_ok());
+        assert!(validate_background_duration(Some(MIN_BACKGROUND_DURATION_MS)).is_ok());
+        assert!(validate_background_duration(Some(MAX_BACKGROUND_DURATION_MS)).is_ok());
+        assert!(validate_background_duration(Some(MIN_BACKGROUND_DURATION_MS - 1)).is_err());
+        assert!(validate_background_duration(Some(MAX_BACKGROUND_DURATION_MS + 1)).is_err());
         for state in [
             "present",
             "absent",

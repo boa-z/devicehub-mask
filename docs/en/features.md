@@ -98,7 +98,7 @@ The Streamable HTTP MCP endpoint exposes the following tools while the desktop a
 - Device/session: `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `lock_device`, `wait_for_device_event`, `list_companion_devices`, and `home_screen_layout`.
 - Apps and diagnosis: `list_apps`, `launch_app`, `stop_app`, `app_status`, `wait_for_app`, `list_processes`, `process_status`, `wait_for_process`, `list_crash_reports`, `read_crash_report` with a normalized summary, `performance_snapshot`, and `recent_device_logs`.
 - Location and conditions: `set_location`, `clear_location`, `list_device_conditions`, `apply_device_condition`, and `clear_device_condition`.
-- WDA: `wda_runner_status`, `wda_start`, `wda_stop`, `wda_status`, `wda_device_state`, `wda_ui_tree`, `wda_find_elements`, `wda_inspect_element`, `wda_wait_for_element`, `wda_click`, `wda_type_text`, `wda_double_tap`, `wda_touch_and_hold`, and `wda_scroll`.
+- WDA: `wda_runner_status`, `wda_start`, `wda_stop`, `wda_status`, `wda_device_state`, `wda_unlock`, `wda_ui_tree`, `wda_find_elements`, `wda_inspect_element`, `wda_wait_for_element`, `wda_click`, `wda_type_text`, `wda_double_tap`, `wda_touch_and_hold`, `wda_scroll`, and `wda_background_app`.
 
 MCP currently exposes one-way device locking, but not device restart or shutdown. Restart and shutdown are available in the desktop Device Info tab and require an interactive confirmation. MCP also does not expose IPA installation, upgrade, or removal; AMFI signer trust; AFC mutation; backup; sysdiagnose; Unified Log archive export; provisioning-profile mutation; packet capture; or Developer Disk Image mutation.
 

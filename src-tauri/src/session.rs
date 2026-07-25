@@ -2534,6 +2534,9 @@ fn reject_wda_command(command: crate::wda_automation::WdaAutomationCommand, reas
         WdaAutomationCommand::DeviceState { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
+        WdaAutomationCommand::Unlock { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
         WdaAutomationCommand::Find { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
@@ -2556,6 +2559,9 @@ fn reject_wda_command(command: crate::wda_automation::WdaAutomationCommand, reas
             let _ = reply.send(Err(reason.into()));
         }
         WdaAutomationCommand::Scroll { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        WdaAutomationCommand::BackgroundApp { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
     }
