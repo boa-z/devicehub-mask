@@ -4,12 +4,15 @@
 
 mod clipboard;
 mod discovery;
+mod manager;
 mod media;
 mod orientation;
 mod rtcp;
 mod services;
 mod transport;
 mod trust;
+
+pub(crate) use manager::manage;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,16 +60,12 @@ use crate::ipa::{
 };
 use crate::location::LocationCommand;
 use crate::protocol::{
-    ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardSlot, ConnKind, ControlCmd,
-    DeviceActivationState, DeviceApp, DeviceBattery, DeviceDetails, DeviceListSlot,
-    DevicePairingState, DeviceRegionalSettings, DeviceStorage, ErrorSlot, ForgetDeviceResult,
-    FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus, LocationStatusSlot,
-    Orientation, OrientationSlot, PairDeviceResult, RotateDir, StatusSlot, VideoCounterSnapshot,
-    VideoCounters,
+    AppOperationKind, AppOperationSlot, ClipboardSlot, ConnKind, DeviceActivationState, DeviceApp,
+    DeviceBattery, DeviceDetails, DeviceRegionalSettings, DeviceStorage, InputCmd, KeyMods,
+    Orientation, OrientationSlot, RotateDir, VideoCounterSnapshot, VideoCounters,
 };
-use crate::{performance, supervisor};
 use clipboard::ClipboardBridge;
-use discovery::DeviceDiscovery;
+use manager::{SessionVideo, SessionViews};
 use media::{
     AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RtpVideoClock,
     RunningStats, audio_decoder_restart_backoff,
@@ -74,7 +73,7 @@ use media::{
 use orientation::OrientationWatcher;
 use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
 use services::{DeviceManagementServices, LocationBridge, SessionServices};
-use transport::{SessionEndpoint, connect_core_tunnel, connect_provider, resolve_device_selection};
+use transport::{SessionEndpoint, connect_core_tunnel, connect_provider};
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
 const CLIENT_SUPPORTED_FEATURES: u64 = 140;
@@ -116,37 +115,6 @@ pub(crate) const APP_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(22)
 /// short enough to pick up a real stream restart promptly.
 const SSRC_TAKEOVER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
-/// How often to re-scan for attached devices while idle, so the picker reflects
-/// devices coming and going without a manual refresh.
-const IDLE_RESCAN: Duration = Duration::from_secs(2);
-/// Cap on how long we wait for a session to tear down when switching/quitting, so
-/// a wedged session can't hang the transition forever.
-const SWITCH_GRACE: Duration = Duration::from_secs(3);
-/// Briefly yield after a Wi-Fi transport failure before rebuilding the complete
-/// RemotePairing tunnel. Child services cannot repair a dead parent tunnel.
-const WIFI_RECONNECT_DELAY: Duration = Duration::from_secs(1);
-/// What the manager should do once the current session is no longer running.
-enum Next {
-    /// Connect to this UDID.
-    Switch(String),
-    /// Rebuild a dropped Wi-Fi session while preserving the selected transport.
-    RetryWifi(String),
-    /// Stop the active session, then pair this USB transport.
-    Pair {
-        selection_id: String,
-        reply: tokio::sync::oneshot::Sender<PairDeviceResult>,
-    },
-    /// Stop the active session, then revoke this USB trust relationship.
-    Forget {
-        selection_id: String,
-        reply: tokio::sync::oneshot::Sender<ForgetDeviceResult>,
-    },
-    /// Go idle (no device); wait for the user to pick one.
-    Idle,
-    /// The UI is gone - exit the manager entirely.
-    Quit,
-}
-
 #[derive(Debug, Clone, Copy)]
 enum DevicePowerAction {
     Lock,
@@ -191,320 +159,6 @@ struct AppControlLease(AppControlSlot);
 impl Drop for AppControlLease {
     fn drop(&mut self) {
         self.0.0.store(false, Ordering::Release);
-    }
-}
-
-#[derive(Clone)]
-struct SessionViews {
-    status: StatusSlot,
-    orientation: OrientationSlot,
-    error: ErrorSlot,
-    app_operation: AppOperationSlot,
-    app_document_activity: crate::app_documents::AppDocumentActivitySlot,
-    device_file_activity: crate::device_files::DeviceFileActivitySlot,
-    location: LocationStatusSlot,
-    performance: performance::PerformanceSlot,
-    performance_demand: performance::PerformanceDemand,
-    device_logs: crate::device_logs::DeviceLogSlot,
-    device_log_demand: crate::device_logs::DeviceLogDemand,
-    services: supervisor::ServiceRegistry,
-    device_events: crate::device_events::DeviceEventSlot,
-    network_capture: crate::network_capture::NetworkCaptureSlot,
-    bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
-    device_backup: crate::device_backup::DeviceBackupSlot,
-    sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
-    log_archive: crate::log_archive::LogArchiveSlot,
-    developer_image: crate::developer_image::DeveloperImageMountSlot,
-    device_conditions: crate::device_conditions::DeviceConditionSlot,
-}
-
-#[derive(Clone)]
-struct SessionVideo {
-    frame_format: FrameFormat,
-    decoder_backend: crate::settings::VideoDecoderBackend,
-    counters: VideoCounters,
-    frames: FrameSlot,
-    browser_frames: crate::browser_video::BrowserVideoSlot,
-    audio_enabled: bool,
-    clipboard_sync_enabled: bool,
-    audio: AudioOutput,
-}
-
-/// Supervise the device session: enumerate attached devices for the picker,
-/// connect to one, and tear down / reconnect when the selection changes.
-#[allow(clippy::too_many_arguments)]
-pub async fn manage(
-    initial_udid: Option<String>,
-    pairing_dir: PathBuf,
-    resource_dir: Option<PathBuf>,
-    settings: Arc<crate::settings::AppSettings>,
-    video_counters: VideoCounters,
-    repaint: impl Fn() + Send + Clone + 'static,
-    frames: FrameSlot,
-    browser_frames: crate::browser_video::BrowserVideoSlot,
-    audio: AudioOutput,
-    status: StatusSlot,
-    clipboard: ClipboardSlot,
-    device_events: crate::device_events::DeviceEventSlot,
-    network_capture: crate::network_capture::NetworkCaptureSlot,
-    bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
-    device_backup: crate::device_backup::DeviceBackupSlot,
-    sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
-    log_archive: crate::log_archive::LogArchiveSlot,
-    developer_image: crate::developer_image::DeveloperImageMountSlot,
-    device_conditions: crate::device_conditions::DeviceConditionSlot,
-    orientation_view: OrientationSlot,
-    device_list: DeviceListSlot,
-    active: ActiveSlot,
-    error: ErrorSlot,
-    app_operation: AppOperationSlot,
-    app_document_activity: crate::app_documents::AppDocumentActivitySlot,
-    device_file_activity: crate::device_files::DeviceFileActivitySlot,
-    location: LocationStatusSlot,
-    performance: performance::PerformanceSlot,
-    performance_demand: performance::PerformanceDemand,
-    device_logs: crate::device_logs::DeviceLogSlot,
-    device_log_demand: crate::device_logs::DeviceLogDemand,
-    services: supervisor::ServiceRegistry,
-    input_sink: InputSink,
-    mut control_rx: UnboundedReceiver<ControlCmd>,
-) {
-    let mut discovery = DeviceDiscovery::new(pairing_dir.clone(), resource_dir);
-    // Auto-pick the first device only when no UDID was given, and only until we've
-    // connected once: after a session ends we drop to idle rather than hot-loop.
-    let mut auto_pick = initial_udid.is_none();
-    let mut target = initial_udid;
-
-    loop {
-        let (devices, endpoints) = discovery.refresh().await;
-        device_list.set(devices);
-        let wifi_setup_required = discovery.requires_pairing();
-
-        if let Some(requested) = target.as_deref()
-            && let Some(resolved) = resolve_device_selection(requested, &device_list.get())
-        {
-            target = Some(resolved);
-        }
-
-        if target.is_none()
-            && auto_pick
-            && let Some(first) = device_list
-                .get()
-                .into_iter()
-                .find(|device| device.pairing != DevicePairingState::Unpaired)
-        {
-            target = Some(first.id.clone());
-            auto_pick = false;
-        }
-
-        let Some(selection_id) = target.clone() else {
-            active.set(None);
-            location.set(LocationStatus::default());
-            performance.reset();
-            device_logs.reset();
-            services.clear();
-            status.set(if wifi_setup_required {
-                "Wi-Fi device found - connect it by USB once to authorize this app"
-            } else {
-                "no device - pick one from the menu"
-            });
-            tokio::select! {
-                cmd = control_rx.recv() => match cmd {
-                    Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
-                    Some(ControlCmd::Refresh) => discovery.invalidate(),
-                    Some(ControlCmd::Pair { selection_id, reply }) => {
-                        let requested = selection_id.clone();
-                        if trust::pair(selection_id, reply, &endpoints, &status).await {
-                            target = Some(requested);
-                        }
-                        discovery.invalidate();
-                    }
-                    Some(ControlCmd::Forget { selection_id, reply }) => {
-                        trust::forget(
-                            selection_id,
-                            reply,
-                            &endpoints,
-                            &status,
-                            &mut discovery,
-                        ).await;
-                        discovery.invalidate();
-                    }
-                    Some(ControlCmd::Quit) | None => return,
-                },
-                _ = tokio::time::sleep(IDLE_RESCAN) => {}
-            }
-            continue;
-        };
-
-        let Some(endpoint) = endpoints.get(&selection_id).cloned() else {
-            tracing::debug!(
-                transport = %selection_id,
-                "requested device transport not discovered yet"
-            );
-            active.set(None);
-            status.set("waiting for selected device transport...");
-            tokio::select! {
-                cmd = control_rx.recv() => match cmd {
-                    Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
-                    Some(ControlCmd::Refresh) => discovery.invalidate(),
-                    Some(ControlCmd::Pair { selection_id, reply }) => {
-                        let requested = selection_id.clone();
-                        if trust::pair(selection_id, reply, &endpoints, &status).await {
-                            target = Some(requested);
-                        }
-                        discovery.invalidate();
-                    }
-                    Some(ControlCmd::Forget { selection_id, reply }) => {
-                        trust::forget(
-                            selection_id,
-                            reply,
-                            &endpoints,
-                            &status,
-                            &mut discovery,
-                        ).await;
-                        target = None;
-                        discovery.invalidate();
-                    }
-                    Some(ControlCmd::Quit) | None => return,
-                },
-                _ = tokio::time::sleep(IDLE_RESCAN) => {}
-            }
-            continue;
-        };
-        let udid = endpoint.udid().to_owned();
-        let connection = endpoint.connection();
-
-        // Per-session input channel, published so the UI's input reaches it.
-        let (in_tx, in_rx) = tokio::sync::mpsc::unbounded_channel();
-        input_sink.set(Some(in_tx.clone()));
-        active.set_selected(udid.clone(), selection_id.clone());
-        error.set(None);
-
-        let session = run(
-            endpoint,
-            pairing_dir.clone(),
-            SessionVideo {
-                frame_format: settings.video_pixel_format(),
-                decoder_backend: settings.video_decoder_backend(),
-                counters: video_counters.clone(),
-                frames: frames.clone(),
-                browser_frames: browser_frames.clone(),
-                audio_enabled: settings.audio_enabled(),
-                clipboard_sync_enabled: settings.clipboard_sync_enabled(),
-                audio: audio.clone(),
-            },
-            repaint.clone(),
-            clipboard.clone(),
-            SessionViews {
-                status: status.clone(),
-                orientation: orientation_view.clone(),
-                error: error.clone(),
-                app_operation: app_operation.clone(),
-                app_document_activity: app_document_activity.clone(),
-                device_file_activity: device_file_activity.clone(),
-                location: location.clone(),
-                performance: performance.clone(),
-                performance_demand: performance_demand.clone(),
-                device_logs: device_logs.clone(),
-                device_log_demand: device_log_demand.clone(),
-                services: services.clone(),
-                device_events: device_events.clone(),
-                network_capture: network_capture.clone(),
-                bluetooth_capture: bluetooth_capture.clone(),
-                device_backup: device_backup.clone(),
-                sysdiagnose: sysdiagnose.clone(),
-                log_archive: log_archive.clone(),
-                developer_image: developer_image.clone(),
-                device_conditions: device_conditions.clone(),
-            },
-            in_rx,
-        );
-        tokio::pin!(session);
-        let mut active_rescan = tokio::time::interval(IDLE_RESCAN);
-        active_rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Consume the immediate first tick; the initial list was just populated.
-        active_rescan.tick().await;
-
-        // Run until the session ends on its own or the UI redirects us.
-        let outcome = loop {
-            tokio::select! {
-                res = &mut session => {
-                    match res {
-                        Ok(()) => break Next::Idle,
-                        Err(e) => {
-                            tracing::error!(connection = connection.label(), "session ended: {e}");
-                            error.set(Some(e));
-                            if connection == ConnKind::Network {
-                                break Next::RetryWifi(selection_id.clone());
-                            }
-                            break Next::Idle;
-                        }
-                    }
-                }
-                cmd = control_rx.recv() => match cmd {
-                    Some(ControlCmd::Connect(u)) if u != selection_id && u != udid => break Next::Switch(u),
-                    Some(ControlCmd::Connect(_)) => {} // already on this device
-                    Some(ControlCmd::Reconnect(u)) => break Next::Switch(u),
-                    Some(ControlCmd::Refresh) => {
-                        discovery.invalidate();
-                        let (devices, _) = discovery.refresh().await;
-                        device_list.set(devices);
-                    }
-                    Some(ControlCmd::Pair { selection_id, reply }) => break Next::Pair { selection_id, reply },
-                    Some(ControlCmd::Forget { selection_id, reply }) => break Next::Forget { selection_id, reply },
-                    Some(ControlCmd::Quit) | None => break Next::Quit,
-                },
-                _ = active_rescan.tick() => {
-                    let (devices, _) = discovery.refresh().await;
-                    device_list.set(devices);
-                }
-            }
-        };
-
-        // For user-initiated transitions the session is still live: stop it and
-        // wait for teardown so two sessions never fight over the same media stream.
-        if matches!(
-            outcome,
-            Next::Switch(_) | Next::Pair { .. } | Next::Forget { .. } | Next::Quit
-        ) {
-            let _ = in_tx.send(InputCmd::Shutdown);
-            let _ = tokio::time::timeout(SWITCH_GRACE, &mut session).await;
-        }
-        input_sink.set(None);
-        active.set(None);
-        location.set(LocationStatus::default());
-
-        match outcome {
-            Next::Switch(u) => target = Some(u),
-            Next::RetryWifi(u) => {
-                tracing::info!(
-                    retry_ms = WIFI_RECONNECT_DELAY.as_millis(),
-                    "Wi-Fi session transport dropped; rebuilding the complete tunnel"
-                );
-                target = Some(u);
-                tokio::time::sleep(WIFI_RECONNECT_DELAY).await;
-            }
-            Next::Pair {
-                selection_id,
-                reply,
-            } => {
-                let requested = selection_id.clone();
-                target = trust::pair(selection_id, reply, &endpoints, &status)
-                    .await
-                    .then_some(requested);
-                discovery.invalidate();
-            }
-            Next::Forget {
-                selection_id,
-                reply,
-            } => {
-                trust::forget(selection_id, reply, &endpoints, &status, &mut discovery).await;
-                target = None;
-                discovery.invalidate();
-            }
-            Next::Idle => target = None,
-            Next::Quit => return,
-        }
     }
 }
 

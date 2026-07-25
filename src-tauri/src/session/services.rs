@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use idevice::{provider::IdeviceProvider, rsd::RsdHandshake, tcp::handle::AdapterHandle};
 
-use super::SessionViews;
+use super::manager::SessionViews;
 use crate::location::{self, LocationCommand};
 use crate::protocol::{ConnKind, LocationStatus, LocationStatusSlot};
 use crate::supervisor::ServiceSupervisor;
