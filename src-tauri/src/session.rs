@@ -6,6 +6,7 @@ mod clipboard;
 mod media;
 mod orientation;
 mod rtcp;
+mod transport;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use idevice::{
-    IdeviceError, IdeviceService, ReadWrite, RemoteXpcClient, RsdService,
+    IdeviceError, IdeviceService, ReadWrite, RsdService,
     core_device::{
         AppServiceClient, CallInfoBlob, CoreDeviceError, DisplayServiceClient, HevcDepacketizer,
         Orientation as DevOrientation, OrientationServiceClient, PasteboardServiceClient,
@@ -31,17 +32,13 @@ use idevice::{
         },
         is_rtcp, parse_answer_media_blob,
     },
-    core_device_proxy::CoreDeviceProxy,
     diagnostics_relay::DiagnosticsRelayClient,
     dvt::{process_control::ProcessControlClient, remote_server::RemoteServerClient},
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     mobile_image_mounter::ImageMounter,
     mobileactivationd::MobileActivationdClient,
-    provider::{IdeviceProvider, TcpProvider},
-    remote_pairing::{
-        RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
-    },
+    provider::IdeviceProvider,
     rsd::RsdHandshake,
     tcp::handle::{AdapterHandle, UdpSocketHandle},
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
@@ -65,7 +62,7 @@ use crate::protocol::{
     LocationStatusSlot, Orientation, OrientationSlot, PairDeviceOutcome, PairDeviceResult,
     RotateDir, StatusSlot, VideoCounterSnapshot, VideoCounters, device_selector,
 };
-use crate::wifi_devices::{WifiDiscovery, WifiEndpoint};
+use crate::wifi_devices::WifiDiscovery;
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
 use clipboard::ClipboardBridge;
@@ -75,6 +72,11 @@ use media::{
 };
 use orientation::OrientationWatcher;
 use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
+use transport::{
+    SessionEndpoint, UsbmuxdEndpoint, connect_core_tunnel, connect_provider, connection_kind,
+    connection_kind_priority, connection_priority, resolve_device_selection,
+    uses_usbmuxd_core_proxy, wifi_provider,
+};
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
 const CLIENT_SUPPORTED_FEATURES: u64 = 140;
@@ -237,34 +239,6 @@ struct SessionVideo {
     audio_enabled: bool,
     clipboard_sync_enabled: bool,
     audio: AudioOutput,
-}
-
-#[derive(Clone, Debug)]
-struct UsbmuxdEndpoint {
-    device: UsbmuxdDevice,
-    address: UsbmuxdAddr,
-}
-
-#[derive(Clone, Debug)]
-enum SessionEndpoint {
-    Usbmuxd(Box<UsbmuxdEndpoint>),
-    Wifi(Box<WifiEndpoint>),
-}
-
-impl SessionEndpoint {
-    fn udid(&self) -> &str {
-        match self {
-            Self::Usbmuxd(endpoint) => &endpoint.device.udid,
-            Self::Wifi(endpoint) => &endpoint.udid,
-        }
-    }
-
-    fn connection(&self) -> ConnKind {
-        match self {
-            Self::Usbmuxd(endpoint) => connection_kind(&endpoint.device.connection_type),
-            Self::Wifi(_) => ConnKind::Network,
-        }
-    }
 }
 
 fn pairing_failure(error: IdeviceError) -> PairDeviceResult {
@@ -1020,230 +994,6 @@ async fn fetch_device_name_from_provider(provider: &dyn IdeviceProvider) -> Opti
         .await
         .ok()
         .flatten()
-}
-
-async fn connect_core_tunnel(
-    endpoint: &SessionEndpoint,
-    provider: &dyn IdeviceProvider,
-    pairing_dir: &Path,
-    status: &StatusSlot,
-) -> Result<(AdapterHandle, RsdHandshake), String> {
-    match endpoint {
-        SessionEndpoint::Usbmuxd(_) => connect_usb_core_tunnel(provider).await,
-        SessionEndpoint::Wifi(endpoint) => {
-            connect_wifi_core_tunnel(endpoint, pairing_dir, status).await
-        }
-    }
-}
-
-async fn connect_usb_core_tunnel(
-    provider: &dyn IdeviceProvider,
-) -> Result<(AdapterHandle, RsdHandshake), String> {
-    let proxy = CoreDeviceProxy::connect(provider)
-        .await
-        .map_err(|error| format!("no core device proxy: {error:?}"))?;
-    let rsd_port = proxy.tunnel_info().server_rsd_port;
-    let adapter = proxy
-        .create_software_tunnel()
-        .map_err(|error| format!("no software tunnel: {error:?}"))?;
-    let mut adapter = adapter.to_async_handle();
-    let stream = adapter
-        .connect(rsd_port)
-        .await
-        .map_err(|error| format!("RSD connect failed: {error:?}"))?;
-    let handshake = RsdHandshake::new(stream)
-        .await
-        .map_err(|error| format!("RSD handshake failed: {error:?}"))?;
-    Ok((adapter, handshake))
-}
-
-async fn connect_wifi_core_tunnel(
-    endpoint: &WifiEndpoint,
-    pairing_dir: &Path,
-    status: &StatusSlot,
-) -> Result<(AdapterHandle, RsdHandshake), String> {
-    let pairing_path = remote_pairing_path(pairing_dir, &endpoint.udid)?;
-    let mut pairing_file = match RpPairingFile::read_from_file(&pairing_path).await {
-        Ok(pairing_file) => pairing_file,
-        Err(_) => {
-            status.set("unlock the device and approve Wi-Fi control...");
-            tracing::info!(
-                device_id = %crate::diagnostics::device_id_fingerprint(&endpoint.udid),
-                "remote pairing credentials missing; authorizing over USB"
-            );
-            tokio::time::timeout(
-                Duration::from_secs(120),
-                pair_remote_via_usb(&endpoint.udid, &pairing_path),
-            )
-            .await
-            .map_err(|_| {
-                "initial Wi-Fi authorization timed out; unlock the device and accept its trust prompt"
-                    .to_string()
-            })??
-        }
-    };
-    status.set("verifying Wi-Fi control authorization...");
-    let address = scoped_socket_addr(
-        endpoint.remote_pairing_address,
-        endpoint.remote_pairing_scope_id,
-        endpoint.remote_pairing_port,
-    );
-    let stream = tokio::time::timeout(NAME_TIMEOUT, tokio::net::TcpStream::connect(address))
-        .await
-        .map_err(|_| "remote pairing connection timed out".to_string())?
-        .map_err(|error| format!("remote pairing connection failed: {error}"))?;
-    let socket = RpPairingSocket::new(stream);
-    let mut client = RemotePairingClient::new(socket, "devicehub-mask");
-    client
-        .connect(&mut pairing_file, async || "000000".to_string())
-        .await
-        .map_err(|error| format!("remote pairing verification failed: {error:?}"))?;
-
-    let tunnel_port = client
-        .create_tcp_listener()
-        .await
-        .map_err(|error| format!("remote tunnel listener failed: {error:?}"))?;
-    status.set("establishing secure Wi-Fi tunnel...");
-    let tunnel_address = scoped_socket_addr(
-        endpoint.remote_pairing_address,
-        endpoint.remote_pairing_scope_id,
-        tunnel_port,
-    );
-    let tunnel_stream =
-        tokio::time::timeout(NAME_TIMEOUT, tokio::net::TcpStream::connect(tunnel_address))
-            .await
-            .map_err(|_| "remote tunnel connection timed out".to_string())?
-            .map_err(|error| format!("remote tunnel connection failed: {error}"))?;
-    let tunnel = connect_tls_psk_tunnel_native(tunnel_stream, client.encryption_key())
-        .await
-        .map_err(|error| format!("remote TLS-PSK tunnel failed: {error:?}"))?;
-    let client_ip = tunnel
-        .info
-        .client_address
-        .parse()
-        .map_err(|error| format!("invalid remote tunnel client address: {error}"))?;
-    let server_ip = tunnel
-        .info
-        .server_address
-        .parse()
-        .map_err(|error| format!("invalid remote tunnel server address: {error}"))?;
-    let rsd_port = tunnel.info.server_rsd_port;
-    let mtu = tunnel.info.mtu as usize;
-    let mut adapter =
-        idevice::tcp::adapter::Adapter::new(Box::new(tunnel.into_inner()), client_ip, server_ip);
-    adapter.set_mss(mtu.saturating_sub(60));
-    let mut adapter = adapter.to_async_handle();
-    let rsd_stream = adapter
-        .connect(rsd_port)
-        .await
-        .map_err(|error| format!("remote RSD connect failed: {error:?}"))?;
-    let handshake = RsdHandshake::new(rsd_stream)
-        .await
-        .map_err(|error| format!("remote RSD handshake failed: {error:?}"))?;
-    tracing::info!(
-        device_id = %crate::diagnostics::device_id_fingerprint(&endpoint.udid),
-        "remote pairing CoreDevice tunnel established"
-    );
-    Ok((adapter, handshake))
-}
-
-async fn pair_remote_via_usb(udid: &str, path: &Path) -> Result<RpPairingFile, String> {
-    let address = UsbmuxdAddr::from_env_var()
-        .map_err(|error| format!("USB transport unavailable for remote pairing: {error:?}"))?;
-    let mut mux = address
-        .connect(0)
-        .await
-        .map_err(|error| format!("USB connection required for initial Wi-Fi pairing: {error:?}"))?;
-    let device = mux
-        .get_devices()
-        .await
-        .map_err(|error| format!("cannot list USB devices for remote pairing: {error:?}"))?
-        .into_iter()
-        .find(|device| device.udid == udid && matches!(device.connection_type, Connection::Usb))
-        .ok_or_else(|| "connect this device by USB once to authorize Wi-Fi control".to_string())?;
-    let provider = device.to_provider(address, "devicehub-mask-remote-pairing");
-    tracing::debug!(
-        device_id = %crate::diagnostics::device_id_fingerprint(udid),
-        "opening USB CoreDevice tunnel for remote pairing"
-    );
-    let (mut adapter, handshake) = connect_usb_core_tunnel(&provider).await?;
-    let service = handshake
-        .services
-        .get("com.apple.internal.dt.coredevice.untrusted.tunnelservice")
-        .ok_or_else(|| "device does not expose the remote pairing service".to_string())?;
-    let stream = adapter
-        .connect(service.port)
-        .await
-        .map_err(|error| format!("remote pairing service connect failed: {error:?}"))?;
-    let mut connection = RemoteXpcClient::new(stream)
-        .await
-        .map_err(|error| format!("remote pairing XPC connection failed: {error:?}"))?;
-    connection
-        .do_handshake()
-        .await
-        .map_err(|error| format!("remote pairing XPC handshake failed: {error:?}"))?;
-    connection
-        .recv_root()
-        .await
-        .map_err(|error| format!("remote pairing XPC root failed: {error:?}"))?;
-    tracing::info!(
-        device_id = %crate::diagnostics::device_id_fingerprint(udid),
-        "waiting for device to authorize remote pairing"
-    );
-    let mut pairing_file = RpPairingFile::generate("devicehub-mask");
-    let mut client = RemotePairingClient::new(connection, "devicehub-mask");
-    client
-        .connect(&mut pairing_file, async || "000000".to_string())
-        .await
-        .map_err(|error| format!("USB remote pairing failed: {error:?}"))?;
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("cannot create remote pairing directory: {error}"))?;
-    }
-    pairing_file
-        .write_to_file(path)
-        .await
-        .map_err(|error| format!("cannot save remote pairing credentials: {error:?}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("cannot secure remote pairing credentials: {error}"))?;
-    }
-    tracing::info!(
-        device_id = %crate::diagnostics::device_id_fingerprint(udid),
-        "created remote pairing credentials over USB"
-    );
-    Ok(pairing_file)
-}
-
-fn remote_pairing_path(pairing_dir: &Path, udid: &str) -> Result<PathBuf, String> {
-    if udid.is_empty()
-        || !udid
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
-        return Err("device UDID contains unsupported characters".into());
-    }
-    let base = pairing_dir.parent().unwrap_or(pairing_dir);
-    Ok(base.join("remote-pairings").join(format!("{udid}.plist")))
-}
-
-fn scoped_socket_addr(
-    address: std::net::IpAddr,
-    scope_id: Option<u32>,
-    port: u16,
-) -> std::net::SocketAddr {
-    match address {
-        std::net::IpAddr::V4(_) => std::net::SocketAddr::new(address, port),
-        std::net::IpAddr::V6(address) => std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
-            address,
-            port,
-            0,
-            scope_id.unwrap_or(0),
-        )),
-    }
 }
 
 /// Run the whole session to completion. Returns an error string suitable for the
@@ -5267,94 +5017,6 @@ async fn stall_watchdog(counters: VideoCounters, corruption: &Notify) {
     }
 }
 
-/// Build the provider chosen by the picker without silently switching transport.
-async fn connect_provider(
-    endpoint: SessionEndpoint,
-) -> Result<(Arc<dyn IdeviceProvider>, ConnKind), String> {
-    let udid = endpoint.udid().to_owned();
-    let connection = endpoint.connection();
-    let provider: Arc<dyn IdeviceProvider> = match endpoint {
-        SessionEndpoint::Usbmuxd(endpoint) => Arc::new(
-            endpoint
-                .device
-                .to_provider(endpoint.address, "devicehub_rs"),
-        ),
-        SessionEndpoint::Wifi(endpoint) => Arc::new(wifi_provider(&endpoint)),
-    };
-    tracing::info!(
-        device_id = %crate::diagnostics::device_id_fingerprint(&udid),
-        connection = connection.label(),
-        "selected CoreDevice transport"
-    );
-    Ok((provider, connection))
-}
-
-fn connection_priority(connection: &Connection) -> u8 {
-    match connection {
-        Connection::Usb => 0,
-        Connection::Network(_) => 1,
-        Connection::Unknown(_) => 2,
-    }
-}
-
-fn uses_usbmuxd_core_proxy(connection: &Connection) -> bool {
-    matches!(connection, Connection::Usb)
-}
-
-fn connection_kind(connection: &Connection) -> ConnKind {
-    match connection {
-        Connection::Network(_) => ConnKind::Network,
-        Connection::Usb => ConnKind::Usb,
-        Connection::Unknown(_) => ConnKind::Other,
-    }
-}
-
-fn connection_kind_priority(connection: ConnKind) -> u8 {
-    match connection {
-        ConnKind::Usb => 0,
-        ConnKind::Network => 1,
-        ConnKind::Other => 2,
-    }
-}
-
-fn resolve_device_selection(requested: &str, devices: &[DeviceInfo]) -> Option<String> {
-    devices
-        .iter()
-        .find(|device| device.id == requested)
-        .or_else(|| {
-            devices
-                .iter()
-                .filter(|device| device.udid == requested)
-                .min_by_key(|device| connection_kind_priority(device.connection))
-        })
-        .map(|device| device.id.clone())
-}
-
-#[cfg(test)]
-fn select_preferred_usbmuxd_device(
-    devices: Vec<UsbmuxdDevice>,
-    udid: Option<&str>,
-) -> Option<UsbmuxdDevice> {
-    devices
-        .into_iter()
-        .filter(|device| udid.is_none_or(|wanted| device.udid == wanted))
-        .min_by_key(|device| {
-            (
-                connection_priority(&device.connection_type),
-                device.device_id,
-            )
-        })
-}
-
-fn wifi_provider(endpoint: &WifiEndpoint) -> TcpProvider {
-    TcpProvider {
-        addr: endpoint.address,
-        scope_id: endpoint.scope_id,
-        pairing_file: endpoint.pairing_file.clone(),
-        label: "devicehub_rs_wifi".into(),
-    }
-}
-
 /// Map an ASCII character to its HID Keyboard/Keypad usage and whether Shift is
 /// required (US layout). Ported from idevice-tools' `hid` command.
 fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
@@ -5480,7 +5142,8 @@ mod tests {
         let mut usbmuxd = UsbmuxdConnection::default().await.expect("connect usbmuxd");
         let devices = usbmuxd.get_devices().await.expect("list devices");
         let endpoint = SessionEndpoint::Usbmuxd(Box::new(UsbmuxdEndpoint {
-            device: select_preferred_usbmuxd_device(devices, None).expect("connected device"),
+            device: transport::select_preferred_usbmuxd_device(devices, None)
+                .expect("connected device"),
             address: UsbmuxdAddr::default(),
         }));
         let (provider, _) = connect_provider(endpoint)
@@ -5553,35 +5216,6 @@ mod tests {
     }
 
     #[test]
-    fn transport_selection_is_explicit_and_legacy_udids_prefer_usb() {
-        let devices = vec![
-            DeviceInfo {
-                id: device_selector("phone", ConnKind::Usb),
-                udid: "phone".into(),
-                name: "iPhone".into(),
-                connection: ConnKind::Usb,
-                pairing: DevicePairingState::Paired,
-            },
-            DeviceInfo {
-                id: device_selector("phone", ConnKind::Network),
-                udid: "phone".into(),
-                name: "iPhone".into(),
-                connection: ConnKind::Network,
-                pairing: DevicePairingState::NotApplicable,
-            },
-        ];
-
-        assert_eq!(
-            resolve_device_selection("phone", &devices).as_deref(),
-            Some("phone::usb")
-        );
-        assert_eq!(
-            resolve_device_selection("phone::wifi", &devices).as_deref(),
-            Some("phone::wifi")
-        );
-    }
-
-    #[test]
     fn pairing_errors_are_normalized_for_the_frontend() {
         assert_eq!(
             pairing_failure(IdeviceError::UserDeniedPairing).outcome,
@@ -5621,31 +5255,6 @@ mod tests {
         );
         assert_eq!(failed.outcome, ForgetDeviceOutcome::Failed);
         assert!(failed.error.unwrap().contains("host record cleanup failed"));
-    }
-
-    #[test]
-    fn network_usbmuxd_devices_never_use_the_usb_coredevice_proxy() {
-        assert!(uses_usbmuxd_core_proxy(&Connection::Usb));
-        assert!(!uses_usbmuxd_core_proxy(&Connection::Network(
-            [192, 0, 2, 1].into()
-        )));
-        assert!(!uses_usbmuxd_core_proxy(&Connection::Unknown(
-            "Network".into()
-        )));
-    }
-
-    #[test]
-    fn remote_pairing_credentials_stay_inside_application_data() {
-        let pairing_dir = Path::new("app-data").join("pairings");
-        assert_eq!(
-            remote_pairing_path(&pairing_dir, "00008030-001905C02106402E").unwrap(),
-            Path::new("app-data")
-                .join("remote-pairings")
-                .join("00008030-001905C02106402E.plist")
-        );
-        assert!(remote_pairing_path(&pairing_dir, "../outside").is_err());
-        assert!(remote_pairing_path(&pairing_dir, "phone/plist").is_err());
-        assert!(remote_pairing_path(&pairing_dir, "").is_err());
     }
 
     #[test]
