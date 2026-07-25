@@ -3,13 +3,14 @@
 // run the video pipeline and dispatch input commands to the device's HID surfaces.
 
 mod clipboard;
+mod discovery;
 mod media;
 mod orientation;
 mod rtcp;
 mod transport;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -41,7 +42,7 @@ use idevice::{
     provider::IdeviceProvider,
     rsd::RsdHandshake,
     tcp::handle::{AdapterHandle, UdpSocketHandle},
-    usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
+    usbmuxd::Connection,
     utils::installation::{install_package_with_callback, upgrade_package_with_callback},
 };
 use tokio::process::ChildStdin;
@@ -56,16 +57,16 @@ use crate::ipa::{
 };
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardSlot, ConnKind, ControlCmd,
-    DeviceActivationState, DeviceApp, DeviceBattery, DeviceDetails, DeviceInfo, DeviceListSlot,
+    DeviceActivationState, DeviceApp, DeviceBattery, DeviceDetails, DeviceListSlot,
     DevicePairingState, DeviceRegionalSettings, DeviceStorage, ErrorSlot, ForgetDeviceOutcome,
     ForgetDeviceResult, FrameFormat, FrameSlot, InputCmd, InputSink, KeyMods, LocationStatus,
     LocationStatusSlot, Orientation, OrientationSlot, PairDeviceOutcome, PairDeviceResult,
-    RotateDir, StatusSlot, VideoCounterSnapshot, VideoCounters, device_selector,
+    RotateDir, StatusSlot, VideoCounterSnapshot, VideoCounters,
 };
-use crate::wifi_devices::WifiDiscovery;
 use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
 use clipboard::ClipboardBridge;
+use discovery::DeviceDiscovery;
 use media::{
     AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RtpVideoClock,
     RunningStats, audio_decoder_restart_backoff,
@@ -73,9 +74,8 @@ use media::{
 use orientation::OrientationWatcher;
 use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
 use transport::{
-    SessionEndpoint, UsbmuxdEndpoint, connect_core_tunnel, connect_provider, connection_kind,
-    connection_kind_priority, connection_priority, resolve_device_selection,
-    uses_usbmuxd_core_proxy, wifi_provider,
+    SessionEndpoint, UsbmuxdEndpoint, connect_core_tunnel, connect_provider,
+    resolve_device_selection,
 };
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -127,9 +127,6 @@ const SWITCH_GRACE: Duration = Duration::from_secs(3);
 /// Briefly yield after a Wi-Fi transport failure before rebuilding the complete
 /// RemotePairing tunnel. Child services cannot repair a dead parent tunnel.
 const WIFI_RECONNECT_DELAY: Duration = Duration::from_secs(1);
-/// Per-device budget for resolving `DeviceName` over lockdown; on timeout we fall
-/// back to the UDID so a flaky/locked device doesn't stall the picker.
-const NAME_TIMEOUT: Duration = Duration::from_secs(2);
 /// Pairing includes a user confirmation on the device, but must not wait forever
 /// when the prompt is ignored or the USB transport disappears.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(90);
@@ -377,8 +374,7 @@ async fn delete_host_pair_record(endpoint: &UsbmuxdEndpoint) -> Result<(), Idevi
 
 async fn forget_usb_endpoint(
     endpoint: &UsbmuxdEndpoint,
-    wifi: Option<&mut WifiDiscovery>,
-    pairing_dir: &Path,
+    discovery: &mut DeviceDiscovery,
 ) -> ForgetDeviceResult {
     if !matches!(endpoint.device.connection_type, Connection::Usb) {
         return ForgetDeviceResult {
@@ -421,11 +417,7 @@ async fn forget_usb_endpoint(
         .await
         .err()
         .map(|error| error.to_string());
-    let cache_error = match wifi {
-        Some(discovery) => discovery.remove_pairing(&endpoint.device.udid),
-        None => crate::wifi_devices::remove_cached_pairing(pairing_dir, &endpoint.device.udid),
-    }
-    .err();
+    let cache_error = discovery.remove_cached_pairing(&endpoint.device.udid).err();
     let host_error = match (pair_record_error, cache_error) {
         (Some(pair_record), Some(cache)) => Some(format!(
             "usbmuxd record removal failed: {pair_record}; cached record removal failed: {cache}"
@@ -448,13 +440,12 @@ async fn execute_forget_command(
     reply: tokio::sync::oneshot::Sender<ForgetDeviceResult>,
     endpoints: &HashMap<String, SessionEndpoint>,
     status: &StatusSlot,
-    wifi: &mut Option<WifiDiscovery>,
-    pairing_dir: &Path,
+    discovery: &mut DeviceDiscovery,
 ) {
     let result = match endpoints.get(&selection_id) {
         Some(SessionEndpoint::Usbmuxd(endpoint)) => {
             status.set("removing device trust...");
-            forget_usb_endpoint(endpoint, wifi.as_mut(), pairing_dir).await
+            forget_usb_endpoint(endpoint, discovery).await
         }
         Some(SessionEndpoint::Wifi(_)) => ForgetDeviceResult {
             outcome: ForgetDeviceOutcome::Failed,
@@ -507,29 +498,16 @@ pub async fn manage(
     input_sink: InputSink,
     mut control_rx: UnboundedReceiver<ControlCmd>,
 ) {
-    // Cache of UDID -> DeviceName so a refresh doesn't re-query lockdown.
-    let mut names: HashMap<String, String> = HashMap::new();
-    let mut netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), resource_dir);
-    let prefer_netmuxd = netmuxd.is_forced();
-    let mut wifi = start_wifi_discovery(&pairing_dir);
+    let mut discovery = DeviceDiscovery::new(pairing_dir.clone(), resource_dir);
     // Auto-pick the first device only when no UDID was given, and only until we've
     // connected once: after a session ends we drop to idle rather than hot-loop.
     let mut auto_pick = initial_udid.is_none();
     let mut target = initial_udid;
 
     loop {
-        let (devices, endpoints) = enumerate_devices(
-            &mut names,
-            &mut netmuxd,
-            &mut wifi,
-            &pairing_dir,
-            prefer_netmuxd,
-        )
-        .await;
+        let (devices, endpoints) = discovery.refresh().await;
         device_list.set(devices);
-        let wifi_setup_required = wifi
-            .as_ref()
-            .is_some_and(|discovery| discovery.requires_pairing());
+        let wifi_setup_required = discovery.requires_pairing();
 
         if let Some(requested) = target.as_deref()
             && let Some(resolved) = resolve_device_selection(requested, &device_list.get())
@@ -562,13 +540,13 @@ pub async fn manage(
             tokio::select! {
                 cmd = control_rx.recv() => match cmd {
                     Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
-                    Some(ControlCmd::Refresh) => names.clear(),
+                    Some(ControlCmd::Refresh) => discovery.invalidate(),
                     Some(ControlCmd::Pair { selection_id, reply }) => {
                         let requested = selection_id.clone();
                         if execute_pair_command(selection_id, reply, &endpoints, &status).await {
                             target = Some(requested);
                         }
-                        names.clear();
+                        discovery.invalidate();
                     }
                     Some(ControlCmd::Forget { selection_id, reply }) => {
                         execute_forget_command(
@@ -576,10 +554,9 @@ pub async fn manage(
                             reply,
                             &endpoints,
                             &status,
-                            &mut wifi,
-                            &pairing_dir,
+                            &mut discovery,
                         ).await;
-                        names.clear();
+                        discovery.invalidate();
                     }
                     Some(ControlCmd::Quit) | None => return,
                 },
@@ -598,13 +575,13 @@ pub async fn manage(
             tokio::select! {
                 cmd = control_rx.recv() => match cmd {
                     Some(ControlCmd::Connect(u) | ControlCmd::Reconnect(u)) => target = Some(u),
-                    Some(ControlCmd::Refresh) => names.clear(),
+                    Some(ControlCmd::Refresh) => discovery.invalidate(),
                     Some(ControlCmd::Pair { selection_id, reply }) => {
                         let requested = selection_id.clone();
                         if execute_pair_command(selection_id, reply, &endpoints, &status).await {
                             target = Some(requested);
                         }
-                        names.clear();
+                        discovery.invalidate();
                     }
                     Some(ControlCmd::Forget { selection_id, reply }) => {
                         execute_forget_command(
@@ -612,11 +589,10 @@ pub async fn manage(
                             reply,
                             &endpoints,
                             &status,
-                            &mut wifi,
-                            &pairing_dir,
+                            &mut discovery,
                         ).await;
                         target = None;
-                        names.clear();
+                        discovery.invalidate();
                     }
                     Some(ControlCmd::Quit) | None => return,
                 },
@@ -699,8 +675,8 @@ pub async fn manage(
                     Some(ControlCmd::Connect(_)) => {} // already on this device
                     Some(ControlCmd::Reconnect(u)) => break Next::Switch(u),
                     Some(ControlCmd::Refresh) => {
-                        names.clear();
-                        let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, &mut wifi, &pairing_dir, prefer_netmuxd).await;
+                        discovery.invalidate();
+                        let (devices, _) = discovery.refresh().await;
                         device_list.set(devices);
                     }
                     Some(ControlCmd::Pair { selection_id, reply }) => break Next::Pair { selection_id, reply },
@@ -708,7 +684,7 @@ pub async fn manage(
                     Some(ControlCmd::Quit) | None => break Next::Quit,
                 },
                 _ = active_rescan.tick() => {
-                    let (devices, _) = enumerate_devices(&mut names, &mut netmuxd, &mut wifi, &pairing_dir, prefer_netmuxd).await;
+                    let (devices, _) = discovery.refresh().await;
                     device_list.set(devices);
                 }
             }
@@ -745,255 +721,21 @@ pub async fn manage(
                 target = execute_pair_command(selection_id, reply, &endpoints, &status)
                     .await
                     .then_some(requested);
-                names.clear();
+                discovery.invalidate();
             }
             Next::Forget {
                 selection_id,
                 reply,
             } => {
-                execute_forget_command(
-                    selection_id,
-                    reply,
-                    &endpoints,
-                    &status,
-                    &mut wifi,
-                    &pairing_dir,
-                )
-                .await;
+                execute_forget_command(selection_id, reply, &endpoints, &status, &mut discovery)
+                    .await;
                 target = None;
-                names.clear();
+                discovery.invalidate();
             }
             Next::Idle => target = None,
             Next::Quit => return,
         }
     }
-}
-
-/// Enumerate the devices usbmuxd currently knows about, resolving (and caching)
-/// each one's `DeviceName`. Best-effort: any failure yields an empty list rather
-/// than erroring, and an un-nameable device falls back to its UDID.
-async fn enumerate_devices(
-    names: &mut HashMap<String, String>,
-    netmuxd: &mut crate::netmuxd::NetmuxdSupervisor,
-    wifi: &mut Option<WifiDiscovery>,
-    pairing_dir: &Path,
-    prefer_netmuxd: bool,
-) -> (Vec<DeviceInfo>, HashMap<String, SessionEndpoint>) {
-    let netmuxd_addr = if prefer_netmuxd || wifi.is_none() {
-        netmuxd.ensure_ready().await
-    } else {
-        None
-    };
-    if wifi.is_none() {
-        *wifi = start_wifi_discovery(pairing_dir);
-    }
-    let system_addr = UsbmuxdAddr::from_env_var().map_err(|error| {
-        tracing::warn!(?error, "invalid usbmuxd address; USB discovery disabled");
-    });
-    let mut candidates = Vec::new();
-    if let Some(address) = netmuxd_addr.clone() {
-        candidates.push((address, true));
-    }
-    if let Ok(address) = system_addr {
-        candidates.push((address, false));
-    }
-    let mut selected_mux = None;
-    for (address, is_netmuxd) in candidates {
-        match address.connect(0).await {
-            Ok(mut connection) => match connection.get_devices().await {
-                Ok(devices) => {
-                    selected_mux = Some((address, connection, devices, is_netmuxd));
-                    break;
-                }
-                Err(error) => tracing::warn!(
-                    ?error,
-                    is_netmuxd,
-                    "unable to list usbmuxd devices; trying transport fallback"
-                ),
-            },
-            Err(error) => tracing::warn!(
-                ?error,
-                is_netmuxd,
-                "unable to connect to usbmuxd; trying transport fallback"
-            ),
-        }
-    }
-    let (addr, mut usbmuxd, devs, using_netmuxd) = match selected_mux {
-        Some(selected) => (Some(selected.0), Some(selected.1), selected.2, selected.3),
-        None => (None, None, Vec::new(), false),
-    };
-
-    let mut pairing_states = HashMap::new();
-    if let Some(usbmuxd) = usbmuxd.as_mut() {
-        for device in devs
-            .iter()
-            .filter(|device| matches!(device.connection_type, Connection::Usb))
-        {
-            match usbmuxd.get_pair_record(&device.udid).await {
-                Ok(pairing_file) => {
-                    pairing_states.insert(device.udid.clone(), DevicePairingState::Paired);
-                    if let Some(discovery) = wifi.as_mut()
-                        && discovery.pairing_needs_refresh(&device.udid)
-                    {
-                        if let Err(error) = discovery.cache_pairing(&device.udid, pairing_file) {
-                            tracing::warn!(
-                                device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
-                                %error,
-                                "unable to cache pairing record for Wi-Fi discovery"
-                            );
-                        } else {
-                            discovery.mark_pairing_refreshed(&device.udid);
-                        }
-                    }
-                }
-                Err(error) => {
-                    pairing_states.insert(device.udid.clone(), DevicePairingState::Unpaired);
-                    tracing::debug!(
-                        device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
-                        ?error,
-                        "USB pairing record unavailable"
-                    );
-                }
-            }
-        }
-    }
-
-    // A network device exposed through usbmuxd/netmuxd is a Lockdown transport,
-    // not a USB CoreDevice proxy. Routing it through `connect_usb_core_tunnel`
-    // makes the device close the TLS stream during CoreDeviceProxy negotiation.
-    // Wi-Fi control is always represented by the RemotePairing endpoint below.
-    let mut selected = Vec::with_capacity(devs.len());
-    for device in devs {
-        if uses_usbmuxd_core_proxy(&device.connection_type) {
-            selected.push(device);
-        } else if let Connection::Unknown(connection_type) = &device.connection_type {
-            tracing::warn!(
-                device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
-                %connection_type,
-                "ignoring usbmuxd device with an ambiguous transport"
-            );
-        }
-    }
-    selected.sort_by(|a, b| {
-        a.udid.cmp(&b.udid).then_with(|| {
-            connection_priority(&a.connection_type).cmp(&connection_priority(&b.connection_type))
-        })
-    });
-
-    let mut out = Vec::with_capacity(selected.len());
-    let mut endpoints = HashMap::new();
-    for dev in selected {
-        let connection = connection_kind(&dev.connection_type);
-        let id = device_selector(&dev.udid, connection);
-        let name = match names.get(&dev.udid) {
-            Some(n) => n.clone(),
-            None => {
-                let n = match &addr {
-                    Some(addr) => fetch_device_name(&dev, addr).await,
-                    None => None,
-                }
-                .unwrap_or_else(|| dev.udid.clone());
-                names.insert(dev.udid.clone(), n.clone());
-                n
-            }
-        };
-        out.push(DeviceInfo {
-            id: id.clone(),
-            udid: dev.udid.clone(),
-            name,
-            connection,
-            pairing: pairing_states.get(&dev.udid).copied().unwrap_or_default(),
-        });
-        if let Some(address) = addr.clone() {
-            endpoints
-                .entry(id)
-                .or_insert(SessionEndpoint::Usbmuxd(Box::new(UsbmuxdEndpoint {
-                    device: dev,
-                    address,
-                })));
-        }
-    }
-
-    if let Some(discovery) = wifi.as_mut() {
-        for endpoint in discovery.refresh() {
-            let id = device_selector(&endpoint.udid, ConnKind::Network);
-            if endpoints.contains_key(&id) {
-                continue;
-            }
-            let provider = wifi_provider(&endpoint);
-            let name = match names.get(&endpoint.udid) {
-                Some(name) => name.clone(),
-                None => {
-                    let name = fetch_device_name_from_provider(&provider)
-                        .await
-                        .unwrap_or_else(|| endpoint.udid.clone());
-                    names.insert(endpoint.udid.clone(), name.clone());
-                    name
-                }
-            };
-            out.push(DeviceInfo {
-                id: id.clone(),
-                udid: endpoint.udid.clone(),
-                name,
-                connection: ConnKind::Network,
-                pairing: DevicePairingState::NotApplicable,
-            });
-            endpoints.insert(id, SessionEndpoint::Wifi(Box::new(endpoint)));
-        }
-    }
-    let usb_count = out
-        .iter()
-        .filter(|device| device.connection == ConnKind::Usb)
-        .count();
-    let wifi_count = out
-        .iter()
-        .filter(|device| device.connection == ConnKind::Network)
-        .count();
-    tracing::debug!(
-        provider = if using_netmuxd {
-            "netmuxd"
-        } else {
-            "system-usbmuxd"
-        },
-        usb_count,
-        wifi_count,
-        "device discovery refresh completed"
-    );
-    out.sort_by(|a, b| {
-        a.udid.cmp(&b.udid).then_with(|| {
-            connection_kind_priority(a.connection).cmp(&connection_kind_priority(b.connection))
-        })
-    });
-    (out, endpoints)
-}
-
-fn start_wifi_discovery(pairing_dir: &Path) -> Option<WifiDiscovery> {
-    match WifiDiscovery::start(pairing_dir.to_owned()) {
-        Ok(discovery) => Some(discovery),
-        Err(error) => {
-            tracing::warn!(%error, "Wi-Fi discovery unavailable; continuing with usbmuxd");
-            None
-        }
-    }
-}
-
-/// Resolve a device's `DeviceName` over lockdown, with a timeout. Returns `None`
-/// (caller falls back to the UDID) if the device can't be reached or named.
-async fn fetch_device_name(dev: &UsbmuxdDevice, addr: &UsbmuxdAddr) -> Option<String> {
-    let provider = dev.to_provider(addr.clone(), "devicehub_rs");
-    fetch_device_name_from_provider(&provider).await
-}
-
-async fn fetch_device_name_from_provider(provider: &dyn IdeviceProvider) -> Option<String> {
-    let lookup = async {
-        let mut lockdown = LockdownClient::connect(provider).await.ok()?;
-        let value = lockdown.get_value(Some("DeviceName"), None).await.ok()?;
-        value.as_string().map(|s| s.to_string())
-    };
-    tokio::time::timeout(NAME_TIMEOUT, lookup)
-        .await
-        .ok()
-        .flatten()
 }
 
 /// Run the whole session to completion. Returns an error string suitable for the
@@ -5067,7 +4809,7 @@ fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use idevice::usbmuxd::UsbmuxdConnection;
+    use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
 
     fn video_snapshot(
         transport_events: u64,
