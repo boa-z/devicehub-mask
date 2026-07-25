@@ -22,6 +22,7 @@ mod diagnostics;
 mod heartbeat;
 mod hid;
 mod home_screen;
+mod http_diagnostics;
 mod http_performance;
 mod http_profiles;
 mod http_storage;
@@ -312,11 +313,14 @@ fn spawn_backend(
                             app_document_activity,
                             device_file_activity,
                         ),
+                        diagnostics_http: http_diagnostics::DiagnosticsHttpState::new(
+                            input.clone(),
+                            device_backup,
+                            sysdiagnose,
+                            log_archive,
+                        ),
                         browser_frames,
                         clipboard,
-                        device_backup,
-                        sysdiagnose,
-                        log_archive,
                         developer_image,
                         video_counters,
                         app_operation,

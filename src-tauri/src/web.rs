@@ -35,11 +35,9 @@ pub struct AppState {
     pub performance_http: crate::http_performance::PerformanceHttpState,
     pub profiles_http: crate::http_profiles::ProfileHttpState,
     pub storage_http: crate::http_storage::StorageHttpState,
+    pub diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
-    pub device_backup: crate::device_backup::DeviceBackupSlot,
-    pub sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
-    pub log_archive: crate::log_archive::LogArchiveSlot,
     pub developer_image: crate::developer_image::DeveloperImageMountSlot,
     pub video_counters: VideoCounters,
     pub app_operation: AppOperationSlot,
@@ -53,11 +51,13 @@ pub fn router(state: AppState, token: String) -> Router {
     let performance_routes = crate::http_performance::router(state.performance_http.clone());
     let profile_routes = crate::http_profiles::router(state.profiles_http.clone());
     let storage_routes = crate::http_storage::router(state.storage_http.clone());
+    let diagnostics_routes = crate::http_diagnostics::router(state.diagnostics_http.clone());
     Router::new()
         .route("/api/status", get(status))
         .merge(performance_routes)
         .merge(profile_routes)
         .merge(storage_routes)
+        .merge(diagnostics_routes)
         .route("/api/devices/refresh", put(refresh_devices))
         .route("/api/devices/{udid}/connect", put(connect_device))
         .route("/api/devices/{udid}/reconnect", put(reconnect_device))
@@ -66,24 +66,6 @@ pub fn router(state: AppState, token: String) -> Router {
             put(pair_device).delete(forget_device),
         )
         .route("/api/device/details", get(device_details))
-        .route(
-            "/api/device/backup",
-            get(device_backup_status)
-                .put(start_device_backup)
-                .delete(stop_device_backup),
-        )
-        .route(
-            "/api/device/sysdiagnose",
-            get(sysdiagnose_status)
-                .put(start_sysdiagnose)
-                .delete(stop_sysdiagnose),
-        )
-        .route(
-            "/api/device/log-archive",
-            get(log_archive_status)
-                .put(start_log_archive)
-                .delete(stop_log_archive),
-        )
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
         .route("/api/device/wallpaper/{kind}", get(device_wallpaper))
@@ -190,244 +172,6 @@ fn private_api_authorized(headers: &HeaderMap, token: &str) -> bool {
 
 async fn status(State(state): State<AppState>) -> Json<crate::web_status::StatusView> {
     Json(crate::web_status::snapshot(&state.application))
-}
-
-async fn device_backup_status(
-    State(state): State<AppState>,
-) -> Json<crate::device_backup::DeviceBackupStatus> {
-    Json(state.device_backup.get())
-}
-
-#[derive(Deserialize)]
-struct StartDeviceBackupRequest {
-    destination: PathBuf,
-    #[serde(default)]
-    full: bool,
-}
-
-async fn start_device_backup(
-    State(state): State<AppState>,
-    Json(request): Json<StartDeviceBackupRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let destination = crate::device_backup::prepare_destination(&request.destination)
-        .await
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceBackup(
-        crate::device_backup::DeviceBackupCommand::Start {
-            destination,
-            full: request.full,
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_device_backup_command(response, "start device backup").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn stop_device_backup(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceBackup(
-        crate::device_backup::DeviceBackupCommand::Stop { reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_device_backup_command(response, "stop device backup").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn await_device_backup_command(
-    response: oneshot::Receiver<Result<(), String>>,
-    operation: &str,
-) -> Result<(), (StatusCode, String)> {
-    let result = tokio::time::timeout(Duration::from_secs(45), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                format!("{operation} request timed out"),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    result.map_err(|error| {
-        let status = if error.contains("already running") || error.contains("no device backup") {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-        (status, error)
-    })
-}
-
-async fn sysdiagnose_status(
-    State(state): State<AppState>,
-) -> Json<crate::sysdiagnose::SysdiagnoseStatus> {
-    Json(state.sysdiagnose.get())
-}
-
-#[derive(Deserialize)]
-struct StartSysdiagnoseRequest {
-    destination: PathBuf,
-}
-
-async fn start_sysdiagnose(
-    State(state): State<AppState>,
-    Json(request): Json<StartSysdiagnoseRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let destination = crate::sysdiagnose::prepare_destination(&request.destination)
-        .await
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::Sysdiagnose(
-        crate::sysdiagnose::SysdiagnoseCommand::Start { destination, reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_sysdiagnose_command(response, "start sysdiagnose export").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn stop_sysdiagnose(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::Sysdiagnose(
-        crate::sysdiagnose::SysdiagnoseCommand::Stop { reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_sysdiagnose_command(response, "stop sysdiagnose export").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn await_sysdiagnose_command(
-    response: oneshot::Receiver<Result<(), String>>,
-    operation: &str,
-) -> Result<(), (StatusCode, String)> {
-    let result = tokio::time::timeout(Duration::from_secs(10), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                format!("{operation} request timed out"),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    result.map_err(|error| {
-        let status = if error.contains("already running") || error.contains("no sysdiagnose") {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-        (status, error)
-    })
-}
-
-async fn log_archive_status(
-    State(state): State<AppState>,
-) -> Json<crate::log_archive::LogArchiveStatus> {
-    Json(state.log_archive.get())
-}
-
-#[derive(Deserialize)]
-struct StartLogArchiveRequest {
-    destination: PathBuf,
-    age_limit_hours: u16,
-}
-
-async fn start_log_archive(
-    State(state): State<AppState>,
-    Json(request): Json<StartLogArchiveRequest>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let destination = crate::log_archive::prepare_destination(&request.destination)
-        .await
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let age_limit_hours = crate::log_archive::validate_age_limit_hours(request.age_limit_hours)
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::LogArchive(
-        crate::log_archive::LogArchiveCommand::Start {
-            destination,
-            age_limit_hours,
-            reply,
-        },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_log_archive_command(response, "start log archive export").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn stop_log_archive(
-    State(state): State<AppState>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::LogArchive(
-        crate::log_archive::LogArchiveCommand::Stop { reply },
-    )) {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "no active device session".into(),
-        ));
-    }
-    await_log_archive_command(response, "stop log archive export").await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn await_log_archive_command(
-    response: oneshot::Receiver<Result<(), String>>,
-    operation: &str,
-) -> Result<(), (StatusCode, String)> {
-    let result = tokio::time::timeout(Duration::from_secs(10), response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                format!("{operation} request timed out"),
-            )
-        })?
-        .map_err(|_| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "device session ended".into(),
-            )
-        })?;
-    result.map_err(|error| {
-        let status = if error.contains("already running") || error.contains("no log archive") {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-        (status, error)
-    })
 }
 
 async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
@@ -1810,11 +1554,14 @@ mod tests {
                     app_document_activity,
                     device_file_activity,
                 ),
+                diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState::new(
+                    input.clone(),
+                    crate::device_backup::DeviceBackupSlot::default(),
+                    crate::sysdiagnose::SysdiagnoseSlot::default(),
+                    crate::log_archive::LogArchiveSlot::default(),
+                ),
                 browser_frames,
                 clipboard: ClipboardSlot::default(),
-                device_backup: crate::device_backup::DeviceBackupSlot::default(),
-                sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot::default(),
-                log_archive: crate::log_archive::LogArchiveSlot::default(),
                 developer_image: crate::developer_image::DeveloperImageMountSlot::default(),
                 video_counters: VideoCounters::default(),
                 app_operation: AppOperationSlot::default(),
@@ -2044,182 +1791,6 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.0, expected);
         }
-    }
-
-    #[tokio::test]
-    async fn device_backup_endpoints_validate_and_dispatch_commands() {
-        let (state, mut input_rx) = test_state();
-        let missing = std::env::temp_dir().join(format!(
-            "devicehub-mask-missing-web-backup-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let invalid = start_device_backup(
-            State(state.clone()),
-            Json(StartDeviceBackupRequest {
-                destination: missing,
-                full: false,
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
-        assert!(input_rx.try_recv().is_err());
-
-        let destination = std::env::temp_dir();
-        let expected = tokio::fs::canonicalize(&destination).await.unwrap();
-        let start = tokio::spawn(start_device_backup(
-            State(state.clone()),
-            Json(StartDeviceBackupRequest {
-                destination,
-                full: true,
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::DeviceBackup(crate::device_backup::DeviceBackupCommand::Start {
-                destination,
-                full,
-                reply,
-            }) => {
-                assert_eq!(destination, expected);
-                assert!(full);
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            device_backup_status(State(state.clone())).await.0.state,
-            crate::device_backup::DeviceBackupState::Idle
-        );
-
-        let stop = tokio::spawn(stop_device_backup(State(state)));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::DeviceBackup(crate::device_backup::DeviceBackupCommand::Stop { reply }) => {
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn sysdiagnose_endpoints_validate_and_dispatch_commands() {
-        let (state, mut input_rx) = test_state();
-        let invalid = start_sysdiagnose(
-            State(state.clone()),
-            Json(StartSysdiagnoseRequest {
-                destination: PathBuf::from("relative.tar.gz"),
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
-        assert!(input_rx.try_recv().is_err());
-
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-web-sysdiagnose-{}.tar.gz",
-            uuid::Uuid::new_v4()
-        ));
-        let expected = crate::sysdiagnose::prepare_destination(&destination)
-            .await
-            .unwrap();
-        let start = tokio::spawn(start_sysdiagnose(
-            State(state.clone()),
-            Json(StartSysdiagnoseRequest { destination }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::Sysdiagnose(crate::sysdiagnose::SysdiagnoseCommand::Start {
-                destination,
-                reply,
-            }) => {
-                assert_eq!(destination, expected);
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            sysdiagnose_status(State(state.clone())).await.0.state,
-            crate::sysdiagnose::SysdiagnoseState::Idle
-        );
-
-        let stop = tokio::spawn(stop_sysdiagnose(State(state)));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::Sysdiagnose(crate::sysdiagnose::SysdiagnoseCommand::Stop { reply }) => {
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn log_archive_endpoints_validate_and_dispatch_commands() {
-        let (state, mut input_rx) = test_state();
-        let invalid = start_log_archive(
-            State(state.clone()),
-            Json(StartLogArchiveRequest {
-                destination: PathBuf::from("relative.tar"),
-                age_limit_hours: 2,
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
-        assert!(input_rx.try_recv().is_err());
-
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-web-log-archive-{}.tar",
-            uuid::Uuid::new_v4()
-        ));
-        let invalid_age = start_log_archive(
-            State(state.clone()),
-            Json(StartLogArchiveRequest {
-                destination: destination.clone(),
-                age_limit_hours: 2,
-            }),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(invalid_age.0, StatusCode::BAD_REQUEST);
-        assert!(input_rx.try_recv().is_err());
-
-        let expected = crate::log_archive::prepare_destination(&destination)
-            .await
-            .unwrap();
-        let start = tokio::spawn(start_log_archive(
-            State(state.clone()),
-            Json(StartLogArchiveRequest {
-                destination,
-                age_limit_hours: 6,
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::LogArchive(crate::log_archive::LogArchiveCommand::Start {
-                destination,
-                age_limit_hours,
-                reply,
-            }) => {
-                assert_eq!(destination, expected);
-                assert_eq!(age_limit_hours, 6);
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            log_archive_status(State(state.clone())).await.0.state,
-            crate::log_archive::LogArchiveState::Idle
-        );
-
-        let stop = tokio::spawn(stop_log_archive(State(state)));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::LogArchive(crate::log_archive::LogArchiveCommand::Stop { reply }) => {
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
