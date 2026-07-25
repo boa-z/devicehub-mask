@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
+import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isEligibleWdaRunner, isSysdiagnoseActive, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -47,6 +47,18 @@ describe("incremental app rendering", () => {
     expect(nextAppRenderLimit(APP_RENDER_BATCH_SIZE, 150)).toBe(APP_RENDER_BATCH_SIZE * 2);
     expect(nextAppRenderLimit(140, 150)).toBe(150);
     expect(nextAppRenderLimit(0, 12)).toBe(12);
+  });
+});
+
+describe("device task polling state", () => {
+  it("polls only while long-running operations are active", () => {
+    expect(isBackupActive(null)).toBe(false);
+    expect(isBackupActive({ state: "backing_up" } as never)).toBe(true);
+    expect(isSysdiagnoseActive({ state: "collecting" } as never)).toBe(true);
+    expect(isDeveloperImageActive({ state: "mounted" } as never)).toBe(false);
+    expect(isDeveloperImageActive({ state: "uploading" } as never)).toBe(true);
+    expect(isAppOperationActive({ state: "idle" } as never)).toBe(false);
+    expect(isAppOperationActive({ state: "running" } as never)).toBe(true);
   });
 });
 

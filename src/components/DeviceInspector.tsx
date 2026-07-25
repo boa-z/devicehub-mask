@@ -37,9 +37,10 @@ import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
-import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isEligibleWdaRunner, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isEligibleWdaRunner, isSysdiagnoseActive, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
+import { useActivePolling } from "../hooks/useActivePolling";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type WallpaperKind = "home" | "lock";
@@ -200,6 +201,10 @@ export function DeviceInspector({
   const appListContainer = useRef<HTMLDivElement>(null);
   const appListSentinel = useRef<HTMLDivElement>(null);
   const homeScreenLoaded = useRef(false);
+  const backupStatusRequest = useRef(0);
+  const sysdiagnoseStatusRequest = useRef(0);
+  const developerImageStatusRequest = useRef(0);
+  const appOperationRequest = useRef(0);
   const appScopesRequest = useRef(0);
   const wallpaperRequest = useRef(0);
   const showSystemAppsRef = useRef(false);
@@ -289,22 +294,37 @@ export function DeviceInspector({
   }, [request]);
 
   const loadBackupStatus = useCallback(async () => {
+    const requestId = ++backupStatusRequest.current;
     const status = await readJson<DeviceBackupStatus>(await request("/api/device/backup"));
-    setBackupStatus(status);
+    if (backupStatusRequest.current === requestId) setBackupStatus(status);
     return status;
   }, [request]);
 
   const loadSysdiagnoseStatus = useCallback(async () => {
+    const requestId = ++sysdiagnoseStatusRequest.current;
     const status = await readJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose"));
-    setSysdiagnoseStatus(status);
+    if (sysdiagnoseStatusRequest.current === requestId) setSysdiagnoseStatus(status);
     return status;
   }, [request]);
 
   const loadDeveloperImageStatus = useCallback(async () => {
+    const requestId = ++developerImageStatusRequest.current;
     const status = await readJson<DeveloperImageMountStatus>(await request("/api/device/developer-image"));
-    setDeveloperImageStatus(status);
+    if (developerImageStatusRequest.current === requestId) setDeveloperImageStatus(status);
     return status;
   }, [request]);
+
+  const readAppOperation = useCallback(
+    async () => readJson<AppOperation>(await request("/api/device/apps/operation")),
+    [request],
+  );
+
+  const refreshAppOperation = useCallback(async () => {
+    const requestId = ++appOperationRequest.current;
+    const operation = await readAppOperation();
+    if (appOperationRequest.current === requestId) setAppOperation(operation);
+    return operation;
+  }, [readAppOperation]);
 
   const load = useCallback(async (force = false) => {
     if (!activeUdid) return;
@@ -313,6 +333,11 @@ export function DeviceInspector({
     setError(null);
     try {
       if (tab === "info") {
+        void Promise.allSettled([
+          loadBackupStatus(),
+          loadSysdiagnoseStatus(),
+          loadDeveloperImageStatus(),
+        ]);
         const nextDetails = await readJson<DeviceDetails>(await request("/api/device/details"));
         setDetails(nextDetails);
         setCompanions([]);
@@ -332,6 +357,7 @@ export function DeviceInspector({
         if (loaded) {
           if (force || !homeScreenLoaded.current) void loadHomeScreen();
           void loadWdaRunnerStatus();
+          void refreshAppOperation();
         }
       } else if (tab === "profiles") {
         setProfiles(await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles")));
@@ -345,7 +371,7 @@ export function DeviceInspector({
     } finally {
       if (inspectorLoadRequest.current === requestId) setLoading(false);
     }
-  }, [activeUdid, loadApps, loadHomeScreen, loadWdaRunnerStatus, request, tab]);
+  }, [activeUdid, loadApps, loadBackupStatus, loadDeveloperImageStatus, loadHomeScreen, loadSysdiagnoseStatus, loadWdaRunnerStatus, refreshAppOperation, request, tab]);
 
   useEffect(() => {
     inspectorLoadRequest.current += 1;
@@ -355,6 +381,10 @@ export function DeviceInspector({
     appListAbort.current = null;
     appCatalogCache.current.clear();
     homeScreenLoaded.current = false;
+    backupStatusRequest.current += 1;
+    sysdiagnoseStatusRequest.current += 1;
+    developerImageStatusRequest.current += 1;
+    appOperationRequest.current += 1;
     appScopesRequest.current += 1;
     wallpaperRequest.current += 1;
     showSystemAppsRef.current = false;
@@ -414,77 +444,10 @@ export function DeviceInspector({
     if (tab !== "apps") appListAbort.current?.abort();
   }, [tab]);
 
-  useEffect(() => {
-    if (!activeUdid) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      let next: DeviceBackupStatus | null = null;
-      try {
-        next = await readJson<DeviceBackupStatus>(await request("/api/device/backup"));
-        if (!cancelled) setBackupStatus(next);
-      } catch {
-        // The regular inspector request path surfaces connection errors.
-      }
-      if (!cancelled) {
-        const active = next?.state === "starting" || next?.state === "backing_up";
-        timer = setTimeout(poll, active ? 350 : 2_000);
-      }
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [activeUdid, request]);
-
-  useEffect(() => {
-    if (!activeUdid) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      let next: SysdiagnoseStatus | null = null;
-      try {
-        next = await readJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose"));
-        if (!cancelled) setSysdiagnoseStatus(next);
-      } catch {
-        // The regular inspector request path surfaces connection errors.
-      }
-      if (!cancelled) {
-        const active = next != null && ["starting", "collecting", "downloading"].includes(next.state);
-        timer = setTimeout(poll, active ? 350 : 2_000);
-      }
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [activeUdid, request]);
-
-  useEffect(() => {
-    if (!activeUdid) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      let next: DeveloperImageMountStatus | null = null;
-      try {
-        next = await readJson<DeveloperImageMountStatus>(await request("/api/device/developer-image"));
-        if (!cancelled) setDeveloperImageStatus(next);
-      } catch {
-        // The regular inspector request path surfaces connection errors.
-      }
-      if (!cancelled) {
-        const active = next && ["validating", "personalizing", "uploading", "mounting", "unmounting"].includes(next.state);
-        timer = setTimeout(poll, active ? 350 : 2_000);
-      }
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [activeUdid, request]);
+  useActivePolling(Boolean(activeUdid) && isBackupActive(backupStatus), loadBackupStatus, 350);
+  useActivePolling(Boolean(activeUdid) && isSysdiagnoseActive(sysdiagnoseStatus), loadSysdiagnoseStatus, 350);
+  useActivePolling(Boolean(activeUdid) && isDeveloperImageActive(developerImageStatus), loadDeveloperImageStatus, 350);
+  useActivePolling(Boolean(activeUdid) && isAppOperationActive(appOperation), refreshAppOperation, 500);
 
   useEffect(() => {
     if (!developerImageStatus) return;
@@ -508,17 +471,6 @@ export function DeviceInspector({
     if (shouldRefreshDeviceInspector(deviceEvent.kind, tab)) void load(true);
   }, [deviceEvent, load, tab]);
 
-  const readAppOperation = useCallback(
-    async () => readJson<AppOperation>(await request("/api/device/apps/operation")),
-    [request],
-  );
-
-  const refreshAppOperation = useCallback(async () => {
-    const operation = await readAppOperation();
-    setAppOperation(operation);
-    return operation;
-  }, [readAppOperation]);
-
   const toggleAppScope = async (scope: "system" | "clips") => {
     if (loading || appScopesLoading) return;
     const nextSystem = scope === "system" ? !showSystemApps : showSystemApps;
@@ -539,29 +491,6 @@ export function DeviceInspector({
       if (appScopesRequest.current === requestId) setAppScopesLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (!activeUdid) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      let operation: AppOperation | null = null;
-      try {
-        operation = await readAppOperation();
-        if (!cancelled) setAppOperation(operation);
-      } catch {
-        // The regular inspector request path surfaces connection errors.
-      }
-      if (!cancelled) {
-        timer = setTimeout(poll, operation?.state === "running" ? 500 : 2000);
-      }
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [activeUdid, readAppOperation]);
 
   useEffect(() => {
     if (!appOperation || appOperation.id === 0 || appOperation.state === "running" || appOperation.state === "idle") return;
@@ -1302,9 +1231,8 @@ export function DeviceInspector({
       ? "-"
       : t("deviceInspector.minutes", { count: details.battery.time_remaining_minutes })],
   ] : [];
-  const backupRunning = backupStatus?.state === "starting" || backupStatus?.state === "backing_up";
-  const developerImageMountRunning = developerImageStatus != null
-    && ["validating", "personalizing", "uploading", "mounting", "unmounting"].includes(developerImageStatus.state);
+  const backupRunning = isBackupActive(backupStatus);
+  const developerImageMountRunning = isDeveloperImageActive(developerImageStatus);
   const backupProgress = backupStatus?.progress_percent
     ?? (backupStatus && backupStatus.bytes_total > 0
       ? Math.min(100, backupStatus.bytes_done * 100 / backupStatus.bytes_total)
@@ -1316,8 +1244,7 @@ export function DeviceInspector({
       : backupRunning
         ? "processing"
         : "default";
-  const sysdiagnoseRunning = sysdiagnoseStatus != null
-    && ["starting", "collecting", "downloading"].includes(sysdiagnoseStatus.state);
+  const sysdiagnoseRunning = isSysdiagnoseActive(sysdiagnoseStatus);
   const sysdiagnoseProgress = sysdiagnoseStatus?.progress_percent
     ?? (sysdiagnoseStatus && sysdiagnoseStatus.bytes_total > 0
       ? Math.min(100, sysdiagnoseStatus.bytes_written * 100 / sysdiagnoseStatus.bytes_total)

@@ -1,4 +1,4 @@
-import type { DeviceApp, DeviceCrashReport, DeviceEvent, DeviceRegionalSettings, ProvisioningProfile } from "./types";
+import type { AppOperation, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceEvent, DeviceRegionalSettings, ProvisioningProfile, SysdiagnoseStatus } from "./types";
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
@@ -7,6 +7,22 @@ export const APP_RENDER_BATCH_SIZE = 30;
 
 export function nextAppRenderLimit(current: number, total: number): number {
   return Math.min(total, Math.max(APP_RENDER_BATCH_SIZE, current + APP_RENDER_BATCH_SIZE));
+}
+
+export function isBackupActive(status: DeviceBackupStatus | null): boolean {
+  return status?.state === "starting" || status?.state === "backing_up";
+}
+
+export function isSysdiagnoseActive(status: SysdiagnoseStatus | null): boolean {
+  return status != null && ["starting", "collecting", "downloading"].includes(status.state);
+}
+
+export function isDeveloperImageActive(status: DeveloperImageMountStatus | null): boolean {
+  return status != null && ["validating", "personalizing", "uploading", "mounting", "unmounting"].includes(status.state);
+}
+
+export function isAppOperationActive(operation: AppOperation | null): boolean {
+  return operation?.state === "running";
 }
 
 export function deviceAppScopeQuery(includeSystem: boolean, includeAppClips: boolean): string {
