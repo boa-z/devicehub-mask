@@ -30,6 +30,7 @@ use idevice::{
     },
     core_device_proxy::CoreDeviceProxy,
     diagnostics_relay::DiagnosticsRelayClient,
+    dvt::{process_control::ProcessControlClient, remote_server::RemoteServerClient},
     installation_proxy::InstallationProxyClient,
     lockdown::LockdownClient,
     mobile_image_mounter::ImageMounter,
@@ -105,7 +106,10 @@ const VIDEO_TRANSPORT_SILENT_WINDOWS: u8 = 3;
 const APP_SERVICE_LIST_TIMEOUT: Duration = Duration::from_secs(6);
 const APP_METADATA_TIMEOUT: Duration = Duration::from_secs(4);
 const APP_CLIENT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+const APP_DVT_CHANNEL_TIMEOUT: Duration = Duration::from_secs(2);
+const APP_CONTROL_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const APP_LIST_REQUEST_TIMEOUT: Duration = Duration::from_secs(24);
+pub(crate) const APP_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
 /// How long the locked stream must go silent before we migrate to a different
 /// SSRC: long enough to ignore stray packets from a competing/leaked sender,
 /// short enough to pick up a real stream restart promptly.
@@ -740,6 +744,26 @@ impl DevicePowerSlot {
 struct DevicePowerLease(DevicePowerSlot);
 
 impl Drop for DevicePowerLease {
+    fn drop(&mut self) {
+        self.0.0.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Default)]
+struct AppControlSlot(Arc<AtomicBool>);
+
+impl AppControlSlot {
+    fn try_start(&self) -> Result<AppControlLease, String> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| AppControlLease(self.clone()))
+            .map_err(|_| "another app control command is already running".into())
+    }
+}
+
+struct AppControlLease(AppControlSlot);
+
+impl Drop for AppControlLease {
     fn drop(&mut self) {
         self.0.0.store(false, Ordering::Release);
     }
@@ -2697,6 +2721,7 @@ fn reject_device_file_command(command: crate::device_files::DeviceFileCommand, r
 struct DeviceManagement {
     provider: Arc<dyn IdeviceProvider>,
     power: DevicePowerSlot,
+    app_control: AppControlSlot,
     app_operation: AppOperationSlot,
     operation_task: Option<ActiveAppOperation>,
     details: Option<DeviceDetails>,
@@ -2740,6 +2765,7 @@ impl DeviceManagement {
         Self {
             provider,
             power: DevicePowerSlot::default(),
+            app_control: AppControlSlot::default(),
             app_operation,
             operation_task: None,
             details,
@@ -2824,17 +2850,6 @@ impl DeviceManagement {
             Err(_) => return Err("InstallationProxy connection timed out".into()),
         };
         Ok(())
-    }
-
-    async fn ensure_app_service(&mut self) -> Result<(), String> {
-        if self.app_service.is_some() {
-            return Ok(());
-        }
-        self.reconnect_app_clients().await?;
-        self.app_service
-            .is_some()
-            .then_some(())
-            .ok_or_else(|| "CoreDevice AppService is unavailable after reconnect".to_string())
     }
 
     fn clear_finished_operation(&mut self) {
@@ -3426,38 +3441,40 @@ impl DeviceManagement {
                 None
             }
             InputCmd::LaunchApp { bundle_id, reply } => {
-                let result = match self.ensure_app_service().await {
-                    Ok(()) => self
-                        .app_service
-                        .as_mut()
-                        .expect("AppService was ensured")
-                        .launch_application(bundle_id, &[], true, false, None, None, None)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| format!("unable to launch app: {error:?}")),
-                    Err(error) => Err(format!("app launch requires AppService: {error}")),
-                };
-                if result.is_err() {
-                    self.app_service.take();
+                match self.app_control.try_start() {
+                    Ok(lease) => {
+                        self.app_service.take();
+                        let adapter = self.app_service_transport.adapter.clone();
+                        let handshake = self.app_service_transport.handshake.clone();
+                        tokio::task::spawn_local(async move {
+                            let _lease = lease;
+                            let _ =
+                                reply.send(launch_device_app(adapter, handshake, bundle_id).await);
+                        });
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
                 }
-                let _ = reply.send(result);
                 None
             }
             InputCmd::StopApp { bundle_id, reply } => {
-                let result = match self.ensure_app_service().await {
-                    Ok(()) => {
-                        stop_device_app(
-                            self.app_service.as_mut().expect("AppService was ensured"),
-                            &bundle_id,
-                        )
-                        .await
+                match self.app_control.try_start() {
+                    Ok(lease) => {
+                        self.app_service.take();
+                        let adapter = self.app_service_transport.adapter.clone();
+                        let handshake = self.app_service_transport.handshake.clone();
+                        tokio::task::spawn_local(async move {
+                            let _lease = lease;
+                            let _ = reply.send(
+                                stop_device_app_isolated(adapter, handshake, bundle_id).await,
+                            );
+                        });
                     }
-                    Err(error) => Err(format!("app stop requires AppService: {error}")),
-                };
-                if result.is_err() {
-                    self.app_service.take();
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
                 }
-                let _ = reply.send(result);
                 None
             }
             InputCmd::ListCrashReports(reply) => {
@@ -4127,6 +4144,163 @@ async fn stop_device_app(
             .map_err(|error| format!("unable to stop app: {error:?}"))?;
     }
     Ok(!process_ids.is_empty())
+}
+
+async fn connect_app_control(
+    mut adapter: AdapterHandle,
+    mut handshake: RsdHandshake,
+) -> Result<AppServiceClient<Box<dyn ReadWrite>>, String> {
+    tokio::time::timeout(
+        APP_CLIENT_RECONNECT_TIMEOUT,
+        AppServiceClient::connect_rsd(&mut adapter, &mut handshake),
+    )
+    .await
+    .map_err(|_| "CoreDevice app control connection timed out".to_string())?
+    .map_err(|error| format!("CoreDevice app control service unavailable: {error:?}"))
+}
+
+async fn launch_device_app(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    bundle_id: String,
+) -> Result<(), String> {
+    match launch_device_app_via_dvt(adapter.clone(), handshake.clone(), &bundle_id).await {
+        DvtLaunchOutcome::Attempted(result) => return result,
+        DvtLaunchOutcome::Unavailable(error) => {
+            tracing::warn!(%error, %bundle_id, "DVT app launch unavailable; using CoreDevice AppService");
+        }
+    }
+    launch_device_app_via_coredevice(adapter, handshake, bundle_id).await
+}
+
+enum DvtLaunchOutcome {
+    Unavailable(String),
+    Attempted(Result<(), String>),
+}
+
+async fn launch_device_app_via_dvt(
+    mut adapter: AdapterHandle,
+    mut handshake: RsdHandshake,
+    bundle_id: &str,
+) -> DvtLaunchOutcome {
+    let started = Instant::now();
+    let mut remote = match tokio::time::timeout(
+        APP_CLIENT_RECONNECT_TIMEOUT,
+        RemoteServerClient::<Box<dyn ReadWrite>>::connect_rsd(&mut adapter, &mut handshake),
+    )
+    .await
+    {
+        Ok(Ok(remote)) => remote,
+        Ok(Err(error)) => {
+            return DvtLaunchOutcome::Unavailable(format!(
+                "DVT process control connection failed: {error:?}"
+            ));
+        }
+        Err(_) => {
+            return DvtLaunchOutcome::Unavailable(
+                "DVT process control connection timed out".into(),
+            );
+        }
+    };
+    let mut client = match tokio::time::timeout(
+        APP_DVT_CHANNEL_TIMEOUT,
+        ProcessControlClient::new(&mut remote),
+    )
+    .await
+    {
+        Ok(Ok(client)) => client,
+        Ok(Err(error)) => {
+            return DvtLaunchOutcome::Unavailable(format!(
+                "DVT ProcessControl channel unavailable: {error:?}"
+            ));
+        }
+        Err(_) => {
+            return DvtLaunchOutcome::Unavailable(
+                "DVT ProcessControl channel creation timed out".into(),
+            );
+        }
+    };
+    let result = tokio::time::timeout(
+        APP_CONTROL_OPERATION_TIMEOUT,
+        client.launch_app(bundle_id, None, None, false, true),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "DVT app launch timed out after {} seconds",
+            APP_CONTROL_OPERATION_TIMEOUT.as_secs()
+        )
+    })
+    .and_then(|result| {
+        result
+            .map(|_| ())
+            .map_err(|error| format!("unable to launch app through DVT: {error:?}"))
+    });
+    tracing::info!(
+        %bundle_id,
+        backend = "dvt-process-control",
+        success = result.is_ok(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "app launch completed"
+    );
+    DvtLaunchOutcome::Attempted(result)
+}
+
+async fn launch_device_app_via_coredevice(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    bundle_id: String,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let mut client = connect_app_control(adapter, handshake).await?;
+    let result = tokio::time::timeout(
+        APP_CONTROL_OPERATION_TIMEOUT,
+        client.launch_application(&bundle_id, &[], true, false, None, None, None),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "CoreDevice app launch timed out after {} seconds",
+            APP_CONTROL_OPERATION_TIMEOUT.as_secs()
+        )
+    })?
+    .map(|_| ())
+    .map_err(|error| format!("unable to launch app: {error:?}"));
+    tracing::debug!(
+        %bundle_id,
+        backend = "coredevice-app-service",
+        success = result.is_ok(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "app launch completed"
+    );
+    result
+}
+
+async fn stop_device_app_isolated(
+    adapter: AdapterHandle,
+    handshake: RsdHandshake,
+    bundle_id: String,
+) -> Result<bool, String> {
+    let started = Instant::now();
+    let mut client = connect_app_control(adapter, handshake).await?;
+    let result = tokio::time::timeout(
+        APP_CONTROL_OPERATION_TIMEOUT,
+        stop_device_app(&mut client, &bundle_id),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "CoreDevice app stop timed out after {} seconds",
+            APP_CONTROL_OPERATION_TIMEOUT.as_secs()
+        )
+    })?;
+    tracing::debug!(
+        %bundle_id,
+        success = result.is_ok(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "isolated app stop completed"
+    );
+    result
 }
 
 fn sort_device_apps(mut apps: Vec<DeviceApp>) -> Vec<DeviceApp> {
@@ -6409,6 +6583,27 @@ mod tests {
             + APP_METADATA_TIMEOUT;
         assert!(APP_LIST_REQUEST_TIMEOUT > default_worst_case);
         assert!(APP_LIST_REQUEST_TIMEOUT > extended_worst_case);
+    }
+
+    #[test]
+    fn app_control_outer_timeout_covers_connection_and_operation_deadlines() {
+        let dvt_attempt =
+            APP_CLIENT_RECONNECT_TIMEOUT + APP_DVT_CHANNEL_TIMEOUT + APP_CONTROL_OPERATION_TIMEOUT;
+        let fallback_attempt = APP_CLIENT_RECONNECT_TIMEOUT
+            + APP_DVT_CHANNEL_TIMEOUT
+            + APP_CLIENT_RECONNECT_TIMEOUT
+            + APP_CONTROL_OPERATION_TIMEOUT;
+        assert!(APP_CONTROL_REQUEST_TIMEOUT > dvt_attempt);
+        assert!(APP_CONTROL_REQUEST_TIMEOUT > fallback_attempt);
+    }
+
+    #[test]
+    fn app_control_slot_serializes_commands_and_releases_on_drop() {
+        let slot = AppControlSlot::default();
+        let lease = slot.try_start().unwrap();
+        assert!(slot.try_start().is_err());
+        drop(lease);
+        assert!(slot.try_start().is_ok());
     }
 
     #[tokio::test]

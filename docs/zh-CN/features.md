@@ -69,7 +69,8 @@
 | 设备身份、名称、区域设置、存储回退 | Lockdown |
 | 实时画面、音频、方向、剪贴板、HID | CoreDevice display、orientation、Pasteboard 和 HID 服务 |
 | 原生截图 | CoreDevice ScreenCaptureService、screenshotr 和最终 DVT Screenshot 递进回退 |
-| App 列表、进程状态、启动、停止 | CoreDevice AppService |
+| App 列表、进程状态、停止与启动后备 | CoreDevice AppService |
+| App 启动 | DVT ProcessControl，并提供仅限发送前的 CoreDevice 回退 |
 | 显式带控制台启动 App | CoreDevice AppService + OpenStdioSocket |
 | IPA 安装与用户 App 回退 | Installation Proxy |
 | App Documents/Container | House Arrest 和 AFC |

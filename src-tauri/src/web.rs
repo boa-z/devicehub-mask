@@ -2456,7 +2456,7 @@ async fn launch_app(
             "no active device session".into(),
         ));
     }
-    tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+    tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
             (
@@ -2595,7 +2595,7 @@ async fn stop_app(
             "no active device session".into(),
         ));
     }
-    let was_running = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
+    let was_running = tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
             (
@@ -5342,6 +5342,16 @@ mod tests {
             ));
         }
         assert!(input_rx.try_recv().is_err());
+
+        let request = tokio::spawn(launch_app(State(state), Path("com.example.game".into())));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::LaunchApp { bundle_id, reply } => {
+                assert_eq!(bundle_id, "com.example.game");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        assert_eq!(request.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
