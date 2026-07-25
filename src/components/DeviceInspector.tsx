@@ -1,7 +1,6 @@
 import {
   AppstoreOutlined,
   BugOutlined,
-  CheckOutlined,
   CopyOutlined,
   DatabaseOutlined,
   DeleteOutlined,
@@ -9,7 +8,6 @@ import {
   DownloadOutlined,
   EditOutlined,
   FileTextOutlined,
-  FilterOutlined,
   InfoCircleOutlined,
   LockOutlined,
   MobileOutlined,
@@ -18,14 +16,11 @@ import {
   ReloadOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
-  SortAscendingOutlined,
-  SortDescendingOutlined,
   StopOutlined,
-  ThunderboltOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Alert, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { showErrorMessage } from "../errorMessage";
@@ -33,15 +28,15 @@ import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
-import { APP_RENDER_BATCH_SIZE, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isSysdiagnoseActive, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "../deviceInspector";
+import { canTrustProvisioningProfileSigner, filterCrashReports, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isSysdiagnoseActive, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
 import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, IpaOperation, IpaPreflight, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 import { useActivePolling } from "../hooks/useActivePolling";
-import { DeviceAppRow } from "../features/device-inspector/apps/DeviceAppRow";
+import { AppsPane } from "../features/device-inspector/apps/AppsPane";
+import { useDeviceAppCatalog } from "../features/device-inspector/apps/useDeviceAppCatalog";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type WallpaperKind = "home" | "lock";
-const APP_CATALOG_CACHE_MS = 30_000;
 
 type Props = {
   activeUdid: string | null;
@@ -81,8 +76,6 @@ export function DeviceInspector({
   const [companions, setCompanions] = useState<CompanionDevice[]>([]);
   const [companionError, setCompanionError] = useState<string | null>(null);
   const [companionLoading, setCompanionLoading] = useState(false);
-  const [apps, setApps] = useState<DeviceApp[]>([]);
-  const [appRenderLimit, setAppRenderLimit] = useState(APP_RENDER_BATCH_SIZE);
   const [wdaRunnerStatus, setWdaRunnerStatus] = useState<WdaRunnerStatus | null>(null);
   const [homeScreenLayout, setHomeScreenLayout] = useState<HomeScreenLayout | null>(null);
   const [homeScreenError, setHomeScreenError] = useState<string | null>(null);
@@ -92,9 +85,6 @@ export function DeviceInspector({
   const [crashReportsTruncated, setCrashReportsTruncated] = useState(false);
   const [query, setQuery] = useState("");
   const [appSort, setAppSort] = useState<DeviceAppSort>("name");
-  const [showSystemApps, setShowSystemApps] = useState(false);
-  const [showAppClips, setShowAppClips] = useState(false);
-  const [appScopesLoading, setAppScopesLoading] = useState(false);
   const [profileStatus, setProfileStatus] = useState<ProfileStatusFilter>("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,25 +114,25 @@ export function DeviceInspector({
   const [consoleApp, setConsoleApp] = useState<DeviceApp | null>(null);
   const [wallpaperLoading, setWallpaperLoading] = useState<WallpaperKind | null>(null);
   const [wallpaperPreview, setWallpaperPreview] = useState<{ kind: WallpaperKind; source: string } | null>(null);
+  const {
+    apps,
+    showSystemApps,
+    showAppClips,
+    scopesLoading: appScopesLoading,
+    load: loadApps,
+    toggleScope: toggleAppCatalogScope,
+  } = useDeviceAppCatalog(activeUdid, tab === "apps", request);
   const handledOperation = useRef(0);
   const handledDeviceEvent = useRef(0);
   const handledDeveloperImageState = useRef<string>("");
   const homeScreenRequest = useRef(0);
-  const appListRequest = useRef(0);
   const inspectorLoadRequest = useRef(0);
-  const appListAbort = useRef<AbortController | null>(null);
-  const appCatalogCache = useRef(new Map<string, { loadedAt: number; apps: DeviceApp[] }>());
-  const appListContainer = useRef<HTMLDivElement>(null);
-  const appListSentinel = useRef<HTMLDivElement>(null);
   const homeScreenLoaded = useRef(false);
   const backupStatusRequest = useRef(0);
   const sysdiagnoseStatusRequest = useRef(0);
   const developerImageStatusRequest = useRef(0);
   const appOperationRequest = useRef(0);
-  const appScopesRequest = useRef(0);
   const wallpaperRequest = useRef(0);
-  const showSystemAppsRef = useRef(false);
-  const showAppClipsRef = useRef(false);
 
   const loadHomeScreen = useCallback(async () => {
     const requestId = ++homeScreenRequest.current;
@@ -186,38 +176,6 @@ export function DeviceInspector({
       if (wallpaperRequest.current === requestId) setWallpaperLoading(null);
     }
   }, [request, t]);
-
-  const loadApps = useCallback(async (
-    includeSystem = showSystemAppsRef.current,
-    includeAppClips = showAppClipsRef.current,
-    force = false,
-  ) => {
-    const cacheKey = `${includeSystem}:${includeAppClips}`;
-    const cached = appCatalogCache.current.get(cacheKey);
-    if (!force && cached && performance.now() - cached.loadedAt < APP_CATALOG_CACHE_MS) {
-      setApps(cached.apps);
-      return true;
-    }
-    appListAbort.current?.abort();
-    const controller = new AbortController();
-    appListAbort.current = controller;
-    const requestId = ++appListRequest.current;
-    const suffix = deviceAppScopeQuery(includeSystem, includeAppClips);
-    try {
-      const nextApps = await readJson<DeviceApp[]>(await request(`/api/device/apps${suffix}`, {
-        signal: controller.signal,
-      }));
-      if (appListRequest.current !== requestId) return false;
-      appCatalogCache.current.set(cacheKey, { loadedAt: performance.now(), apps: nextApps });
-      setApps(nextApps);
-      return true;
-    } catch (loadError) {
-      if (controller.signal.aborted) return false;
-      throw loadError;
-    } finally {
-      if (appListAbort.current === controller) appListAbort.current = null;
-    }
-  }, [request]);
 
   const loadWdaRunnerStatus = useCallback(async () => {
     try {
@@ -310,27 +268,16 @@ export function DeviceInspector({
   useEffect(() => {
     inspectorLoadRequest.current += 1;
     homeScreenRequest.current += 1;
-    appListRequest.current += 1;
-    appListAbort.current?.abort();
-    appListAbort.current = null;
-    appCatalogCache.current.clear();
     homeScreenLoaded.current = false;
     backupStatusRequest.current += 1;
     sysdiagnoseStatusRequest.current += 1;
     developerImageStatusRequest.current += 1;
     appOperationRequest.current += 1;
-    appScopesRequest.current += 1;
     wallpaperRequest.current += 1;
-    showSystemAppsRef.current = false;
-    showAppClipsRef.current = false;
-    setShowSystemApps(false);
-    setShowAppClips(false);
-    setAppScopesLoading(false);
     setDetails(null);
     setCompanions([]);
     setCompanionError(null);
     setCompanionLoading(false);
-    setApps([]);
     setWdaRunnerStatus(null);
     setWdaRunnerAction(null);
     setHomeScreenLayout(null);
@@ -374,10 +321,6 @@ export function DeviceInspector({
     void load(false);
   }, [load]);
 
-  useEffect(() => {
-    if (tab !== "apps") appListAbort.current?.abort();
-  }, [tab]);
-
   useActivePolling(Boolean(activeUdid) && isBackupActive(backupStatus), loadBackupStatus, 350);
   useActivePolling(Boolean(activeUdid) && isSysdiagnoseActive(sysdiagnoseStatus), loadSysdiagnoseStatus, 350);
   useActivePolling(Boolean(activeUdid) && isDeveloperImageActive(developerImageStatus), loadDeveloperImageStatus, 350);
@@ -405,26 +348,14 @@ export function DeviceInspector({
     if (shouldRefreshDeviceInspector(deviceEvent.kind, tab)) void load(true);
   }, [deviceEvent, load, tab]);
 
-  const toggleAppScope = async (scope: "system" | "clips") => {
-    if (loading || appScopesLoading) return;
-    const nextSystem = scope === "system" ? !showSystemApps : showSystemApps;
-    const nextAppClips = scope === "clips" ? !showAppClips : showAppClips;
-    const requestId = ++appScopesRequest.current;
-    setAppScopesLoading(true);
+  const toggleAppScope = useCallback(async (scope: "system" | "clips") => {
+    if (loading) return;
     try {
-      if (await loadApps(nextSystem, nextAppClips)) {
-        showSystemAppsRef.current = nextSystem;
-        showAppClipsRef.current = nextAppClips;
-        setShowSystemApps(nextSystem);
-        setShowAppClips(nextAppClips);
-      }
+      await toggleAppCatalogScope(scope);
     } catch (scopeError) {
-      if (appScopesRequest.current !== requestId) return;
       void showErrorMessage(t("deviceInspector.appScopesUnavailable", { error: String(scopeError) }));
-    } finally {
-      if (appScopesRequest.current === requestId) setAppScopesLoading(false);
     }
-  };
+  }, [loading, t, toggleAppCatalogScope]);
 
   useEffect(() => {
     if (!appOperation || appOperation.id === 0 || appOperation.state === "running" || appOperation.state === "idle") return;
@@ -440,62 +371,6 @@ export function DeviceInspector({
     }
   }, [appOperation, load, t, tab]);
 
-  const visibleApps = useMemo(
-    () => sortDeviceApps(
-      filterDeviceApps(apps, query),
-      appSort,
-      i18n.resolvedLanguage ?? i18n.language,
-    ),
-    [appSort, apps, i18n.language, i18n.resolvedLanguage, query],
-  );
-  const renderedApps = useMemo(
-    () => visibleApps.slice(0, appRenderLimit),
-    [appRenderLimit, visibleApps],
-  );
-
-  useEffect(() => {
-    setAppRenderLimit(Math.min(APP_RENDER_BATCH_SIZE, visibleApps.length));
-    appListContainer.current?.scrollTo({ top: 0 });
-  }, [appSort, apps, query, showAppClips, showSystemApps, visibleApps.length]);
-
-  useEffect(() => {
-    const root = appListContainer.current;
-    const sentinel = appListSentinel.current;
-    if (tab !== "apps" || !root || !sentinel || appRenderLimit >= visibleApps.length) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setAppRenderLimit(visibleApps.length);
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        setAppRenderLimit((current) => nextAppRenderLimit(current, visibleApps.length));
-      }
-    }, { root, rootMargin: "400px 0px" });
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [appRenderLimit, tab, visibleApps.length]);
-  const homeScreenLocations = useMemo(
-    () => new Map(homeScreenLayout?.apps.map((location) => [location.bundle_id, location]) ?? []),
-    [homeScreenLayout],
-  );
-  const homeScreenMetricSummary = useMemo(() => {
-    const metrics = homeScreenLayout?.metrics;
-    if (!metrics) return null;
-    const parts: string[] = [];
-    if (metrics.columns != null && metrics.rows != null) {
-      parts.push(t("deviceInspector.homeScreenGrid", { columns: metrics.columns, rows: metrics.rows }));
-    }
-    if (metrics.screen_width != null && metrics.screen_height != null) {
-      parts.push(t("deviceInspector.homeScreenLayoutSize", { width: metrics.screen_width, height: metrics.screen_height }));
-    }
-    if (metrics.icon_width != null && metrics.icon_height != null) {
-      parts.push(t("deviceInspector.homeScreenIconSize", { width: metrics.icon_width, height: metrics.icon_height }));
-    }
-    if (metrics.folder_columns != null && metrics.folder_rows != null) {
-      parts.push(t("deviceInspector.homeScreenFolderGrid", { columns: metrics.folder_columns, rows: metrics.folder_rows }));
-    }
-    return parts.length > 0 ? parts.join(" · ") : null;
-  }, [homeScreenLayout?.metrics, t]);
   const visibleProfiles = useMemo(
     () => filterProvisioningProfiles(profiles, query, profileStatus),
     [profileStatus, profiles, query],
@@ -688,7 +563,7 @@ export function DeviceInspector({
     }
   }, [activeProfile, onAppProfileBindingChange, t]);
 
-  const installApp = async (operation: IpaOperation) => {
+  const installApp = useCallback(async (operation: IpaOperation) => {
     if (ipaPreflightBusy || appOperation?.state === "running") return;
     try {
       const selected = await open({
@@ -763,7 +638,7 @@ export function DeviceInspector({
     } finally {
       setIpaPreflightBusy(false);
     }
-  };
+  }, [appOperation?.state, ipaPreflightBusy, refreshAppOperation, request, t]);
 
   const uninstallApp = useCallback((app: DeviceApp) => {
     Modal.confirm({
@@ -1586,159 +1461,43 @@ export function DeviceInspector({
           )}
         </div>
       ) : tab === "apps" ? (
-        <div className="device-apps-pane">
-          <div className="device-app-toolbar">
-            <Input
-              allowClear
-              value={query}
-              prefix={<SearchOutlined />}
-              placeholder={t("deviceInspector.searchApps")}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            <Dropdown
-              menu={{
-                items: [
-                  { key: "name", icon: appSort === "name" ? <CheckOutlined /> : <SortAscendingOutlined />, label: t("deviceInspector.sortAppsByName") },
-                  { key: "storage", icon: appSort === "storage" ? <CheckOutlined /> : <DatabaseOutlined />, label: t("deviceInspector.sortAppsByStorage") },
-                ],
-                onClick: ({ key }) => setAppSort(key as DeviceAppSort),
-              }}
-            >
-              <Tooltip title={t("deviceInspector.sortApps")}>
-                <Button
-                  aria-label={t("deviceInspector.sortApps")}
-                  icon={appSort === "storage" ? <SortDescendingOutlined /> : <SortAscendingOutlined />}
-                />
-              </Tooltip>
-            </Dropdown>
-            <Dropdown
-              trigger={["click"]}
-              menu={{
-                selectable: false,
-                items: [
-                  {
-                    key: "system",
-                    icon: showSystemApps ? <CheckOutlined /> : <AppstoreOutlined />,
-                    label: t("deviceInspector.systemApps"),
-                  },
-                  {
-                    key: "clips",
-                    icon: showAppClips ? <CheckOutlined /> : <ThunderboltOutlined />,
-                    label: t("deviceInspector.appClips"),
-                  },
-                ],
-                onClick: ({ key }) => void toggleAppScope(key as "system" | "clips"),
-              }}
-            >
-              <Tooltip title={t("deviceInspector.appScopes")}>
-                <Button
-                  type={showSystemApps || showAppClips ? "primary" : "default"}
-                  aria-label={t("deviceInspector.appScopes")}
-                  icon={<FilterOutlined />}
-                  loading={appScopesLoading}
-                  disabled={loading || appScopesLoading}
-                />
-              </Tooltip>
-            </Dropdown>
-            <Dropdown
-              trigger={["click"]}
-              menu={{
-                items: [
-                  { key: "install", icon: <UploadOutlined />, label: t("deviceInspector.installApp") },
-                  { key: "upgrade", icon: <ReloadOutlined />, label: t("deviceInspector.upgradeApp") },
-                ],
-                onClick: ({ key }) => void installApp(key as IpaOperation),
-              }}
-            >
-              <Tooltip title={t("deviceInspector.installOrUpgradeApp")}>
-                <Button aria-label={t("deviceInspector.installOrUpgradeApp")} icon={<UploadOutlined />} loading={ipaPreflightBusy} disabled={appMutationRunning} />
-              </Tooltip>
-            </Dropdown>
-          </div>
-          {appOperation && appOperation.id > 0 && appOperation.state !== "idle" && (
-            <div className="device-app-operation">
-              <div className="device-app-operation-label">
-                <Typography.Text ellipsis={{ tooltip: appOperation.label ?? undefined }}>
-                  {appOperation.label ?? t("deviceInspector.appOperation")}
-                </Typography.Text>
-                <Typography.Text type="secondary">
-                  {appOperation.stage
-                    ? t(`deviceInspector.appOperationStages.${appOperation.stage}`)
-                    : t(`deviceInspector.appOperationStates.${appOperation.state}`)}
-                </Typography.Text>
-              </div>
-              {appOperation.state === "running" && appOperation.progress === null ? (
-                <Spin size="small" />
-              ) : (
-                <Progress
-                  size="small"
-                  percent={appOperation.progress ?? (appOperation.state === "succeeded" ? 100 : 0)}
-                  status={appOperation.state === "failed" ? "exception" : appOperation.state === "succeeded" ? "success" : "active"}
-                />
-              )}
-            </div>
-          )}
-          {homeScreenLoading && (
-            <div className="device-home-screen-status">
-              <Spin size="small" />
-              <Typography.Text type="secondary">{t("deviceInspector.homeScreenLoading")}</Typography.Text>
-            </div>
-          )}
-          {homeScreenError && (
-            <Alert
-              className="device-home-screen-alert"
-              type="warning"
-              showIcon
-              message={t("deviceInspector.homeScreenUnavailable")}
-              description={homeScreenError}
-            />
-          )}
-          {homeScreenLayout?.truncated && (
-            <Alert
-              className="device-home-screen-alert"
-              type="warning"
-              showIcon
-              message={t("deviceInspector.homeScreenTruncated")}
-            />
-          )}
-          {homeScreenMetricSummary && (
-            <div className="device-home-screen-metrics">
-              <InfoCircleOutlined aria-hidden="true" />
-              <Typography.Text type="secondary">{homeScreenMetricSummary}</Typography.Text>
-            </div>
-          )}
-          <div className="device-app-count">{t("deviceInspector.appCount", { count: visibleApps.length })}</div>
-          <div className="device-app-list" ref={appListContainer}>
-            {renderedApps.map((app) => (
-              <DeviceAppRow
-                key={app.bundle_id}
-                app={app}
-                request={request}
-                location={homeScreenLocations.get(app.bundle_id)}
-                activeProfile={activeProfile}
-                appProfileBindings={appProfileBindings}
-                bindingConflicts={bindingConflicts}
-                bindingApp={bindingApp}
-                appProcessAction={appProcessAction}
-                appMutationRunning={appMutationRunning}
-                consoleOpen={consoleApp !== null}
-                wdaRunnerStatus={wdaRunnerStatus}
-                wdaRunnerAction={wdaRunnerAction}
-                onChangeProfileBinding={changeAppProfileBinding}
-                onCopyBundleId={copyBundleId}
-                onOpenDocuments={openAppDocuments}
-                onStartWdaRunner={startWdaRunner}
-                onStopWdaRunner={stopWdaRunner}
-                onOpenConsole={openAppConsole}
-                onLaunch={launch}
-                onStop={stopApp}
-                onUninstall={uninstallApp}
-              />
-            ))}
-            {renderedApps.length < visibleApps.length && <div ref={appListSentinel} className="device-app-list-sentinel" />}
-            {visibleApps.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noApps")} />}
-          </div>
-        </div>
+        <AppsPane
+          apps={apps}
+          request={request}
+          query={query}
+          appSort={appSort}
+          showSystemApps={showSystemApps}
+          showAppClips={showAppClips}
+          loading={loading}
+          appScopesLoading={appScopesLoading}
+          appOperation={appOperation}
+          ipaPreflightBusy={ipaPreflightBusy}
+          homeScreenLayout={homeScreenLayout}
+          homeScreenLoading={homeScreenLoading}
+          homeScreenError={homeScreenError}
+          activeProfile={activeProfile}
+          appProfileBindings={appProfileBindings}
+          bindingConflicts={bindingConflicts}
+          bindingApp={bindingApp}
+          appProcessAction={appProcessAction}
+          appMutationRunning={appMutationRunning}
+          consoleOpen={consoleApp !== null}
+          wdaRunnerStatus={wdaRunnerStatus}
+          wdaRunnerAction={wdaRunnerAction}
+          onQueryChange={setQuery}
+          onSortChange={setAppSort}
+          onToggleScope={toggleAppScope}
+          onInstall={installApp}
+          onChangeProfileBinding={changeAppProfileBinding}
+          onCopyBundleId={copyBundleId}
+          onOpenDocuments={openAppDocuments}
+          onStartWdaRunner={startWdaRunner}
+          onStopWdaRunner={stopWdaRunner}
+          onOpenConsole={openAppConsole}
+          onLaunch={launch}
+          onStop={stopApp}
+          onUninstall={uninstallApp}
+        />
       ) : tab === "profiles" ? (
         <div className="device-profiles-pane">
           <div className="device-profile-toolbar">
