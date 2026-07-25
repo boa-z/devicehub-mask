@@ -24,7 +24,7 @@ Workflow artifacts are retained for 14 days. The rolling public release is:
 
 ## Versions and Artifacts
 
-`tauri.conf.json` contains the target stable product version. A Nightly build derives the standard SemVer prerelease `<product-version>-nightly.<run-number>`; for example, build 96 targeting version `0.1.0` is `0.1.0-nightly.96`. Numeric prerelease identifiers order Nightly builds, and the final `0.1.0` release sorts above every `0.1.0-nightly.*` build. After publishing a stable release, increment the product version before producing further Nightly builds.
+`tauri.conf.json` contains the target stable product version. A Nightly build derives the cross-platform SemVer prerelease `<product-version>-<run-number>`; for example, build 96 targeting version `0.1.0` is `0.1.0-96`. The prerelease identifier is numeric because the Windows MSI toolchain rejects textual identifiers and values above 65,535. Numeric identifiers order Nightly builds, and the final `0.1.0` release sorts above every `0.1.0-*` build. After publishing a stable release, increment the product version before producing further Nightly builds.
 
 Installer filenames contain the product version and workflow build number. The run number also becomes `CFBundleVersion` on macOS. Settings reports **Version**, **Build**, and the seven-character **Commit** separately; the selected update channel identifies a Stable or Nightly build without exposing an internal second version.
 

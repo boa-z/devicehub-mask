@@ -24,7 +24,7 @@
 
 ## 版本与产物
 
-`tauri.conf.json` 保存当前目标正式版本。Nightly 构建使用标准 SemVer 预发布版本 `<product-version>-nightly.<run-number>`；例如目标版本为 `0.1.0` 的第 96 次构建是 `0.1.0-nightly.96`。数字预发布标识用于排序 Nightly，最终的 `0.1.0` 正式版高于所有 `0.1.0-nightly.*` 构建。正式版发布后，必须先提升产品版本，再继续生成 Nightly。
+`tauri.conf.json` 保存当前目标正式版本。Nightly 构建使用跨平台 SemVer 预发布版本 `<product-version>-<run-number>`；例如目标版本为 `0.1.0` 的第 96 次构建是 `0.1.0-96`。预发布标识必须为数字，因为 Windows MSI 工具链会拒绝文本标识和大于 65,535 的数值。数字标识用于排序 Nightly，最终的 `0.1.0` 正式版高于所有 `0.1.0-*` 构建。正式版发布后，必须先提升产品版本，再继续生成 Nightly。
 
 安装包文件名包含产品版本和 workflow build number，macOS 也使用运行编号作为 `CFBundleVersion`。设置页分别显示**版本**、**构建编号**和七位 **Commit**；当前更新通道已能识别正式版或 Nightly，不再向用户暴露第二套内部版本。
 

@@ -37,6 +37,10 @@ jobs:
     name: Validate release metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      app_version: ${{ steps.metadata.outputs.app_version }}
+      build_number: ${{ steps.metadata.outputs.build_number }}
+      release_version: ${{ steps.metadata.outputs.release_version }}
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -45,6 +49,7 @@ jobs:
           persist-credentials: false
 
       - name: Validate channel and tag
+        id: metadata
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -66,6 +71,11 @@ jobs:
                 echo "::error::Nightly builds must publish to the nightly tag"
                 exit 1
               }
+              if (( GITHUB_RUN_NUMBER < 1 || GITHUB_RUN_NUMBER > 65535 )); then
+                echo "::error::Nightly build number must be between 1 and 65535 for MSI compatibility"
+                exit 1
+              fi
+              RELEASE_VERSION="${APP_VERSION}-${GITHUB_RUN_NUMBER}"
               ;;
             stable)
               test "$RELEASE_TAG" = "v${APP_VERSION}" || {
@@ -76,12 +86,18 @@ jobs:
                 echo "::error::Stable releases require TAURI_SIGNING_PRIVATE_KEY"
                 exit 1
               }
+              RELEASE_VERSION="$APP_VERSION"
               ;;
             *)
               echo "::error::Unsupported release channel: ${RELEASE_CHANNEL}"
               exit 1
               ;;
           esac
+          {
+            echo "app_version=${APP_VERSION}"
+            echo "build_number=${GITHUB_RUN_NUMBER}"
+            echo "release_version=${RELEASE_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
   verify:
     name: Verify (${{ matrix.name }})
@@ -213,13 +229,9 @@ jobs:
         id: version
         shell: bash
         run: |
-          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
-          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
-            UPDATE_VERSION="$APP_VERSION"
-          else
-            UPDATE_VERSION="${APP_VERSION}-nightly.${BUILD_NUMBER}"
-          fi
+          APP_VERSION="${{ needs.validate-release.outputs.app_version }}"
+          BUILD_NUMBER="${{ needs.validate-release.outputs.build_number }}"
+          UPDATE_VERSION="${{ needs.validate-release.outputs.release_version }}"
           {
             echo "app_version=${APP_VERSION}"
             echo "build_number=${BUILD_NUMBER}"
@@ -349,9 +361,9 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $appVersion = node -p "require('./src-tauri/tauri.conf.json').version"
-          $buildNumber = "${env:GITHUB_RUN_NUMBER}"
-          $updateVersion = if ($env:RELEASE_CHANNEL -eq 'stable') { $appVersion } else { "${appVersion}-nightly.${buildNumber}" }
+          $appVersion = "${{ needs.validate-release.outputs.app_version }}"
+          $buildNumber = "${{ needs.validate-release.outputs.build_number }}"
+          $updateVersion = "${{ needs.validate-release.outputs.release_version }}"
           "app_version=${appVersion}" >> $env:GITHUB_OUTPUT
           "build_number=${buildNumber}" >> $env:GITHUB_OUTPUT
           "update_version=${updateVersion}" >> $env:GITHUB_OUTPUT
@@ -461,13 +473,9 @@ jobs:
         id: version
         shell: bash
         run: |
-          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          BUILD_NUMBER="${GITHUB_RUN_NUMBER}"
-          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
-            UPDATE_VERSION="$APP_VERSION"
-          else
-            UPDATE_VERSION="${APP_VERSION}-nightly.${BUILD_NUMBER}"
-          fi
+          APP_VERSION="${{ needs.validate-release.outputs.app_version }}"
+          BUILD_NUMBER="${{ needs.validate-release.outputs.build_number }}"
+          UPDATE_VERSION="${{ needs.validate-release.outputs.release_version }}"
           {
             echo "app_version=${APP_VERSION}"
             echo "build_number=${BUILD_NUMBER}"
@@ -565,14 +573,8 @@ jobs:
         shell: bash
         env:
           NOTES: DeviceHub Mask ${{ inputs.release_channel || 'nightly' }} build ${{ github.run_number }} (${{ github.sha }}).
+          UPDATE_VERSION: ${{ needs.validate-release.outputs.release_version }}
         run: |
-          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
-            UPDATE_VERSION="$APP_VERSION"
-          else
-            UPDATE_VERSION="${APP_VERSION}-nightly.${GITHUB_RUN_NUMBER}"
-          fi
-          UPDATE_VERSION="$UPDATE_VERSION" \
           NOTES="$NOTES" \
             scripts/generate-update-manifest.sh
 
@@ -590,14 +592,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          APP_VERSION: ${{ needs.validate-release.outputs.app_version }}
+          UPDATE_VERSION: ${{ needs.validate-release.outputs.release_version }}
         run: |
-          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
-            UPDATE_VERSION="$APP_VERSION"
-          else
-            UPDATE_VERSION="${APP_VERSION}-nightly.${GITHUB_RUN_NUMBER}"
-          fi
-
           NOTES=$(cat <<EOF
           Automated DeviceHub Mask cross-platform ${RELEASE_CHANNEL} build.
 
