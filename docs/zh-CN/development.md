@@ -40,7 +40,7 @@ npm run tauri:dev
 | `DEVICEHUB_MCP_ADDR` | `127.0.0.1:8009` | Streamable HTTP MCP 监听地址；端点路径为 `/mcp` |
 | `DEVICEHUB_PROFILE_DIR` | Tauri 应用数据目录 | 映射配置存储位置 |
 | `DEVICEHUB_FFMPEG` | 自动查找 | 设备音频解码使用的 FFmpeg 可执行文件绝对路径 |
-| `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` | `2` | 有界 WebView 帧流水线的诊断 A/B 覆盖，仅接受 `1` 或 `2` |
+| `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` | `8` | 有界 WebView 入口流水线的诊断 A/B 覆盖，接受 `1` 至 `8` |
 | `DEVICEHUB_LOG` | DeviceHub info 日志 | 首选 Rust tracing 过滤器；优先于 `RUST_LOG` |
 | `RUST_LOG` | DeviceHub info 日志 | 标准 tracing 过滤器回退 |
 | `DEVICEHUB_HID_DUMP` | 未设置 | 导出 Universal HID 服务 plist 供协议分析 |

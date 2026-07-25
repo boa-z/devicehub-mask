@@ -40,7 +40,7 @@ Development artifacts use `target/tauri-dev` and load Vite from `http://127.0.0.
 | `DEVICEHUB_MCP_ADDR` | `127.0.0.1:8009` | Streamable HTTP MCP bind address; endpoint path is `/mcp` |
 | `DEVICEHUB_PROFILE_DIR` | Tauri application data directory | Mapping profile storage |
 | `DEVICEHUB_FFMPEG` | Auto-detected | Absolute FFmpeg executable path used by device audio decoding |
-| `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` | `2` | Diagnostic A/B override for the bounded WebView frame pipeline; accepts `1` or `2` |
+| `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` | `8` | Diagnostic A/B override for the bounded WebView ingress pipeline; accepts `1` through `8` |
 | `DEVICEHUB_LOG` | DeviceHub info logging | Preferred Rust tracing filter; overrides `RUST_LOG` |
 | `RUST_LOG` | DeviceHub info logging | Standard tracing filter fallback |
 | `DEVICEHUB_HID_DUMP` | Unset | Export the Universal HID service plist for protocol diagnostics |

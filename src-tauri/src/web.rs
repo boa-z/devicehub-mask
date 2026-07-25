@@ -3399,7 +3399,10 @@ async fn websocket(socket: WebSocket, state: AppState) {
 
 const FRAME_CREDIT_LEASE: Duration = Duration::from_millis(500);
 const PRESENTATION_SAMPLE_LEASE: Duration = Duration::from_secs(5);
-const DEFAULT_IN_FLIGHT_FRAMES: usize = 2;
+// Match the frontend decoder's eight-packet hard limit. Missing ingress ACKs
+// then indicate real queue saturation rather than a normal access-unit burst.
+const DEFAULT_IN_FLIGHT_FRAMES: usize = 8;
+const MAX_IN_FLIGHT_FRAMES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameCredit {
@@ -3441,10 +3444,12 @@ fn browser_frame_decision(
 }
 
 fn configured_in_flight_frames(value: Option<&std::ffi::OsStr>) -> usize {
-    match value.and_then(|value| value.to_str()) {
-        None | Some("") | Some("2") => DEFAULT_IN_FLIGHT_FRAMES,
-        Some("1") => 1,
-        Some(value) => {
+    let Some(value) = value.and_then(|value| value.to_str()).filter(|value| !value.is_empty()) else {
+        return DEFAULT_IN_FLIGHT_FRAMES;
+    };
+    match value.parse::<usize>() {
+        Ok(value) if (1..=MAX_IN_FLIGHT_FRAMES).contains(&value) => value,
+        _ => {
             tracing::warn!(value, "ignoring invalid DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES");
             DEFAULT_IN_FLIGHT_FRAMES
         }
@@ -4666,18 +4671,22 @@ mod tests {
 
     #[test]
     fn frame_pipeline_depth_accepts_only_bounded_diagnostic_values() {
-        assert_eq!(configured_in_flight_frames(None), 2);
+        assert_eq!(configured_in_flight_frames(None), 8);
         assert_eq!(
             configured_in_flight_frames(Some(std::ffi::OsStr::new("1"))),
             1
         );
         assert_eq!(
-            configured_in_flight_frames(Some(std::ffi::OsStr::new("2"))),
-            2
+            configured_in_flight_frames(Some(std::ffi::OsStr::new("8"))),
+            8
         );
         assert_eq!(
             configured_in_flight_frames(Some(std::ffi::OsStr::new("16"))),
-            2
+            8
+        );
+        assert_eq!(
+            configured_in_flight_frames(Some(std::ffi::OsStr::new("0"))),
+            8
         );
     }
 
