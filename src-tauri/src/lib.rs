@@ -74,6 +74,8 @@ struct BackendHandle {
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
+struct ProfileDirectory(PathBuf);
+
 #[derive(Serialize)]
 struct BackendConnection {
     origin: String,
@@ -106,6 +108,15 @@ fn set_debug_logging(
 #[tauri::command]
 fn open_log_directory(state: tauri::State<'_, diagnostics::Diagnostics>) -> Result<(), String> {
     state.open_log_directory()
+}
+
+#[tauri::command]
+async fn open_profile_directory(state: tauri::State<'_, ProfileDirectory>) -> Result<(), String> {
+    tokio::fs::create_dir_all(&state.0)
+        .await
+        .map_err(|error| format!("cannot create key mapping directory: {error}"))?;
+    tauri_plugin_opener::open_path(&state.0, None::<&str>)
+        .map_err(|error| format!("cannot open key mapping directory: {error}"))
 }
 
 #[tauri::command]
@@ -389,6 +400,7 @@ pub fn run() {
             diagnostics_status,
             set_debug_logging,
             open_log_directory,
+            open_profile_directory,
             frontend_log,
             app_settings_status,
             set_audio_enabled,
@@ -418,6 +430,7 @@ pub fn run() {
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| app_data_dir.join("profiles"));
+            app.manage(ProfileDirectory(profile_dir.clone()));
             let backend = spawn_backend(
                 initial_udid,
                 profile_dir,

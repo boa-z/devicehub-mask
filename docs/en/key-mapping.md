@@ -48,7 +48,7 @@ The runtime mapping handler ignores keys while focus is inside buttons, fields, 
 | Field | Meaning |
 | --- | --- |
 | Name | User-visible overlay and list label; it does not affect dispatch |
-| Type | Fixed when the controller is created; create another controller to change behavior |
+| Type | Controller behavior; changing it rebuilds the controller and resets incompatible settings |
 | Position / Cast center | X/Y percentages in the current oriented source picture |
 | Contact ID | Universal HID identity `0..4`; simultaneous contacts must be unique |
 | Keyboard binding | One physical key or an all-keys-required chord |
@@ -60,7 +60,11 @@ The runtime mapping handler ignores keys while focus is inside buttons, fields, 
 | Sequence | Ordered normalized points; MultipleTap also stores each point's duration and preceding wait |
 | Script fields | Compatibility text retained in the profile and export; never executed by this version |
 
-Changing a field edits the in-memory profile. Select **Save** to persist it. The type selector is intentionally disabled because converting one controller shape into another would otherwise leave incompatible fields behind.
+Changing a field edits the in-memory profile. Select **Save** to persist it. The type selector can rebuild a controller as another type after confirmation. The conversion keeps its ID, name, position, and compatible binding and contact fields, while target-specific settings start from valid defaults. Incompatible data such as swipe paths, cast-only options, FPS touch modes, or Script text is discarded. Legacy Button and Direction pad mappings can be upgraded to Single tap and Direction pad through the same selector.
+
+Select the folder button in the profile toolbar to open the desktop-local directory containing saved key mapping JSON files. The application creates the directory first when necessary. Files exported through the download menu are separate copies in the user-selected download location.
+
+The profile toolbar provides Undo and Redo for unsaved editor changes. `Ctrl+Z` / `Cmd+Z` undo from the device surface; `Ctrl+Shift+Z`, `Cmd+Shift+Z`, and `Ctrl+Y` redo. Text fields keep their native editing shortcuts while focused, so use the toolbar buttons to undo the complete profile change from inside a field. Consecutive typing and controller dragging are coalesced into useful history steps. Loading another profile resets the history so changes never cross profile boundaries.
 
 ## Contact IDs and Simultaneous Input
 

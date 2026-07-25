@@ -55,6 +55,7 @@ import { useDeviceVideoStream } from "./useDeviceVideoStream";
 import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
 import { usePrivateBackend } from "./usePrivateBackend";
+import { useUndoHistory } from "./useUndoHistory";
 import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./appSettings";
 
 const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
@@ -120,7 +121,15 @@ export default function App() {
   const { backend, request } = usePrivateBackend((error) => {
     setStatus({ ...emptyStatus, status: t("status.backendUnavailable"), error: String(error) });
   }, t("errors.backendNotReady"));
-  const [profile, setProfile] = useState<Profile>(() => createLocalizedDefaultProfile(t));
+  const {
+    value: profile,
+    update: updateProfile,
+    reset: resetProfile,
+    undo: undoProfile,
+    redo: redoProfile,
+    canUndo: canUndoProfile,
+    canRedo: canRedoProfile,
+  } = useUndoHistory<Profile>(() => createLocalizedDefaultProfile(t));
   const initialProfileRef = useRef(profile);
   const [controlProfile, setControlProfile] = useState<Profile>(profile);
   const [profiles, setProfiles] = useState<string[]>([]);
@@ -294,6 +303,23 @@ export default function App() {
     };
   }, [appWindow]);
   const mappingEditing = page === "mappings" && controlMode === "mapping" && editing;
+  useEffect(() => {
+    const handleHistoryShortcut = (event: KeyboardEvent) => {
+      if (page !== "mappings" || isUiControl(event.target) || event.altKey) return;
+      const modifier = event.ctrlKey || event.metaKey;
+      const undo = modifier && event.code === "KeyZ" && !event.shiftKey;
+      const redo = modifier && ((event.code === "KeyZ" && event.shiftKey) || (event.ctrlKey && event.code === "KeyY"));
+      if (undo && canUndoProfile) {
+        event.preventDefault();
+        undoProfile();
+      } else if (redo && canRedoProfile) {
+        event.preventDefault();
+        redoProfile();
+      }
+    };
+    window.addEventListener("keydown", handleHistoryShortcut);
+    return () => window.removeEventListener("keydown", handleHistoryShortcut);
+  }, [canRedoProfile, canUndoProfile, page, redoProfile, undoProfile]);
   const videoDemand = documentVisible
     && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
   const handleVideoDisconnect = useCallback(() => {
@@ -614,9 +640,9 @@ export default function App() {
 
   const loadProfile = useCallback(async (name: string) => {
     const loaded = await readProfile(name);
-    setProfile(loaded);
+    resetProfile(loaded);
     setSelectedId(loaded.mappings[0]?.id ?? null);
-  }, [readProfile]);
+  }, [readProfile, resetProfile]);
 
   const refreshProfiles = useCallback(async () => {
     const response = await request("/api/profiles");
@@ -703,9 +729,9 @@ export default function App() {
             : current.bundleIdentifiers.filter((candidate) => candidate !== bundleId),
         }
       : current;
-    setProfile(mergeBinding);
+    resetProfile(mergeBinding(profile));
     setControlProfile(mergeBinding);
-  }, [activeProfile, appBindingConflicts, appProfileBindings, readProfile, refreshProfiles, writeProfile]);
+  }, [activeProfile, appBindingConflicts, appProfileBindings, profile, readProfile, refreshProfiles, resetProfile, writeProfile]);
 
   useEffect(() => {
     if (!backend) return;
@@ -717,20 +743,20 @@ export default function App() {
         await request("/api/profiles/default/activate", { method: "PUT" });
         setProfiles(["default"]);
         setActiveProfile("default");
-        setProfile(initialProfile);
+        resetProfile(initialProfile);
         setControlProfile(initialProfile);
         return;
       }
       const selected = list.profiles.includes(list.active) ? list.active : list.profiles[0];
       const loaded = await readProfile(selected);
-      setProfile(loaded);
+      resetProfile(loaded);
       setControlProfile(loaded);
       setSelectedId(loaded.mappings[0]?.id ?? null);
     };
     void initializeProfiles().catch((error) => showErrorMessage(error));
-  }, [backend, readProfile, refreshProfiles, request, writeProfile]);
+  }, [backend, readProfile, refreshProfiles, request, resetProfile, writeProfile]);
 
-  const updateMapping = (next: Mapping) => setProfile((current) => {
+  const updateMapping = (next: Mapping, mergeKey?: string) => updateProfile((current) => {
     const keyConflict = hardwareButtons.some((button) => {
       const key = current.hardwareBindings[button.name];
       return key && isBoundKey([next], key);
@@ -740,8 +766,8 @@ export default function App() {
       return current;
     }
     return { ...current, mappings: current.mappings.map((mapping) => mapping.id === next.id ? next : mapping) };
-  });
-  const updateHardwareBinding = (name: HardwareButtonName, key: string) => setProfile((current) => {
+  }, mergeKey ? { mergeKey: `mapping:${next.id}:${mergeKey}` } : undefined);
+  const updateHardwareBinding = (name: HardwareButtonName, key: string) => updateProfile((current) => {
     if (key && isBoundKey(current.mappings, key)) {
       void message.warning(t("mapping.keyUsedByTouch"));
       return current;
@@ -752,22 +778,22 @@ export default function App() {
     }
     return { ...current, hardwareBindings: { ...current.hardwareBindings, [name]: key } };
   });
-  const moveMapping = (id: string, x: number, y: number) => setProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? ("position" in mapping ? { ...mapping, position: { x, y } } : { ...mapping, x, y }) as Mapping : mapping) }));
+  const moveMapping = (id: string, x: number, y: number) => updateProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? ("position" in mapping ? { ...mapping, position: { x, y } } : { ...mapping, x, y }) as Mapping : mapping) }), { mergeKey: `move:${id}` });
   const addMapping = (type: ScrcpyMappingType, position: Position = { x: 0.5, y: 0.5 }) => {
     const next = createEditorMapping(type, position, mappingFrameSize, profile.mappings);
     const id = next.id;
-    setProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
+    updateProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
     setSelectedId(id);
   };
   const duplicateMapping = (id: string) => {
     const source = profile.mappings.find((mapping) => mapping.id === id);
     if (!source) return;
     const next = duplicateEditorMapping(source, profile.mappings);
-    setProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
+    updateProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
     setSelectedId(next.id);
   };
   const deleteMapping = (id: string) => {
-    setProfile((current) => ({ ...current, mappings: current.mappings.filter((mapping) => mapping.id !== id) }));
+    updateProfile((current) => ({ ...current, mappings: current.mappings.filter((mapping) => mapping.id !== id) }));
     setSelectedId(null);
   };
   const save = async () => {
@@ -822,7 +848,7 @@ export default function App() {
     const response = await request(`/api/profiles/${encodeURIComponent(profile.name)}/delete`, { method: "PUT" });
     if (!response.ok) throw new Error(t("errors.deleteProfile", { status: response.status }));
     setProfiles((current) => current.filter((name) => name !== profile.name));
-    setProfile(controlProfile);
+    resetProfile(controlProfile);
     setSelectedId(controlProfile.mappings[0]?.id ?? null);
   };
   const importProfile = async (next: Profile, imported: number, skipped: number) => {
@@ -1300,8 +1326,12 @@ export default function App() {
                   onDuplicate={duplicateProfile}
                   onRename={renameProfile}
                   onDelete={deleteCurrentProfile}
-                  onBundleIdentifiersChange={(bundleIdentifiers) => setProfile((current) => ({ ...current, bundleIdentifiers }))}
+                  onBundleIdentifiersChange={(bundleIdentifiers) => updateProfile((current) => ({ ...current, bundleIdentifiers }))}
                   onImport={importProfile}
+                  canUndo={canUndoProfile}
+                  canRedo={canRedoProfile}
+                  onUndo={undoProfile}
+                  onRedo={redoProfile}
                 />
               )}
               <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" && deviceViewPreferences.deviceInspectorVisible ? "device-workspace" : page === "mappings" && deviceViewPreferences.mappingInspectorVisible ? "mapping-workspace" : "inspector-hidden"}`}>
@@ -1465,6 +1495,7 @@ export default function App() {
                     onAdd={addMapping}
                     onDuplicate={duplicateMapping}
                     onDelete={deleteMapping}
+                    frameSize={mappingFrameSize}
                     hardwareBindings={profile.hardwareBindings}
                     onHardwareBindingChange={updateHardwareBinding}
                   />

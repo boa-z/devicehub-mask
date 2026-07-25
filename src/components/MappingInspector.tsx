@@ -4,9 +4,10 @@ import {
   PlusOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
-import { Button, Dropdown, Empty, Input, InputNumber, Segmented, Select, Space, Tag, Tooltip, Typography } from "antd";
+import { Button, Dropdown, Empty, Input, InputNumber, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { convertEditorMappingType } from "../mappingEditor";
 import {
   hardwareButtons,
   keyboardBindingLabel,
@@ -28,10 +29,11 @@ type Props = {
   mappings: Mapping[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onChange: (mapping: Mapping) => void;
+  onChange: (mapping: Mapping, mergeKey?: string) => void;
   onAdd: (type: ScrcpyMappingType) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
+  frameSize: { width: number; height: number };
   hardwareBindings: HardwareBindings;
   onHardwareBindingChange: (name: HardwareButtonName, key: string) => void;
 };
@@ -140,6 +142,7 @@ export function MappingInspector({
   onAdd,
   onDuplicate,
   onDelete,
+  frameSize,
   hardwareBindings,
   onHardwareBindingChange,
 }: Props) {
@@ -153,7 +156,10 @@ export function MappingInspector({
     return mappings.filter((mapping) => [mappingLabel(mapping), mapping.type, mappingBindingLabel(mapping)]
       .some((value) => value?.toLocaleLowerCase().includes(normalized)));
   }, [mappings, query]);
-  const patch = (values: object) => selected && onChange({ ...selected, ...values } as Mapping);
+  const patch = (values: object, coalesce = true) => selected && onChange(
+    { ...selected, ...values } as Mapping,
+    coalesce ? Object.keys(values).sort().join(",") : undefined,
+  );
   const pointerId = selected && ("contactId" in selected ? selected.contactId : "pointer_id" in selected ? selected.pointer_id : null);
   const binding = selected && (selected.type === "touch" ? [selected.key] : "bind" in selected && Array.isArray(selected.bind) ? selected.bind : null);
   const primaryPosition = selected ? mappingPosition(selected) : null;
@@ -176,6 +182,28 @@ export function MappingInspector({
   const addMenu = {
     items: scrcpyMappingTypes.map((type) => ({ key: type, label: t(`mapping.types.${type}`) })),
     onClick: ({ key }: { key: string }) => onAdd(key as ScrcpyMappingType),
+  };
+  const selectedTypeLabel = selected
+    ? t(`mapping.types.${selected.type === "touch" ? "SingleTap" : selected.type === "dpad" ? "DirectionPad" : selected.type}`)
+    : "";
+  const typeOptions = selected ? [
+    ...(selected.type === "touch" || selected.type === "dpad"
+      ? [{ value: selected.type, label: t("mapping.legacyType", { type: selectedTypeLabel }), disabled: true }]
+      : []),
+    ...scrcpyMappingTypes.map((type) => ({ value: type, label: t(`mapping.types.${type}`) })),
+  ] : [];
+  const changeType = (type: ScrcpyMappingType) => {
+    if (!selected || selected.type === type) return;
+    Modal.confirm({
+      title: t("mapping.changeTypeTitle"),
+      content: t("mapping.changeTypeDescription", {
+        from: selectedTypeLabel,
+        to: t(`mapping.types.${type}`),
+      }),
+      okText: t("mapping.changeTypeConfirm"),
+      cancelText: t("common.cancel"),
+      onOk: () => onChange(convertEditorMappingType(selected, type, frameSize)),
+    });
   };
 
   return (
@@ -249,7 +277,7 @@ export function MappingInspector({
 
               <FieldSection title={t("mapping.basic") }>
                 <label><span>{t("mapping.name")}</span><Input value={mappingLabel(selected)} onChange={(event) => patch("label" in selected ? { label: event.target.value } : { note: event.target.value })} /></label>
-                <label><span>{t("mapping.type")}</span><Select value={selected.type} disabled options={[{ value: selected.type, label: t(`mapping.types.${selected.type === "touch" ? "SingleTap" : selected.type === "dpad" ? "DirectionPad" : selected.type}`) }]} /></label>
+                <label><span>{t("mapping.type")}</span><Select value={selected.type} options={typeOptions} onChange={(type) => changeType(type as ScrcpyMappingType)} /></label>
                 {primaryPosition && <label className="mapping-wide-field"><span>{t("mapping.position")}</span><PositionInput value={primaryPosition} onChange={setPrimaryPosition} /></label>}
                 {pointerId !== null && <label><span>{t("mapping.contactId")}</span><InputNumber min={0} max={4} value={pointerId} onChange={(value) => value !== null && patch("contactId" in selected ? { contactId: value } : { pointer_id: value })} /></label>}
               </FieldSection>
@@ -297,7 +325,7 @@ export function MappingInspector({
                             aria-label={t("mapping.deletePoint", { index: index + 1 })}
                             icon={<DeleteOutlined />}
                             disabled={selected.type === "Swipe" ? selected.positions.length <= 2 : selected.items.length <= 1}
-                            onClick={() => selected.type === "MultipleTap" ? patch({ items: selected.items.filter((_, itemIndex) => itemIndex !== index) }) : patch({ positions: selected.positions.filter((_, itemIndex) => itemIndex !== index) })}
+                            onClick={() => selected.type === "MultipleTap" ? patch({ items: selected.items.filter((_, itemIndex) => itemIndex !== index) }, false) : patch({ positions: selected.positions.filter((_, itemIndex) => itemIndex !== index) }, false)}
                           />
                         </div>
                       );
@@ -305,10 +333,10 @@ export function MappingInspector({
                     <Button icon={<PlusOutlined />} onClick={() => {
                       if (selected.type === "MultipleTap") {
                         const last = selected.items.at(-1) ?? { position: selected.position, duration: 50, wait: 0 };
-                        patch({ items: [...selected.items, { ...last, position: { ...last.position } }] });
+                        patch({ items: [...selected.items, { ...last, position: { ...last.position } }] }, false);
                       } else {
                         const last = selected.positions.at(-1) ?? selected.position;
-                        patch({ positions: [...selected.positions, { ...last }] });
+                        patch({ positions: [...selected.positions, { ...last }] }, false);
                       }
                     }}>{t("mapping.addPoint")}</Button>
                   </div>

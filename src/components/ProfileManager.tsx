@@ -4,11 +4,15 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  FolderOpenOutlined,
   LinkOutlined,
   PlusOutlined,
+  RedoOutlined,
   SaveOutlined,
+  UndoOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
+import { invoke } from "@tauri-apps/api/core";
 import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -34,6 +38,10 @@ type Props = {
   onDelete: () => Promise<void>;
   onBundleIdentifiersChange: (bundleIdentifiers: string[]) => void;
   onImport: (profile: Profile, imported: number, skipped: number) => Promise<void>;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 };
 
 function profileName(value: string) {
@@ -66,6 +74,10 @@ export function ProfileManager({
   onDelete,
   onBundleIdentifiersChange,
   onImport,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }: Props) {
   const { t } = useTranslation();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -147,6 +159,13 @@ export function ProfileManager({
       setImportBusy(false);
     }
   };
+  const openProfileDirectory = async () => {
+    try {
+      await invoke("open_profile_directory");
+    } catch (error) {
+      void showErrorMessage(t("profile.openDirectoryFailed", { error: String(error) }));
+    }
+  };
 
   return (
     <div className="profile-manager">
@@ -157,6 +176,8 @@ export function ProfileManager({
       />
       {activeProfile === profile.name && <Tag color="success">{t("profile.active")}</Tag>}
       <Space size={4}>
+        <Tooltip title={t("profile.undo")}><Button disabled={!canUndo} icon={<UndoOutlined />} aria-label={t("profile.undo")} onClick={onUndo} /></Tooltip>
+        <Tooltip title={t("profile.redo")}><Button disabled={!canRedo} icon={<RedoOutlined />} aria-label={t("profile.redo")} onClick={onRedo} /></Tooltip>
         <Tooltip title={t("profile.save")}><Button icon={<SaveOutlined />} onClick={() => void onSave()} /></Tooltip>
         <Tooltip title={t("profile.activate")}><Button disabled={activeProfile === profile.name} icon={<CheckOutlined />} onClick={() => void onActivate().catch((error) => showErrorMessage(error))} /></Tooltip>
         <Tooltip title={t("profile.create")}><Button icon={<PlusOutlined />} onClick={() => openDialog("create")} /></Tooltip>
@@ -172,6 +193,13 @@ export function ProfileManager({
               setNextBundleIdentifiers(profile.bundleIdentifiers);
               setAppDialog(true);
             }}
+          />
+        </Tooltip>
+        <Tooltip title={t("profile.openDirectory")}>
+          <Button
+            icon={<FolderOpenOutlined />}
+            aria-label={t("profile.openDirectory")}
+            onClick={() => void openProfileDirectory()}
           />
         </Tooltip>
         <Tooltip title={t("profile.importConfig")}><Button icon={<UploadOutlined />} onClick={() => setImportDialog(true)} /></Tooltip>
