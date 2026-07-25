@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::discovery::DeviceDiscovery;
-use super::transport::resolve_device_selection;
+use super::transport::{WIFI_REAUTHORIZE_REQUIRED, resolve_device_selection};
 use super::{run, trust};
 use crate::audio_output::AudioOutput;
 use crate::protocol::{
@@ -31,7 +31,14 @@ const ACTIVE_RESCAN: Duration = Duration::from_secs(8);
 /// A user transition must not leave two media sessions fighting for the device.
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
 /// A dropped Wi-Fi child service cannot repair its parent RemotePairing tunnel.
-const WIFI_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+/// Repeated setup failures back off so a sleeping device or stale Bonjour
+/// record cannot create a connection storm.
+const WIFI_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(8);
+const WIFI_STABLE_SESSION: Duration = Duration::from_secs(30);
+
+fn wifi_reconnect_delay(attempt: u32) -> Duration {
+    Duration::from_secs(1_u64 << attempt.min(3)).min(WIFI_RECONNECT_MAX_DELAY)
+}
 
 /// What the manager should do once the current session is no longer running.
 enum Next {
@@ -49,8 +56,8 @@ enum Next {
     Quit,
 }
 
-fn next_after_session_error(connection: ConnKind, selection_id: &str) -> Next {
-    if connection == ConnKind::Network {
+fn next_after_session_error(connection: ConnKind, selection_id: &str, error_message: &str) -> Next {
+    if connection == ConnKind::Network && error_message != WIFI_REAUTHORIZE_REQUIRED {
         Next::RetryWifi(selection_id.to_owned())
     } else {
         Next::Idle
@@ -139,6 +146,7 @@ pub(crate) async fn manage(
     // session ends prevents a persistent hardware failure from hot-looping.
     let mut auto_pick = initial_udid.is_none();
     let mut target = initial_udid;
+    let mut wifi_retry_attempt = 0_u32;
 
     loop {
         let (devices, endpoints) = discovery.refresh().await;
@@ -282,6 +290,7 @@ pub(crate) async fn manage(
             in_rx,
         );
         tokio::pin!(session);
+        let session_started = std::time::Instant::now();
         let mut active_rescan = tokio::time::interval(ACTIVE_RESCAN);
         active_rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first interval tick is immediate; consume it because discovery was
@@ -294,8 +303,18 @@ pub(crate) async fn manage(
                     Ok(()) => break Next::Idle,
                     Err(error_message) => {
                         tracing::error!(connection = connection.label(), "session ended: {error_message}");
+                        let next = next_after_session_error(
+                            connection,
+                            &selection_id,
+                            &error_message,
+                        );
                         error.set(Some(error_message));
-                        break next_after_session_error(connection, &selection_id);
+                        if connection == ConnKind::Network
+                            && session_started.elapsed() >= WIFI_STABLE_SESSION
+                        {
+                            wifi_retry_attempt = 0;
+                        }
+                        break next;
                     }
                 },
                 cmd = control_rx.recv() => match cmd {
@@ -335,19 +354,27 @@ pub(crate) async fn manage(
         location.set(LocationStatus::default());
 
         match outcome {
-            Next::Switch(id) => target = Some(id),
+            Next::Switch(id) => {
+                wifi_retry_attempt = 0;
+                target = Some(id);
+            }
             Next::RetryWifi(id) => {
+                let retry_delay = wifi_reconnect_delay(wifi_retry_attempt);
+                wifi_retry_attempt = wifi_retry_attempt.saturating_add(1);
+                status.set("Wi-Fi control interrupted - retrying connection...");
                 tracing::info!(
-                    retry_ms = WIFI_RECONNECT_DELAY.as_millis(),
+                    attempt = wifi_retry_attempt,
+                    retry_ms = retry_delay.as_millis(),
                     "Wi-Fi session transport dropped; rebuilding the complete tunnel"
                 );
                 target = Some(id);
-                tokio::time::sleep(WIFI_RECONNECT_DELAY).await;
+                tokio::time::sleep(retry_delay).await;
             }
             Next::Pair {
                 selection_id,
                 reply,
             } => {
+                wifi_retry_attempt = 0;
                 let requested = selection_id.clone();
                 target = trust::pair(selection_id, reply, &endpoints, &status)
                     .await
@@ -358,11 +385,15 @@ pub(crate) async fn manage(
                 selection_id,
                 reply,
             } => {
+                wifi_retry_attempt = 0;
                 trust::forget(selection_id, reply, &endpoints, &status, &mut discovery).await;
                 target = None;
                 discovery.invalidate();
             }
-            Next::Idle => target = None,
+            Next::Idle => {
+                wifi_retry_attempt = 0;
+                target = None;
+            }
             Next::Quit => return,
         }
     }
@@ -370,19 +401,36 @@ pub(crate) async fn manage(
 
 #[cfg(test)]
 mod tests {
-    use super::{Next, interrupts_active_session, next_after_session_error};
+    use super::{Next, interrupts_active_session, next_after_session_error, wifi_reconnect_delay};
     use crate::protocol::{ConnKind, ForgetDeviceResult, PairDeviceResult};
 
     #[test]
     fn only_network_failures_rebuild_the_parent_tunnel() {
         assert!(matches!(
-            next_after_session_error(ConnKind::Network, "wifi:device"),
+            next_after_session_error(ConnKind::Network, "wifi:device", "transient failure"),
             Next::RetryWifi(id) if id == "wifi:device"
         ));
         assert!(matches!(
-            next_after_session_error(ConnKind::Usb, "usb:device"),
+            next_after_session_error(ConnKind::Usb, "usb:device", "transport failure"),
             Next::Idle
         ));
+        assert!(matches!(
+            next_after_session_error(
+                ConnKind::Network,
+                "wifi:device",
+                super::WIFI_REAUTHORIZE_REQUIRED,
+            ),
+            Next::Idle
+        ));
+    }
+
+    #[test]
+    fn repeated_wifi_failures_use_bounded_backoff() {
+        assert_eq!(wifi_reconnect_delay(0), std::time::Duration::from_secs(1));
+        assert_eq!(wifi_reconnect_delay(1), std::time::Duration::from_secs(2));
+        assert_eq!(wifi_reconnect_delay(2), std::time::Duration::from_secs(4));
+        assert_eq!(wifi_reconnect_delay(3), std::time::Duration::from_secs(8));
+        assert_eq!(wifi_reconnect_delay(20), std::time::Duration::from_secs(8));
     }
 
     #[test]

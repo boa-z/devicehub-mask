@@ -53,6 +53,12 @@ Windows 上保持手机连接和解锁，然后运行：
 
 使用 `RUST_LOG=devicehub_mask::session=debug` 输出完整 RSD 服务列表。 `192.168.9.147:62078` 这样的地址是 Lockdown 端点，不是 CoreDeviceProxy 返回的 RSD 端点，手动提供它不会让缺失的服务出现。
 
+## Remote Pairing 验证出现 early EOF
+
+`remote pairing verification failed: Socket(... UnexpectedEof ... "early eof")` 表示应用已经连接到设备通过 Bonjour 发布的 `_remotepairing._tcp` 服务，但设备在发送完整 RemotePairing 握手帧前关闭了 TCP 流。它本身不能证明已保存的授权无效。设备锁屏或切换网络、iOS 重启 RemotePairing 服务、Bonjour 地址刚刚更新，或者上一条隧道仍在关闭，都可能产生这种瞬时结果。
+
+DeviceHub Mask 会保留现有凭据，使用全新 socket 重试瞬时断流，然后通过有界退避重建完整 Wi-Fi 隧道。请保持设备唤醒、解锁并与电脑处于同一网络；不要因为一次 EOF 删除信任。如果应用明确报告 Wi-Fi 授权已不再被设备接受，并且错误持续出现，再通过 USB 连接，执行**忘记电脑信任**，重新确认**信任此电脑**，然后选择 Wi-Fi 传输。显式移除信任现在也会删除 DeviceHub Mask 独立保存的 RemotePairing 凭据，使下一次 Wi-Fi 连接能够创建干净的新身份。
+
 ## CoreDevice 错误 9021
 
 设备拒绝了远程控制能力。支持情况取决于硬件与 iOS 组合，不代表所有低于 iOS 27 的 设备都不受支持；但对于明确拒绝的设备，需要升级到 iOS 27 或使用受支持的新硬件。

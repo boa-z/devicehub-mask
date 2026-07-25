@@ -10,11 +10,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use idevice::{
-    IdeviceService, RemoteXpcClient,
+    IdeviceError, IdeviceService, RemoteXpcClient,
     core_device_proxy::CoreDeviceProxy,
     provider::{IdeviceProvider, TcpProvider},
     remote_pairing::{
         RemotePairingClient, RpPairingFile, RpPairingSocket, connect_tls_psk_tunnel_native,
+        errors::RemotePairingError,
     },
     rsd::RsdHandshake,
     tcp::handle::AdapterHandle,
@@ -26,6 +27,59 @@ use crate::wifi_devices::WifiEndpoint;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_WIFI_PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
+const REMOTE_PAIRING_VERIFY_TIMEOUT: Duration = Duration::from_secs(8);
+const REMOTE_PAIRING_VERIFY_ATTEMPTS: usize = 3;
+const REMOTE_PAIRING_RETRY_DELAY: Duration = Duration::from_millis(300);
+pub(super) const WIFI_REAUTHORIZE_REQUIRED: &str = "Wi-Fi control authorization is no longer accepted by the device. Connect it by USB, remove computer trust, then trust it again to create new Wi-Fi credentials.";
+
+type WifiPairingClient = RemotePairingClient<RpPairingSocket<tokio::net::TcpStream>>;
+
+#[derive(Debug)]
+enum WifiPairingVerificationError {
+    ConnectTimeout,
+    Connect(std::io::Error),
+    VerifyTimeout,
+    Verify(IdeviceError),
+}
+
+impl WifiPairingVerificationError {
+    fn is_transient(&self) -> bool {
+        match self {
+            Self::ConnectTimeout | Self::VerifyTimeout => true,
+            Self::Connect(error) => !matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::PermissionDenied
+            ),
+            Self::Verify(IdeviceError::Socket(error)) => matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::WouldBlock
+            ),
+            Self::Verify(IdeviceError::Timeout) => true,
+            _ => false,
+        }
+    }
+
+    fn user_message(&self) -> String {
+        match self {
+            Self::Verify(IdeviceError::RemotePairing(
+                RemotePairingError::PairVerifyFailed
+                | RemotePairingError::PairingRejected(_)
+                | RemotePairingError::SrpAuthFailed,
+            )) => WIFI_REAUTHORIZE_REQUIRED.into(),
+            Self::Verify(IdeviceError::DeviceLocked | IdeviceError::PasswordProtected) => {
+                "The device must remain unlocked while Wi-Fi control authorization is verified."
+                    .into()
+            }
+            error if error.is_transient() => "The device closed its Wi-Fi authorization service before verification completed. Existing credentials were preserved; keep the device awake on the same network and reconnect.".into(),
+            _ => "The device returned an invalid response while verifying Wi-Fi control authorization. Existing credentials were preserved; reconnect by USB and authorize Wi-Fi control again if the error persists.".into(),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct UsbmuxdEndpoint {
@@ -217,16 +271,39 @@ async fn connect_wifi_core_tunnel(
         endpoint.remote_pairing_scope_id,
         endpoint.remote_pairing_port,
     );
-    let stream = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(address))
-        .await
-        .map_err(|_| "remote pairing connection timed out".to_string())?
-        .map_err(|error| format!("remote pairing connection failed: {error}"))?;
-    let socket = RpPairingSocket::new(stream);
-    let mut client = RemotePairingClient::new(socket, "devicehub-mask");
-    client
-        .connect(&mut pairing_file, async || "000000".to_string())
-        .await
-        .map_err(|error| format!("remote pairing verification failed: {error:?}"))?;
+    let mut client = None;
+    for attempt in 1..=REMOTE_PAIRING_VERIFY_ATTEMPTS {
+        match verify_remote_pairing_once(address, &mut pairing_file).await {
+            Ok(verified) => {
+                client = Some(verified);
+                break;
+            }
+            Err(error) if error.is_transient() && attempt < REMOTE_PAIRING_VERIFY_ATTEMPTS => {
+                tracing::warn!(
+                    device_id = %crate::diagnostics::device_id_fingerprint(&endpoint.udid),
+                    attempt,
+                    max_attempts = REMOTE_PAIRING_VERIFY_ATTEMPTS,
+                    ?error,
+                    "remote pairing verification interrupted; retrying with a fresh connection"
+                );
+                tokio::time::sleep(REMOTE_PAIRING_RETRY_DELAY * attempt as u32).await;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    device_id = %crate::diagnostics::device_id_fingerprint(&endpoint.udid),
+                    attempt,
+                    ?error,
+                    transient = error.is_transient(),
+                    "remote pairing verification failed"
+                );
+                return Err(error.user_message());
+            }
+        }
+    }
+    let mut client = client.ok_or_else(|| {
+        "Wi-Fi control authorization verification ended without a result; reconnect the device."
+            .to_string()
+    })?;
 
     let tunnel_port = client
         .create_tcp_listener()
@@ -278,6 +355,29 @@ async fn connect_wifi_core_tunnel(
         "remote pairing CoreDevice tunnel established"
     );
     Ok((adapter, handshake))
+}
+
+async fn verify_remote_pairing_once(
+    address: std::net::SocketAddr,
+    pairing_file: &mut RpPairingFile,
+) -> Result<WifiPairingClient, WifiPairingVerificationError> {
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(address))
+        .await
+        .map_err(|_| WifiPairingVerificationError::ConnectTimeout)?
+        .map_err(WifiPairingVerificationError::Connect)?;
+    let socket = RpPairingSocket::new(stream);
+    let mut client = RemotePairingClient::new(socket, "devicehub-mask");
+    tokio::time::timeout(REMOTE_PAIRING_VERIFY_TIMEOUT, async {
+        // Existing credentials are verified only. Any failure must remain a
+        // failure: RemotePairingClient::connect would turn all verification
+        // errors, including an EOF, into an implicit new pairing attempt.
+        client.attempt_pair_verify().await?;
+        client.validate_pairing(pairing_file).await
+    })
+    .await
+    .map_err(|_| WifiPairingVerificationError::VerifyTimeout)?
+    .map_err(WifiPairingVerificationError::Verify)?;
+    Ok(client)
 }
 
 async fn pair_remote_via_usb(udid: &str, path: &Path) -> Result<RpPairingFile, String> {
@@ -366,6 +466,18 @@ fn remote_pairing_path(pairing_dir: &Path, udid: &str) -> Result<PathBuf, String
     Ok(base.join("remote-pairings").join(format!("{udid}.plist")))
 }
 
+pub(super) fn remove_remote_pairing_credentials(
+    pairing_dir: &Path,
+    udid: &str,
+) -> Result<(), String> {
+    let path = remote_pairing_path(pairing_dir, udid)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot remove remote pairing credentials: {error}")),
+    }
+}
+
 fn scoped_socket_addr(
     address: std::net::IpAddr,
     scope_id: Option<u32>,
@@ -388,8 +500,12 @@ mod tests {
 
     use idevice::usbmuxd::Connection;
 
-    use super::{remote_pairing_path, resolve_device_selection, uses_usbmuxd_core_proxy};
+    use super::{
+        WIFI_REAUTHORIZE_REQUIRED, WifiPairingVerificationError, remote_pairing_path,
+        remove_remote_pairing_credentials, resolve_device_selection, uses_usbmuxd_core_proxy,
+    };
     use crate::protocol::{ConnKind, DeviceInfo, DevicePairingState, device_selector};
+    use idevice::IdeviceError;
 
     #[test]
     fn explicit_selection_and_legacy_udids_prefer_usb() {
@@ -443,5 +559,54 @@ mod tests {
         assert!(remote_pairing_path(&pairing_dir, "../outside").is_err());
         assert!(remote_pairing_path(&pairing_dir, "phone/plist").is_err());
         assert!(remote_pairing_path(&pairing_dir, "").is_err());
+    }
+
+    #[test]
+    fn transient_remote_pairing_disconnects_are_retryable() {
+        for kind in [
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let error = WifiPairingVerificationError::Verify(IdeviceError::Socket(
+                std::io::Error::new(kind, "test disconnect"),
+            ));
+            assert!(error.is_transient(), "{kind:?} should be retried");
+            assert!(!error.user_message().contains("Socket("));
+        }
+        assert!(WifiPairingVerificationError::ConnectTimeout.is_transient());
+        assert!(WifiPairingVerificationError::VerifyTimeout.is_transient());
+    }
+
+    #[test]
+    fn rejected_remote_pairing_requires_explicit_reauthorization() {
+        let error = WifiPairingVerificationError::Verify(IdeviceError::RemotePairing(
+            idevice::remote_pairing::errors::RemotePairingError::PairVerifyFailed,
+        ));
+        assert!(!error.is_transient());
+        assert_eq!(error.user_message(), WIFI_REAUTHORIZE_REQUIRED);
+    }
+
+    #[test]
+    fn removing_remote_pairing_credentials_is_idempotent_and_confined() {
+        let base = std::env::temp_dir().join(format!(
+            "devicehub-mask-remote-pairing-removal-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let pairing_dir = base.join("pairings");
+        let remote_dir = base.join("remote-pairings");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        let udid = "00008110-0011223344556677";
+        let path = remote_dir.join(format!("{udid}.plist"));
+        std::fs::write(&path, b"private credentials").unwrap();
+
+        remove_remote_pairing_credentials(&pairing_dir, udid).unwrap();
+        assert!(!path.exists());
+        remove_remote_pairing_credentials(&pairing_dir, udid).unwrap();
+        assert!(remove_remote_pairing_credentials(&pairing_dir, "../outside").is_err());
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

@@ -18,7 +18,7 @@ use idevice::{
 
 use super::transport::{
     SessionEndpoint, UsbmuxdEndpoint, connection_kind, connection_kind_priority,
-    connection_priority, uses_usbmuxd_core_proxy, wifi_provider,
+    connection_priority, remove_remote_pairing_credentials, uses_usbmuxd_core_proxy, wifi_provider,
 };
 use crate::protocol::{ConnKind, DeviceInfo, DevicePairingState, device_selector};
 use crate::wifi_devices::WifiDiscovery;
@@ -62,9 +62,16 @@ impl DeviceDiscovery {
     /// Remove credentials from the active discovery backend when available, or
     /// from the same confined on-disk cache when Wi-Fi discovery is unavailable.
     pub(super) fn remove_cached_pairing(&mut self, udid: &str) -> Result<(), String> {
-        match self.wifi.as_mut() {
+        let discovery_result = match self.wifi.as_mut() {
             Some(discovery) => discovery.remove_pairing(udid),
             None => crate::wifi_devices::remove_cached_pairing(&self.pairing_dir, udid),
+        };
+        let remote_result = remove_remote_pairing_credentials(&self.pairing_dir, udid);
+        match (discovery_result, remote_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(discovery), Ok(())) => Err(discovery),
+            (Ok(()), Err(remote)) => Err(remote),
+            (Err(discovery), Err(remote)) => Err(format!("{discovery}; {remote}")),
         }
     }
 

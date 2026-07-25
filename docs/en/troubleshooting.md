@@ -53,6 +53,12 @@ The helper checks Developer Mode, mounts the Personalized Developer Disk Image, 
 
 Use `RUST_LOG=devicehub_mask::session=debug` for the complete RSD service list. An address such as `192.168.9.147:62078` is a Lockdown endpoint, not the RSD endpoint returned by CoreDeviceProxy, and cannot make a missing service appear.
 
+## Remote Pairing Verification Ends With Early EOF
+
+`remote pairing verification failed: Socket(... UnexpectedEof ... "early eof")` means the app reached the device's Bonjour `_remotepairing._tcp` service, but the device closed that TCP stream before sending a complete RemotePairing handshake frame. It does not by itself mean the saved authorization is invalid. A device lock or network transition, an iOS RemotePairing service restart, a recently replaced Bonjour address, or a previous tunnel still shutting down can all produce this transient result.
+
+DeviceHub Mask preserves the existing credentials and retries transient disconnects with fresh sockets before rebuilding the complete Wi-Fi tunnel with bounded backoff. Keep the device awake, unlocked, and on the same network. Do not remove trust for a single EOF. If the app instead reports that Wi-Fi authorization is no longer accepted and the error persists, connect by USB, use **Forget computer trust**, approve **Trust This Computer** again, then select the Wi-Fi transport. Explicit trust removal also deletes DeviceHub Mask's separate RemotePairing credentials so the next Wi-Fi connection can create a clean identity.
+
 ## CoreDevice Error 9021
 
 The device rejected the remote-control capability. Support depends on the hardware and iOS combination; it does not mean every device below iOS 27 is unsupported. For the rejected device, updating to iOS 27 or using supported newer hardware is required.
