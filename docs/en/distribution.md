@@ -22,6 +22,8 @@ Workflow artifacts are retained for 14 days. The rolling public release is:
 
 <https://github.com/boa-z/devicehub-mask/releases/tag/nightly>
 
+Both Windows installer formats are produced for every Nightly and Stable release. Nightly NSIS packages use zlib compression to keep CI latency bounded, while Stable NSIS packages use the smaller but slower LZMA output. Tauri's downloaded NSIS and WiX toolchains are cached between runs; CMake and NASM are installed only when absent from the runner image.
+
 ## Versions and Artifacts
 
 `tauri.conf.json` contains the target stable product version. A Nightly build derives the cross-platform SemVer prerelease `<product-version>-<run-number>`; for example, build 96 targeting version `0.1.0` is `0.1.0-96`. The prerelease identifier is numeric because the Windows MSI toolchain rejects textual identifiers and values above 65,535. Numeric identifiers order Nightly builds, and the final `0.1.0` release sorts above every `0.1.0-*` build. After publishing a stable release, increment the product version before producing further Nightly builds.

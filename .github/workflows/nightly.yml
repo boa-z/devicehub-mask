@@ -351,10 +351,24 @@ jobs:
           key: release-windows-x64
           workspaces: src-tauri -> target
 
+      - name: Restore Tauri Windows bundler tools
+        uses: actions/cache@v5
+        with:
+          path: ~/AppData/Local/tauri
+          key: tauri-windows-tools-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            tauri-windows-tools-${{ runner.arch }}-
+
       - name: Install build dependencies
         shell: pwsh
         run: |
-          choco install cmake nasm --yes --no-progress
+          $missing = @()
+          if (-not (Get-Command cmake.exe -ErrorAction SilentlyContinue)) { $missing += 'cmake' }
+          if (-not (Get-Command nasm.exe -ErrorAction SilentlyContinue)) { $missing += 'nasm' }
+          if ($missing.Count -gt 0) {
+            & choco install @missing --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           npm ci
 
       - name: Read version metadata
@@ -383,10 +397,20 @@ jobs:
           $createUpdater = -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
           "updater_enabled=$($createUpdater.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           if (-not $createUpdater) { Write-Warning "Updater signing key is not configured; signed update archive will be skipped" }
-          $config = @{ version = $env:UPDATE_VERSION; bundle = @{ createUpdaterArtifacts = $createUpdater } } | ConvertTo-Json -Compress -Depth 5
+          $nsisCompression = if ($env:RELEASE_CHANNEL -eq 'nightly') { 'zlib' } else { 'lzma' }
+          $config = @{
+            version = $env:UPDATE_VERSION
+            bundle = @{
+              createUpdaterArtifacts = $createUpdater
+              windows = @{ nsis = @{ compression = $nsisCompression } }
+            }
+          } | ConvertTo-Json -Compress -Depth 6
           $config | Set-Content -Encoding utf8 tauri.ci.windows.json
-          & node scripts/build-desktop.mjs --verbose --bundles nsis,msi --ignore-version-mismatches --config tauri.ci.windows.json
+          $startedAt = Get-Date
+          & node scripts/build-desktop.mjs --bundles nsis,msi --ignore-version-mismatches --config tauri.ci.windows.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $elapsed = (Get-Date) - $startedAt
+          "Windows Tauri build and packaging: $([math]::Round($elapsed.TotalSeconds, 1)) seconds (NSIS $nsisCompression, MSI enabled)" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Verify Windows installers
         shell: pwsh

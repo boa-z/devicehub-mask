@@ -22,6 +22,8 @@
 
 <https://github.com/boa-z/devicehub-mask/releases/tag/nightly>
 
+每次 Nightly 和 Stable 发布都会同时生成两种 Windows 安装包。Nightly NSIS 使用 zlib 压缩以控制 CI 耗时，Stable NSIS 则使用体积更小但速度更慢的 LZMA。Tauri 下载的 NSIS 和 WiX 工具链会在不同运行之间缓存；CMake 和 NASM 仅在 runner 缺失时安装。
+
 ## 版本与产物
 
 `tauri.conf.json` 保存当前目标正式版本。Nightly 构建使用跨平台 SemVer 预发布版本 `<product-version>-<run-number>`；例如目标版本为 `0.1.0` 的第 96 次构建是 `0.1.0-96`。预发布标识必须为数字，因为 Windows MSI 工具链会拒绝文本标识和大于 65,535 的数值。数字标识用于排序 Nightly，最终的 `0.1.0` 正式版高于所有 `0.1.0-*` 构建。正式版发布后，必须先提升产品版本，再继续生成 Nightly。
