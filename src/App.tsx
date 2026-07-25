@@ -45,7 +45,6 @@ import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { showErrorMessage } from "./errorMessage";
-import { parsePngDimensions } from "./deviceScreenshot";
 import { buildMappingRuntimeFrame, buildTouchFrame, isBoundKey, isUiControl, keyboardUsage, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual, type TouchContact } from "./control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
@@ -53,6 +52,7 @@ import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type PairDeviceResult, type Position, type Profile, type ScrcpyMappingType } from "./types";
 import { useDeviceVideoStream } from "./useDeviceVideoStream";
+import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
 import { usePrivateBackend } from "./usePrivateBackend";
 import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./appSettings";
@@ -77,7 +77,6 @@ const emptyStatus: DeviceStatus = {
   location: { available: false, active: false, backend: null, latitude: null, longitude: null, error: null },
 };
 type ProfileList = { profiles: string[]; active: string; app_bindings: Record<string, string>; binding_conflicts: string[] };
-type CapturedScreenshot = { blob: Blob; url: string; width: number; height: number };
 
 function containSize(containerWidth: number, containerHeight: number, contentWidth: number, contentHeight: number) {
   if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
@@ -85,22 +84,6 @@ function containSize(containerWidth: number, containerHeight: number, contentWid
   }
   const scale = Math.min(containerWidth / contentWidth, containerHeight / contentHeight);
   return { width: contentWidth * scale, height: contentHeight * scale };
-}
-
-function canvasPng(canvas: HTMLCanvasElement) {
-  return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-}
-
-function screenshotFilename(deviceName: string, width: number, height: number) {
-  const safeName = deviceName.trim().replace(/[<>:"/\\|?*]+/g, "-") || "iPhone";
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `devicehub-mask_${safeName}_${width}x${height}_${timestamp}.png`;
-}
-
-function recordingFilename(deviceName: string, extension: string) {
-  const safeName = deviceName.trim().replace(/[<>:"/\\|?*]+/g, "-") || "iPhone";
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `devicehub-mask_${safeName}_${timestamp}.${extension}`;
 }
 
 type ControlMode = "mapping" | "keyboard";
@@ -167,23 +150,17 @@ export default function App() {
   const [deviceEvent, setDeviceEvent] = useState<DeviceEvent | null>(null);
   const [activeMappingIds, setActiveMappingIds] = useState<Set<string>>(new Set());
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
-  const [recording, setRecording] = useState(false);
   const [textInputOpen, setTextInputOpen] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [textInputBusy, setTextInputBusy] = useState(false);
-  const [screenshotBusy, setScreenshotBusy] = useState(false);
   const [displayScaleOpen, setDisplayScaleOpen] = useState(false);
   const [mappingBackgroundMode, setMappingBackgroundMode] = useState<MappingBackgroundMode>("live");
   const [mappingGuidesVisible, setMappingGuidesVisible] = useState(false);
   const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== "hidden");
-  const [capturedScreenshot, setCapturedScreenshot] = useState<CapturedScreenshot | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
   const mappingInsertPositionRef = useRef<Position>({ x: 0.5, y: 0.5 });
   const audioPlaybackGenerationRef = useRef(0);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const recordingStreamRef = useRef<MediaStream | null>(null);
-  const recordingChunksRef = useRef<Blob[]>([]);
   const fullscreenToolbarTimerRef = useRef<number | null>(null);
   const selectedDeviceIntentRef = useRef<string | null>(null);
   const profileSwitchingRef = useRef(false);
@@ -197,7 +174,6 @@ export default function App() {
   const directTouchReleaseTimersRef = useRef(new Map<number, number>());
   const activeMappingIdsRef = useRef(new Set<string>());
   const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
-  const capturedScreenshotRef = useRef<CapturedScreenshot | null>(null);
 
   useEffect(() => {
     const intended = selectedDeviceIntentRef.current;
@@ -347,6 +323,28 @@ export default function App() {
     onClipboard: setClipboardEvent,
     onDeviceEvent: setDeviceEvent,
     onDisconnect: handleVideoDisconnect,
+  });
+  const activeDeviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
+  const useCapturedMappingBackground = useCallback(() => setMappingBackgroundMode("screenshot"), []);
+  const {
+    capturedScreenshot,
+    screenshotBusy,
+    recording,
+    recordingSupported,
+    captureMappingScreenshot,
+    saveMappingScreenshot,
+    saveDeviceScreenshot,
+    toggleDeviceRecording,
+  } = useDeviceMediaCapture({
+    canvasRef,
+    canvasReadyRef,
+    hasFrame,
+    activeDeviceId: status.active_udid,
+    activeDeviceName,
+    devicePageActive: page === "device",
+    request,
+    onUseCapturedBackground: useCapturedMappingBackground,
+    t,
   });
   const mappingFrameSize = mappingBackgroundMode === "screenshot" && capturedScreenshot
     ? { width: capturedScreenshot.width, height: capturedScreenshot.height }
@@ -523,177 +521,6 @@ export default function App() {
     }
     if (deviceEvent?.kind === "lock_state_changed") releaseAllControls();
   }, [deviceEvent, releaseAllControls, request]);
-
-  useEffect(() => () => {
-    if (capturedScreenshotRef.current) URL.revokeObjectURL(capturedScreenshotRef.current.url);
-  }, []);
-
-  const captureMappingScreenshot = useCallback(async (selectBackground: boolean) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !hasFrame) {
-      void message.warning(t("mapping.screenshotUnavailable"));
-      return null;
-    }
-    const blob = await canvasPng(canvas);
-    if (!blob) {
-      void showErrorMessage(t("mapping.screenshotFailed"));
-      return null;
-    }
-    const next = {
-      blob,
-      url: URL.createObjectURL(blob),
-      width: canvas.width,
-      height: canvas.height,
-    };
-    const previous = capturedScreenshotRef.current;
-    capturedScreenshotRef.current = next;
-    setCapturedScreenshot(next);
-    if (selectBackground) setMappingBackgroundMode("screenshot");
-    if (previous) URL.revokeObjectURL(previous.url);
-    void message.success(t("mapping.screenshotCaptured"));
-    return next;
-  }, [canvasRef, hasFrame, t]);
-
-  const saveMappingScreenshot = useCallback(async () => {
-    const screenshot = mappingBackgroundMode === "live"
-      ? await captureMappingScreenshot(false)
-      : capturedScreenshotRef.current ?? await captureMappingScreenshot(false);
-    if (!screenshot) return;
-    const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
-    const link = document.createElement("a");
-    link.href = screenshot.url;
-    link.download = screenshotFilename(deviceName, screenshot.width, screenshot.height);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    void message.success(t("mapping.screenshotSaved"));
-  }, [captureMappingScreenshot, mappingBackgroundMode, status.active_udid, status.devices, t]);
-
-  const saveDeviceScreenshot = useCallback(async () => {
-    if (screenshotBusy) return;
-    setScreenshotBusy(true);
-    try {
-      let blob: Blob | null = null;
-      let dimensions: { width: number; height: number } | null = null;
-      if (status.active_udid) {
-        try {
-          const response = await request("/api/device/screenshot");
-          if (!response.ok) throw new Error((await response.text()) || response.statusText);
-          const native = await response.blob();
-          const header = new Uint8Array(await native.slice(0, 24).arrayBuffer());
-          dimensions = parsePngDimensions(header);
-          if (!dimensions) throw new Error("device returned an invalid PNG screenshot");
-          blob = native;
-        } catch (error) {
-          logFrontend("warn", "screenshot", "native_capture", error);
-        }
-      }
-      if (!blob || !dimensions) {
-        const canvas = canvasRef.current;
-        if (!canvas || !canvasReadyRef.current) {
-          void message.warning(t("device.screenshotUnavailable"));
-          return;
-        }
-        blob = await canvasPng(canvas);
-        dimensions = { width: canvas.width, height: canvas.height };
-      }
-      if (!blob) {
-        void showErrorMessage(t("device.screenshotFailed"));
-        return;
-      }
-      const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = screenshotFilename(deviceName, dimensions.width, dimensions.height);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-      void message.success(t("device.screenshotSaved"));
-    } finally {
-      setScreenshotBusy(false);
-    }
-  }, [canvasReadyRef, canvasRef, request, screenshotBusy, status.active_udid, status.devices, t]);
-
-  const stopDeviceRecording = useCallback(() => {
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
-  }, []);
-
-  const toggleDeviceRecording = useCallback(() => {
-    const activeRecorder = recorderRef.current;
-    if (activeRecorder && activeRecorder.state !== "inactive") {
-      activeRecorder.stop();
-      return;
-    }
-    const canvas = canvasRef.current;
-    if (!canvas || !canvasReadyRef.current || typeof MediaRecorder === "undefined" || typeof canvas.captureStream !== "function") {
-      void message.warning(t("device.recordingUnavailable"));
-      return;
-    }
-    try {
-      const stream = canvas.captureStream(60);
-      const mimeType = [
-        "video/mp4;codecs=avc1.42E01E",
-        "video/mp4",
-        "video/webm;codecs=vp9",
-        "video/webm;codecs=vp8",
-        "video/webm",
-      ].find((candidate) => MediaRecorder.isTypeSupported(candidate));
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-      recordingChunksRef.current = [];
-      recordingStreamRef.current = stream;
-      recorderRef.current = recorder;
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
-      };
-      recorder.onerror = (event) => {
-        logFrontend("warn", "video", "recording", event.error);
-        void showErrorMessage(t("device.recordingFailed", { error: event.error.message }));
-      };
-      recorder.onstop = () => {
-        const chunks = recordingChunksRef.current;
-        const recordedType = recorder.mimeType || mimeType || "video/webm";
-        recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-        recordingStreamRef.current = null;
-        recorderRef.current = null;
-        recordingChunksRef.current = [];
-        setRecording(false);
-        if (chunks.length === 0) return;
-        const blob = new Blob(chunks, { type: recordedType });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        const deviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
-        link.href = url;
-        link.download = recordingFilename(deviceName, recordedType.includes("mp4") ? "mp4" : "webm");
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-        void message.success(t("device.recordingSaved"));
-      };
-      recorder.start(1_000);
-      setRecording(true);
-    } catch (error) {
-      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-      recordingStreamRef.current = null;
-      recorderRef.current = null;
-      setRecording(false);
-      logFrontend("warn", "video", "start_recording", error);
-      void showErrorMessage(t("device.recordingFailed", { error: String(error) }));
-    }
-  }, [canvasReadyRef, canvasRef, status.active_udid, status.devices, t]);
-
-  useEffect(() => {
-    if (page !== "device" || !status.active_udid) stopDeviceRecording();
-  }, [page, status.active_udid, stopDeviceRecording]);
-
-  useEffect(() => () => {
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
-    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-  }, []);
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -1278,9 +1105,6 @@ export default function App() {
     </div>
   );
   const hardwareControls = renderHardwareControls(true);
-  const recordingSupported = typeof MediaRecorder !== "undefined"
-    && typeof HTMLCanvasElement !== "undefined"
-    && typeof HTMLCanvasElement.prototype.captureStream === "function";
   const audioControlAction = deviceAudioControlAction(
     deviceAudioEnabled,
     audioPlayback.muted,
@@ -1573,7 +1397,7 @@ export default function App() {
                       showGuides={mappingGuidesVisible}
                       onModeChange={setMappingBackgroundMode}
                       onCapture={() => void captureMappingScreenshot(true)}
-                      onSave={() => void saveMappingScreenshot()}
+                      onSave={() => void saveMappingScreenshot(mappingBackgroundMode === "live")}
                       onShowGuidesChange={setMappingGuidesVisible}
                     />
                   )}
