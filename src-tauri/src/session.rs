@@ -7,6 +7,7 @@ mod discovery;
 mod media;
 mod orientation;
 mod rtcp;
+mod services;
 mod transport;
 mod trust;
 
@@ -54,6 +55,7 @@ use crate::ipa::{
     InstalledAppMatch, IpaArchiveMetadata, IpaCompatibility, IpaOperation, IpaPreflight,
     IpaPreflightIssue,
 };
+use crate::location::LocationCommand;
 use crate::protocol::{
     ActiveSlot, AppOperationKind, AppOperationSlot, ClipboardSlot, ConnKind, ControlCmd,
     DeviceActivationState, DeviceApp, DeviceBattery, DeviceDetails, DeviceListSlot,
@@ -62,7 +64,6 @@ use crate::protocol::{
     Orientation, OrientationSlot, PairDeviceResult, RotateDir, StatusSlot, VideoCounterSnapshot,
     VideoCounters,
 };
-use crate::{location, location::LocationCommand};
 use crate::{performance, supervisor};
 use clipboard::ClipboardBridge;
 use discovery::DeviceDiscovery;
@@ -72,6 +73,7 @@ use media::{
 };
 use orientation::OrientationWatcher;
 use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
+use services::{DeviceManagementServices, LocationBridge, SessionServices};
 use transport::{SessionEndpoint, connect_core_tunnel, connect_provider, resolve_device_selection};
 
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
@@ -540,284 +542,14 @@ async fn run(
     let (mut adapter, mut handshake) =
         connect_core_tunnel(&endpoint, &*provider, &pairing_dir, &views.status).await?;
 
-    views.performance.reset();
-    views.device_logs.reset();
-    views.device_events.reset();
-    let mut supervisor = supervisor::ServiceSupervisor::new(views.services.clone());
-    supervisor.spawn(crate::heartbeat::supervise(
+    let mut session_services = SessionServices::start(
         provider.clone(),
-        supervisor.reporter("device.heartbeat"),
-        supervisor.shutdown_receiver(),
-    ));
-    supervisor.spawn(crate::device_logs::supervise(
+        connection,
         adapter.clone(),
         handshake.clone(),
-        views.device_logs.clone(),
-        supervisor.reporter("device.logs"),
-        views.device_log_demand.subscribe(),
-        supervisor.shutdown_receiver(),
-    ));
-    supervisor.spawn(crate::device_events::supervise(
-        adapter.clone(),
-        handshake.clone(),
-        views.device_events.clone(),
-        supervisor.reporter("device.notifications"),
-        supervisor.shutdown_receiver(),
-    ));
-    supervisor.spawn(performance::supervise_system(
-        adapter.clone(),
-        handshake.clone(),
-        views.performance.clone(),
-        supervisor.reporter("performance.system"),
-        views.performance_demand.subscribe(),
-        supervisor.shutdown_receiver(),
-    ));
-    supervisor.spawn(performance::supervise_graphics(
-        adapter.clone(),
-        handshake.clone(),
-        views.performance.clone(),
-        supervisor.reporter("performance.graphics"),
-        views.performance_demand.subscribe(),
-        supervisor.shutdown_receiver(),
-    ));
-    supervisor.spawn(performance::supervise_network(
-        adapter.clone(),
-        handshake.clone(),
-        views.performance.clone(),
-        supervisor.reporter("performance.network"),
-        views.performance_demand.subscribe(),
-        supervisor.shutdown_receiver(),
-    ));
-    supervisor.spawn(performance::supervise_energy(
-        adapter.clone(),
-        handshake.clone(),
-        views.performance.clone(),
-        supervisor.reporter("performance.energy"),
-        views.performance_demand.subscribe(),
-        supervisor.shutdown_receiver(),
-    ));
-    supervisor.spawn(performance::supervise_app_activity(
-        adapter.clone(),
-        handshake.clone(),
-        views.performance.clone(),
-        supervisor.reporter("performance.app_activity"),
-        views.performance_demand.subscribe(),
-        supervisor.shutdown_receiver(),
-    ));
-
-    views.location.set(LocationStatus::default());
-    let (location_sender, location_receiver) = tokio::sync::mpsc::channel(8);
-    supervisor.spawn(location::supervise(
-        adapter.clone(),
-        handshake.clone(),
-        provider.clone(),
-        location_receiver,
-        views.location.clone(),
-        supervisor.reporter("location"),
-        supervisor.shutdown_receiver(),
-    ));
-    let location = LocationBridge {
-        sender: location_sender,
-        status: views.location.clone(),
-    };
-    let (app_icon_sender, app_icon_receiver) = tokio::sync::mpsc::channel(16);
-    supervisor.spawn(crate::app_icons::serve(
-        adapter.clone(),
-        handshake.clone(),
-        app_icon_receiver,
-        supervisor.shutdown_receiver(),
-    ));
-    let (companion_sender, companion_receiver) = tokio::sync::mpsc::channel(2);
-    supervisor.spawn(crate::companion_devices::serve(
-        adapter.clone(),
-        handshake.clone(),
-        companion_receiver,
-        supervisor.reporter("device.companions"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (home_screen_sender, home_screen_receiver) = tokio::sync::mpsc::channel(2);
-    supervisor.spawn(crate::home_screen::serve(
-        adapter.clone(),
-        handshake.clone(),
-        home_screen_receiver,
-        supervisor.reporter("device.home_screen"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (running_process_sender, running_process_receiver) = tokio::sync::mpsc::channel(2);
-    supervisor.spawn(crate::running_processes::serve(
-        adapter.clone(),
-        handshake.clone(),
-        running_process_receiver,
-        supervisor.reporter("performance.process_inventory"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (app_lifecycle_sender, app_lifecycle_receiver) = tokio::sync::mpsc::channel(2);
-    supervisor.spawn(crate::app_lifecycle::serve(
-        adapter.clone(),
-        handshake.clone(),
-        app_lifecycle_receiver,
-        supervisor.reporter("device.app_lifecycle"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (wda_sender, wda_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::wda_automation::serve(
-        provider.clone(),
-        wda_receiver,
-        supervisor.reporter("device.wda"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (wda_runner_sender, wda_runner_receiver) = tokio::sync::mpsc::channel(2);
-    supervisor.spawn(crate::wda_runner::serve(
-        provider.clone(),
-        wda_runner_receiver,
-        supervisor.reporter("device.wda_runner"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (app_console_sender, app_console_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::app_console::serve(
-        adapter.clone(),
-        handshake.clone(),
-        app_console_receiver,
-        supervisor.reporter("device.app_console"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (app_documents_sender, app_documents_receiver) = tokio::sync::mpsc::channel(8);
-    supervisor.spawn(crate::app_documents::serve(
-        crate::app_documents::AppStorageTransport::new(
-            provider.clone(),
-            connection,
-            adapter.clone(),
-            handshake.clone(),
-        ),
-        app_documents_receiver,
-        views.app_document_activity.clone(),
-        supervisor.shutdown_receiver(),
-    ));
-    let (device_files_sender, device_files_receiver) = tokio::sync::mpsc::channel(8);
-    supervisor.spawn(crate::device_files::serve(
-        crate::device_files::DeviceFileTransport::new(
-            provider.clone(),
-            connection,
-            adapter.clone(),
-            handshake.clone(),
-        ),
-        device_files_receiver,
-        views.device_file_activity.clone(),
-        supervisor.reporter("device.files"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (screen_capture_sender, screen_capture_receiver) = tokio::sync::mpsc::channel(1);
-    supervisor.spawn(crate::screen_capture::serve(
-        crate::screen_capture::ScreenCaptureTransport::new(
-            provider.clone(),
-            connection,
-            adapter.clone(),
-            handshake.clone(),
-        ),
-        screen_capture_receiver,
-        supervisor.shutdown_receiver(),
-    ));
-    let (network_capture_sender, network_capture_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::network_capture::serve(
-        crate::network_capture::NetworkCaptureTransport::new(
-            provider.clone(),
-            connection,
-            adapter.clone(),
-            handshake.clone(),
-        ),
-        network_capture_receiver,
-        views.network_capture.clone(),
-        supervisor.reporter("network.capture"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (bluetooth_capture_sender, bluetooth_capture_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::bluetooth_capture::serve(
-        adapter.clone(),
-        handshake.clone(),
-        bluetooth_capture_receiver,
-        views.bluetooth_capture.clone(),
-        supervisor.reporter("bluetooth.capture"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (device_backup_sender, device_backup_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::device_backup::serve(
-        crate::device_backup::DeviceBackupTransport::new(
-            provider.clone(),
-            connection,
-            adapter.clone(),
-            handshake.clone(),
-            requested_udid,
-        ),
-        device_backup_receiver,
-        views.device_backup.clone(),
-        supervisor.reporter("device.backup"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (sysdiagnose_sender, sysdiagnose_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::sysdiagnose::serve(
-        adapter.clone(),
-        handshake.clone(),
-        sysdiagnose_receiver,
-        views.sysdiagnose.clone(),
-        supervisor.reporter("device.sysdiagnose"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (log_archive_sender, log_archive_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::log_archive::serve(
-        adapter.clone(),
-        handshake.clone(),
-        log_archive_receiver,
-        views.log_archive.clone(),
-        supervisor.reporter("device.log_archive"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (developer_image_sender, developer_image_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::developer_image::serve(
-        provider.clone(),
-        developer_image_receiver,
-        views.developer_image.clone(),
-        supervisor.reporter("device.developer_image"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (device_condition_sender, device_condition_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::device_conditions::supervise(
-        adapter.clone(),
-        handshake.clone(),
-        device_condition_receiver,
-        views.device_conditions.clone(),
-        supervisor.reporter("device.conditions"),
-        supervisor.shutdown_receiver(),
-    ));
-    let (provisioning_sender, provisioning_receiver) = tokio::sync::mpsc::channel(4);
-    supervisor.spawn(crate::provisioning::supervise(
-        adapter.clone(),
-        handshake.clone(),
-        provider.clone(),
-        provisioning_receiver,
-        supervisor.reporter("device.provisioning"),
-        supervisor.shutdown_receiver(),
-    ));
-    let device_management_services = DeviceManagementServices {
-        icons: app_icon_sender,
-        companions: companion_sender,
-        home_screen: home_screen_sender,
-        running_processes: running_process_sender,
-        app_lifecycle: app_lifecycle_sender,
-        wda: wda_sender,
-        wda_runner: wda_runner_sender,
-        app_console: app_console_sender,
-        documents: app_documents_sender,
-        device_files: device_files_sender,
-        screen_capture: screen_capture_sender,
-        network_capture: network_capture_sender,
-        bluetooth_capture: bluetooth_capture_sender,
-        device_backup: device_backup_sender,
-        sysdiagnose: sysdiagnose_sender,
-        log_archive: log_archive_sender,
-        developer_image: developer_image_sender,
-        device_conditions: device_condition_sender,
-        provisioning: provisioning_sender,
-    };
+        requested_udid,
+        &views,
+    );
 
     // Our RTCP SSRC. MUST be declared in the video offer (field 5.1) so the device
     // associates our RTCP feedback with the stream; otherwise it's ignored.
@@ -838,6 +570,7 @@ async fn run(
             tracing::warn!("screen control unavailable; keeping device management session alive");
             views.error.set(Some(error));
             views.status.set("device management connected");
+            let device_management_services = session_services.take_management();
             management_input_loop(
                 DeviceManagement::fallback(
                     provider,
@@ -851,11 +584,10 @@ async fn run(
                     device_management_services,
                 ),
                 &mut input_rx,
-                &location,
+                session_services.location(),
             )
             .await;
-            drop(location);
-            supervisor.shutdown().await;
+            session_services.shutdown().await;
             views.status.set("stopping...");
             return Ok(());
         }
@@ -1001,6 +733,7 @@ async fn run(
 
     let management_app_adapter = adapter.clone();
     let management_app_handshake = handshake.clone();
+    let device_management_services = session_services.take_management();
     tokio::select! {
         _ = video_task(
             video_udp.clone(),
@@ -1054,14 +787,13 @@ async fn run(
             &mut input_rx,
             InputBridges {
                 orientation: &views.orientation,
-                location: &location,
+                location: session_services.location(),
                 clipboard: &clipboard_bridge,
             },
         ) => {}
     }
 
-    drop(location);
-    supervisor.shutdown().await;
+    session_services.shutdown().await;
     browser_lifecycle.reset_dimensions();
     views.status.set("stopping...");
     display.stop_media_stream().await.ok();
@@ -1174,33 +906,6 @@ fn forward_location_command(command: InputCmd, location: &LocationBridge) -> Opt
         }
     }
     None
-}
-
-struct LocationBridge {
-    sender: tokio::sync::mpsc::Sender<LocationCommand>,
-    status: LocationStatusSlot,
-}
-
-struct DeviceManagementServices {
-    icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
-    companions: tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
-    home_screen: tokio::sync::mpsc::Sender<crate::home_screen::HomeScreenCommand>,
-    running_processes: tokio::sync::mpsc::Sender<crate::running_processes::RunningProcessCommand>,
-    app_lifecycle: tokio::sync::mpsc::Sender<crate::app_lifecycle::AppLifecycleCommand>,
-    wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
-    wda_runner: tokio::sync::mpsc::Sender<crate::wda_runner::WdaRunnerCommand>,
-    app_console: tokio::sync::mpsc::Sender<crate::app_console::AppConsoleCommand>,
-    documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
-    device_files: tokio::sync::mpsc::Sender<crate::device_files::DeviceFileCommand>,
-    screen_capture: tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
-    network_capture: tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
-    bluetooth_capture: tokio::sync::mpsc::Sender<crate::bluetooth_capture::BluetoothCaptureCommand>,
-    device_backup: tokio::sync::mpsc::Sender<crate::device_backup::DeviceBackupCommand>,
-    sysdiagnose: tokio::sync::mpsc::Sender<crate::sysdiagnose::SysdiagnoseCommand>,
-    log_archive: tokio::sync::mpsc::Sender<crate::log_archive::LogArchiveCommand>,
-    developer_image: tokio::sync::mpsc::Sender<crate::developer_image::DeveloperImageMountCommand>,
-    device_conditions: tokio::sync::mpsc::Sender<crate::device_conditions::DeviceConditionCommand>,
-    provisioning: tokio::sync::mpsc::Sender<crate::provisioning::ProvisioningCommand>,
 }
 
 fn reject_provisioning_command(command: crate::provisioning::ProvisioningCommand, reason: &str) {
