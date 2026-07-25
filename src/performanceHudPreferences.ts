@@ -9,7 +9,7 @@ export const performanceHudItems = [
   "decoded_fps",
   "presented_fps",
   "bandwidth",
-  "jpeg_encode",
+  "decoder_accept",
   "frame_age",
 ] as const;
 

@@ -18,9 +18,8 @@ use super::{run, trust};
 use crate::audio_output::AudioOutput;
 use crate::protocol::{
     ActiveSlot, AppOperationSlot, ClipboardSlot, ConnKind, ControlCmd, DeviceListSlot,
-    DevicePairingState, ErrorSlot, ForgetDeviceResult, FrameFormat, FrameSlot, InputCmd, InputSink,
-    LocationStatus, LocationStatusSlot, OrientationSlot, PairDeviceResult, StatusSlot,
-    VideoCounters,
+    DevicePairingState, ErrorSlot, ForgetDeviceResult, InputCmd, InputSink, LocationStatus,
+    LocationStatusSlot, OrientationSlot, PairDeviceResult, StatusSlot, VideoCounters,
 };
 use crate::{performance, supervisor};
 
@@ -91,10 +90,7 @@ pub(super) struct SessionViews {
 
 #[derive(Clone)]
 pub(super) struct SessionVideo {
-    pub(super) frame_format: FrameFormat,
-    pub(super) decoder_backend: crate::settings::VideoDecoderBackend,
     pub(super) counters: VideoCounters,
-    pub(super) frames: FrameSlot,
     pub(super) browser_frames: crate::browser_video::BrowserVideoSlot,
     pub(super) audio_enabled: bool,
     pub(super) clipboard_sync_enabled: bool,
@@ -110,8 +106,6 @@ pub(crate) async fn manage(
     resource_dir: Option<PathBuf>,
     settings: Arc<crate::settings::AppSettings>,
     video_counters: VideoCounters,
-    repaint: impl Fn() + Send + Clone + 'static,
-    frames: FrameSlot,
     browser_frames: crate::browser_video::BrowserVideoSlot,
     audio: AudioOutput,
     status: StatusSlot,
@@ -256,16 +250,12 @@ pub(crate) async fn manage(
             endpoint,
             pairing_dir.clone(),
             SessionVideo {
-                frame_format: settings.video_pixel_format(),
-                decoder_backend: settings.video_decoder_backend(),
                 counters: video_counters.clone(),
-                frames: frames.clone(),
                 browser_frames: browser_frames.clone(),
                 audio_enabled: settings.audio_enabled(),
                 clipboard_sync_enabled: settings.clipboard_sync_enabled(),
                 audio: audio.clone(),
             },
-            repaint.clone(),
             clipboard.clone(),
             SessionViews {
                 status: status.clone(),

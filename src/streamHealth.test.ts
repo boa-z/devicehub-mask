@@ -9,7 +9,6 @@ const metrics = (decodedFps: number, sourceFps = decodedFps): StreamMetrics => (
   published_fps: 0,
   sent_fps: 0,
   backend_dropped_fps: 0,
-  jpeg_encode_ms: 0,
   frame_age_ms: 0,
   websocket_send_ms: 0,
   decoder_accept_ms: 0,

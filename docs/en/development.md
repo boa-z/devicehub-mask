@@ -39,9 +39,7 @@ Development artifacts use `target/tauri-dev` and load Vite from `http://127.0.0.
 | `DEVICEHUB_ADDR` | `127.0.0.1:0` | Private backend address; port `0` selects a random port |
 | `DEVICEHUB_MCP_ADDR` | `127.0.0.1:8009` | Streamable HTTP MCP bind address; endpoint path is `/mcp` |
 | `DEVICEHUB_PROFILE_DIR` | Tauri application data directory | Mapping profile storage |
-| `DEVICEHUB_FFMPEG` | Auto-detected | Absolute FFmpeg executable path |
-| `DEVICEHUB_VIDEO_MAX_DIMENSION` | `1920` on Windows; native elsewhere | Maximum decoded width or height; preserves aspect ratio and never upscales; `0` disables the limit |
-| `DEVICEHUB_VIDEO_PIXEL_FORMAT` | Settings value | Override the app's video pixel-format setting with `rgb24` or experimental `yuv420p` |
+| `DEVICEHUB_FFMPEG` | Auto-detected | Absolute FFmpeg executable path used by device audio decoding |
 | `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` | `2` | Diagnostic A/B override for the bounded WebView frame pipeline; accepts `1` or `2` |
 | `DEVICEHUB_LOG` | DeviceHub info logging | Preferred Rust tracing filter; overrides `RUST_LOG` |
 | `RUST_LOG` | DeviceHub info logging | Standard tracing filter fallback |
@@ -59,9 +57,7 @@ DEVICEHUB_LOG=devicehub_mask=info,devicehub_mask::session=trace npm run tauri:de
 
 An environment filter takes precedence over the Settings switch. Invalid filters are rejected and the application falls back to the default filter.
 
-Settings > Video exposes RGB24 and the experimental YUV420P path. RGB24 remains the default. The selection is persisted in the platform application config directory and applies on the next device connection. An explicit `DEVICEHUB_VIDEO_PIXEL_FORMAT` value makes the setting read-only for that run.
-
-The same section exposes the default, experimental Browser / WebCodecs decoder. It sends complete Annex-B HEVC access units directly to the WebView and removes FFmpeg, raw-frame transport, and JPEG encoding from the live video path. A WebCodecs capability, output timeout, or runtime failure is reported in Settings and automatically reconnects the current device with the native decoder for the rest of the run.
+Live video always sends complete Annex-B HEVC access units to the WebView and decodes them with WebCodecs. FFmpeg video decoding, raw RGB/YUV transport, JPEG encoding, decoder selection, and pixel-format settings are no longer part of the application. FFmpeg remains required for AAC-ELD device audio.
 
 ## Validation
 

@@ -33,12 +33,11 @@ use crate::hid::TouchContact;
 use crate::performance::{PerformanceDemand, PerformanceSlot};
 #[cfg(test)]
 use crate::protocol::{
-    ActiveSlot, DeviceListSlot, ErrorSlot, FrameSlot, InputSink, LocationStatusSlot,
-    OrientationSlot, StatusSlot,
+    ActiveSlot, DeviceListSlot, ErrorSlot, InputSink, LocationStatusSlot, OrientationSlot,
+    StatusSlot,
 };
 use crate::protocol::{
-    ControlCmd, Frame, FrameFormat, InputCmd, Orientation, RotateDir, norm, unrotate_norm,
-    validate_paste_text,
+    ControlCmd, InputCmd, Orientation, RotateDir, norm, unrotate_norm, validate_paste_text,
 };
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
@@ -455,70 +454,6 @@ fn validate_process_pid(pid: u32) -> Result<(), McpError> {
     }
 }
 
-fn display_dims(frame: &Frame, turns: u8) -> (u32, u32) {
-    let (width, height) = (frame.width as u32, frame.height as u32);
-    if turns % 2 == 1 {
-        (height, width)
-    } else {
-        (width, height)
-    }
-}
-
-fn rgb_at(frame: &Frame, x: usize, y: usize) -> [u8; 3] {
-    match frame.format {
-        FrameFormat::Rgb24 => {
-            let offset = (y * frame.width + x) * 3;
-            frame
-                .pixels
-                .get(offset..offset + 3)
-                .map(|pixel| [pixel[0], pixel[1], pixel[2]])
-                .unwrap_or([0, 0, 0])
-        }
-        FrameFormat::Yuv420p => {
-            let y_len = frame.width.saturating_mul(frame.height);
-            let chroma_width = frame.width.div_ceil(2);
-            let chroma_height = frame.height.div_ceil(2);
-            let chroma_len = chroma_width.saturating_mul(chroma_height);
-            let y_value = *frame.pixels.get(y * frame.width + x).unwrap_or(&16) as i32;
-            let chroma_offset = (y / 2) * chroma_width + x / 2;
-            let u = *frame.pixels.get(y_len + chroma_offset).unwrap_or(&128) as i32;
-            let v = *frame
-                .pixels
-                .get(y_len + chroma_len + chroma_offset)
-                .unwrap_or(&128) as i32;
-            let c = (y_value - 16).max(0);
-            let d = u - 128;
-            let e = v - 128;
-            let clamp = |value: i32| ((value + 128) >> 8).clamp(0, 255) as u8;
-            [
-                clamp(298 * c + 409 * e),
-                clamp(298 * c - 100 * d - 208 * e),
-                clamp(298 * c + 516 * d),
-            ]
-        }
-    }
-}
-
-fn render_upright(frame: &Frame, turns: u8) -> (u32, u32, Vec<u8>) {
-    let (width, height) = display_dims(frame, turns);
-    if width == 0 || height == 0 || frame.width == 0 || frame.height == 0 {
-        return (width, height, Vec::new());
-    }
-    let mut rgb = vec![0; width as usize * height as usize * 3];
-    for output_y in 0..height {
-        for output_x in 0..width {
-            let dx = (output_x as f32 + 0.5) / width as f32;
-            let dy = (output_y as f32 + 0.5) / height as f32;
-            let (nx, ny) = unrotate_norm(dx, dy, turns);
-            let source_x = ((nx * frame.width as f32) as usize).min(frame.width - 1);
-            let source_y = ((ny * frame.height as f32) as usize).min(frame.height - 1);
-            let offset = (output_y as usize * width as usize + output_x as usize) * 3;
-            rgb[offset..offset + 3].copy_from_slice(&rgb_at(frame, source_x, source_y));
-        }
-    }
-    (width, height, rgb)
-}
-
 fn downscale(rgb: Vec<u8>, width: u32, height: u32, max_dim: u32) -> (u32, u32, Vec<u8>) {
     let longer = width.max(height);
     if max_dim == 0 || longer <= max_dim || rgb.len() != width as usize * height as usize * 3 {
@@ -537,25 +472,6 @@ fn downscale(rgb: Vec<u8>, width: u32, height: u32, max_dim: u32) -> (u32, u32, 
     (output_width, output_height, resized.into_raw())
 }
 
-fn frame_signature(frame: &Frame) -> Vec<u8> {
-    const SAMPLES: usize = 24;
-    if frame.width == 0 || frame.height == 0 {
-        return Vec::new();
-    }
-    let mut signature = Vec::with_capacity(SAMPLES * SAMPLES);
-    for row in 0..SAMPLES {
-        let y =
-            ((row * frame.height) / SAMPLES + frame.height / (2 * SAMPLES)).min(frame.height - 1);
-        for column in 0..SAMPLES {
-            let x = ((column * frame.width) / SAMPLES + frame.width / (2 * SAMPLES))
-                .min(frame.width - 1);
-            let [red, green, blue] = rgb_at(frame, x, y);
-            signature.push(((red as u16 * 2 + green as u16 * 5 + blue as u16) / 8) as u8);
-        }
-    }
-    signature
-}
-
 fn signature_diff(left: &[u8], right: &[u8]) -> f32 {
     if left.is_empty() || left.len() != right.len() {
         return f32::INFINITY;
@@ -566,6 +482,26 @@ fn signature_diff(left: &[u8], right: &[u8]) -> f32 {
         .map(|(left, right)| (*left as i32 - *right as i32).unsigned_abs())
         .sum();
     total as f32 / left.len() as f32
+}
+
+fn rgb_signature(rgb: &[u8], width: usize, height: usize) -> Vec<u8> {
+    const SAMPLES: usize = 24;
+    if width == 0 || height == 0 || rgb.len() != width.saturating_mul(height).saturating_mul(3) {
+        return Vec::new();
+    }
+    let mut signature = Vec::with_capacity(SAMPLES * SAMPLES);
+    for row in 0..SAMPLES {
+        let y = ((row * height) / SAMPLES + height / (2 * SAMPLES)).min(height - 1);
+        for column in 0..SAMPLES {
+            let x = ((column * width) / SAMPLES + width / (2 * SAMPLES)).min(width - 1);
+            let offset = (y * width + x) * 3;
+            let [red, green, blue] = rgb[offset..offset + 3] else {
+                continue;
+            };
+            signature.push(((red as u16 * 2 + green as u16 * 5 + blue as u16) / 8) as u8);
+        }
+    }
+    signature
 }
 
 const DIGITS: [[u8; 5]; 10] = [
@@ -779,7 +715,6 @@ impl DeviceHub {
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        frames: FrameSlot,
         browser_frames: crate::browser_video::BrowserVideoSlot,
         input: InputSink,
         orientation: OrientationSlot,
@@ -800,7 +735,7 @@ impl DeviceHub {
             device_log_demand,
         } = observability;
         Self::new_with_service(ApplicationServices::new(
-            DeviceControlService::new(frames, browser_frames, input),
+            DeviceControlService::new(browser_frames, input),
             DeviceStateSlots {
                 orientation,
                 devices,
@@ -834,12 +769,6 @@ impl DeviceHub {
         let turns = self.application.orientation.get().quarter_turns_cw();
         let (width, height) = size
             .or_else(|| *self.last_image.lock().unwrap())
-            .or_else(|| {
-                self.application
-                    .device_control
-                    .latest_frame()
-                    .map(|(_, frame)| display_dims(&frame, turns))
-            })
             .or_else(|| {
                 self.application
                     .device_control
@@ -887,25 +816,25 @@ impl DeviceHub {
 
     async fn settle(&self) {
         tokio::time::sleep(SETTLE_MIN).await;
-        if self.application.device_control.latest_frame().is_none() {
-            return;
-        }
         let started = Instant::now();
-        let mut previous = self
-            .application
-            .device_control
-            .latest_frame()
-            .map(|(_, frame)| frame_signature(&frame));
+        let Ok(Ok((width, height, rgb))) =
+            tokio::time::timeout(SETTLE_MAX, self.native_screenshot()).await
+        else {
+            return;
+        };
+        let mut previous = rgb_signature(&rgb, width as usize, height as usize);
         let mut stable = 0;
         while started.elapsed() < SETTLE_MAX {
             tokio::time::sleep(SETTLE_POLL).await;
-            let current = self
-                .application
-                .device_control
-                .latest_frame()
-                .map(|(_, frame)| frame_signature(&frame));
-            match (&previous, &current) {
-                (Some(left), Some(right)) if signature_diff(left, right) < SETTLE_DIFF => {
+            let remaining = SETTLE_MAX.saturating_sub(started.elapsed());
+            let Ok(Ok((width, height, rgb))) =
+                tokio::time::timeout(remaining, self.native_screenshot()).await
+            else {
+                return;
+            };
+            let current = rgb_signature(&rgb, width as usize, height as usize);
+            match signature_diff(&previous, &current) {
+                difference if difference < SETTLE_DIFF => {
                     stable += 1;
                     if stable >= SETTLE_STABLE_SAMPLES {
                         break;
@@ -925,15 +854,7 @@ impl DeviceHub {
         Parameters(params): Parameters<ScreenshotParams>,
     ) -> Result<CallToolResult, McpError> {
         let frame_version = self.frame_version();
-        let (width, height, rgb) =
-            if let Some((_, frame)) = self.application.device_control.latest_frame() {
-                render_upright(
-                    &frame,
-                    self.application.orientation.get().quarter_turns_cw(),
-                )
-            } else {
-                self.native_screenshot().await?
-            };
+        let (width, height, rgb) = self.native_screenshot().await?;
         if rgb.is_empty() {
             return Err(McpError::internal_error("current frame is empty", None));
         }
@@ -2325,7 +2246,11 @@ impl DeviceHub {
         }
         if !reconnect
             && self.application.active.get().as_deref() == Some(udid.as_str())
-            && self.application.device_control.latest_frame().is_some()
+            && self
+                .application
+                .device_control
+                .browser_dimensions()
+                .is_some()
         {
             return ok_text(format!("Already connected to {udid}; screen is streaming."));
         }
@@ -2595,32 +2520,21 @@ impl DeviceHub {
         description = "Report active device, stream state, screen size, orientation and virtual-location state."
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
-        let screen_size = self
-            .application
-            .device_control
-            .latest_frame()
-            .map(|(_, frame)| {
-                let (width, height) = display_dims(
-                    &frame,
-                    self.application.orientation.get().quarter_turns_cw(),
-                );
-                json!([width, height])
-            })
-            .or_else(|| {
-                let turns = self.application.orientation.get().quarter_turns_cw();
-                self.application
-                    .device_control
-                    .browser_dimensions()
-                    .map(|(width, height)| {
-                        let (width, height) = if turns.is_multiple_of(2) {
-                            (width, height)
-                        } else {
-                            (height, width)
-                        };
-                        json!([width, height])
-                    })
-            })
-            .unwrap_or(json!(null));
+        let screen_size = {
+            let turns = self.application.orientation.get().quarter_turns_cw();
+            self.application
+                .device_control
+                .browser_dimensions()
+                .map(|(width, height)| {
+                    let (width, height) = if turns.is_multiple_of(2) {
+                        (width, height)
+                    } else {
+                        (height, width)
+                    };
+                    json!([width, height])
+                })
+        }
+        .unwrap_or(json!(null));
         let orientation = match self.application.orientation.get() {
             Orientation::Portrait => "portrait",
             Orientation::PortraitUpsideDown => "portrait-upside-down",
@@ -2632,7 +2546,7 @@ impl DeviceHub {
                 "active_udid": self.application.active.get(),
                 "status": self.application.status.get(),
                 "error": self.application.error.get(),
-                "streaming": self.application.device_control.latest_frame().is_some() || self.application.device_control.browser_dimensions().is_some(),
+                "streaming": self.application.device_control.browser_dimensions().is_some(),
                 "screen_size": screen_size,
                 "orientation": orientation,
                 "location": self.application.location.get(),
@@ -2850,7 +2764,6 @@ mod tests {
         active.set_selected("phone".into(), "phone::wifi".into());
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),
@@ -2884,7 +2797,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -2936,7 +2848,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -2978,7 +2889,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -3026,7 +2936,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -3131,7 +3040,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -3240,7 +3148,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -3272,7 +3179,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -3335,7 +3241,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -3877,7 +3782,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -3949,7 +3853,6 @@ mod tests {
             .publish(crate::device_events::DeviceEventKind::AppInstalled);
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),
@@ -4033,7 +3936,6 @@ mod tests {
             });
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -4111,7 +4013,6 @@ mod tests {
             .publish("application ready".into());
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),
@@ -4162,7 +4063,6 @@ mod tests {
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -4295,21 +4195,11 @@ mod tests {
 
     #[tokio::test]
     async fn multi_touch_sends_simultaneous_down_and_release_frames() {
-        let frames = FrameSlot::default();
-        frames.publish(Arc::new(Frame {
-            width: 100,
-            height: 200,
-            format: FrameFormat::Rgb24,
-            pixels: vec![0; 100 * 200 * 3],
-            decoded_at: Instant::now(),
-            jpeg: std::sync::OnceLock::new(),
-        }));
         let input = InputSink::default();
         let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
         input.set(Some(input_tx));
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            frames,
             crate::browser_video::BrowserVideoSlot::default(),
             input,
             OrientationSlot::default(),
@@ -4357,53 +4247,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_frame_observes_a_newer_published_version() {
-        let frames = FrameSlot::default();
-        let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
-        let hub = DeviceHub::new(
-            frames.clone(),
-            crate::browser_video::BrowserVideoSlot::default(),
-            InputSink::default(),
-            OrientationSlot::default(),
-            DeviceListSlot::default(),
-            ActiveSlot::default(),
-            ErrorSlot::default(),
-            StatusSlot::default(),
-            LocationStatusSlot::default(),
-            McpObservability::default(),
-            control,
-        );
-        let waiter = tokio::spawn(async move {
-            hub.wait_for_frame(Parameters(WaitFrameParams {
-                after_version: Some(0),
-                timeout_ms: Some(500),
-            }))
-            .await
-            .unwrap()
-        });
-        tokio::task::yield_now().await;
-        frames.publish(Arc::new(Frame {
-            width: 1,
-            height: 1,
-            format: FrameFormat::Rgb24,
-            pixels: vec![0, 0, 0],
-            decoded_at: Instant::now(),
-            jpeg: std::sync::OnceLock::new(),
-        }));
-        let result = waiter.await.unwrap();
-        assert!(result.content.iter().any(|content| {
-            content
-                .as_text()
-                .is_some_and(|text| text.text.contains(r#""changed":true"#))
-        }));
-    }
-
-    #[tokio::test]
     async fn wait_for_frame_observes_browser_video_without_native_decode() {
         let browser_frames = crate::browser_video::BrowserVideoSlot::default();
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             browser_frames.clone(),
             InputSink::default(),
             OrientationSlot::default(),
@@ -4434,29 +4281,6 @@ mod tests {
     }
 
     #[test]
-    fn converts_rgb_and_yuv_pixels() {
-        let rgb = Frame {
-            width: 1,
-            height: 1,
-            format: FrameFormat::Rgb24,
-            pixels: vec![1, 2, 3],
-            decoded_at: Instant::now(),
-            jpeg: std::sync::OnceLock::new(),
-        };
-        assert_eq!(rgb_at(&rgb, 0, 0), [1, 2, 3]);
-        let yuv = Frame {
-            width: 2,
-            height: 2,
-            format: FrameFormat::Yuv420p,
-            pixels: vec![235, 235, 235, 235, 128, 128],
-            decoded_at: Instant::now(),
-            jpeg: std::sync::OnceLock::new(),
-        };
-        let pixel = rgb_at(&yuv, 1, 1);
-        assert!(pixel.iter().all(|channel| *channel >= 250));
-    }
-
-    #[test]
     fn key_and_button_aliases_are_supported() {
         assert_eq!(key_usage("PageDown"), Some(0x4e));
         assert_eq!(button_label("volume_up"), Some("volume-up"));
@@ -4467,7 +4291,6 @@ mod tests {
     async fn streamable_http_negotiates_and_calls_status() {
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
-            FrameSlot::default(),
             crate::browser_video::BrowserVideoSlot::default(),
             InputSink::default(),
             OrientationSlot::default(),

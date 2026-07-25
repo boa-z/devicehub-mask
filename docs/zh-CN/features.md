@@ -54,9 +54,8 @@
 
 | 领域 | 当前行为 |
 | --- | --- |
-| 视频 | CoreDevice HEVC，最高 60 FPS；Native/FFmpeg 是兼容路径，实验性 WebCodecs 失败时自动回退 |
+| 视频 | CoreDevice HEVC 压缩 Access Unit 传输，并固定使用 WebCodecs 解码 |
 | 画面录制 | 通过系统 WebView 的 MediaRecorder 以最高 60 FPS 录制已渲染 Canvas，并下载 MP4 或 WebM；切页或切换设备时停止，不包含主机原生播放的设备音频 |
-| 像素格式 | 默认 RGB24；YUV420P 为实验选项，环境变量强制指定时界面不可修改 |
 | 音频 | 可选 CoreDevice AAC-ELD 采集、主机原生播放、音量和静音；启用采集后需要重新连接 |
 | 剪贴板 | 单次 Unicode 粘贴始终可用；可选文本/图片双向同步需要重新连接 |
 | 触控 | 鼠标直接输入与映射输出合并为经过校验的五触点 Universal HID report |

@@ -55,7 +55,7 @@ import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMapping
 import { useDeviceVideoStream } from "./useDeviceVideoStream";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
 import { usePrivateBackend } from "./usePrivateBackend";
-import { readAudioOutputStatus, readVideoSettings, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./videoSettings";
+import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./appSettings";
 
 const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
 const DeviceInspector = lazy(() => import("./components/DeviceInspector").then((module) => ({ default: module.DeviceInspector })));
@@ -234,14 +234,14 @@ export default function App() {
     } catch (error) {
       if (audioPlaybackGenerationRef.current === generation) {
         setAudioPlaybackPreferences(previous);
-        void showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
+        void showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) }));
       }
       logFrontend("warn", "audio", "set_playback", error);
     }
   }, [audioPlayback, t]);
 
   useEffect(() => {
-    void readVideoSettings()
+    void readAppSettings()
       .then(async (settings) => {
         let playbackSettings = settings;
         const legacy = readLegacyDeviceAudioPreferences();
@@ -333,6 +333,7 @@ export default function App() {
     hasFrame,
     canvasReady,
     streamStalled,
+    decoderError,
     canvasRef,
     canvasReadyRef,
     bindCanvas,
@@ -1234,6 +1235,8 @@ export default function App() {
     ? "waiting"
     : !connected
       ? "reconnecting"
+      : decoderError
+        ? "decoder"
       : !canvasReady
         ? "starting"
         : streamStalled
@@ -1525,7 +1528,7 @@ export default function App() {
                             decoded: streamMetrics.decoded_fps.toFixed(0),
                             sent: streamMetrics.sent_fps.toFixed(0),
                             render: renderFps.toFixed(0),
-                            jpeg: streamMetrics.jpeg_encode_ms.toFixed(1),
+                            accept: streamMetrics.decoder_accept_ms.toFixed(1),
                           })}
                         </Typography.Text>
                       </Tooltip>
@@ -1620,7 +1623,7 @@ export default function App() {
                         <div className="device-stage-state" onPointerDown={(event) => event.stopPropagation()}>
                           <AimOutlined />
                           <span>{t(`device.stageState.${stageIssue}`)}</span>
-                          {stageIssue !== "waiting" && selectedDeviceId && (
+                          {stageIssue !== "waiting" && stageIssue !== "decoder" && selectedDeviceId && (
                             <Button size="small" icon={<SyncOutlined />} onClick={() => void reconnectDevice()}>{t("device.reconnect")}</Button>
                           )}
                         </div>

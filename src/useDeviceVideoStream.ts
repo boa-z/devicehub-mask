@@ -12,7 +12,6 @@ const emptyMetrics: StreamMetrics = {
   published_fps: 0,
   sent_fps: 0,
   backend_dropped_fps: 0,
-  jpeg_encode_ms: 0,
   frame_age_ms: 0,
   websocket_send_ms: 0,
   decoder_accept_ms: 0,
@@ -36,7 +35,7 @@ type FrontendMetrics = {
   receivedFrames: number;
   replacedFrames: number;
   presentedFrames: number;
-  jpegDecodeMs: number;
+  decoderOutputMs: number;
   canvasDrawMs: number;
   decoderCongestions: number;
   decodeErrors: number;
@@ -48,7 +47,7 @@ function createFrontendMetrics(startedAt = performance.now()): FrontendMetrics {
     receivedFrames: 0,
     replacedFrames: 0,
     presentedFrames: 0,
-    jpegDecodeMs: 0,
+    decoderOutputMs: 0,
     canvasDrawMs: 0,
     decoderCongestions: 0,
     decodeErrors: 0,
@@ -107,6 +106,7 @@ export function useDeviceVideoStream({
   const [hasFrame, setHasFrame] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
   const [streamStalled, setStreamStalled] = useState(false);
+  const [decoderError, setDecoderError] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const canvasReadyRef = useRef(false);
@@ -178,9 +178,6 @@ export function useDeviceVideoStream({
     const open = () => {
       const socket = new WebSocket(wsUrl(backend), ["devicehub-mask", backend.token]);
       activeSocket = socket;
-      let socketClosed = false;
-      let pendingFrame: Blob | null = null;
-      let decoding = false;
       let browserTransportActive = false;
       let lastBrowserSequence: bigint | null = null;
       let browserSequenceResync = false;
@@ -213,6 +210,7 @@ export function useDeviceVideoStream({
         renderedFramesRef.current += 1;
         lastDecodedActivityAtRef.current = performance.now();
         setStreamStalled(false);
+        setDecoderError(null);
         if (!canvasReadyRef.current) {
           canvasReadyRef.current = true;
           setCanvasReady(true);
@@ -226,7 +224,7 @@ export function useDeviceVideoStream({
       const browserDecoder = new BrowserVideoDecoder({
         output: (frame, decodeMs, sequence) => {
           try {
-            frontendMetrics.jpegDecodeMs += decodeMs;
+            frontendMetrics.decoderOutputMs += decodeMs;
             presentFrame(frame, frame.codedWidth, frame.codedHeight);
           } finally {
             frame.close();
@@ -251,6 +249,7 @@ export function useDeviceVideoStream({
         },
         fatal: (error) => {
           frontendMetrics.decodeErrors += 1;
+          setDecoderError(String(error));
           logFrontend("warn", "video", "browser_decoder", error);
           if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "browser_decoder_error", message: String(error) }));
@@ -266,7 +265,7 @@ export function useDeviceVideoStream({
             received_frames: frontendMetrics.receivedFrames,
             replaced_frames: frontendMetrics.replacedFrames,
             presented_frames: frontendMetrics.presentedFrames,
-            jpeg_decode_ms: frontendMetrics.jpegDecodeMs,
+            decoder_output_ms: frontendMetrics.decoderOutputMs,
             canvas_draw_ms: frontendMetrics.canvasDrawMs,
             decoder_congestions: frontendMetrics.decoderCongestions,
             decode_errors: frontendMetrics.decodeErrors,
@@ -293,9 +292,7 @@ export function useDeviceVideoStream({
           "closed",
           `code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`,
         );
-        socketClosed = true;
         if (metricsTimer !== undefined) window.clearInterval(metricsTimer);
-        pendingFrame = null;
         browserDecoder.close();
         callbacksRef.current.onDisconnect();
         if (socketRef.current === socket) socketRef.current = null;
@@ -305,37 +302,9 @@ export function useDeviceVideoStream({
         canvasReadyRef.current = false;
         setCanvasReady(false);
         setStreamStalled(false);
+        setDecoderError(null);
         setStreamMetrics(emptyMetrics);
         if (!disposed) retry = window.setTimeout(open, 800);
-      };
-      const drainFrames = async () => {
-        if (decoding) return;
-        decoding = true;
-        try {
-          while (pendingFrame && !disposed && !socketClosed) {
-            const blob = pendingFrame;
-            pendingFrame = null;
-            let bitmap: ImageBitmap | null = null;
-            try {
-              const decodeStarted = performance.now();
-              bitmap = await createImageBitmap(blob);
-              frontendMetrics.jpegDecodeMs += performance.now() - decodeStarted;
-              if (disposed || socketClosed) continue;
-              presentFrame(bitmap, bitmap.width, bitmap.height);
-            } catch (error) {
-              frontendMetrics.decodeErrors += 1;
-              logFrontend("warn", "video", "decode_frame", error);
-            } finally {
-              bitmap?.close();
-              if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({ type: "frame_presented" }));
-              }
-            }
-          }
-        } finally {
-          decoding = false;
-          if (pendingFrame && !disposed && !socketClosed) void drainFrames();
-        }
       };
       socket.onmessage = (event) => {
         if (typeof event.data === "string") {
@@ -392,17 +361,8 @@ export function useDeviceVideoStream({
           }
           return;
         }
-        browserTransportActive = false;
-        lastBrowserSequence = null;
-        browserSequenceResync = false;
-        if (pendingFrame) {
-          frontendMetrics.replacedFrames += 1;
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: "frame_presented" }));
-          }
-        }
-        pendingFrame = new Blob([buffer], { type: "image/jpeg" });
-        void drainFrames();
+        frontendMetrics.decodeErrors += 1;
+        logFrontend("warn", "video", "unsupported_packet", "Received a non-WebCodecs video packet");
       };
     };
     open();
@@ -421,6 +381,7 @@ export function useDeviceVideoStream({
     hasFrame,
     canvasReady,
     streamStalled,
+    decoderError,
     canvasRef,
     canvasReadyRef,
     bindCanvas,

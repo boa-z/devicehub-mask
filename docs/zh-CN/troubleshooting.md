@@ -65,29 +65,18 @@ Windows 上保持手机连接和解锁，然后运行：
 
 ## Windows CPU 占用较高
 
-跨平台对比时可在“设置 > 视频”尝试实验性的“浏览器 / WebCodecs”解码器。平台 WebView 支持 HEVC 时，该路径会移除实时链路中的 FFmpeg 和 JPEG。Windows 立即显示能力回退，表示 WebView2 未暴露兼容的 HEVC codec，即使 GPU 本身具备 HEVC 解码能力也可能如此。项目不要求购买扩展：内置的“原生 / FFmpeg”是兼容路径，浏览器解码运行失败后会自动重连并使用它。
-
-如果 WebCodecs 报告 `OperationError: Unsupported configuration`，应用会从数据流 SPS 读取 HEVC profile 与 level，并重试保守的 `hev1`、`hvc1` 配置。准确配置全部失败后，本次运行会 重连到“原生 / FFmpeg”；这通常表示平台 WebView 或系统 HEVC 组件无法解码当前设备的分辨率 或 profile。
+实时视频固定使用 WebCodecs。如果 Windows 报告 `OperationError: Unsupported configuration`，应用会从 SPS 读取 HEVC profile 与 level，并重试保守的 `hev1`、`hvc1` 配置。全部失败表示 WebView2 或系统 codec 无法解码设备视频流。GPU 具备 HEVC 能力仍不充分；Windows 通常需要 HEVC Video Extensions。当前没有 Native / FFmpeg 视频回退。
 
 `browser video client lagged` 表示 WebSocket 发送端短暂落后于压缩 HEVC 广播，不代表 CoreDevice 已停止产出画面。应用会丢弃不可继续解码的依赖帧，重复请求 IRAP 直到重同步，并在无需重新连接设备的情况下恢复。如果工具栏的“源/解码”持续非零，而“发送/显示”超过数秒仍为零，请采集包含 lag 警告、后续 PLI/FIR 请求、收到 IRAP 记录和 `devicehub_mask::perf` 输出的 Debug 日志。
 
-观察界面的解码 / 发送 / 显示 FPS 和 JPEG 延迟：
+观察界面的解码 / 发送 / 显示 FPS 和解码入口延迟：
 
-- 源 FPS 来自完整 RTP 帧 marker；解码与发布 FPS 会区分 FFmpeg 输出和重复帧抑制。
-- 发送与显示 FPS 应接近发布 FPS。最多两帧 JPEG 在途，使后端编码可与 WebView 解码重叠， 但不会形成无限队列。
-- Debug 性能日志还会报告 RTP 时间戳步长、源到达抖动、HEVC 排队时间、JPEG 编码、帧年龄、 WebSocket 写入、呈现确认、前端 JPEG 解码、Canvas 绘制和各阶段丢帧。
-- Windows 默认使用 1920 像素长边和 RGB24 传输。
+- 源 FPS 来自完整 RTP 帧 marker；发布 FPS 表示进入 WebCodecs 传输的压缩 Access Unit。
+- 发送与显示 FPS 应接近发布 FPS。后端最多保留两个未确认包，前端入口队列上限为八个包。
+- Debug 性能日志会报告 RTP 时间戳步长、源到达抖动、HEVC 排队时间、帧年龄、WebSocket 写入、解码入口确认、呈现确认、WebCodecs 输出、Canvas 绘制和各阶段丢帧。
+- Windows 使用 WebCodecs 暴露的源分辨率，不再存在 RGB24/YUV420P 传输或 FFmpeg 尺寸限制。
 
-这些指标和 Debug 日志字段在各平台保持一致。比较 macOS、Windows 与 Linux 时，应使用 Release 构建，并保持设备/画面内容、像素格式、解码尺寸及 `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` 相同；不要拿一台主机的静态画面与另一台的动态画面比较。
-
-可以降低解码限制，同时保持画面比例：
-
-```powershell
-$env:DEVICEHUB_VIDEO_MAX_DIMENSION = "1280"
-npm run tauri:dev
-```
-
-仅在诊断原始分辨率时设置为 `0`。记录 CPU、全部 FPS 指标、JPEG 延迟、设备分辨率、 GPU，以及测试的是安装版还是 debug 版。Debug 构建不能代表 release 性能。
+这些指标和 Debug 日志字段在各平台保持一致。比较 macOS、Windows 与 Linux 时，应使用 Release 构建，并保持设备、画面内容、解码尺寸和 `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` 相同。记录 CPU、全部 FPS 指标、入口/呈现延迟、设备分辨率、GPU、WebView 版本，以及测试的是安装版还是 Debug 构建。Debug 构建不能代表 Release 性能。
 
 ## 按进程过滤的网络抓包没有数据包
 

@@ -54,9 +54,8 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 
 | Area | Current behavior |
 | --- | --- |
-| Video | CoreDevice HEVC, up to 60 FPS; Native/FFmpeg decoding is the compatibility path and experimental WebCodecs decoding falls back automatically |
+| Video | CoreDevice HEVC transported as compressed access units and decoded exclusively with WebCodecs |
 | Recording | Records the rendered canvas at up to 60 FPS through the system WebView's MediaRecorder and downloads MP4 or WebM; it stops on page or device changes and does not include the native device-audio output |
-| Pixel format | RGB24 is the default; YUV420P is experimental and selectable unless an environment override is active |
 | Audio | Optional CoreDevice AAC-ELD capture, native host playback, volume and mute; enabling capture requires reconnecting |
 | Clipboard | One-shot Unicode paste always remains available; optional bidirectional text/image sync requires reconnecting |
 | Touch | Direct mouse input and mapping output share a validated five-contact Universal HID report |

@@ -1219,7 +1219,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "turbojpeg",
  "uuid",
 ]
 
@@ -1728,12 +1727,6 @@ dependencies = [
  "pin-project-lite",
  "slab",
 ]
-
-[[package]]
-name = "gcd"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d758ba1b47b00caf47f24925c0074ecb20d6dfcffe7f6d53395c0465674841a"
 
 [[package]]
 name = "gdk"
@@ -5933,30 +5926,6 @@ dependencies = [
  "rand 0.9.5",
  "sha1",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "turbojpeg"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b12ab1b96184a3879b4b16a74ee67436a5ef8833c0e6954a8cbf47ec9036559"
-dependencies = [
- "gcd",
- "libc",
- "thiserror 1.0.69",
- "turbojpeg-sys",
-]
-
-[[package]]
-name = "turbojpeg-sys"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49b5a974bc59382d35927e3a07eef2ba9a24fe7227cefe52ec44b508e1b90f86"
-dependencies = [
- "anyhow",
- "cmake",
- "libc",
- "pkg-config",
 ]
 
 [[package]]

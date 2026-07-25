@@ -1,7 +1,7 @@
 import { BugOutlined, FolderOpenOutlined, GithubOutlined } from "@ant-design/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Button, Checkbox, Select, Slider, Space, Switch, Tag, Typography, message } from "antd";
+import { Button, Checkbox, Select, Slider, Space, Switch, Typography, message } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
@@ -12,15 +12,11 @@ import { performanceHudItems, type PerformanceHudItem, type PerformanceHudPrefer
 import { openLogDirectory, readDiagnosticsStatus, setDebugLogging, type DiagnosticsStatus } from "../diagnostics";
 import { useUpdates } from "../updateContext";
 import {
-  readVideoSettings,
+  readAppSettings,
   setAudioEnabled,
   setClipboardSyncEnabled,
-  setVideoDecoderBackend,
-  setVideoPixelFormat,
-  type VideoDecoderBackend,
-  type VideoPixelFormat,
-  type VideoSettingsStatus,
-} from "../videoSettings";
+  type AppSettingsStatus,
+} from "../appSettings";
 import { UpdateButton } from "./UpdateButton";
 
 type Props = {
@@ -56,8 +52,8 @@ export function SettingsPage({
   const [version, setVersion] = useState("-");
   const [diagnostics, setDiagnostics] = useState<DiagnosticsStatus | null>(null);
   const [diagnosticsBusy, setDiagnosticsBusy] = useState(false);
-  const [videoSettings, setVideoSettings] = useState<VideoSettingsStatus | null>(null);
-  const [videoSettingsBusy, setVideoSettingsBusy] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettingsStatus | null>(null);
+  const [appSettingsBusy, setAppSettingsBusy] = useState(false);
   const [audioVolumeDraft, setAudioVolumeDraft] = useState<number | null>(null);
   useEffect(() => { void getVersion().then(setVersion); }, []);
   useEffect(() => {
@@ -66,61 +62,37 @@ export function SettingsPage({
       .catch((error) => showErrorMessage(t("settings.diagnosticsUnavailable", { error: String(error) })));
   }, [t]);
   useEffect(() => {
-    void readVideoSettings()
+    void readAppSettings()
       .then((settings) => {
-        setVideoSettings(settings);
+        setAppSettings(settings);
         onAudioEnabledChange(settings.audio_enabled);
       })
-      .catch((error) => showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) })));
+      .catch((error) => showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) })));
   }, [onAudioEnabledChange, t]);
 
-  const changeVideoPixelFormat = async (videoPixelFormat: VideoPixelFormat) => {
-    setVideoSettingsBusy(true);
-    try {
-      setVideoSettings(await setVideoPixelFormat(videoPixelFormat));
-      message.success(t("settings.videoPixelFormatChanged"));
-    } catch (error) {
-      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
-    } finally {
-      setVideoSettingsBusy(false);
-    }
-  };
-
-  const changeVideoDecoderBackend = async (videoDecoderBackend: VideoDecoderBackend) => {
-    setVideoSettingsBusy(true);
-    try {
-      setVideoSettings(await setVideoDecoderBackend(videoDecoderBackend));
-      message.success(t("settings.videoDecoderChanged"));
-    } catch (error) {
-      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
-    } finally {
-      setVideoSettingsBusy(false);
-    }
-  };
-
   const changeAudioEnabled = async (enabled: boolean) => {
-    setVideoSettingsBusy(true);
+    setAppSettingsBusy(true);
     try {
       const settings = await setAudioEnabled(enabled);
-      setVideoSettings(settings);
+      setAppSettings(settings);
       onAudioEnabledChange(settings.audio_enabled);
       message.success(t("settings.deviceAudioChanged"));
     } catch (error) {
-      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) }));
     } finally {
-      setVideoSettingsBusy(false);
+      setAppSettingsBusy(false);
     }
   };
 
   const changeClipboardSyncEnabled = async (enabled: boolean) => {
-    setVideoSettingsBusy(true);
+    setAppSettingsBusy(true);
     try {
-      setVideoSettings(await setClipboardSyncEnabled(enabled));
+      setAppSettings(await setClipboardSyncEnabled(enabled));
       message.success(t("settings.clipboardSyncChanged"));
     } catch (error) {
-      showErrorMessage(t("settings.videoSettingsUnavailable", { error: String(error) }));
+      showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) }));
     } finally {
-      setVideoSettingsBusy(false);
+      setAppSettingsBusy(false);
     }
   };
 
@@ -203,60 +175,13 @@ export function SettingsPage({
         <label><span>{t("settings.fullscreenToolbarAutoHide")}</span><Switch checked={deviceView.fullscreenToolbarAutoHide} onChange={(fullscreenToolbarAutoHide) => onDeviceViewChange({ ...deviceView, fullscreenToolbarAutoHide })} /></label>
       </div>
       <div className="settings-section">
-        <Typography.Title level={5}>{t("settings.video")}</Typography.Title>
-        <label>
-          <Space size={8} wrap>
-            <span>{t("settings.videoDecoder")}</span>
-            <Tag color="warning">{t("settings.experimental")}</Tag>
-          </Space>
-          <Select<VideoDecoderBackend>
-            className="video-format-select"
-            value={videoSettings?.video_decoder_backend}
-            disabled={!videoSettings}
-            loading={videoSettingsBusy}
-            options={[
-              { value: "native", label: t("settings.videoDecoders.native") },
-              { value: "browser", label: t("settings.videoDecoders.browser") },
-            ]}
-            onChange={(value) => void changeVideoDecoderBackend(value)}
-          />
-        </label>
-        <Typography.Text type={videoSettings?.browser_decoder_fallback ? "warning" : "secondary"}>
-          {videoSettings?.browser_decoder_fallback
-            ? t("settings.videoDecoderFallback", { error: videoSettings.browser_decoder_fallback })
-            : t("settings.videoDecoderHint")}
-        </Typography.Text>
-        <label>
-          <Space size={8} wrap>
-            <span>{t("settings.videoPixelFormat")}</span>
-            <Tag color="warning">{t("settings.experimental")}</Tag>
-          </Space>
-          <Select<VideoPixelFormat>
-            className="video-format-select"
-            value={videoSettings?.video_pixel_format}
-            disabled={!videoSettings || videoSettings.environment_override}
-            loading={videoSettingsBusy}
-            options={[
-              { value: "rgb24", label: t("settings.videoFormats.rgb24") },
-              { value: "yuv420p", label: t("settings.videoFormats.yuv420p") },
-            ]}
-            onChange={(value) => void changeVideoPixelFormat(value)}
-          />
-        </label>
-        <Typography.Text type="secondary">
-          {videoSettings?.environment_override
-            ? t("settings.videoPixelFormatEnvironmentOverride")
-            : t("settings.videoPixelFormatHint")}
-        </Typography.Text>
-      </div>
-      <div className="settings-section">
         <Typography.Title level={5}>{t("settings.audio")}</Typography.Title>
         <label>
           <span>{t("settings.deviceAudioEnabled")}</span>
           <Switch
-            checked={videoSettings?.audio_enabled ?? false}
-            disabled={!videoSettings}
-            loading={videoSettingsBusy}
+            checked={appSettings?.audio_enabled ?? false}
+            disabled={!appSettings}
+            loading={appSettingsBusy}
             onChange={(enabled) => void changeAudioEnabled(enabled)}
           />
         </label>
@@ -282,9 +207,9 @@ export function SettingsPage({
         <label>
           <span>{t("settings.clipboardSyncEnabled")}</span>
           <Switch
-            checked={videoSettings?.clipboard_sync_enabled ?? false}
-            disabled={!videoSettings}
-            loading={videoSettingsBusy}
+            checked={appSettings?.clipboard_sync_enabled ?? false}
+            disabled={!appSettings}
+            loading={appSettingsBusy}
             onChange={(enabled) => void changeClipboardSyncEnabled(enabled)}
           />
         </label>

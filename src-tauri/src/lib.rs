@@ -47,8 +47,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use protocol::{
-    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, FrameSlot,
-    InputSink, LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
+    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, InputSink,
+    LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -107,33 +107,17 @@ fn frontend_log(event: diagnostics::FrontendLogEvent) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn video_settings_status(
+fn app_settings_status(
     state: tauri::State<'_, Arc<settings::AppSettings>>,
-) -> settings::VideoSettingsStatus {
+) -> settings::SettingsStatus {
     state.status()
-}
-
-#[tauri::command]
-fn set_video_pixel_format(
-    video_pixel_format: protocol::FrameFormat,
-    state: tauri::State<'_, Arc<settings::AppSettings>>,
-) -> Result<settings::VideoSettingsStatus, String> {
-    state.set_video_pixel_format(video_pixel_format)
-}
-
-#[tauri::command]
-fn set_video_decoder_backend(
-    video_decoder_backend: settings::VideoDecoderBackend,
-    state: tauri::State<'_, Arc<settings::AppSettings>>,
-) -> Result<settings::VideoSettingsStatus, String> {
-    state.set_video_decoder_backend(video_decoder_backend)
 }
 
 #[tauri::command]
 fn set_audio_enabled(
     enabled: bool,
     state: tauri::State<'_, Arc<settings::AppSettings>>,
-) -> Result<settings::VideoSettingsStatus, String> {
+) -> Result<settings::SettingsStatus, String> {
     state.set_audio_enabled(enabled)
 }
 
@@ -143,7 +127,7 @@ fn set_audio_playback(
     volume: f32,
     settings: tauri::State<'_, Arc<settings::AppSettings>>,
     output: tauri::State<'_, audio_output::AudioOutput>,
-) -> Result<settings::VideoSettingsStatus, String> {
+) -> Result<settings::SettingsStatus, String> {
     let status = settings.set_audio_playback(muted, volume)?;
     output.set_preferences(status.audio_muted, status.audio_volume)?;
     Ok(status)
@@ -160,7 +144,7 @@ fn audio_output_status(
 fn set_clipboard_sync_enabled(
     enabled: bool,
     state: tauri::State<'_, Arc<settings::AppSettings>>,
-) -> Result<settings::VideoSettingsStatus, String> {
+) -> Result<settings::SettingsStatus, String> {
     state.set_clipboard_sync_enabled(enabled)
 }
 
@@ -205,7 +189,6 @@ fn spawn_backend(
                 .expect("build CoreDevice runtime");
             let device_tasks = tokio::task::LocalSet::new();
             runtime.block_on(device_tasks.run_until(async move {
-                let frames = FrameSlot::default();
                 let browser_frames = browser_video::BrowserVideoSlot::default();
                 let video_counters = VideoCounters::default();
                 let status = StatusSlot::default();
@@ -232,11 +215,8 @@ fn spawn_backend(
                 let device_logs = device_logs::DeviceLogSlot::default();
                 let device_log_demand = device_logs::DeviceLogDemand::default();
                 let services = supervisor::ServiceRegistry::default();
-                let device_control = application::DeviceControlService::new(
-                    frames.clone(),
-                    browser_frames.clone(),
-                    input.clone(),
-                );
+                let device_control =
+                    application::DeviceControlService::new(browser_frames.clone(), input.clone());
                 let application_services = application::ApplicationServices::new(
                     device_control,
                     application::DeviceStateSlots {
@@ -266,8 +246,6 @@ fn spawn_backend(
                     resource_dir,
                     settings.clone(),
                     video_counters.clone(),
-                    || {},
-                    frames.clone(),
                     browser_frames.clone(),
                     audio.clone(),
                     status.clone(),
@@ -299,7 +277,6 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         application: application_services,
-                        frames,
                         browser_frames,
                         clipboard,
                         network_capture,
@@ -315,7 +292,6 @@ fn spawn_backend(
                         services,
                         input,
                         profile_dir: Arc::new(profile_dir),
-                        settings,
                     },
                     server_token,
                 );
@@ -396,9 +372,7 @@ pub fn run() {
             set_debug_logging,
             open_log_directory,
             frontend_log,
-            video_settings_status,
-            set_video_pixel_format,
-            set_video_decoder_backend,
+            app_settings_status,
             set_audio_enabled,
             set_audio_playback,
             audio_output_status,

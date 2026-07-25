@@ -21,6 +21,7 @@ pub struct BrowserVideoFrame {
     pub width: u16,
     pub height: u16,
     pub bytes: Bytes,
+    pub published_at: std::time::Instant,
 }
 
 struct BrowserVideoSlotInner {
@@ -59,6 +60,7 @@ impl BrowserVideoSlot {
             width,
             height,
             bytes: Bytes::from(bytes),
+            published_at: std::time::Instant::now(),
         }));
     }
 
@@ -275,6 +277,7 @@ mod tests {
             width: 1290,
             height: 2796,
             bytes: Bytes::from_static(&[0, 0, 0, 1, 0x26]),
+            published_at: std::time::Instant::now(),
         };
         let packet = encode_packet(&frame);
         assert_eq!(&packet[..4], PACKET_MAGIC);

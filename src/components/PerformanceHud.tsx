@@ -41,7 +41,7 @@ export function PerformanceHud({ items, view, streamMetrics, renderFps, avoidFul
     decoded_fps: number(streamMetrics.decoded_fps),
     presented_fps: number(renderFps),
     bandwidth: `${number(streamMetrics.megabits_per_second, 2)} Mbps`,
-    jpeg_encode: `${number(streamMetrics.jpeg_encode_ms, 2)} ms`,
+    decoder_accept: `${number(streamMetrics.decoder_accept_ms, 2)} ms`,
     frame_age: `${number(streamMetrics.frame_age_ms, 2)} ms`,
   };
 

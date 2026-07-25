@@ -22,7 +22,7 @@ idevice：CoreDevice、Lockdown、Installation Proxy、Misagent、Universal HID
 
 Rust 传输适配器不应分别实现设备控制规则。第一条迁移到 `application` 应用服务层的纵向链路包含活动会话命令、截图超时、最新原生帧、浏览器画面尺寸和联合帧版本。HTTP 截图与 MCP 截图、输入和帧等待把各自的请求/响应格式映射到同一个 `DeviceControlService`；等待新画面由原生 `watch` 或浏览器帧广播直接唤醒，不在适配器中轮询。后续设备能力应沿用“传输适配器 -> 应用服务 -> 会话能力”的依赖方向。
 
-前端的 `useDeviceVideoStream` controller 独占视频 WebSocket、WebCodecs/JPEG 解码、Canvas 呈现、重连、画面需求、停滞检测和前端性能指标。`App` 只组合页面工作流，通过稳定的命令接口发送输入，并在断线回调中清理按键映射状态。截图与录制可以读取 controller 暴露的 Canvas ref，但不会参与解码器生命周期管理。
+前端的 `useDeviceVideoStream` controller 独占视频 WebSocket、WebCodecs 解码、Canvas 呈现、重连、画面需求、停滞检测和前端性能指标。`App` 只组合页面工作流，通过稳定的命令接口发送输入，并在断线回调中清理按键映射状态。截图与录制可以读取 controller 暴露的 Canvas ref，但不会参与解码器生命周期管理。
 
 前端运行时服务沿用相同的所有权规则。`usePrivateBackend` 独占 Tauri 启动握手和 bearer 鉴权请求构造，`usePerformanceTelemetry` 与 `useDeviceLogDemand` 分别独占受监督服务的需求启停、轮询与清理。非主工作区和大型检查器通过独立 React suspense 边界加载，使设备画面无需等待 AFC、诊断、设置或映射编辑代码完成解析。AFC 只在首次访问时加载，此后保持挂载，因为活动传输与取消操作属于该工作区生命周期。`DeviceFullscreenToolbar` 负责独立的硬件与功能控制面、Pointer Capture 及尺寸变化监听，纯 `fullscreenToolbarLayout` 函数负责边界限制、最近槽位吸合，以及以硬件控制面为最高优先级的实际渲染边界冲突处理。`App` 继续持有命令与生命周期状态；持久化的设备视图偏好分别控制两个工具条槽位以及设备/映射侧栏，设备侧栏通过 CSS 收起以保留检查器组件中的活动状态。
 
@@ -32,7 +32,7 @@ Rust 传输适配器不应分别实现设备控制规则。第一条迁移到 `a
 
 Axum 是内部传输层，而不是独立部署的网页服务器。默认监听随机回环端口，没有浏览器 入口，不负责提供前端文件，并要求使用通过 Tauri IPC 获取的每次启动独立 bearer token。没有活动会话时，设备管理路由返回 `503`。IPA 预检属于活动会话中的类型化命令：有界归档解析器只读取唯一顶层 App 的 `Info.plist`，新的 Installation Proxy 客户端则核对精确 Bundle ID 和声明的正向 capability；原始 plist 与归档内容不会越过私有 API。确认后的安装与升级任务会在 AFC 上传前重复同一授权，无法确定的检查结果仍保持未知，不会变成兼容性结论。锁定、重启和关机命令共享 Diagnostics Relay 单任务租约。锁定映射到单向休眠请求并保留父控制会话；重启和关机则允许设备断开结束当前会话。
 
-WebSocket 传输 JPEG 帧和类型化控制消息。前端发送归一化触点，而不是原始 HID report。 Rust 会在分发前验证触点身份、五触点上限、坐标范围和画面方向。
+WebSocket 传输带版本头的 Annex-B HEVC Access Unit 和类型化控制消息。前端发送归一化触点，而不是原始 HID report。Rust 会在分发前验证触点身份、五触点上限、坐标范围和画面方向。
 
 MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp`。它共享会话管理器的最新帧、输入通道、设备状态和控制通道， 并共享性能快照和有界设备日志缓冲，因此自动化客户端与 WebView 复用同一个 CoreDevice 会话。后端仅保留当前会话最近一条归一化设备元数据事件，用于消除读取事件游标与订阅 下一事件之间的竞态；切换会话会清除保留事件，但不会重用单调递增的序列号。性能与日志 调用使用临时需求租约，与 WebView 的显式需求组合，而不会改写其状态。 坐标工具携带截图尺寸，并通过 与鼠标直接触控相同的方向模型转换。游戏手势通过共享输入队列串行发送一至五触点 HID 帧；截图和动作结果携带帧版本，使 agent 可以跳过画面稳定等待并显式等待下一解码帧。 MCP 崩溃报告工具通过当前会话 provider 分发，报告正文上限为 1 MiB；设备路径使用与桌面 导出相同的防穿越校验。 设备详情调用使用现有会话命令队列，除非调用者显式请求，否则省略稳定硬件标识符。 MCP 没有鉴权；监听非回环地址属于显式部署选择，同时会输出警告。
 
@@ -120,17 +120,13 @@ IPA 安装、显式升级和应用卸载使用独立 Tokio 任务及新的 Insta
 
 ## 视频管线
 
-CoreDevice displayservice 输出 RTP/HEVC。后端先组装完整 HEVC Access Unit，再进入 16 MiB 字节上限队列；溢出时丢弃依赖帧直至 IRAP，并通过 PLI/FIR 请求恢复。FFmpeg 默认输出 自描述的 RGB24 PAM 帧。实验性 YUV420P 设置（也可通过 `DEVICEHUB_VIDEO_PIXEL_FORMAT=yuv420p` 选择）输出 YUV4MPEG2，并将 planar YUV420P 直接交给 TurboJPEG，避免 RGB 转换并将解码帧带宽减半。 最新帧通过 `watch` 通道按事件通知 WebSocket，取消固定频率轮询；慢消费者只会看到最新帧， 不会积压陈旧画面。
+CoreDevice displayservice 输出 RTP/HEVC。后端组装完整 HEVC Access Unit 后写入 16 MiB 字节上限队列；溢出时丢弃依赖帧直至 IRAP，并通过 PLI/FIR 请求恢复。Rust 通过已鉴权 WebSocket 发布带版本头的 Annex-B Access Unit。WebView 从 SPS 推导 RFC 6381 HEVC profile、tier、level、compatibility flags 和 constraints，再使用 `VideoDecoder` 解码并将 `VideoFrame` 绘制到 Canvas。实时视频不再包含 FFmpeg、原始帧、JPEG 或原生解码回退路径。
 
-默认启用的实验性“浏览器 / WebCodecs”后端在同一个有界 Access Unit 队列后分流。Rust 通过已鉴权 WebSocket 发布带版本头的 Annex-B HEVC Access Unit。WebView 从各数据流的 SPS 推导 RFC 6381 HEVC profile、tier、level、compatibility flags 和 constraints，再使用 `VideoDecoder` 解码并把 `VideoFrame` 绘制到现有 Canvas。压缩帧广播缓冲可在 60 FPS 下吸收约半秒的短时 WebSocket 阻塞。广播落后、序列断点、解码队列积压、解码输出超时或配置变化时会丢弃依赖帧并进入明确的重同步状态；重同步期间后端停止发送增量帧，按受限间隔重复 PLI/FIR，直到 IRAP 确实发送给 WebView。设备解码继续而 WebSocket 输出为零时，前端指标也会补发恢复请求。能力检测、输出超时或运行时连续失败会自动重连并回退原生后端。初始化时会探测带真实尺寸与 codec 的准确配置；如果 WebKit 报告支持但 `configure()` 拒绝，应用会依次尝试更简化的 `hev1` 和 `hvc1` 配置，全部失败后才触发原生回退。WebCodecs 的 `EncodedVideoChunk.timestamp` 来自 90 kHz RTP 时钟而非固定 60 FPS 计数，因此会保留设备的实际帧间隔、可变帧率以及更高刷新率。SPS/codec 扫描仅发生在首次、关键帧或尺寸变化时，普通依赖帧不再重复遍历整个压缩 Access Unit。
+压缩帧广播缓冲用于吸收短时 WebSocket 阻塞。广播落后、序列断点、有界入口拥塞、解码队列积压、输出超时或配置变化时会丢弃依赖帧并进入重同步。只有前端将相同 sequence 的数据包接收到有界解码入口队列后才释放传输 credit；呈现确认仅用于独立的显示延迟指标。重同步期间后端停止发送增量帧并重复 PLI/FIR，直到 IRAP 确实发出。初始化会按真实尺寸和 codec 探测配置，并依次尝试更简化的 `hev1` 和 `hvc1` 配置。WebCodecs 时间戳来自 90 kHz RTP 时钟，可保留真实节奏、可变帧率和更高刷新率。
 
 WebSocket 客户端会显式声明实时画面需求。仅设备控制页和使用实时背景的按键映射页接收视频； 切换到设置、AFC、日志等页面、使用静态映射截图或窗口不可见时，后端仍维持 RTP/RTCP 会话， 但停止向该 WebView 复制和发送画面。恢复显示时主动请求 IRAP，避免用缺少参考帧的 P-frame 恢复。此门控只作用于 UI 显示，MCP 截图继续使用按需 CoreDevice ScreenCaptureService，帧同步 同时观察原生与浏览器帧版本。
 
-Axum 使用线程本地复用的 TurboJPEG compressor 编码最新帧。每个 WebView 最多允许两帧 在途，使后端 JPEG 编码与 WebView JPEG 解码可以重叠，同时不会形成无限队列。前端会对 已解码呈现或主动替换的帧发送确认；500ms credit 租约避免确认丢失时永久停帧。
-
-Windows 默认将解码长边限制在 1920 像素。FFmpeg 始终保持比例、不放大，并输出偶数 尺寸。设置 `DEVICEHUB_VIDEO_MAX_DIMENSION=0` 可使用原始分辨率，低性能设备可设置 更小值。
-
-浏览器后端不应用 FFmpeg 尺寸上限。它要求平台 WebView 通过 WebCodecs 暴露 HEVC；Windows 通常还需要系统 HEVC Video Extensions。应用会在运行时探测并配置 SPS 推导出的准确解码 配置，不会仅凭 WebCodecs 存在就假定 HEVC 可用。
+平台 WebView 必须通过 WebCodecs 暴露 HEVC。Windows WebView2 通常还需要系统 HEVC Video Extensions；GPU 具备硬件解码能力并不等于 WebCodecs 一定开放 HEVC。平台不支持时应用会报告解码失败，不再重连到原生视频解码器。FFmpeg 仅保留给设备音频，MCP 和 HTTP 的独立按需截图服务不受影响。
 
 Canvas 使用同一个比例 contain-fit 旋转后的源画面。鼠标坐标只在准确显示矩形内归一化， 避免横屏拉伸和触控偏移。
 

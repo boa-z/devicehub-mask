@@ -1,7 +1,6 @@
 //! Application services shared by HTTP, WebSocket, and MCP adapters.
 
 use std::fmt;
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -11,8 +10,8 @@ use crate::device_events::DeviceEventSlot;
 use crate::device_logs::{DeviceLogDemand, DeviceLogSlot};
 use crate::performance::{PerformanceDemand, PerformanceSlot};
 use crate::protocol::{
-    ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, Frame, FrameSlot, InputCmd, InputSink,
-    LocationStatusSlot, OrientationSlot, StatusSlot,
+    ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, InputCmd, InputSink, LocationStatusSlot,
+    OrientationSlot, StatusSlot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +61,6 @@ pub struct ObservabilitySlots {
 
 #[derive(Clone)]
 pub struct DeviceControlService {
-    frames: FrameSlot,
     browser_frames: BrowserVideoSlot,
     input: InputSink,
 }
@@ -133,9 +131,8 @@ impl ApplicationServices {
 }
 
 impl DeviceControlService {
-    pub fn new(frames: FrameSlot, browser_frames: BrowserVideoSlot, input: InputSink) -> Self {
+    pub fn new(browser_frames: BrowserVideoSlot, input: InputSink) -> Self {
         Self {
-            frames,
             browser_frames,
             input,
         }
@@ -149,13 +146,7 @@ impl DeviceControlService {
     }
 
     pub fn frame_version(&self) -> u64 {
-        self.frames
-            .version()
-            .saturating_add(self.browser_frames.version())
-    }
-
-    pub fn latest_frame(&self) -> Option<(u64, Arc<Frame>)> {
-        self.frames.latest()
+        self.browser_frames.version()
     }
 
     pub fn browser_dimensions(&self) -> Option<(u32, u32)> {
@@ -179,26 +170,20 @@ impl DeviceControlService {
         if self.frame_version() > after {
             return true;
         }
-        let mut native = self.frames.subscribe();
         let mut browser = self.browser_frames.subscribe();
         // Close the publication race between the initial version check and
-        // installing both subscriptions.
+        // installing the compressed-frame subscription.
         if self.frame_version() > after {
             return true;
         }
         tokio::time::timeout(timeout, async {
             loop {
-                tokio::select! {
-                    changed = native.changed() => {
-                        if changed.is_err() {
-                            return false;
-                        }
-                    }
-                    changed = browser.recv() => {
-                        if matches!(changed, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
-                            return false;
-                        }
-                    }
+                let changed = browser.recv().await;
+                if matches!(
+                    changed,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed)
+                ) {
+                    return false;
                 }
                 if self.frame_version() > after {
                     return true;
@@ -213,9 +198,7 @@ impl DeviceControlService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{FrameFormat, InputSink};
-    use std::sync::OnceLock;
-    use std::time::Instant;
+    use crate::protocol::InputSink;
     use tokio::sync::mpsc::unbounded_channel;
 
     fn service() -> (
@@ -226,7 +209,7 @@ mod tests {
         let (sender, receiver) = unbounded_channel();
         input.set(Some(sender));
         (
-            DeviceControlService::new(FrameSlot::default(), BrowserVideoSlot::default(), input),
+            DeviceControlService::new(BrowserVideoSlot::default(), input),
             receiver,
         )
     }
@@ -237,11 +220,7 @@ mod tests {
         let observability = ObservabilitySlots::default();
         let (control, mut commands) = unbounded_channel();
         let services = ApplicationServices::new(
-            DeviceControlService::new(
-                FrameSlot::default(),
-                BrowserVideoSlot::default(),
-                InputSink::default(),
-            ),
+            DeviceControlService::new(BrowserVideoSlot::default(), InputSink::default()),
             state.clone(),
             observability.clone(),
             control,
@@ -274,34 +253,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frame_wait_is_woken_by_native_publication() {
-        let frames = FrameSlot::default();
-        let service = DeviceControlService::new(
-            frames.clone(),
-            BrowserVideoSlot::default(),
-            InputSink::default(),
-        );
-        let waiter = tokio::spawn({
-            let service = service.clone();
-            async move { service.wait_for_frame(0, Duration::from_secs(1)).await }
-        });
-        tokio::task::yield_now().await;
-        frames.publish(Arc::new(Frame {
-            width: 1,
-            height: 1,
-            format: FrameFormat::Rgb24,
-            pixels: vec![0, 0, 0],
-            decoded_at: Instant::now(),
-            jpeg: OnceLock::new(),
-        }));
-        assert!(waiter.await.unwrap());
-    }
-
-    #[tokio::test]
     async fn frame_wait_is_woken_by_browser_publication() {
         let browser = BrowserVideoSlot::default();
-        let service =
-            DeviceControlService::new(FrameSlot::default(), browser.clone(), InputSink::default());
+        let service = DeviceControlService::new(browser.clone(), InputSink::default());
         let waiter = tokio::spawn({
             let service = service.clone();
             async move { service.wait_for_frame(0, Duration::from_secs(1)).await }

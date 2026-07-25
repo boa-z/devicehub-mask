@@ -48,7 +48,6 @@ use idevice::{
     tcp::handle::{AdapterHandle, UdpSocketHandle},
     utils::installation::{install_package_with_callback, upgrade_package_with_callback},
 };
-use tokio::process::ChildStdin;
 
 use crate::audio_output::AudioOutput;
 use crate::decode;
@@ -169,7 +168,6 @@ async fn run(
     endpoint: SessionEndpoint,
     pairing_dir: PathBuf,
     video: SessionVideo,
-    repaint: impl Fn() + Send + 'static,
     clipboard: ClipboardSlot,
     views: SessionViews,
     mut input_rx: UnboundedReceiver<InputCmd>,
@@ -302,11 +300,11 @@ async fn run(
         }
     };
 
-    let frame_format = video.frame_format;
-    let decoder_backend = video.decoder_backend;
-    video.frames.reset();
     video.browser_frames.reset_dimensions();
-    tracing::info!(?decoder_backend, "selected video decoder backend");
+    tracing::info!(
+        decoder_backend = "webcodecs",
+        "selected video decoder backend"
+    );
 
     views.status.set("connected");
 
@@ -349,39 +347,13 @@ async fn run(
     let browser_keyframes = video.browser_frames.clone();
     let browser_lifecycle = video.browser_frames.clone();
     let decode_pipeline = async move {
-        match decoder_backend {
-            crate::settings::VideoDecoderBackend::Native => {
-                let (_child, ffmpeg_in, ffmpeg_out, ffmpeg_err) =
-                    decode::spawn_ffmpeg(frame_format)
-                        .map_err(|error| format!("failed to spawn ffmpeg: {error}"))?;
-                tokio::select! {
-                    _ = ffmpeg_writer(ffmpeg_in, decode_queue) => {
-                        tracing::warn!("ffmpeg writer ended");
-                    }
-                    _ = decode::read_frames(
-                        ffmpeg_out,
-                        frame_format,
-                        video.frames,
-                        decode_counters,
-                        repaint,
-                    ) => {
-                        tracing::warn!("decode task ended early");
-                    }
-                    _ = watch_decode_errors(ffmpeg_err, decode_corruption) => {
-                        tracing::warn!("ffmpeg stderr watcher ended");
-                    }
-                }
-            }
-            crate::settings::VideoDecoderBackend::Browser => {
-                browser_video_writer(
-                    decode_queue,
-                    video.browser_frames,
-                    decode_counters,
-                    decode_corruption,
-                )
-                .await;
-            }
-        }
+        browser_video_writer(
+            decode_queue,
+            video.browser_frames,
+            decode_counters,
+            decode_corruption,
+        )
+        .await;
         Ok::<(), String>(())
     };
 
@@ -2817,17 +2789,6 @@ async fn video_task(
     hevc_queue.close();
 }
 
-/// Drain depacketized Annex-B from [`video_task`] into ffmpeg's stdin. On its own
-/// task so ffmpeg backpressure never stalls the RTP receive loop's RTCP ACKs.
-async fn ffmpeg_writer(mut ffmpeg_in: ChildStdin, hevc_queue: Arc<HevcQueue>) {
-    while let Some(access_unit) = hevc_queue.pop().await {
-        if ffmpeg_in.write_all(&access_unit.bytes).await.is_err() {
-            tracing::info!("ffmpeg stdin closed; ending writer");
-            break;
-        }
-    }
-}
-
 async fn browser_video_writer(
     hevc_queue: Arc<HevcQueue>,
     frames: crate::browser_video::BrowserVideoSlot,
@@ -3803,29 +3764,6 @@ async fn start_video(
     Ok(())
 }
 
-/// Watch ffmpeg's stderr for HEVC decode errors; each pulses `corruption` to ask
-/// [`rtcp_send_task`] for a fresh IDR. The encoder sends only one IDR, so a dropped
-/// packet floods these errors and they never stop on their own.
-async fn watch_decode_errors(stderr: ChildStderr, corruption: Arc<Notify>) {
-    let mut reader = BufReader::new(stderr);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break, // ffmpeg exited
-            Ok(_) => {
-                if line.contains("Could not find ref")
-                    || line.contains("Error constructing")
-                    || line.contains("error while decoding")
-                {
-                    corruption.notify_one();
-                }
-            }
-            Err(_) => break,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VideoWatchdogObservation {
     Decoded,
@@ -3948,7 +3886,6 @@ mod tests {
             transport_events,
             source_frames,
             decoded_frames,
-            duplicate_frames: 0,
         }
     }
 

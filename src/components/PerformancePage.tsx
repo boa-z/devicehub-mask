@@ -757,7 +757,7 @@ export function PerformancePage({ activeUdid, streamMetrics, renderFps, view, er
           <div><span>{t("performance.decodedFps")}</span><strong>{number(streamMetrics.decoded_fps)}</strong></div>
           <div><span>{t("performance.presentedFps")}</span><strong>{number(renderFps)}</strong></div>
           <div><span>{t("performance.bandwidth")}</span><strong>{number(streamMetrics.megabits_per_second, 2)} Mbps</strong></div>
-          <div><span>{t("performance.jpegEncode")}</span><strong>{number(streamMetrics.jpeg_encode_ms, 2)} ms</strong></div>
+          <div><span>{t("performance.decoderAccept")}</span><strong>{number(streamMetrics.decoder_accept_ms, 2)} ms</strong></div>
           <div><span>{t("performance.frameAge")}</span><strong>{number(streamMetrics.frame_age_ms, 2)} ms</strong></div>
         </div>
       </section>

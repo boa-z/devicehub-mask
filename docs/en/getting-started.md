@@ -30,7 +30,7 @@ Open a new shell, then verify `rustc`, `node`, `npm`, and `ffmpeg`.
 
 Windows 10/11 requires WebView2, the Rust MSVC toolchain, Visual Studio Build Tools with **Desktop development with C++**, CMake, NASM, and Apple Mobile Device Service. The desktop iTunes package provides the Apple service and the usbmuxd endpoint at `127.0.0.1:27015`.
 
-The experimental Browser / WebCodecs fast path may require Microsoft's HEVC Video Extensions on some Windows systems. Buying or installing that extension is not required to use the app: capability probing automatically selects the bundled Native / FFmpeg decoder when WebView2 cannot expose HEVC.
+Live video requires WebView2 to expose HEVC through WebCodecs. On many Windows systems this requires Microsoft's HEVC Video Extensions; GPU HEVC support alone is not sufficient. The app no longer includes a Native / FFmpeg video fallback.
 
 ```powershell
 winget install --id Rustlang.Rustup --exact
@@ -43,7 +43,7 @@ rustup default stable-msvc
 Get-Service "Apple Mobile Device Service"
 ```
 
-Python 3.12 is used only by the preparation helper. CMake and NASM build the bundled static libjpeg-turbo; a separate TurboJPEG DLL is not required at runtime. Install a system FFmpeg only when using `tauri dev` without first running `npm run ffmpeg:prepare`. Connect and trust the device once in iTunes.
+Python 3.12 is used only by preparation helpers. CMake and NASM are build-time dependencies for bundled native sidecars. Install a system FFmpeg only when using `tauri dev` without first running `npm run ffmpeg:prepare`; FFmpeg is used for device audio, not live video. Connect and trust the device once in iTunes.
 
 ### Linux
 

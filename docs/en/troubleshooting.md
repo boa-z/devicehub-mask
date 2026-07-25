@@ -65,29 +65,18 @@ Do not force the canvas to an arbitrary width and height. DeviceHub Mask contain
 
 ## Windows CPU Usage Is High
 
-For a cross-platform comparison, try the experimental Browser / WebCodecs decoder in Settings > Video. It removes FFmpeg and JPEG from the live path when the platform WebView supports HEVC. A Windows capability fallback means WebView2 does not expose a compatible HEVC codec even if the GPU can decode HEVC. No paid extension is required: the bundled Native / FFmpeg decoder remains the compatibility path and runtime decoder failures reconnect with it automatically.
-
-If WebCodecs reports `OperationError: Unsupported configuration`, the app reads the HEVC profile and level from the stream SPS and retries conservative `hev1` and `hvc1` configurations. If all exact configurations fail, the current run reconnects with Native / FFmpeg; this usually means the platform WebView or its system HEVC component cannot decode that device's resolution/profile.
+Live video uses WebCodecs exclusively. If Windows reports `OperationError: Unsupported configuration`, the app reads the HEVC profile and level from the SPS and retries conservative `hev1` and `hvc1` configurations. If all configurations fail, WebView2 or its system codec cannot decode the device stream. GPU HEVC capability alone is insufficient; Windows commonly requires HEVC Video Extensions. There is no Native / FFmpeg video fallback.
 
 `browser video client lagged` means the WebSocket sender briefly fell behind the compressed HEVC broadcast; it does not mean CoreDevice stopped producing frames. The app discards dependent frames, repeatedly requests IRAP until resynchronized, and resumes without reconnecting. If the toolbar remains at nonzero Source/Decode but zero Send/Display for more than a few seconds, collect Debug logs containing the lag warning, following PLI/FIR requests, received IRAP entries, and `devicehub_mask::perf` output.
 
-Use the live Decode / Send / Display FPS and JPEG latency metrics:
+Use the live Decode / Send / Display FPS and decoder-ingress latency metrics:
 
-- Source FPS reports complete RTP frame markers; Decode and Published FPS separate FFmpeg output from duplicate-frame suppression.
-- Send and Display FPS should track Published FPS. Up to two JPEG frames are in flight so backend encoding can overlap WebView decoding without an unbounded queue.
-- Debug performance logs also report RTP timestamp deltas, source arrival jitter, HEVC queue wait, JPEG encode, frame age, WebSocket write, presentation acknowledgement, frontend JPEG decode, Canvas draw, and per-stage dropped frames.
-- Windows defaults to a 1920-pixel decoded long edge and RGB24 transport.
+- Source FPS reports complete RTP frame markers; Published FPS reports compressed access units admitted to the WebCodecs transport.
+- Send and Display FPS should track Published FPS. The backend allows at most two unacknowledged packets and the frontend has a bounded eight-packet ingress queue.
+- Debug performance logs report RTP timestamp deltas, source arrival jitter, HEVC queue wait, frame age, WebSocket write, decoder acceptance, presentation acknowledgement, WebCodecs output, Canvas draw, and per-stage drops.
+- Windows decodes the source resolution exposed by WebCodecs; there is no RGB24/YUV420P transport or FFmpeg dimension limit.
 
-These metrics and Debug log fields are platform-independent. Compare macOS, Windows, and Linux with Release builds, the same device/content, pixel format, decoded dimensions, and `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` value; do not compare an idle screen on one host with active motion on another.
-
-Try a smaller decode limit without changing aspect ratio:
-
-```powershell
-$env:DEVICEHUB_VIDEO_MAX_DIMENSION = "1280"
-npm run tauri:dev
-```
-
-Set it to `0` only when diagnosing native resolution. Record CPU usage, all FPS metrics, JPEG latency, device resolution, GPU, and whether the installed release or a debug build was tested. Debug builds are not representative of release performance.
+These metrics and Debug log fields are platform-independent. Compare macOS, Windows, and Linux with Release builds, the same device/content, decoded dimensions, and `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` value. Record CPU usage, all FPS metrics, ingress/presentation latency, device resolution, GPU, WebView version, and whether an installed release or Debug build was tested. Debug builds are not representative of Release performance.
 
 ## A Process-Filtered Network Capture Contains No Packets
 

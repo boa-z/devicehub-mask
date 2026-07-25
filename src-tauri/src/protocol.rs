@@ -2,43 +2,21 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
-use tokio::sync::watch;
 
 use crate::hid::TouchContact;
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FrameFormat {
-    #[default]
-    Rgb24,
-    Yuv420p,
-}
-
-/// A decoded screen frame. Pixels are tightly packed RGB24 or planar YUV420P.
-pub struct Frame {
-    pub width: usize,
-    pub height: usize,
-    pub format: FrameFormat,
-    pub pixels: Vec<u8>,
-    pub decoded_at: Instant,
-    pub jpeg: OnceLock<Result<Bytes, String>>,
-}
 
 #[derive(Debug, Default)]
 struct VideoCountersInner {
     transport_events: AtomicU64,
     source_frames: AtomicU64,
     decoded_frames: AtomicU64,
-    duplicate_frames: AtomicU64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -49,7 +27,6 @@ pub struct VideoCounterSnapshot {
     pub transport_events: u64,
     pub source_frames: u64,
     pub decoded_frames: u64,
-    pub duplicate_frames: u64,
 }
 
 impl VideoCounters {
@@ -65,68 +42,12 @@ impl VideoCounters {
         self.0.decoded_frames.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn note_duplicate_frame(&self) {
-        self.0.duplicate_frames.fetch_add(1, Ordering::Relaxed);
-    }
-
     pub fn snapshot(&self) -> VideoCounterSnapshot {
         VideoCounterSnapshot {
             transport_events: self.0.transport_events.load(Ordering::Relaxed),
             source_frames: self.0.source_frames.load(Ordering::Relaxed),
             decoded_frames: self.0.decoded_frames.load(Ordering::Relaxed),
-            duplicate_frames: self.0.duplicate_frames.load(Ordering::Relaxed),
         }
-    }
-}
-
-/// The latest decoded frame, shared with connected WebSocket clients.
-///
-/// Each consumer subscribes independently and none steal from others; laggards
-/// automatically drop to the latest published frame.
-#[derive(Clone)]
-pub struct FrameSlot(Arc<FrameSlotInner>);
-
-struct FrameSlotInner {
-    frame: watch::Sender<Option<Arc<Frame>>>,
-    version: AtomicU64,
-}
-
-impl Default for FrameSlot {
-    fn default() -> Self {
-        let (frame, _) = watch::channel(None);
-        Self(Arc::new(FrameSlotInner {
-            frame,
-            version: AtomicU64::new(0),
-        }))
-    }
-}
-
-impl FrameSlot {
-    pub fn publish(&self, frame: Arc<Frame>) -> Option<Arc<Frame>> {
-        self.0.version.fetch_add(1, Ordering::Relaxed);
-        self.0.frame.send_replace(Some(frame))
-    }
-
-    /// Subscribe to newest-frame notifications. Slow consumers automatically
-    /// skip stale frames because `watch` retains only the latest value.
-    pub fn subscribe(&self) -> watch::Receiver<Option<Arc<Frame>>> {
-        self.0.frame.subscribe()
-    }
-
-    pub fn reset(&self) {
-        self.0.frame.send_replace(None);
-    }
-
-    pub fn latest(&self) -> Option<(u64, Arc<Frame>)> {
-        self.0
-            .frame
-            .borrow()
-            .clone()
-            .map(|frame| (self.version(), frame))
-    }
-
-    pub fn version(&self) -> u64 {
-        self.0.version.load(Ordering::Relaxed)
     }
 }
 

@@ -30,7 +30,7 @@ rustup-init
 
 Windows 10/11 需要 WebView2、Rust MSVC 工具链、带 **Desktop development with C++** 工作负载的 Visual Studio Build Tools、CMake、NASM 和 Apple Mobile Device Service。桌面版 iTunes 会安装 Apple 服务，并在 `127.0.0.1:27015` 提供 usbmuxd 端点。
 
-实验性的“浏览器 / WebCodecs”快速路径在部分 Windows 系统上可能需要 Microsoft HEVC Video Extensions。使用本应用不要求购买或安装该扩展：WebView2 无法暴露 HEVC 时，能力检测会自动选择内置的“原生 / FFmpeg”解码器。
+实时视频要求 WebView2 通过 WebCodecs 暴露 HEVC。许多 Windows 系统需要 Microsoft HEVC Video Extensions；GPU 支持 HEVC 并不充分。应用不再包含 Native / FFmpeg 视频回退。
 
 ```powershell
 winget install --id Rustlang.Rustup --exact
@@ -43,7 +43,7 @@ rustup default stable-msvc
 Get-Service "Apple Mobile Device Service"
 ```
 
-Python 3.12 只供设备准备脚本使用。CMake 和 NASM 用于编译内置的静态 libjpeg-turbo，运行时不需要单独安装 TurboJPEG DLL。首次启动前应在 iTunes 中连接 并信任设备。只有在没有先运行 `npm run ffmpeg:prepare` 而直接使用 `tauri dev` 时， 才需要另行安装系统 FFmpeg。
+Python 3.12 只供准备脚本使用。CMake 和 NASM 是内置原生 sidecar 的构建依赖。只有在未先运行 `npm run ffmpeg:prepare` 而直接使用 `tauri dev` 时才需要系统 FFmpeg；FFmpeg 用于设备音频，不参与实时视频。首次启动前应在 iTunes 中连接并信任设备。
 
 ### Linux
 

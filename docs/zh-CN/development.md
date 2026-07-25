@@ -39,9 +39,7 @@ npm run tauri:dev
 | `DEVICEHUB_ADDR` | `127.0.0.1:0` | 私有后端地址；端口 `0` 表示随机端口 |
 | `DEVICEHUB_MCP_ADDR` | `127.0.0.1:8009` | Streamable HTTP MCP 监听地址；端点路径为 `/mcp` |
 | `DEVICEHUB_PROFILE_DIR` | Tauri 应用数据目录 | 映射配置存储位置 |
-| `DEVICEHUB_FFMPEG` | 自动查找 | FFmpeg 可执行文件的绝对路径 |
-| `DEVICEHUB_VIDEO_MAX_DIMENSION` | Windows 为 `1920`，其他平台为原始尺寸 | 最大解码宽度或高度；保持比例且不放大；`0` 表示禁用限制 |
-| `DEVICEHUB_VIDEO_PIXEL_FORMAT` | 设置页选项 | 使用 `rgb24` 或实验性 `yuv420p` 覆盖应用的视频像素格式设置 |
+| `DEVICEHUB_FFMPEG` | 自动查找 | 设备音频解码使用的 FFmpeg 可执行文件绝对路径 |
 | `DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES` | `2` | 有界 WebView 帧流水线的诊断 A/B 覆盖，仅接受 `1` 或 `2` |
 | `DEVICEHUB_LOG` | DeviceHub info 日志 | 首选 Rust tracing 过滤器；优先于 `RUST_LOG` |
 | `RUST_LOG` | DeviceHub info 日志 | 标准 tracing 过滤器回退 |
@@ -59,9 +57,7 @@ DEVICEHUB_LOG=devicehub_mask=info,devicehub_mask::session=trace npm run tauri:de
 
 环境过滤器优先于设置页开关。无效过滤器会被拒绝，应用自动使用默认过滤器继续启动。
 
-“设置 > 视频”提供 RGB24 与实验性 YUV420P 路径，RGB24 仍为默认值。选择会持久化到 平台应用配置目录，并在下次连接设备时生效。显式设置 `DEVICEHUB_VIDEO_PIXEL_FORMAT` 后，本次运行中的界面选项将变为只读。
-
-同一区域默认启用实验性的“浏览器 / WebCodecs”解码器。该路径把完整 Annex-B HEVC Access Unit 直接发送到 WebView，从实时视频链路中移除 FFmpeg、原始帧传输和 JPEG 编码。 WebCodecs 能力检测、输出超时或运行时失败会显示在设置页，并自动重连当前设备；本次运行 后续使用原生解码器。
+实时视频固定将完整 Annex-B HEVC Access Unit 发送到 WebView，并使用 WebCodecs 解码。应用已移除 FFmpeg 视频解码、RGB/YUV 原始帧传输、JPEG 编码、解码器选择和像素格式设置。FFmpeg 仍用于 AAC-ELD 设备音频解码。
 
 ## 验证
 

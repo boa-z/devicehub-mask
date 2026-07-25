@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,16 +21,15 @@ use tower_http::cors::CorsLayer;
 
 use crate::hid::TouchContact;
 use crate::protocol::{
-    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, Frame, FrameFormat, FrameSlot,
-    InputCmd, InputSink, LocationStatus, Orientation, PairDeviceResult, RotateDir, VideoCounters,
-    norm, unrotate_norm, validate_device_name, validate_paste_text,
+    AppOperationSlot, ClipboardSlot, ControlCmd, ForgetDeviceResult, InputCmd, InputSink,
+    LocationStatus, Orientation, PairDeviceResult, RotateDir, VideoCounters, norm, unrotate_norm,
+    validate_device_name, validate_paste_text,
 };
 use crate::supervisor::ServiceRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
     pub application: crate::application::ApplicationServices,
-    pub frames: FrameSlot,
     pub browser_frames: crate::browser_video::BrowserVideoSlot,
     pub clipboard: ClipboardSlot,
     pub network_capture: crate::network_capture::NetworkCaptureSlot,
@@ -47,7 +45,6 @@ pub struct AppState {
     pub services: ServiceRegistry,
     pub input: InputSink,
     pub profile_dir: Arc<PathBuf>,
-    pub settings: Arc<crate::settings::AppSettings>,
 }
 
 #[derive(Serialize)]
@@ -78,7 +75,6 @@ struct StreamMetricsView {
     published_fps: f64,
     sent_fps: f64,
     backend_dropped_fps: f64,
-    jpeg_encode_ms: f64,
     frame_age_ms: f64,
     websocket_send_ms: f64,
     decoder_accept_ms: f64,
@@ -3133,8 +3129,7 @@ enum ClientMessage {
         sequence: String,
     },
     FramePresented {
-        #[serde(default)]
-        sequence: Option<String>,
+        sequence: String,
     },
     BrowserVideoKeyframe,
     BrowserDecoderError {
@@ -3145,7 +3140,7 @@ enum ClientMessage {
         received_frames: u64,
         replaced_frames: u64,
         presented_frames: u64,
-        jpeg_decode_ms: f64,
+        decoder_output_ms: f64,
         canvas_draw_ms: f64,
         decoder_congestions: u64,
         decode_errors: u64,
@@ -3184,7 +3179,6 @@ async fn websocket(socket: WebSocket, state: AppState) {
     let send_browser_resync = browser_resync.clone();
     let send_task = tokio::spawn(async move {
         let mut last_status = String::new();
-        let mut frame_rx = send_state.frames.subscribe();
         let mut browser_frame_rx = send_state.browser_frames.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
         let mut device_event_rx = send_state.application.device_events.subscribe();
@@ -3197,12 +3191,9 @@ async fn websocket(socket: WebSocket, state: AppState) {
         browser_resync_tick.tick().await;
         let mut metrics_started = Instant::now();
         let mut metrics_counters = send_state.video_counters.snapshot();
-        let mut metrics_frame_version = send_state.frames.version();
         let mut metrics_browser_frame_version = send_state.browser_frames.version();
         let mut sent_frames = 0_u64;
         let mut sent_bytes = 0_u64;
-        let mut encoded_frames = 0_u64;
-        let mut encoding_time = Duration::ZERO;
         let mut frame_age = Duration::ZERO;
         let mut websocket_send_time = Duration::ZERO;
         let mut skipped_for_backpressure = 0_u64;
@@ -3219,40 +3210,6 @@ async fn websocket(socket: WebSocket, state: AppState) {
                             break;
                         }
                     }
-                }
-                changed = frame_rx.changed() => {
-                    if changed.is_err() {
-                        break;
-                    }
-                    let Some(frame) = frame_rx.borrow_and_update().clone() else {
-                        continue;
-                    };
-                    if !send_video_active.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    if !send_pacer.try_acquire(FrameCredit::JpegPresentation) {
-                        skipped_for_backpressure += 1;
-                        continue;
-                    }
-                    let cached = frame.jpeg.get().is_some();
-                    let encode_started = Instant::now();
-                    frame_age += encode_started.saturating_duration_since(frame.decoded_at);
-                    let encoded = tokio::task::spawn_blocking(move || encode_jpeg(&frame)).await;
-                    let Ok(Ok(jpeg)) = encoded else {
-                        send_pacer.release(FrameCredit::JpegPresentation);
-                        continue;
-                    };
-                    if !cached {
-                        encoded_frames += 1;
-                        encoding_time += encode_started.elapsed();
-                    }
-                    sent_frames += 1;
-                    sent_bytes += jpeg.len() as u64;
-                    let send_started = Instant::now();
-                    if sender.send(Message::Binary(jpeg)).await.is_err() {
-                        break;
-                    }
-                    websocket_send_time += send_started.elapsed();
                 }
                 browser_frame = browser_frame_rx.recv() => {
                     match browser_frame {
@@ -3281,6 +3238,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
                                 }
                             };
                             let packet = crate::browser_video::encode_packet(&frame);
+                            frame_age += Instant::now().saturating_duration_since(frame.published_at);
                             sent_frames += 1;
                             sent_bytes += packet.len() as u64;
                             let send_started = Instant::now();
@@ -3346,14 +3304,11 @@ async fn websocket(socket: WebSocket, state: AppState) {
                 _ = metrics_tick.tick() => {
                     let elapsed = metrics_started.elapsed().as_secs_f64().max(f64::EPSILON);
                     let counters = send_state.video_counters.snapshot();
-                    let version = send_state.frames.version();
                     let browser_version = send_state.browser_frames.version();
                     let source_frames = counters.source_frames.wrapping_sub(metrics_counters.source_frames);
                     let decoded_frames = counters.decoded_frames.wrapping_sub(metrics_counters.decoded_frames);
                     let transport_active = counters.transport_events != metrics_counters.transport_events;
-                    let published_frames = version
-                        .wrapping_sub(metrics_frame_version)
-                        .saturating_add(browser_version.wrapping_sub(metrics_browser_frame_version));
+                    let published_frames = browser_version.wrapping_sub(metrics_browser_frame_version);
                     let pacer = send_pacer.take_metrics();
                     let metrics = StreamMetricsView {
                         transport_active,
@@ -3362,11 +3317,6 @@ async fn websocket(socket: WebSocket, state: AppState) {
                         published_fps: published_frames as f64 / elapsed,
                         sent_fps: sent_frames as f64 / elapsed,
                         backend_dropped_fps: published_frames.saturating_sub(sent_frames) as f64 / elapsed,
-                        jpeg_encode_ms: if encoded_frames == 0 {
-                            0.0
-                        } else {
-                            encoding_time.as_secs_f64() * 1000.0 / encoded_frames as f64
-                        },
                         frame_age_ms: duration_average_ms(frame_age, sent_frames),
                         websocket_send_ms: duration_average_ms(websocket_send_time, sent_frames),
                         decoder_accept_ms: pacer.decoder_accept_average_ms,
@@ -3383,9 +3333,7 @@ async fn websocket(socket: WebSocket, state: AppState) {
                             published_fps = metrics.published_fps,
                             sent_fps = metrics.sent_fps,
                             backend_dropped_fps = metrics.backend_dropped_fps,
-                            duplicate_fps = counters.duplicate_frames.wrapping_sub(metrics_counters.duplicate_frames) as f64 / elapsed,
                             skipped_for_backpressure,
-                            jpeg_encode_ms = metrics.jpeg_encode_ms,
                             frame_age_ms = metrics.frame_age_ms,
                             websocket_send_ms = metrics.websocket_send_ms,
                             decoder_accept_ms = metrics.decoder_accept_ms,
@@ -3408,12 +3356,9 @@ async fn websocket(socket: WebSocket, state: AppState) {
                     }
                     metrics_started = Instant::now();
                     metrics_counters = counters;
-                    metrics_frame_version = version;
                     metrics_browser_frame_version = browser_version;
                     sent_frames = 0;
                     sent_bytes = 0;
-                    encoded_frames = 0;
-                    encoding_time = Duration::ZERO;
                     frame_age = Duration::ZERO;
                     websocket_send_time = Duration::ZERO;
                     skipped_for_backpressure = 0;
@@ -3458,7 +3403,6 @@ const DEFAULT_IN_FLIGHT_FRAMES: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameCredit {
-    JpegPresentation,
     BrowserAccepted(u64),
 }
 
@@ -3466,7 +3410,7 @@ enum FrameCredit {
 enum ClientVideoFeedback {
     None,
     BrowserAccepted(u64),
-    FramePresented(Option<u64>),
+    FramePresented(u64),
     ResetBrowser,
     ResetAll,
 }
@@ -3582,9 +3526,8 @@ impl FramePacer {
             .is_some_and(|credit| credit.acquired_at.elapsed() >= FRAME_CREDIT_LEASE)
         {
             let expired = state.pending.pop_front().expect("pending credit exists");
-            if let FrameCredit::BrowserAccepted(sequence) = expired.kind {
-                state.browser_presentations.remove(&sequence);
-            }
+            let FrameCredit::BrowserAccepted(sequence) = expired.kind;
+            state.browser_presentations.remove(&sequence);
             state.expired_credits = state.expired_credits.saturating_add(1);
         }
         state
@@ -3597,9 +3540,8 @@ impl FramePacer {
         state
             .pending
             .push_back(PendingFrameCredit { kind, acquired_at });
-        if let FrameCredit::BrowserAccepted(sequence) = kind {
-            state.browser_presentations.insert(sequence, acquired_at);
-        }
+        let FrameCredit::BrowserAccepted(sequence) = kind;
+        state.browser_presentations.insert(sequence, acquired_at);
         true
     }
 
@@ -3610,17 +3552,10 @@ impl FramePacer {
         };
         let credit = state.pending.remove(index).expect("matched credit exists");
         let elapsed = credit.acquired_at.elapsed();
-        match kind {
-            FrameCredit::JpegPresentation => state.presentation.record(elapsed),
-            FrameCredit::BrowserAccepted(_) => state.decoder_accept.record(elapsed),
-        }
+        state.decoder_accept.record(elapsed);
     }
 
-    fn presented(&self, browser_sequence: Option<u64>) {
-        let Some(sequence) = browser_sequence else {
-            self.release(FrameCredit::JpegPresentation);
-            return;
-        };
+    fn presented(&self, sequence: u64) {
         let mut state = self.state.lock().expect("frame pacer lock poisoned");
         if let Some(sent_at) = state.browser_presentations.remove(&sequence) {
             state.presentation.record(sent_at.elapsed());
@@ -3629,9 +3564,7 @@ impl FramePacer {
 
     fn clear_browser(&self) {
         let mut state = self.state.lock().expect("frame pacer lock poisoned");
-        state
-            .pending
-            .retain(|credit| !matches!(credit.kind, FrameCredit::BrowserAccepted(_)));
+        state.pending.clear();
         state.browser_presentations.clear();
     }
 
@@ -3659,52 +3592,6 @@ impl FramePacer {
     }
 }
 
-thread_local! {
-    static JPEG_COMPRESSOR: RefCell<Option<turbojpeg::Compressor>> = const { RefCell::new(None) };
-}
-
-fn encode_jpeg(frame: &Frame) -> Result<bytes::Bytes, String> {
-    frame
-        .jpeg
-        .get_or_init(|| {
-            JPEG_COMPRESSOR.with(|slot| {
-                let mut slot = slot.borrow_mut();
-                if slot.is_none() {
-                    let mut compressor =
-                        turbojpeg::Compressor::new().map_err(|error| error.to_string())?;
-                    compressor
-                        .set_quality(80)
-                        .map_err(|error| error.to_string())?;
-                    compressor
-                        .set_subsamp(turbojpeg::Subsamp::Sub2x2)
-                        .map_err(|error| error.to_string())?;
-                    *slot = Some(compressor);
-                }
-                let compressor = slot.as_mut().expect("JPEG compressor initialized");
-                let encoded = match frame.format {
-                    FrameFormat::Rgb24 => compressor.compress_to_vec(turbojpeg::Image {
-                        pixels: frame.pixels.as_slice(),
-                        width: frame.width,
-                        pitch: frame.width * 3,
-                        height: frame.height,
-                        format: turbojpeg::PixelFormat::RGB,
-                    }),
-                    FrameFormat::Yuv420p => compressor.compress_yuv_to_vec(turbojpeg::YuvImage {
-                        pixels: frame.pixels.as_slice(),
-                        width: frame.width,
-                        align: 1,
-                        height: frame.height,
-                        subsamp: turbojpeg::Subsamp::Sub2x2,
-                    }),
-                };
-                encoded
-                    .map(bytes::Bytes::from)
-                    .map_err(|error| error.to_string())
-            })
-        })
-        .clone()
-}
-
 /// Separates decoder ingress acknowledgements from presentation telemetry.
 /// A browser credit is released only by the matching sequence, so a late
 /// acknowledgement cannot accidentally admit a newer frame.
@@ -3726,9 +3613,10 @@ fn handle_client_message(
                 .unwrap_or(ClientVideoFeedback::None);
         }
         ClientMessage::FramePresented { sequence } => {
-            return ClientVideoFeedback::FramePresented(
-                sequence.and_then(|value| value.parse::<u64>().ok()),
-            );
+            return sequence
+                .parse::<u64>()
+                .map(ClientVideoFeedback::FramePresented)
+                .unwrap_or(ClientVideoFeedback::None);
         }
         ClientMessage::VideoDemand { active } => {
             let was_active = video_active.load(Ordering::Relaxed);
@@ -3751,21 +3639,14 @@ fn handle_client_message(
         }
         ClientMessage::BrowserDecoderError { message } => {
             let message = message.chars().take(256).collect::<String>();
-            if state.settings.report_browser_decoder_failure(message)
-                && let Some(selection_id) = state.application.active.selection_id()
-            {
-                let _ = state
-                    .application
-                    .control
-                    .send(ControlCmd::Reconnect(selection_id));
-            }
+            tracing::error!(%message, "WebCodecs video decoder stopped; no native video fallback is configured");
         }
         ClientMessage::FrontendMetrics {
             window_ms,
             received_frames,
             replaced_frames,
             presented_frames,
-            jpeg_decode_ms,
+            decoder_output_ms,
             canvas_draw_ms,
             decoder_congestions,
             decode_errors,
@@ -3775,7 +3656,7 @@ fn handle_client_message(
                 received_frames,
                 replaced_frames,
                 presented_frames,
-                jpeg_decode_ms,
+                decoder_output_ms,
                 canvas_draw_ms,
                 decoder_congestions,
                 decode_errors,
@@ -3788,7 +3669,7 @@ fn handle_client_message(
                     received_frames,
                     replaced_frames,
                     presented_frames,
-                    jpeg_decode_ms = jpeg_decode_ms / received_frames.max(1) as f64,
+                    decoder_output_ms = decoder_output_ms / received_frames.max(1) as f64,
                     canvas_draw_ms = canvas_draw_ms / presented_frames.max(1) as f64,
                     decoder_congestions,
                     decode_errors,
@@ -3848,15 +3729,15 @@ fn valid_frontend_metrics(
     received_frames: u64,
     replaced_frames: u64,
     presented_frames: u64,
-    jpeg_decode_ms: f64,
+    decoder_output_ms: f64,
     canvas_draw_ms: f64,
     decoder_congestions: u64,
     decode_errors: u64,
 ) -> bool {
     (500.0..=60_000.0).contains(&window_ms)
-        && jpeg_decode_ms.is_finite()
+        && decoder_output_ms.is_finite()
         && canvas_draw_ms.is_finite()
-        && (0.0..=window_ms * 10.0).contains(&jpeg_decode_ms)
+        && (0.0..=window_ms * 10.0).contains(&decoder_output_ms)
         && (0.0..=window_ms * 10.0).contains(&canvas_draw_ms)
         && received_frames <= 10_000
         && replaced_frames <= received_frames
@@ -3989,13 +3870,11 @@ mod tests {
         let (input_tx, input_rx) = unbounded_channel();
         input.set(Some(input_tx));
         let (control, control_rx) = unbounded_channel();
-        let frames = FrameSlot::default();
         let browser_frames = crate::browser_video::BrowserVideoSlot::default();
         (
             AppState {
                 application: crate::application::ApplicationServices::new(
                     crate::application::DeviceControlService::new(
-                        frames.clone(),
                         browser_frames.clone(),
                         input.clone(),
                     ),
@@ -4003,7 +3882,6 @@ mod tests {
                     crate::application::ObservabilitySlots::default(),
                     control,
                 ),
-                frames,
                 browser_frames,
                 clipboard: ClipboardSlot::default(),
                 network_capture: crate::network_capture::NetworkCaptureSlot::default(),
@@ -4019,12 +3897,6 @@ mod tests {
                 services: ServiceRegistry::default(),
                 input,
                 profile_dir: Arc::new(PathBuf::new()),
-                settings: Arc::new(crate::settings::AppSettings::load(
-                    std::env::temp_dir().join(format!(
-                        "devicehub-mask-web-test-{}.json",
-                        uuid::Uuid::new_v4().simple()
-                    )),
-                )),
             },
             input_rx,
             control_rx,
@@ -4723,82 +4595,17 @@ mod tests {
         assert!(response.error.is_none());
     }
 
-    fn test_frame() -> Frame {
-        Frame {
-            width: 2,
-            height: 1,
-            format: FrameFormat::Rgb24,
-            pixels: vec![255, 0, 0, 0, 255, 0],
-            decoded_at: Instant::now(),
-            jpeg: std::sync::OnceLock::new(),
-        }
-    }
-
     #[test]
-    fn jpeg_encoding_is_valid_and_cached() {
-        let frame = test_frame();
-        let first = encode_jpeg(&frame).unwrap();
-        let second = encode_jpeg(&frame).unwrap();
-
-        assert_eq!(first.as_ptr(), second.as_ptr());
-        let decoded =
-            image::load_from_memory_with_format(&first, image::ImageFormat::Jpeg).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (2, 1));
-    }
-
-    #[test]
-    fn jpeg_encoding_accepts_yuv420p_without_rgb_conversion() {
-        let frame = Frame {
-            width: 2,
-            height: 2,
-            format: FrameFormat::Yuv420p,
-            pixels: vec![76, 76, 76, 76, 85, 255],
-            decoded_at: Instant::now(),
-            jpeg: std::sync::OnceLock::new(),
-        };
-        let encoded = encode_jpeg(&frame).unwrap();
-        let decoded =
-            image::load_from_memory_with_format(&encoded, image::ImageFormat::Jpeg).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (2, 2));
-    }
-
-    #[test]
-    fn frame_slot_version_advances_on_publish() {
-        let slot = FrameSlot::default();
-        assert_eq!(slot.version(), 0);
-        slot.publish(Arc::new(test_frame()));
-        assert_eq!(slot.version(), 1);
-        slot.publish(Arc::new(test_frame()));
-        assert_eq!(slot.version(), 2);
-    }
-
-    #[tokio::test]
-    async fn frame_slot_notifies_with_only_the_latest_frame() {
-        let slot = FrameSlot::default();
-        let mut receiver = slot.subscribe();
-        slot.publish(Arc::new(test_frame()));
-        let latest = Arc::new(test_frame());
-        slot.publish(latest.clone());
-
-        receiver.changed().await.unwrap();
-        let received = receiver.borrow_and_update().clone().unwrap();
-        assert!(Arc::ptr_eq(&received, &latest));
-    }
-
-    #[test]
-    fn frame_pacer_bounds_pipeline_until_a_frame_is_presented() {
+    fn frame_pacer_bounds_browser_decoder_ingress() {
         let pacer = FramePacer::new(2);
-        assert!(pacer.try_acquire(FrameCredit::JpegPresentation));
         assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(1)));
-        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
+        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
+        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
 
         pacer.release(FrameCredit::BrowserAccepted(1));
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
-
-        pacer.presented(None);
-        pacer.release(FrameCredit::BrowserAccepted(2));
-        pacer.release(FrameCredit::BrowserAccepted(99));
         assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
+
+        pacer.release(FrameCredit::BrowserAccepted(2));
         assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(4)));
         assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(5)));
     }
@@ -4810,23 +4617,21 @@ mod tests {
         pacer.release(FrameCredit::BrowserAccepted(6));
         assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
 
-        pacer.presented(Some(7));
+        pacer.presented(7);
         assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
         pacer.release(FrameCredit::BrowserAccepted(7));
         assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
     }
 
     #[test]
-    fn browser_reset_preserves_legacy_jpeg_credit() {
+    fn browser_reset_clears_all_video_credits() {
         let pacer = FramePacer::new(2);
-        assert!(pacer.try_acquire(FrameCredit::JpegPresentation));
         assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(1)));
+        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
         pacer.clear_browser();
 
-        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(2)));
-        assert!(!pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
-        pacer.presented(None);
         assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(3)));
+        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(4)));
     }
 
     #[test]
@@ -4911,11 +4716,7 @@ mod tests {
                 r#"{"type":"frame_presented","sequence":"42"}"#,
                 &mut pressed,
             ),
-            ClientVideoFeedback::FramePresented(Some(42))
-        );
-        assert_eq!(
-            handle_test_client_message(&state, r#"{"type":"frame_presented"}"#, &mut pressed),
-            ClientVideoFeedback::FramePresented(None)
+            ClientVideoFeedback::FramePresented(42)
         );
     }
 

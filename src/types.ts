@@ -26,7 +26,6 @@ export type StreamMetrics = {
   published_fps: number;
   sent_fps: number;
   backend_dropped_fps: number;
-  jpeg_encode_ms: number;
   frame_age_ms: number;
   websocket_send_ms: number;
   decoder_accept_ms: number;
