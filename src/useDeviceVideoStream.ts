@@ -37,6 +37,7 @@ type FrontendMetrics = {
   presentedFrames: number;
   jpegDecodeMs: number;
   canvasDrawMs: number;
+  decoderCongestions: number;
   decodeErrors: number;
 };
 
@@ -48,6 +49,7 @@ function createFrontendMetrics(startedAt = performance.now()): FrontendMetrics {
     presentedFrames: 0,
     jpegDecodeMs: 0,
     canvasDrawMs: 0,
+    decoderCongestions: 0,
     decodeErrors: 0,
   };
 }
@@ -227,12 +229,24 @@ export function useDeviceVideoStream({
             presentFrame(frame, frame.codedWidth, frame.codedHeight);
           } finally {
             frame.close();
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: "frame_presented" }));
+            }
           }
         },
         requestKeyframe: () => {
           if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "browser_video_keyframe" }));
           }
+        },
+        congestion: (decodeQueueSize) => {
+          frontendMetrics.decoderCongestions += 1;
+          logFrontend(
+            "warn",
+            "video",
+            "browser_decoder_congestion",
+            `WebCodecs queue saturated at ${decodeQueueSize} frames; resyncing from a keyframe`,
+          );
         },
         fatal: (error) => {
           frontendMetrics.decodeErrors += 1;
@@ -253,6 +267,7 @@ export function useDeviceVideoStream({
             presented_frames: frontendMetrics.presentedFrames,
             jpeg_decode_ms: frontendMetrics.jpegDecodeMs,
             canvas_draw_ms: frontendMetrics.canvasDrawMs,
+            decoder_congestions: frontendMetrics.decoderCongestions,
             decode_errors: frontendMetrics.decodeErrors,
           }));
         }

@@ -30,7 +30,7 @@ Open a new shell, then verify `rustc`, `node`, `npm`, and `ffmpeg`.
 
 Windows 10/11 requires WebView2, the Rust MSVC toolchain, Visual Studio Build Tools with **Desktop development with C++**, CMake, NASM, and Apple Mobile Device Service. The desktop iTunes package provides the Apple service and the usbmuxd endpoint at `127.0.0.1:27015`.
 
-The optional experimental Browser / WebCodecs video decoder may also require Microsoft's HEVC Video Extensions. This is not required for the default native decoder; the app probes support and falls back automatically.
+The experimental Browser / WebCodecs fast path may require Microsoft's HEVC Video Extensions on some Windows systems. Buying or installing that extension is not required to use the app: capability probing automatically selects the bundled Native / FFmpeg decoder when WebView2 cannot expose HEVC.
 
 ```powershell
 winget install --id Rustlang.Rustup --exact

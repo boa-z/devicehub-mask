@@ -65,7 +65,7 @@ Do not force the canvas to an arbitrary width and height. DeviceHub Mask contain
 
 ## Windows CPU Usage Is High
 
-For a cross-platform comparison, try the experimental Browser / WebCodecs decoder in Settings > Video. It removes FFmpeg and JPEG from the live path when the platform WebView supports HEVC. On Windows, install the HEVC Video Extensions if the setting immediately reports a capability fallback. Native / FFmpeg is still the compatibility default, and runtime decoder failures reconnect with it automatically.
+For a cross-platform comparison, try the experimental Browser / WebCodecs decoder in Settings > Video. It removes FFmpeg and JPEG from the live path when the platform WebView supports HEVC. A Windows capability fallback means WebView2 does not expose a compatible HEVC codec even if the GPU can decode HEVC. No paid extension is required: the bundled Native / FFmpeg decoder remains the compatibility path and runtime decoder failures reconnect with it automatically.
 
 If WebCodecs reports `OperationError: Unsupported configuration`, the app reads the HEVC profile and level from the stream SPS and retries conservative `hev1` and `hvc1` configurations. If all exact configurations fail, the current run reconnects with Native / FFmpeg; this usually means the platform WebView or its system HEVC component cannot decode that device's resolution/profile.
 

@@ -97,6 +97,7 @@ function reverseBits32(value: number): number {
 type Callbacks = {
   output: (frame: VideoFrame, decodeMs: number) => void;
   requestKeyframe: () => void;
+  congestion?: (decodeQueueSize: number) => void;
   fatal: (error: unknown) => void;
 };
 
@@ -205,7 +206,12 @@ export class BrowserVideoDecoder {
     }
     if (!this.decoder || this.decoder.state !== "configured") return;
     if (this.decoder.decodeQueueSize > 8) {
-      this.recover(new Error("Browser decoder queue exceeded its latency budget"));
+      const decodeQueueSize = this.decoder.decodeQueueSize;
+      this.callbacks.congestion?.(decodeQueueSize);
+      // Queue saturation means the producer outran WebCodecs temporarily. It is
+      // not evidence that the selected codec is broken, so resync without
+      // contributing to the fatal decoder failure budget.
+      this.resync();
       return;
     }
     this.waitingForKeyframe = false;

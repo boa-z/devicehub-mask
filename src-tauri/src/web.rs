@@ -3154,6 +3154,7 @@ enum ClientMessage {
         presented_frames: u64,
         jpeg_decode_ms: f64,
         canvas_draw_ms: f64,
+        decoder_congestions: u64,
         decode_errors: u64,
     },
 }
@@ -3266,15 +3267,31 @@ async fn websocket(socket: WebSocket, state: AppState) {
                             if !send_video_active.load(Ordering::Acquire) {
                                 continue;
                             }
-                            let completes_resync = send_browser_resync.load(Ordering::Acquire);
-                            if completes_resync && !frame.key {
-                                continue;
-                            }
+                            let completes_resync = match browser_frame_decision(
+                                frame.key,
+                                &send_browser_resync,
+                                &send_pacer,
+                            ) {
+                                BrowserFrameDecision::Send { completes_resync } => completes_resync,
+                                BrowserFrameDecision::SkipForResync => continue,
+                                BrowserFrameDecision::Backpressured { entered_resync } => {
+                                    skipped_for_backpressure += 1;
+                                    if entered_resync {
+                                        tracing::warn!(
+                                            max_in_flight_frames,
+                                            "browser video presentation credits exhausted; resyncing from a keyframe"
+                                        );
+                                        send_state.browser_frames.request_keyframe();
+                                    }
+                                    continue;
+                                }
+                            };
                             let packet = crate::browser_video::encode_packet(&frame);
                             sent_frames += 1;
                             sent_bytes += packet.len() as u64;
                             let send_started = Instant::now();
                             if sender.send(Message::Binary(packet.into())).await.is_err() {
+                                send_pacer.release();
                                 break;
                             }
                             if completes_resync {
@@ -3432,6 +3449,30 @@ async fn websocket(socket: WebSocket, state: AppState) {
 
 const FRAME_CREDIT_LEASE: Duration = Duration::from_millis(500);
 const DEFAULT_IN_FLIGHT_FRAMES: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserFrameDecision {
+    Send { completes_resync: bool },
+    SkipForResync,
+    Backpressured { entered_resync: bool },
+}
+
+fn browser_frame_decision(
+    key: bool,
+    resync: &AtomicBool,
+    pacer: &FramePacer,
+) -> BrowserFrameDecision {
+    let completes_resync = resync.load(Ordering::Acquire);
+    if completes_resync && !key {
+        return BrowserFrameDecision::SkipForResync;
+    }
+    if !pacer.try_acquire() {
+        return BrowserFrameDecision::Backpressured {
+            entered_resync: !resync.swap(true, Ordering::AcqRel),
+        };
+    }
+    BrowserFrameDecision::Send { completes_resync }
+}
 
 fn configured_in_flight_frames(value: Option<&std::ffi::OsStr>) -> usize {
     match value.and_then(|value| value.to_str()) {
@@ -3614,6 +3655,7 @@ fn handle_client_message(
             presented_frames,
             jpeg_decode_ms,
             canvas_draw_ms,
+            decoder_congestions,
             decode_errors,
         } => {
             if valid_frontend_metrics(
@@ -3623,6 +3665,7 @@ fn handle_client_message(
                 presented_frames,
                 jpeg_decode_ms,
                 canvas_draw_ms,
+                decoder_congestions,
                 decode_errors,
             ) {
                 let elapsed = (window_ms / 1000.0).max(f64::EPSILON);
@@ -3635,6 +3678,7 @@ fn handle_client_message(
                     presented_frames,
                     jpeg_decode_ms = jpeg_decode_ms / received_frames.max(1) as f64,
                     canvas_draw_ms = canvas_draw_ms / presented_frames.max(1) as f64,
+                    decoder_congestions,
                     decode_errors,
                     "frontend video performance"
                 );
@@ -3693,6 +3737,7 @@ fn valid_frontend_metrics(
     presented_frames: u64,
     jpeg_decode_ms: f64,
     canvas_draw_ms: f64,
+    decoder_congestions: u64,
     decode_errors: u64,
 ) -> bool {
     (500.0..=60_000.0).contains(&window_ms)
@@ -3703,6 +3748,7 @@ fn valid_frontend_metrics(
         && received_frames <= 10_000
         && replaced_frames <= received_frames
         && presented_frames <= received_frames
+        && decoder_congestions <= 10_000
         && decode_errors <= received_frames
 }
 
@@ -4649,6 +4695,36 @@ mod tests {
     }
 
     #[test]
+    fn browser_backpressure_resyncs_and_resumes_only_from_a_keyframe() {
+        let pacer = FramePacer::new(1);
+        let resync = AtomicBool::new(false);
+
+        assert_eq!(
+            browser_frame_decision(false, &resync, &pacer),
+            BrowserFrameDecision::Send {
+                completes_resync: false
+            }
+        );
+        assert_eq!(
+            browser_frame_decision(false, &resync, &pacer),
+            BrowserFrameDecision::Backpressured {
+                entered_resync: true
+            }
+        );
+        pacer.release();
+        assert_eq!(
+            browser_frame_decision(false, &resync, &pacer),
+            BrowserFrameDecision::SkipForResync
+        );
+        assert_eq!(
+            browser_frame_decision(true, &resync, &pacer),
+            BrowserFrameDecision::Send {
+                completes_resync: true
+            }
+        );
+    }
+
+    #[test]
     fn frame_pipeline_depth_accepts_only_bounded_diagnostic_values() {
         assert_eq!(configured_in_flight_frames(None), 2);
         assert_eq!(
@@ -4742,12 +4818,12 @@ mod tests {
     #[test]
     fn frontend_metrics_reject_impossible_or_unbounded_values() {
         assert!(valid_frontend_metrics(
-            5_000.0, 300, 0, 299, 600.0, 100.0, 1
+            5_000.0, 300, 0, 299, 600.0, 100.0, 2, 1
         ));
         assert!(!valid_frontend_metrics(
-            5_000.0, 300, 301, 299, 600.0, 100.0, 1,
+            5_000.0, 300, 301, 299, 600.0, 100.0, 2, 1,
         ));
-        assert!(!valid_frontend_metrics(f64::NAN, 0, 0, 0, 0.0, 0.0, 0,));
+        assert!(!valid_frontend_metrics(f64::NAN, 0, 0, 0, 0.0, 0.0, 0, 0,));
     }
 
     #[test]

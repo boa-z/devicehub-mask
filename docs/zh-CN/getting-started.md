@@ -30,7 +30,7 @@ rustup-init
 
 Windows 10/11 需要 WebView2、Rust MSVC 工具链、带 **Desktop development with C++** 工作负载的 Visual Studio Build Tools、CMake、NASM 和 Apple Mobile Device Service。桌面版 iTunes 会安装 Apple 服务，并在 `127.0.0.1:27015` 提供 usbmuxd 端点。
 
-可选的实验性“浏览器 / WebCodecs”视频解码器可能还需要 Microsoft HEVC Video Extensions。默认原生解码器不依赖它；应用会探测支持情况并自动回退。
+实验性的“浏览器 / WebCodecs”快速路径在部分 Windows 系统上可能需要 Microsoft HEVC Video Extensions。使用本应用不要求购买或安装该扩展：WebView2 无法暴露 HEVC 时，能力检测会自动选择内置的“原生 / FFmpeg”解码器。
 
 ```powershell
 winget install --id Rustlang.Rustup --exact

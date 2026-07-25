@@ -1054,7 +1054,7 @@ export const enUS = {
     videoPixelFormatEnvironmentOverride: "Controlled by DEVICEHUB_VIDEO_PIXEL_FORMAT for this run.",
     videoPixelFormatChanged: "Video pixel format saved. Reconnect the device to apply it.",
     videoDecoderChanged: "Video decoder saved. Reconnect the device to apply it.",
-    videoDecoderHint: "Browser HEVC decoding is the default and removes the FFmpeg and JPEG stages when WebCodecs is supported. It falls back to the native decoder after a capability, timeout, or runtime failure.",
+    videoDecoderHint: "Browser HEVC decoding is the default fast path when WebCodecs supports it. The bundled Native / FFmpeg path remains available without a Windows HEVC extension and is selected automatically after a capability or runtime failure.",
     videoDecoderFallback: "Browser decoding failed for this run; the native decoder is active after reconnect: {{error}}",
     videoSettingsUnavailable: "Video settings are unavailable: {{error}}",
     videoFormats: { rgb24: "RGB24 (default)", yuv420p: "YUV420P (experimental)" },

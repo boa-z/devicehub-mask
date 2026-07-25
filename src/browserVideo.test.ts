@@ -55,6 +55,57 @@ describe("HEVC codec configuration", () => {
 });
 
 describe("browser video decoder recovery", () => {
+  it("treats queue saturation as recoverable congestion instead of a fatal decoder failure", async () => {
+    class SaturatedVideoDecoder {
+      static instances: SaturatedVideoDecoder[] = [];
+      static async isConfigSupported(config: VideoDecoderConfig) {
+        return { supported: true, config };
+      }
+
+      state: CodecState = "unconfigured";
+      decodeQueueSize = 9;
+
+      constructor() {
+        SaturatedVideoDecoder.instances.push(this);
+      }
+
+      configure() { this.state = "configured"; }
+      decode() {}
+      reset() { this.state = "unconfigured"; }
+      close() { this.state = "closed"; }
+    }
+
+    vi.stubGlobal("VideoDecoder", SaturatedVideoDecoder);
+    vi.stubGlobal("EncodedVideoChunk", class {});
+    vi.stubGlobal("window", { VideoDecoder: SaturatedVideoDecoder, setTimeout, clearTimeout });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const requestKeyframe = vi.fn();
+    const congestion = vi.fn();
+    const fatal = vi.fn();
+    const decoder = new BrowserVideoDecoder({ output: vi.fn(), requestKeyframe, congestion, fatal });
+    const packet: BrowserVideoPacket = {
+      key: true,
+      timestamp: 1,
+      sequence: 1n,
+      width: 1290,
+      height: 2796,
+      data: Uint8Array.from([
+        0, 0, 0, 1, 0x42, 0x01,
+        0x01, 0x01, 0x60, 0, 0, 0, 0xb0, 0, 0, 0, 0, 0, 153,
+        0, 0, 0, 1, 0x26, 0x01,
+      ]),
+    };
+
+    for (let index = 0; index < 4; index += 1) {
+      decoder.enqueue({ ...packet, timestamp: index + 1, sequence: BigInt(index + 1) });
+      await vi.waitFor(() => expect(congestion).toHaveBeenCalledTimes(index + 1));
+    }
+
+    expect(requestKeyframe).toHaveBeenCalledTimes(4);
+    expect(fatal).not.toHaveBeenCalled();
+    decoder.close();
+  });
+
   it("retries a simpler configuration when configure rejects a supported candidate", async () => {
     class InconsistentVideoDecoder {
       static instances: InconsistentVideoDecoder[] = [];

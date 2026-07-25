@@ -65,7 +65,7 @@ Windows 上保持手机连接和解锁，然后运行：
 
 ## Windows CPU 占用较高
 
-跨平台对比时可在“设置 > 视频”尝试实验性的“浏览器 / WebCodecs”解码器。平台 WebView 支持 HEVC 时，该路径会移除实时链路中的 FFmpeg 和 JPEG。Windows 若立即显示能力回退， 请安装 HEVC Video Extensions。“原生 / FFmpeg”仍是兼容性默认值，浏览器解码运行失败后 也会自动重连并使用它。
+跨平台对比时可在“设置 > 视频”尝试实验性的“浏览器 / WebCodecs”解码器。平台 WebView 支持 HEVC 时，该路径会移除实时链路中的 FFmpeg 和 JPEG。Windows 立即显示能力回退，表示 WebView2 未暴露兼容的 HEVC codec，即使 GPU 本身具备 HEVC 解码能力也可能如此。项目不要求购买扩展：内置的“原生 / FFmpeg”是兼容路径，浏览器解码运行失败后会自动重连并使用它。
 
 如果 WebCodecs 报告 `OperationError: Unsupported configuration`，应用会从数据流 SPS 读取 HEVC profile 与 level，并重试保守的 `hev1`、`hvc1` 配置。准确配置全部失败后，本次运行会 重连到“原生 / FFmpeg”；这通常表示平台 WebView 或系统 HEVC 组件无法解码当前设备的分辨率 或 profile。
 
