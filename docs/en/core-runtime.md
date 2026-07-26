@@ -29,6 +29,8 @@ Device storage follows that ownership directly: core defines public AFC and appl
 
 Core also owns bounded observation ports whose behavior is independent of Apple transports, including capture and diagnostic status, device-condition state, and the normalized device-log ring buffer. Runtime owns the producers: protocol translation, demand gating, retries, deadlines, and command workers remain implementation details.
 
+Key-mapping profile DTOs and validation are also core policy: profile-name confinement, supported mapping forms, normalized positions, application bindings, and hardware-key conflict rules must behave identically for desktop and future headless hosts. `devicehub-server` exposes HTTP over the `ProfileRepository` port; hosts retain profile-directory selection and durable persistence by implementing that port.
+
 Developer Image mount state and version-to-image-type policy follow the same rule. Core exposes the normalized observation; runtime owns opaque asset requests, host-injected loading, personalization, device transport, and operation supervision.
 
 Core owns the normalized service-health registry and restart-count transition policy. Runtime owns the reporters and all executable supervision behavior, including tracing, retry delays, shutdown signals, task spawning, and forced aborts.

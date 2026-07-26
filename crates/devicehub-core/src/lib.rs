@@ -15,6 +15,7 @@ mod device_logs;
 mod diagnostics;
 mod home_screen;
 mod input;
+mod key_mapping;
 mod location;
 mod media;
 mod performance;
@@ -75,6 +76,10 @@ pub use home_screen::{
 pub use input::{
     DeviceInputCommand, HARDWARE_BUTTON_NAMES, HardwareButton, KeyMods, Orientation, RotateDir,
     TouchContact, ascii_key_usage, hardware_button, modifier_key_usages, norm, unrotate_norm,
+};
+pub use key_mapping::{
+    InvalidKeyMappingProfile, KeyMappingProfile, default_hardware_bindings,
+    validate_key_mapping_profile, validate_key_mapping_profile_name,
 };
 pub use location::{LocationBackend, LocationStatus};
 pub use media::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};

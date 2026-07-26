@@ -8,9 +8,9 @@ mod device_runtime;
 mod diagnostic_files;
 mod diagnostics;
 mod host_files;
-mod http_profiles;
 mod mcp;
 mod netmuxd;
+mod profile_files;
 mod provisioning;
 mod session;
 mod settings;
@@ -180,7 +180,9 @@ fn spawn_backend(
                                 capture_files::validate_http_destination,
                             ),
                         ),
-                        profiles_http: http_profiles::ProfileHttpState::new(profile_dir),
+                        profiles_http: devicehub_server::http::ProfileHttpState::new(
+                            profile_files::TokioProfileRepository::new(profile_dir),
+                        ),
                         storage_http: devicehub_server::http::StorageHttpState::new(
                             client.device.commands.clone(),
                             client.device.app_documents,

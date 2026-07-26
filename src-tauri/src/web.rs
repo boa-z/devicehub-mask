@@ -22,7 +22,7 @@ use devicehub_core::{
 pub struct AppState {
     pub application: devicehub_runtime::RuntimeClient<PathBuf>,
     pub performance_http: devicehub_server::http::PerformanceHttpState,
-    pub profiles_http: crate::http_profiles::ProfileHttpState,
+    pub profiles_http: devicehub_server::http::ProfileHttpState,
     pub storage_http: devicehub_server::http::StorageHttpState,
     pub diagnostics_http: devicehub_server::http::DiagnosticsHttpState,
     pub apps_http: devicehub_server::http::AppHttpState,
@@ -38,7 +38,7 @@ struct ApiToken(Arc<str>);
 pub fn router(state: AppState, token: String) -> Router {
     let performance_routes =
         devicehub_server::http::performance_router(state.performance_http.clone());
-    let profile_routes = crate::http_profiles::router(state.profiles_http.clone());
+    let profile_routes = devicehub_server::http::profiles_router(state.profiles_http.clone());
     let storage_routes = devicehub_server::http::storage_router(state.storage_http.clone());
     let diagnostics_routes =
         devicehub_server::http::diagnostics_router(state.diagnostics_http.clone());
@@ -1011,7 +1011,9 @@ mod tests {
                         Ok(())
                     }),
                 ),
-                profiles_http: crate::http_profiles::ProfileHttpState::new(PathBuf::new()),
+                profiles_http: devicehub_server::http::ProfileHttpState::new(
+                    crate::profile_files::TokioProfileRepository::new(PathBuf::new()),
+                ),
                 storage_http: devicehub_server::http::StorageHttpState::new(
                     input.clone(),
                     application.device.app_documents.clone(),

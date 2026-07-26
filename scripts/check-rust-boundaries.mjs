@@ -201,6 +201,14 @@ const serverStorageHttp = readFileSync(
   "crates/devicehub-server/src/http/storage.rs",
   "utf8",
 );
+const serverProfilesHttp = readFileSync(
+  "crates/devicehub-server/src/http/profiles.rs",
+  "utf8",
+);
+const tauriProfileFiles = readFileSync(
+  "src-tauri/src/profile_files.rs",
+  "utf8",
+);
 if (
   !serverHttp.includes("pub use apps::{AppHttpState, router as apps_router}") ||
   !serverHttp.includes(
@@ -224,11 +232,18 @@ if (
   !serverDiagnosticsHttp.includes("pub struct DiagnosticDestinationPreparer") ||
   !serverStorageHttp.includes("pub fn router<S>(state: StorageHttpState)") ||
   !serverStorageHttp.includes("validate_app_bundle_id") ||
+  !serverProfilesHttp.includes("pub trait ProfileRepository") ||
+  !serverProfilesHttp.includes("pub fn router<S>(state: ProfileHttpState)") ||
+  !tauriProfileFiles.includes("impl ProfileRepository for TokioProfileRepository") ||
+  ["tokio::fs", "std::fs", "std::env", "TcpListener::bind", "start_runtime("].some(
+    (token) => productionSource(serverProfilesHttp).includes(token),
+  ) ||
   existsSync("src-tauri/src/http_apps.rs") ||
   existsSync("src-tauri/src/http_crash_reports.rs") ||
   existsSync("src-tauri/src/http_performance.rs") ||
   existsSync("src-tauri/src/http_diagnostics.rs") ||
   existsSync("src-tauri/src/http_storage.rs") ||
+  existsSync("src-tauri/src/http_profiles.rs") ||
   existsSync("src-tauri/src/app_documents.rs") ||
   existsSync("src-tauri/src/device_files.rs") ||
   existsSync("src-tauri/src/sysdiagnose.rs") ||
@@ -242,7 +257,7 @@ if (
   process.exit(1);
 }
 console.log(
-  "devicehub-server owns application, crash-report, performance, storage, and diagnostics HTTP adapters while Tauri only composes injected state and filesystem policy.",
+  "devicehub-server owns application, crash-report, performance, profile, storage, and diagnostics HTTP adapters while Tauri only composes injected state and filesystem policy.",
 );
 
 const hostApiForbidden = ["std::path", "std::fs", "tokio::fs", "std::env"];
@@ -1344,3 +1359,38 @@ if (
 console.log(
   "devicehub-core owns AFC and application-storage domain models and policy.",
 );
+
+const coreKeyMapping = readFileSync(
+  "crates/devicehub-core/src/key_mapping.rs",
+  "utf8",
+);
+const serverProfileAdapter = readFileSync(
+  "crates/devicehub-server/src/http/profiles.rs",
+  "utf8",
+);
+const requiredCoreKeyMapping = [
+  "pub struct KeyMappingProfile",
+  "pub struct InvalidKeyMappingProfile",
+  "pub fn default_hardware_bindings(",
+  "pub fn validate_key_mapping_profile_name(",
+  "pub fn validate_key_mapping_profile(",
+];
+const missingCoreKeyMapping = requiredCoreKeyMapping.filter(
+  (signature) => !coreKeyMapping.includes(signature),
+);
+if (
+  missingCoreKeyMapping.length > 0 ||
+  serverProfileAdapter.includes("fn valid_mapping_type(") ||
+  serverProfileAdapter.includes("fn valid_mapping_positions(") ||
+  serverProfileAdapter.includes("fn collect_mapping_keys") ||
+  serverProfileAdapter.includes("HARDWARE_BUTTON_NAMES") ||
+  !serverProfileAdapter.includes("KeyMappingProfile as Profile") ||
+  !serverProfileAdapter.includes("validate_key_mapping_profile_name") ||
+  !serverProfileAdapter.includes("validate_key_mapping_profile")
+) {
+  console.error(
+    `Rust boundary check failed: key-mapping profile policy is not owned by core: ${missingCoreKeyMapping.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-core owns key-mapping profile models and validation policy.");

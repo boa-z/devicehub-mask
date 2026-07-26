@@ -4,6 +4,7 @@ mod apps;
 mod crash_reports;
 mod diagnostics;
 mod performance;
+mod profiles;
 mod storage;
 
 pub use apps::{AppHttpState, router as apps_router};
@@ -14,5 +15,9 @@ pub use diagnostics::{
 };
 pub use performance::{
     CaptureDestinationValidator, PerformanceHttpState, router as performance_router,
+};
+pub use profiles::{
+    ProfileHttpState, ProfileRepository, ProfileRepositoryError, ProfileRepositoryFuture,
+    ProfileRepositorySnapshot, StoredProfile, router as profiles_router,
 };
 pub use storage::{StorageHttpState, router as storage_router};
