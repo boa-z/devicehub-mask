@@ -5,6 +5,42 @@ use std::sync::Arc;
 
 use idevice::provider::IdeviceProvider;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::{mpsc, watch};
+
+use devicehub_runtime::CrashReportExportCommand;
+
+/// Serves host filesystem exports under the connected session supervisor.
+/// Runtime code owns device access while this adapter owns path validation.
+pub async fn serve(
+    provider: Arc<dyn IdeviceProvider>,
+    mut commands: mpsc::Receiver<CrashReportExportCommand<std::path::PathBuf>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            command = commands.recv() => {
+                let Some(CrashReportExportCommand::Export {
+                    device_path,
+                    destination,
+                    reply,
+                }) = command else {
+                    break;
+                };
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        let _ = reply.send(Err("crash report export was cancelled".into()));
+                        break;
+                    }
+                    result = export(provider.clone(), device_path, &destination) => {
+                        let _ = reply.send(result);
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub async fn export(
     provider: Arc<dyn IdeviceProvider>,

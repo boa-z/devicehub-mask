@@ -11,10 +11,10 @@ use std::time::Duration;
 use idevice::{IdeviceError, IdeviceService, lockdown::LockdownClient, usbmuxd::Connection};
 
 use super::discovery::DeviceDiscovery;
-use super::transport::{SessionEndpoint, UsbmuxdEndpoint};
 use crate::protocol::{
     ForgetDeviceOutcome, ForgetDeviceResult, PairDeviceOutcome, PairDeviceResult, StatusSlot,
 };
+use devicehub_runtime::{SessionEndpoint, UsbmuxdEndpoint};
 
 /// Pairing includes an on-device confirmation and therefore gets a user-facing
 /// deadline rather than inheriting a short transport timeout.

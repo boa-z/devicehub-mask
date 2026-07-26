@@ -16,12 +16,13 @@ use idevice::{
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
 };
 
-use super::transport::{
-    SessionEndpoint, UsbmuxdEndpoint, connection_kind, connection_kind_priority,
-    connection_priority, remove_remote_pairing_credentials, uses_usbmuxd_core_proxy, wifi_provider,
-};
 use crate::protocol::{ConnKind, DeviceInfo, DevicePairingState, device_selector};
 use crate::wifi_devices::WifiDiscovery;
+use devicehub_runtime::{
+    SessionEndpoint, SystemUsbmuxdConfig, UsbmuxdEndpoint, connection_kind,
+    connection_kind_priority, connection_priority, remove_remote_pairing_credentials,
+    uses_usbmuxd_core_proxy, wifi_provider,
+};
 
 const NAME_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -33,7 +34,7 @@ pub(super) struct DeviceDiscovery {
     wifi: Option<WifiDiscovery>,
     pairing_dir: PathBuf,
     prefer_netmuxd: bool,
-    system_usbmuxd: super::transport::SystemUsbmuxdConfig,
+    system_usbmuxd: SystemUsbmuxdConfig,
 }
 
 impl DeviceDiscovery {

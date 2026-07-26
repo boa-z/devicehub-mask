@@ -8,6 +8,7 @@ use idevice::IdeviceService;
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::crashreportcopymobile::{CrashReportCopyMobileClient, flush_reports};
 use idevice::provider::IdeviceProvider;
+use tokio::sync::oneshot;
 
 pub use devicehub_core::validate_crash_report_path;
 
@@ -17,6 +18,26 @@ const MAX_DEPTH: usize = 8;
 const MAX_EXPORT_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_CRASH_REPORT_READ_BYTES: usize = 1024 * 1024;
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Host-backed crash report export request routed by the runtime session.
+#[derive(Debug)]
+pub enum CrashReportExportCommand<HostPath> {
+    Export {
+        device_path: String,
+        destination: HostPath,
+        reply: oneshot::Sender<Result<u64, String>>,
+    },
+}
+
+impl<HostPath> CrashReportExportCommand<HostPath> {
+    pub fn reject(self, reason: &str) {
+        match self {
+            Self::Export { reply, .. } => {
+                let _ = reply.send(Err(reason.into()));
+            }
+        }
+    }
+}
 
 pub async fn list_crash_reports(
     provider: Arc<dyn IdeviceProvider>,

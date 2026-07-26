@@ -13,7 +13,7 @@ pub(crate) use crate::domain::{
     AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AppOperationView, ClipboardContentKind, ClipboardEvent,
     ConnKind, DeviceApp, DeviceCrashReportList, DeviceCrashReportSummary, DeviceDetails,
     DeviceInfo, DevicePairingState, ForgetDeviceOutcome, ForgetDeviceResult, HARDWARE_BUTTON_NAMES,
-    KeyMods, LocationStatus, Orientation, PairDeviceOutcome, PairDeviceResult, ProvisioningProfile,
+    LocationStatus, Orientation, PairDeviceOutcome, PairDeviceResult, ProvisioningProfile,
     RotateDir, clipboard_preview, device_selector, norm, unrotate_norm, validate_device_name,
     validate_paste_text,
 };

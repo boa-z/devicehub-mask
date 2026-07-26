@@ -63,6 +63,12 @@ impl ClipboardBridge {
     }
 }
 
+impl devicehub_runtime::DeviceClipboard for ClipboardBridge {
+    fn set_text(&self, text: String) -> devicehub_runtime::ClipboardWriteFuture<'_> {
+        Box::pin(ClipboardBridge::set_text(self, text))
+    }
+}
+
 /// The contents both clipboards are believed to already share, used to suppress
 /// echoes and break the host/device feedback loop. Images use a raw-RGBA hash.
 struct ClipState {

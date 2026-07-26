@@ -6,63 +6,28 @@
 //! service tree. The session orchestrator only retains the bridges it needs for
 //! input dispatch and no longer knows how each optional service is constructed.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use idevice::{provider::IdeviceProvider, rsd::RsdHandshake, tcp::handle::AdapterHandle};
 
 use super::manager::SessionViews;
-use crate::protocol::{ConnKind, LocationStatus, LocationStatusSlot};
-use crate::supervisor::ServiceSupervisor;
-use devicehub_runtime::LocationCommand;
+use crate::protocol::ConnKind;
+use devicehub_runtime::{DeviceServicePorts, RuntimeSessionServices};
 
-pub(super) struct LocationBridge {
-    pub(super) sender: tokio::sync::mpsc::Sender<LocationCommand>,
-    pub(super) status: LocationStatusSlot,
-}
-
-/// Command endpoints consumed by [`super::DeviceManagement`]. Keeping them in
-/// one value makes service availability follow the lifetime of a device session
-/// instead of leaking individual senders into the outer connection manager.
-pub(super) struct DeviceManagementServices {
-    pub(super) icons: tokio::sync::mpsc::Sender<devicehub_runtime::AppIconCommand>,
-    pub(super) companions: tokio::sync::mpsc::Sender<devicehub_runtime::CompanionDeviceCommand>,
-    pub(super) home_screen: tokio::sync::mpsc::Sender<devicehub_runtime::HomeScreenCommand>,
-    pub(super) running_processes:
-        tokio::sync::mpsc::Sender<devicehub_runtime::RunningProcessCommand>,
-    pub(super) app_lifecycle: tokio::sync::mpsc::Sender<devicehub_runtime::AppLifecycleCommand>,
-    pub(super) wda: tokio::sync::mpsc::Sender<devicehub_runtime::WdaAutomationCommand>,
-    pub(super) wda_runner: tokio::sync::mpsc::Sender<devicehub_runtime::WdaRunnerCommand>,
-    pub(super) app_console: tokio::sync::mpsc::Sender<devicehub_runtime::AppConsoleCommand>,
-    pub(super) documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
-    pub(super) device_files: tokio::sync::mpsc::Sender<crate::device_files::DeviceFileCommand>,
-    pub(super) screen_capture: tokio::sync::mpsc::Sender<devicehub_runtime::ScreenCaptureCommand>,
-    pub(super) network_capture:
-        tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
-    pub(super) bluetooth_capture:
-        tokio::sync::mpsc::Sender<crate::bluetooth_capture::BluetoothCaptureCommand>,
-    pub(super) device_backup: tokio::sync::mpsc::Sender<crate::device_backup::DeviceBackupCommand>,
-    pub(super) sysdiagnose: tokio::sync::mpsc::Sender<crate::sysdiagnose::SysdiagnoseCommand>,
-    pub(super) log_archive: tokio::sync::mpsc::Sender<crate::log_archive::LogArchiveCommand>,
-    pub(super) developer_image:
-        tokio::sync::mpsc::Sender<crate::developer_image::DeveloperImageMountCommand>,
-    pub(super) device_conditions:
-        tokio::sync::mpsc::Sender<devicehub_runtime::DeviceConditionCommand>,
-    pub(super) provisioning: tokio::sync::mpsc::Sender<crate::provisioning::ProvisioningCommand>,
-}
+pub(super) type DeviceManagementServices = DeviceServicePorts<PathBuf>;
 
 /// Owns all optional background services for exactly one connected device.
 ///
-/// `management` is handed once to the input dispatcher. The supervisor remains
-/// here so both the full screen-control path and management-only fallback use
-/// the same deterministic shutdown sequence.
+/// `management` is handed once to the input dispatcher. Runtime-owned and
+/// host-backed services share the deterministic shutdown tree owned by
+/// [`RuntimeSessionServices`].
 pub(super) struct SessionServices {
-    supervisor: ServiceSupervisor,
-    location: LocationBridge,
+    runtime: RuntimeSessionServices,
     management: Option<DeviceManagementServices>,
 }
 
 impl SessionServices {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn start(
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,
@@ -71,151 +36,16 @@ impl SessionServices {
         requested_udid: String,
         views: &SessionViews,
     ) -> Self {
-        views.performance.reset();
-        views.device_logs.reset();
-        views.device_events.reset();
-
-        let mut supervisor = ServiceSupervisor::new(views.services.clone());
-        supervisor.spawn(devicehub_runtime::supervise_heartbeat(
+        let mut runtime = RuntimeSessionServices::start(
             provider.clone(),
-            supervisor.reporter("device.heartbeat"),
-            supervisor.shutdown_receiver(),
-        ));
-        supervisor.spawn(devicehub_runtime::supervise_device_logs(
+            connection,
             adapter.clone(),
             handshake.clone(),
-            views.device_logs.clone(),
-            supervisor.reporter("device.logs"),
-            views.device_log_demand.subscribe(),
-            supervisor.shutdown_receiver(),
-        ));
-        supervisor.spawn(devicehub_runtime::supervise_device_events(
-            adapter.clone(),
-            handshake.clone(),
-            views.device_events.clone(),
-            supervisor.reporter("device.notifications"),
-            supervisor.shutdown_receiver(),
-        ));
-        supervisor.spawn(devicehub_runtime::supervise_performance_system(
-            adapter.clone(),
-            handshake.clone(),
-            views.performance.clone(),
-            supervisor.reporter("performance.system"),
-            views.performance_demand.subscribe(),
-            supervisor.shutdown_receiver(),
-        ));
-        supervisor.spawn(devicehub_runtime::supervise_performance_graphics(
-            adapter.clone(),
-            handshake.clone(),
-            views.performance.clone(),
-            supervisor.reporter("performance.graphics"),
-            views.performance_demand.subscribe(),
-            supervisor.shutdown_receiver(),
-        ));
-        supervisor.spawn(devicehub_runtime::supervise_performance_network(
-            adapter.clone(),
-            handshake.clone(),
-            views.performance.clone(),
-            supervisor.reporter("performance.network"),
-            views.performance_demand.subscribe(),
-            supervisor.shutdown_receiver(),
-        ));
-        supervisor.spawn(devicehub_runtime::supervise_performance_energy(
-            adapter.clone(),
-            handshake.clone(),
-            views.performance.clone(),
-            supervisor.reporter("performance.energy"),
-            views.performance_demand.subscribe(),
-            supervisor.shutdown_receiver(),
-        ));
-        supervisor.spawn(devicehub_runtime::supervise_performance_app_activity(
-            adapter.clone(),
-            handshake.clone(),
-            views.performance.clone(),
-            supervisor.reporter("performance.app_activity"),
-            views.performance_demand.subscribe(),
-            supervisor.shutdown_receiver(),
-        ));
-
-        views.location.set(LocationStatus::default());
-        let (location_sender, location_receiver) = tokio::sync::mpsc::channel(8);
-        supervisor.spawn(devicehub_runtime::supervise_location(
-            adapter.clone(),
-            handshake.clone(),
-            provider.clone(),
-            location_receiver,
-            views.location.clone(),
-            supervisor.reporter("location"),
-            supervisor.shutdown_receiver(),
-        ));
-        let location = LocationBridge {
-            sender: location_sender,
-            status: views.location.clone(),
-        };
-
-        let (icons, icon_commands) = tokio::sync::mpsc::channel(16);
-        supervisor.spawn(devicehub_runtime::serve_app_icons(
-            adapter.clone(),
-            handshake.clone(),
-            icon_commands,
-            supervisor.shutdown_receiver(),
-        ));
-        let (companions, companion_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(devicehub_runtime::serve_companion_devices(
-            adapter.clone(),
-            handshake.clone(),
-            companion_commands,
-            supervisor.reporter("device.companions"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (home_screen, home_screen_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(devicehub_runtime::serve_home_screen(
-            adapter.clone(),
-            handshake.clone(),
-            home_screen_commands,
-            supervisor.reporter("device.home_screen"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (running_processes, running_process_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(devicehub_runtime::serve_running_processes(
-            adapter.clone(),
-            handshake.clone(),
-            running_process_commands,
-            supervisor.reporter("performance.process_inventory"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (app_lifecycle, app_lifecycle_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(devicehub_runtime::serve_app_lifecycle(
-            adapter.clone(),
-            handshake.clone(),
-            app_lifecycle_commands,
-            supervisor.reporter("device.app_lifecycle"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (wda, wda_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(devicehub_runtime::serve_wda_automation(
-            provider.clone(),
-            wda_commands,
-            supervisor.reporter("device.wda"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (wda_runner, wda_runner_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(devicehub_runtime::serve_wda_runner(
-            provider.clone(),
-            wda_runner_commands,
-            supervisor.reporter("device.wda_runner"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (app_console, app_console_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(devicehub_runtime::serve_app_console(
-            adapter.clone(),
-            handshake.clone(),
-            app_console_commands,
-            supervisor.reporter("device.app_console"),
-            supervisor.shutdown_receiver(),
-        ));
+            views.runtime_services.clone(),
+        );
+        let runtime_ports = runtime.take_device_ports();
         let (documents, document_commands) = tokio::sync::mpsc::channel(8);
-        supervisor.spawn(crate::app_documents::serve(
+        runtime.spawn_host_task(crate::app_documents::serve(
             crate::app_documents::AppStorageTransport::new(
                 provider.clone(),
                 connection,
@@ -225,10 +55,10 @@ impl SessionServices {
             document_commands,
             views.app_document_activity.clone(),
             crate::host_files::TokioHostFileIo,
-            supervisor.shutdown_receiver(),
+            runtime.shutdown_receiver(),
         ));
         let (device_files, device_file_commands) = tokio::sync::mpsc::channel(8);
-        supervisor.spawn(crate::device_files::serve(
+        runtime.spawn_host_task(crate::device_files::serve(
             crate::device_files::DeviceFileTransport::new(
                 provider.clone(),
                 connection,
@@ -238,22 +68,11 @@ impl SessionServices {
             device_file_commands,
             views.device_file_activity.clone(),
             crate::host_files::TokioHostFileIo,
-            supervisor.reporter("device.files"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (screen_capture, screen_capture_commands) = tokio::sync::mpsc::channel(1);
-        supervisor.spawn(devicehub_runtime::serve_screen_capture(
-            devicehub_runtime::ScreenCaptureTransport::new(
-                provider.clone(),
-                connection,
-                adapter.clone(),
-                handshake.clone(),
-            ),
-            screen_capture_commands,
-            supervisor.shutdown_receiver(),
+            runtime.reporter("device.files"),
+            runtime.shutdown_receiver(),
         ));
         let (network_capture, network_capture_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::network_capture::serve(
+        runtime.spawn_host_task(crate::network_capture::serve(
             crate::network_capture::NetworkCaptureTransport::new(
                 provider.clone(),
                 connection,
@@ -262,19 +81,19 @@ impl SessionServices {
             ),
             network_capture_commands,
             views.network_capture.clone(),
-            supervisor.reporter("network.capture"),
-            supervisor.shutdown_receiver(),
+            runtime.reporter("network.capture"),
+            runtime.shutdown_receiver(),
         ));
         let (bluetooth_capture, bluetooth_capture_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::bluetooth_capture::serve(
+        runtime.spawn_host_task(crate::bluetooth_capture::serve(
             devicehub_runtime::BluetoothCaptureTransport::new(adapter.clone(), handshake.clone()),
             bluetooth_capture_commands,
             views.bluetooth_capture.clone(),
-            supervisor.reporter("bluetooth.capture"),
-            supervisor.shutdown_receiver(),
+            runtime.reporter("bluetooth.capture"),
+            runtime.shutdown_receiver(),
         ));
         let (device_backup, device_backup_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::device_backup::serve(
+        runtime.spawn_host_task(crate::device_backup::serve(
             crate::device_backup::DeviceBackupTransport::new(
                 provider.clone(),
                 connection,
@@ -284,85 +103,79 @@ impl SessionServices {
             ),
             device_backup_commands,
             views.device_backup.clone(),
-            supervisor.reporter("device.backup"),
-            supervisor.shutdown_receiver(),
+            runtime.reporter("device.backup"),
+            runtime.shutdown_receiver(),
         ));
         let (sysdiagnose, sysdiagnose_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::sysdiagnose::serve(
+        runtime.spawn_host_task(crate::sysdiagnose::serve(
             adapter.clone(),
             handshake.clone(),
             sysdiagnose_commands,
             views.sysdiagnose.clone(),
-            supervisor.reporter("device.sysdiagnose"),
-            supervisor.shutdown_receiver(),
+            runtime.reporter("device.sysdiagnose"),
+            runtime.shutdown_receiver(),
         ));
         let (log_archive, log_archive_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::log_archive::serve(
+        runtime.spawn_host_task(crate::log_archive::serve(
             adapter.clone(),
             handshake.clone(),
             log_archive_commands,
             views.log_archive.clone(),
-            supervisor.reporter("device.log_archive"),
-            supervisor.shutdown_receiver(),
+            runtime.reporter("device.log_archive"),
+            runtime.shutdown_receiver(),
         ));
         let (developer_image, developer_image_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::developer_image::serve(
+        runtime.spawn_host_task(crate::developer_image::serve(
             provider.clone(),
             developer_image_commands,
             views.developer_image.clone(),
             crate::developer_image::TokioDeveloperImageAssets,
-            supervisor.reporter("device.developer_image"),
-            supervisor.shutdown_receiver(),
-        ));
-        let (device_conditions, device_condition_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(devicehub_runtime::supervise_device_conditions(
-            adapter.clone(),
-            handshake.clone(),
-            device_condition_commands,
-            views.device_conditions.clone(),
-            supervisor.reporter("device.conditions"),
-            supervisor.shutdown_receiver(),
+            runtime.reporter("device.developer_image"),
+            runtime.shutdown_receiver(),
         ));
         let (provisioning, provisioning_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::provisioning::supervise(
+        runtime.spawn_host_task(crate::provisioning::supervise(
             adapter,
             handshake,
-            provider,
+            provider.clone(),
             provisioning_commands,
-            supervisor.reporter("device.provisioning"),
-            supervisor.shutdown_receiver(),
+            runtime.reporter("device.provisioning"),
+            runtime.shutdown_receiver(),
+        ));
+        let (crash_report_exports, crash_report_export_commands) = tokio::sync::mpsc::channel(2);
+        runtime.spawn_host_task(crate::crash_reports::serve(
+            provider,
+            crash_report_export_commands,
+            runtime.shutdown_receiver(),
         ));
 
-        let management = DeviceManagementServices {
-            icons,
-            companions,
-            home_screen,
-            running_processes,
-            app_lifecycle,
-            wda,
-            wda_runner,
-            app_console,
+        let management = DeviceServicePorts {
+            location: runtime_ports.location,
+            icons: runtime_ports.icons,
+            companions: runtime_ports.companions,
+            home_screen: runtime_ports.home_screen,
+            running_processes: runtime_ports.running_processes,
+            app_lifecycle: runtime_ports.app_lifecycle,
+            wda: runtime_ports.wda,
+            wda_runner: runtime_ports.wda_runner,
+            app_console: runtime_ports.app_console,
             documents,
             device_files,
-            screen_capture,
+            screen_capture: runtime_ports.screen_capture,
             network_capture,
             bluetooth_capture,
             device_backup,
             sysdiagnose,
             log_archive,
             developer_image,
-            device_conditions,
+            device_conditions: runtime_ports.device_conditions,
             provisioning,
+            crash_report_exports,
         };
         Self {
-            supervisor,
-            location,
+            runtime,
             management: Some(management),
         }
-    }
-
-    pub(super) fn location(&self) -> &LocationBridge {
-        &self.location
     }
 
     /// The input dispatcher is the sole command owner. Taking rather than
@@ -375,14 +188,12 @@ impl SessionServices {
 
     pub(super) async fn shutdown(self) {
         let Self {
-            mut supervisor,
-            location,
+            runtime,
             management,
         } = self;
         // Closing command senders first lets idle workers exit naturally before
         // the supervisor broadcasts cancellation to any active operation.
-        drop(location);
         drop(management);
-        supervisor.shutdown().await;
+        runtime.shutdown().await;
     }
 }

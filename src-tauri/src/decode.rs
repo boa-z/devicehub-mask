@@ -6,16 +6,20 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use idevice::tcp::handle::UdpSocketHandle;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
 use crate::device_runtime::AudioPublisher;
 use crate::protocol::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+use devicehub_runtime::{audio_decoder_restart_backoff, receive_audio_rtp};
 
 const AUDIO_CHUNK_MILLIS: usize = 20;
 const AUDIO_DIAGNOSTIC_CHUNKS: u64 = 5_000 / AUDIO_CHUNK_MILLIS as u64;
 const AUDIO_ACTIVE_SAMPLE_THRESHOLD: i32 = 32;
+const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -101,7 +105,7 @@ impl AudioSignalWindow {
     }
 }
 
-pub async fn spawn_audio_ffmpeg(
+async fn spawn_audio_ffmpeg(
     config: &AudioDecoderConfig,
 ) -> std::io::Result<(Child, ChildStdout, ChildStderr, std::net::SocketAddr)> {
     let ffmpeg = config.resolve()?;
@@ -135,7 +139,7 @@ pub async fn spawn_audio_ffmpeg(
     Ok((child, stdout, stderr, rtp_address))
 }
 
-pub async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioPublisher) {
+async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioPublisher) {
     let frames_per_chunk = AUDIO_SAMPLE_RATE as usize * AUDIO_CHUNK_MILLIS / 1_000;
     let mut chunk = vec![0_u8; frames_per_chunk * usize::from(AUDIO_CHANNELS) * 2];
     let mut chunks = 0_u64;
@@ -175,6 +179,99 @@ pub async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioPublisher) 
                 return;
             }
         }
+    }
+}
+
+/// Runs the optional host audio pipeline for one negotiated device session.
+/// Disabled audio still drains RTP so the shared DisplayService session remains healthy.
+pub(crate) async fn run_audio_pipeline(
+    udp: UdpSocketHandle,
+    output: AudioPublisher,
+    decoder: AudioDecoderConfig,
+    enabled: bool,
+) {
+    if !enabled {
+        tracing::info!("device audio playback disabled; draining negotiated audio stream");
+        receive_audio_rtp(&udp, None).await;
+        return;
+    }
+
+    let mut restart_attempt = 0_u32;
+    loop {
+        let (mut child, stdout, stderr, rtp_address) = match spawn_audio_ffmpeg(&decoder).await {
+            Ok(process) => process,
+            Err(error) => {
+                tracing::warn!(%error, "cannot start device audio decoder; draining audio stream");
+                receive_audio_rtp(&udp, None).await;
+                return;
+            }
+        };
+        let sender = match tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await {
+            Ok(sender) => sender,
+            Err(error) => {
+                tracing::warn!(%error, "cannot bind audio RTP forwarding socket");
+                receive_audio_rtp(&udp, None).await;
+                return;
+            }
+        };
+        let decoder_started = Instant::now();
+        let decoded_output = read_audio_chunks(stdout, output.clone());
+        let errors = watch_audio_errors(stderr);
+        let receive = receive_audio_rtp(&udp, Some((&sender, rtp_address)));
+        tokio::pin!(decoded_output, errors, receive);
+        let exit_reason = tokio::select! {
+            _ = &mut decoded_output => "output-ended",
+            _ = &mut errors => "stderr-ended",
+            _ = &mut receive => {
+                tracing::warn!("device audio RTP input ended");
+                return;
+            }
+            status = child.wait() => {
+                tracing::warn!(?status, "device audio decoder stopped");
+                "process-ended"
+            },
+        };
+        let elapsed = decoder_started.elapsed();
+        restart_attempt = if elapsed >= AUDIO_DECODER_STABLE_RUNTIME {
+            1
+        } else {
+            restart_attempt.saturating_add(1)
+        };
+        let retry_delay = audio_decoder_restart_backoff(restart_attempt - 1);
+        tracing::warn!(
+            exit_reason,
+            elapsed_ms = elapsed.as_millis() as u64,
+            restart_attempt,
+            retry_ms = retry_delay.as_millis() as u64,
+            "device audio decoder ended; restarting"
+        );
+        drop(child);
+        if !drain_audio_until_retry(&udp, retry_delay).await {
+            return;
+        }
+    }
+}
+
+async fn drain_audio_until_retry(udp: &UdpSocketHandle, delay: Duration) -> bool {
+    let retry = tokio::time::sleep(delay);
+    tokio::pin!(retry);
+    loop {
+        tokio::select! {
+            _ = &mut retry => return true,
+            packet = udp.recv() => {
+                if let Err(error) = packet {
+                    tracing::warn!(?error, "audio UDP receive failed while restarting decoder");
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+async fn watch_audio_errors(stderr: ChildStderr) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::warn!(target: "devicehub_mask::audio", message = %line, "ffmpeg audio decode error");
     }
 }
 

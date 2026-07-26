@@ -69,7 +69,7 @@ function checkBoundary(packageName, forbidden) {
 checkBoundary("devicehub-core", coreForbidden);
 checkBoundary("devicehub-runtime", runtimeForbidden);
 
-const hostFilesystemForbidden = ["std::path", "std::fs", "tokio::fs"];
+const hostApiForbidden = ["std::path", "std::fs", "tokio::fs", "std::env"];
 for (const [service, sourcePath] of [
   ["public AFC", "crates/devicehub-runtime/src/storage/public.rs"],
   ["application storage", "crates/devicehub-runtime/src/storage/application.rs"],
@@ -86,16 +86,26 @@ for (const [service, sourcePath] of [
   ["log archive", "crates/devicehub-runtime/src/diagnostics/log_archive.rs"],
   ["device backup", "crates/devicehub-runtime/src/diagnostics/device_backup.rs"],
   ["device details", "crates/devicehub-runtime/src/device/details.rs"],
+  ["crash report exports", "crates/devicehub-runtime/src/device/crash_reports.rs"],
+  ["screen media negotiation", "crates/devicehub-runtime/src/media/negotiation.rs"],
+  ["audio RTP", "crates/devicehub-runtime/src/media/audio_rtp.rs"],
+  ["video RTP", "crates/devicehub-runtime/src/media/video_rtp.rs"],
+  ["RTCP", "crates/devicehub-runtime/src/media/rtcp.rs"],
+  ["media session", "crates/devicehub-runtime/src/media/orchestrator.rs"],
+  ["session service ports", "crates/devicehub-runtime/src/session/services.rs"],
+  ["session commands", "crates/devicehub-runtime/src/session/commands.rs"],
+  ["session command router", "crates/devicehub-runtime/src/session/router.rs"],
+  ["session input loop", "crates/devicehub-runtime/src/session/input.rs"],
 ]) {
   const source = readFileSync(sourcePath, "utf8");
-  const violations = hostFilesystemForbidden.filter((dependency) =>
+  const violations = hostApiForbidden.filter((dependency) =>
     source.includes(dependency),
   );
   if (violations.length > 0) {
     console.error(
-      `Rust boundary check failed: runtime ${service} reaches host filesystem APIs: ${violations.join(", ")}`,
+      `Rust boundary check failed: runtime ${service} reaches host APIs: ${violations.join(", ")}`,
     );
     process.exit(1);
   }
-  console.log(`devicehub-runtime ${service} host filesystem boundary OK.`);
+  console.log(`devicehub-runtime ${service} host API boundary OK.`);
 }

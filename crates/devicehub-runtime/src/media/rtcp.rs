@@ -113,6 +113,13 @@ pub struct RtcpShared {
     frames: u32,
 }
 
+/// Host-provided RTCP behavior toggles for one media session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RtcpOptions {
+    /// Emit the experimental remote-control timing packet.
+    pub send_rctl: bool,
+}
+
 impl RtcpShared {
     pub fn note_inbound(&mut self, bytes: &[u8], source_port: u16, separate: bool, now: Instant) {
         self.peer = if separate {
@@ -197,6 +204,7 @@ pub async fn send_task(
     state: Arc<Mutex<RtcpShared>>,
     our_ssrc: u32,
     cname: String,
+    options: RtcpOptions,
     corruption: &Notify,
 ) {
     let send = |peer: RtcpPeer, packet: Vec<u8>| {
@@ -227,15 +235,12 @@ pub async fn send_task(
 
     let mut fir_sequence = 0_u8;
     let started_at = Instant::now();
-    // Experimental RCTL remains opt-in because the packet is not yet known to be
-    // byte-correct and has previously desynchronized the encoder.
-    let send_rctl = std::env::var("DEVICEHUB_RCTL").is_ok();
     let mut report_tick = tokio::time::interval(REPORT_INTERVAL);
     let mut rctl_tick = tokio::time::interval(Duration::from_millis(50));
     loop {
         tokio::select! {
             _ = rctl_tick.tick() => {
-                if !send_rctl {
+                if !options.send_rctl {
                     continue;
                 }
                 let built = {
@@ -294,6 +299,11 @@ pub async fn send_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn experimental_rctl_is_disabled_unless_the_host_enables_it() {
+        assert!(!RtcpOptions::default().send_rctl);
+    }
 
     #[test]
     fn reception_stats_handle_wrap_and_loss() {

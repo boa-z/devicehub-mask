@@ -12,7 +12,6 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::discovery::DeviceDiscovery;
-use super::transport::resolve_device_selection;
 use super::{run, trust};
 use crate::device_runtime::AudioPublisher;
 use crate::protocol::{
@@ -21,7 +20,9 @@ use crate::protocol::{
     OrientationSlot, PairDeviceResult, StatusSlot, VideoCounters,
 };
 use crate::supervisor;
-use devicehub_runtime::{SessionFailureAction, SessionRetry, SessionRetryPolicy};
+use devicehub_runtime::{
+    SessionFailureAction, SessionRetry, SessionRetryPolicy, resolve_device_selection,
+};
 
 /// Idle discovery remains responsive without continuously probing mux services.
 const IDLE_RESCAN: Duration = Duration::from_secs(2);
@@ -64,20 +65,13 @@ pub(super) struct SessionViews {
     pub(super) app_operation: AppOperationSlot,
     pub(super) app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     pub(super) device_file_activity: crate::device_files::DeviceFileActivitySlot,
-    pub(super) location: LocationStatusSlot,
-    pub(super) performance: devicehub_runtime::PerformanceSlot,
-    pub(super) performance_demand: devicehub_runtime::PerformanceDemand,
-    pub(super) device_logs: devicehub_runtime::DeviceLogSlot,
-    pub(super) device_log_demand: devicehub_runtime::DeviceLogDemand,
-    pub(super) services: supervisor::ServiceRegistry,
-    pub(super) device_events: devicehub_runtime::DeviceEventSlot,
+    pub(super) runtime_services: devicehub_runtime::RuntimeServiceViews,
     pub(super) network_capture: crate::network_capture::NetworkCaptureSlot,
     pub(super) bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     pub(super) device_backup: crate::device_backup::DeviceBackupSlot,
     pub(super) sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     pub(super) log_archive: crate::log_archive::LogArchiveSlot,
     pub(super) developer_image: crate::developer_image::DeveloperImageMountSlot,
-    pub(super) device_conditions: devicehub_runtime::DeviceConditionSlot,
 }
 
 #[derive(Clone)]
@@ -262,20 +256,22 @@ pub(crate) async fn manage(
                 app_operation: app_operation.clone(),
                 app_document_activity: app_document_activity.clone(),
                 device_file_activity: device_file_activity.clone(),
-                location: location.clone(),
-                performance: performance.clone(),
-                performance_demand: performance_demand.clone(),
-                device_logs: device_logs.clone(),
-                device_log_demand: device_log_demand.clone(),
-                services: services.clone(),
-                device_events: device_events.clone(),
+                runtime_services: devicehub_runtime::RuntimeServiceViews {
+                    performance: performance.clone(),
+                    performance_demand: performance_demand.clone(),
+                    device_logs: device_logs.clone(),
+                    device_log_demand: device_log_demand.clone(),
+                    services: services.clone(),
+                    device_events: device_events.clone(),
+                    location: location.clone(),
+                    device_conditions: device_conditions.clone(),
+                },
                 network_capture: network_capture.clone(),
                 bluetooth_capture: bluetooth_capture.clone(),
                 device_backup: device_backup.clone(),
                 sysdiagnose: sysdiagnose.clone(),
                 log_archive: log_archive.clone(),
                 developer_image: developer_image.clone(),
-                device_conditions: device_conditions.clone(),
             },
             in_rx,
         );

@@ -2,77 +2,45 @@
 // stream (which both sources the video AND holds open the HID auth gate), then
 // run the video pipeline and dispatch input commands to the device's HID surfaces.
 
-mod apps;
 mod clipboard;
 mod discovery;
 mod manager;
-mod media;
-mod rtcp;
 mod services;
-mod transport;
 mod trust;
 
-pub(crate) use devicehub_runtime::{APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT};
 pub(crate) use manager::manage;
 
-use apps::{AppClientSet, AppManagement, AppServiceTransport};
-
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::ChildStderr;
-use tokio::sync::Notify;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use idevice::{
-    IdeviceError, ReadWrite, RsdService,
-    core_device::{
-        CallInfoBlob, CoreDeviceError, DisplayServiceClient, HevcDepacketizer,
-        OrientationServiceClient, PasteboardServiceClient, RtpPacket, build_frame_ack,
-        build_screen_audio_offer, build_screen_video_offer, build_start_audio_parameters,
-        build_start_video_parameters, hid::IndigoHidClient, is_rtcp, parse_answer_media_blob,
-    },
+    RsdService,
+    core_device::{OrientationServiceClient, PasteboardServiceClient, hid::IndigoHidClient},
     provider::IdeviceProvider,
-    rsd::RsdHandshake,
-    tcp::handle::{AdapterHandle, UdpSocketHandle},
 };
 
 use crate::decode;
-use crate::device_runtime::AudioPublisher;
-use crate::domain::ascii_key_usage;
-use crate::protocol::{
-    AppOperationSlot, ClipboardSlot, ConnKind, DeviceDetails, InputCmd, KeyMods, VideoCounters,
-};
+use crate::protocol::{AppOperationSlot, ClipboardSlot, DeviceDetails, InputCmd};
 use clipboard::ClipboardBridge;
-use devicehub_runtime::LocationCommand;
+#[cfg(test)]
+use devicehub_runtime::read_device_developer_mode_status;
 use devicehub_runtime::{
-    DeviceInputCommand, DeviceInputDispatcher, DevicePowerAction, DevicePowerController,
-    OrientationWatcher, UniversalHidClient, read_activation_state, read_device_battery,
-    read_device_details, read_device_developer_mode_status, rename_device,
+    AppClientSet, AppServiceTransport, DeviceInputDispatcher, MediaSessionConfig,
+    MediaSessionRuntime, OrientationWatcher, RtcpOptions, SessionEndpoint, SystemUsbmuxdConfig,
+    UniversalHidClient, VideoRtpOptions, connect_core_tunnel, connect_provider,
+    read_device_details, run_device_command_loop, run_management_command_loop,
+    start_screen_media_stream,
 };
 use manager::{SessionVideo, SessionViews};
-use media::{
-    AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RtpVideoClock,
-    RunningStats, audio_decoder_restart_backoff, stall_watchdog,
-};
-use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
-use services::{DeviceManagementServices, LocationBridge, SessionServices};
-use transport::{SessionEndpoint, connect_core_tunnel, connect_provider};
+use services::{DeviceManagementServices, SessionServices};
 
-/// `clientSupportedFeatures` the controller advertises for screen sharing.
-const CLIENT_SUPPORTED_FEATURES: u64 = 140;
-
-/// How long the locked stream must go silent before we migrate to a different
-/// SSRC: long enough to ignore stray packets from a competing/leaked sender,
-/// short enough to pick up a real stream restart promptly.
-const SSRC_TAKEOVER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
-const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceTransportConfig {
     pub(crate) netmuxd: crate::netmuxd::NetmuxdConfig,
-    pub(crate) system_usbmuxd: transport::SystemUsbmuxdConfig,
+    pub(crate) system_usbmuxd: SystemUsbmuxdConfig,
 }
 
 impl DeviceTransportConfig {
@@ -82,7 +50,7 @@ impl DeviceTransportConfig {
     ) -> Self {
         Self {
             netmuxd,
-            system_usbmuxd: transport::SystemUsbmuxdConfig::from_host(system_usbmuxd),
+            system_usbmuxd: SystemUsbmuxdConfig::from_host(system_usbmuxd),
         }
     }
 }
@@ -93,7 +61,7 @@ impl DeviceTransportConfig {
 async fn run(
     endpoint: SessionEndpoint,
     pairing_dir: PathBuf,
-    system_usbmuxd: transport::SystemUsbmuxdConfig,
+    system_usbmuxd: SystemUsbmuxdConfig,
     video: SessionVideo,
     clipboard: ClipboardSlot,
     views: SessionViews,
@@ -150,8 +118,8 @@ async fn run(
             views.error.set(Some(error));
             views.status.set("device management connected");
             let device_management_services = session_services.take_management();
-            management_input_loop(
-                DeviceManagement::fallback(
+            run_management_command_loop(
+                device_router(
                     provider,
                     views.app_operation.clone(),
                     device_details,
@@ -160,7 +128,6 @@ async fn run(
                     device_management_services,
                 ),
                 &mut input_rx,
-                session_services.location(),
             )
             .await;
             session_services.shutdown().await;
@@ -234,25 +201,6 @@ async fn run(
     // Keep the display client to stop the stream on teardown.
     let mut display = media.client;
 
-    // Shared between the RTP receive loop and the RTCP send loop (rtcp-mux feedback
-    // goes back out the RTP socket).
-    let video_udp = Arc::new(media.video_udp);
-    let rtcp_udp = media.rtcp_udp.map(Arc::new);
-
-    // Pulsed when the HEVC publisher loses synchronization or the stream stalls;
-    // the RTCP loop reacts with PLI + FIR on the same stream.
-    let corruption = Arc::new(Notify::new());
-
-    let rtcp = Arc::new(Mutex::new(RtcpShared::default()));
-
-    // `udp.recv()` holds a non-Send MutexGuard across an await, so these loops
-    // can't be spawned; we run them concurrently on this task via `select!`. The
-    // input loop is the only one that returns normally (Shutdown / channel close);
-    // when it does, the other session-owned futures are dropped as one unit.
-    //
-    // Complete access units wait in a byte-bounded queue so WebSocket/WebCodecs
-    // backpressure cannot stall RTP/RTCP or grow memory without limit.
-    let hevc_queue = Arc::new(HevcQueue::new(HEVC_QUEUE_MAX_BYTES));
     let orientation_watch_view = views.orientation.clone();
     let orientation_task = async move {
         match orientation_watcher {
@@ -261,81 +209,63 @@ async fn run(
         }
     };
     let (clipboard_bridge, clipboard_commands) = ClipboardBridge::channel();
-    let decode_corruption = corruption.clone();
-    let decode_queue = hevc_queue.clone();
-    let decode_counters = video.counters.clone();
-    let browser_keyframes = video.browser_frames.clone();
     let browser_lifecycle = video.browser_frames.clone();
-    let decode_pipeline = async move {
-        browser_video_writer(
-            decode_queue,
-            video.browser_frames,
-            decode_counters,
-            decode_corruption,
-        )
-        .await;
-        Ok::<(), String>(())
-    };
 
     let management_app_adapter = adapter.clone();
     let management_app_handshake = handshake.clone();
     let device_management_services = session_services.take_management();
-    tokio::select! {
-        _ = video_task(
-            video_udp.clone(),
-            hevc_queue.clone(),
-            rtcp.clone(),
-            corruption.clone(),
-            video.counters.clone(),
+    let send_frame_ack = std::env::var("DEVICEHUB_FRAME_ACK").is_ok();
+    let rtcp_options = RtcpOptions {
+        send_rctl: std::env::var("DEVICEHUB_RCTL").is_ok(),
+    };
+    let hevc_dump_sink = open_hevc_dump_sink().await;
+    let media_runtime = MediaSessionRuntime::new(
+        media.video_udp,
+        media.rtcp_udp,
+        video.counters.clone(),
+        video.browser_frames,
+        MediaSessionConfig {
             our_ssrc,
-        ) => {
-            tracing::warn!("video task ended early");
-        }
-        _ = audio_task(
-            media.audio_udp,
-            video.audio,
-            video.audio_decoder,
-            video.audio_enabled,
-        ) => {
-            tracing::warn!("audio task ended early");
-        }
-        result = decode_pipeline => {
-            if let Err(error) = result {
-                tracing::warn!(%error, "video decoder pipeline ended");
-            }
-        }
-        _ = stall_watchdog(video.counters.clone(), &corruption) => {}
-        _ = forward_browser_keyframes(browser_keyframes, corruption.clone()) => {}
-        _ = rtcp_receive_task(rtcp_udp.clone(), rtcp.clone(), video.counters.clone()) => {}
-        _ = rtcp_send_task(
-            video_udp, rtcp_udp, rtcp, our_ssrc, cname, &corruption,
-        ) => {}
-        _ = clipboard::run(
-            pasteboard,
-            video.clipboard_sync_enabled,
-            clipboard,
-            clipboard_commands,
-            &mut adapter,
-            &mut handshake,
-        ) => {}
-        _ = orientation_task => {}
-        _ = input_loop(
-            DeviceInputDispatcher::new(touch, indigo, orientation, views.orientation.clone()),
-            DeviceManagement::new(
-                provider,
-                views.app_operation.clone(),
-                device_details,
-                app_clients,
-                AppServiceTransport::new(management_app_adapter, management_app_handshake),
-                device_management_services,
-            ),
-            &mut input_rx,
-            InputBridges {
-                location: session_services.location(),
-                clipboard: &clipboard_bridge,
+            cname,
+            video: VideoRtpOptions {
+                send_frame_ack,
+                annexb_sink: hevc_dump_sink,
             },
-        ) => {}
-    }
+            rtcp: rtcp_options,
+        },
+    );
+    media_runtime
+        .run(
+            decode::run_audio_pipeline(
+                media.audio_udp,
+                video.audio,
+                video.audio_decoder,
+                video.audio_enabled,
+            ),
+            clipboard::run(
+                pasteboard,
+                video.clipboard_sync_enabled,
+                clipboard,
+                clipboard_commands,
+                &mut adapter,
+                &mut handshake,
+            ),
+            orientation_task,
+            run_device_command_loop(
+                DeviceInputDispatcher::new(touch, indigo, orientation, views.orientation.clone()),
+                device_router(
+                    provider,
+                    views.app_operation.clone(),
+                    device_details,
+                    app_clients,
+                    AppServiceTransport::new(management_app_adapter, management_app_handshake),
+                    device_management_services,
+                ),
+                &mut input_rx,
+                &clipboard_bridge,
+            ),
+        )
+        .await;
 
     session_services.shutdown().await;
     browser_lifecycle.reset_dimensions();
@@ -345,1696 +275,52 @@ async fn run(
     Ok(())
 }
 
-/// Dispatch input until the UI shuts us down or the channel closes.
-struct InputBridges<'a> {
-    location: &'a LocationBridge,
-    clipboard: &'a ClipboardBridge,
-}
-
-async fn input_loop(
-    mut device_input: DeviceInputDispatcher,
-    mut management: DeviceManagement,
-    input_rx: &mut UnboundedReceiver<InputCmd>,
-    bridges: InputBridges<'_>,
-) {
-    while let Some(cmd) = input_rx.recv().await {
-        if matches!(cmd, InputCmd::Shutdown) {
-            break;
-        }
-        let Some(cmd) = management.handle(cmd).await else {
-            continue;
-        };
-        let Some(cmd) = forward_location_command(cmd, bridges.location) else {
-            continue;
-        };
-        if let InputCmd::PasteText { text, reply } = cmd {
-            let result = async {
-                bridges.clipboard.set_text(text).await?;
-                let (paste_usage, _) =
-                    ascii_key_usage('v').expect("ASCII v must have a keyboard usage");
-                device_input
-                    .dispatch(DeviceInputCommand::KeyCombo {
-                        usage: paste_usage,
-                        mods: KeyMods {
-                            cmd: true,
-                            ..KeyMods::default()
-                        },
-                    })
-                    .await
-                    .map_err(|error| format!("unable to send paste shortcut: {error:?}"))
-            }
-            .await;
-            let _ = reply.send(result);
-            continue;
-        }
-        if let InputCmd::DeviceInput(command) = cmd
-            && let Err(error) = device_input.dispatch(command).await
-        {
-            tracing::warn!("input dispatch failed: {error:?}");
-        }
-    }
-}
-
-async fn management_input_loop(
-    mut management: DeviceManagement,
-    input_rx: &mut UnboundedReceiver<InputCmd>,
-    location: &LocationBridge,
-) {
-    while let Some(command) = input_rx.recv().await {
-        if matches!(command, InputCmd::Shutdown) {
-            break;
-        }
-        let Some(command) = management.handle(command).await else {
-            continue;
-        };
-        if let InputCmd::PasteText { reply, .. } = command {
-            let _ = reply.send(Err("device control is unavailable".into()));
-            continue;
-        }
-        let _ = forward_location_command(command, location);
-    }
-}
-
-fn forward_location_command(command: InputCmd, location: &LocationBridge) -> Option<InputCmd> {
-    let command = match command {
-        InputCmd::SetLocation {
-            latitude,
-            longitude,
-            reply,
-        } => LocationCommand::Set {
-            latitude,
-            longitude,
-            reply,
-        },
-        InputCmd::ClearLocation { reply } => LocationCommand::Clear { reply },
-        other => return Some(other),
-    };
-
-    let result = if location.status.get().available {
-        location.sender.try_send(command)
-    } else {
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(command))
-    };
-    if let Err(error) = result {
-        let (reason, command) = match error {
-            tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                ("location simulation is busy", command)
-            }
-            tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                ("location simulation is unavailable", command)
-            }
-        };
-        match command {
-            LocationCommand::Set { reply, .. } | LocationCommand::Clear { reply } => {
-                let _ = reply.send(Err(reason.into()));
-            }
-        }
-    }
-    None
-}
-
-fn reject_device_condition_command(
-    command: devicehub_runtime::DeviceConditionCommand,
-    reason: &str,
-) {
-    use devicehub_runtime::DeviceConditionCommand;
-
-    match command {
-        DeviceConditionCommand::Apply { reply, .. }
-        | DeviceConditionCommand::Clear { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_network_capture_command(
-    command: crate::network_capture::NetworkCaptureCommand,
-    reason: &str,
-) {
-    use crate::network_capture::NetworkCaptureCommand;
-
-    match command {
-        NetworkCaptureCommand::Start { reply, .. } | NetworkCaptureCommand::Stop { reply } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_bluetooth_capture_command(
-    command: crate::bluetooth_capture::BluetoothCaptureCommand,
-    reason: &str,
-) {
-    use crate::bluetooth_capture::BluetoothCaptureCommand;
-
-    match command {
-        BluetoothCaptureCommand::Start { reply, .. } | BluetoothCaptureCommand::Stop { reply } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_device_backup_command(command: crate::device_backup::DeviceBackupCommand, reason: &str) {
-    use crate::device_backup::DeviceBackupCommand;
-
-    match command {
-        DeviceBackupCommand::Start { reply, .. } | DeviceBackupCommand::Stop { reply } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_sysdiagnose_command(command: crate::sysdiagnose::SysdiagnoseCommand, reason: &str) {
-    use crate::sysdiagnose::SysdiagnoseCommand;
-
-    match command {
-        SysdiagnoseCommand::Start { reply, .. } | SysdiagnoseCommand::Stop { reply } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_log_archive_command(command: crate::log_archive::LogArchiveCommand, reason: &str) {
-    use crate::log_archive::LogArchiveCommand;
-
-    match command {
-        LogArchiveCommand::Start { reply, .. } | LogArchiveCommand::Stop { reply } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_developer_image_command(
-    command: crate::developer_image::DeveloperImageMountCommand,
-    reason: &str,
-) {
-    use crate::developer_image::DeveloperImageMountCommand;
-
-    match command {
-        DeveloperImageMountCommand::Start { reply, .. }
-        | DeveloperImageMountCommand::Stop { reply }
-        | DeveloperImageMountCommand::Unmount { reply } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_app_document_command(command: crate::app_documents::AppDocumentCommand, reason: &str) {
-    use crate::app_documents::AppDocumentCommand;
-
-    match command {
-        AppDocumentCommand::List { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        AppDocumentCommand::Export { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        AppDocumentCommand::Import { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        AppDocumentCommand::CreateDirectory { reply, .. }
-        | AppDocumentCommand::Rename { reply, .. }
-        | AppDocumentCommand::Delete { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-fn reject_device_file_command(command: crate::device_files::DeviceFileCommand, reason: &str) {
-    use crate::device_files::DeviceFileCommand;
-
-    match command {
-        DeviceFileCommand::List { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        DeviceFileCommand::Export { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        DeviceFileCommand::Import { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        DeviceFileCommand::CreateDirectory { reply, .. }
-        | DeviceFileCommand::Rename { reply, .. }
-        | DeviceFileCommand::Delete { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
-struct DeviceManagement {
+fn device_router(
     provider: Arc<dyn IdeviceProvider>,
-    power: DevicePowerController,
+    app_operation: AppOperationSlot,
     details: Option<DeviceDetails>,
-    apps: AppManagement,
+    app_clients: AppClientSet,
+    app_service_transport: AppServiceTransport,
     services: DeviceManagementServices,
+) -> devicehub_runtime::DeviceSessionRouter<PathBuf> {
+    devicehub_runtime::DeviceSessionRouter::new(
+        provider,
+        app_operation,
+        details,
+        app_clients,
+        app_service_transport,
+        services,
+    )
 }
 
-impl DeviceManagement {
-    fn new(
-        provider: Arc<dyn IdeviceProvider>,
-        app_operation: AppOperationSlot,
-        details: Option<DeviceDetails>,
-        app_clients: AppClientSet,
-        app_service_transport: AppServiceTransport,
-        services: DeviceManagementServices,
-    ) -> Self {
-        let apps = AppManagement::new(
-            provider.clone(),
-            app_operation,
-            app_clients,
-            app_service_transport,
-        );
-        let power = DevicePowerController::new(provider.clone());
-        Self {
-            provider,
-            power,
-            details,
-            apps,
-            services,
+/// Opens the optional host-side HEVC dump without coupling the runtime media
+/// pipeline to environment variables or filesystem APIs.
+async fn open_hevc_dump_sink() -> Option<mpsc::Sender<Vec<u8>>> {
+    let path = std::env::var("DEVICEHUB_DUMP_HEVC").ok()?;
+    let mut file = match tokio::fs::File::create(&path).await {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!(%path, %error, "could not open HEVC diagnostic dump");
+            return None;
         }
-    }
-
-    fn fallback(
-        provider: Arc<dyn IdeviceProvider>,
-        app_operation: AppOperationSlot,
-        details: Option<DeviceDetails>,
-        app_clients: AppClientSet,
-        app_service_transport: AppServiceTransport,
-        services: DeviceManagementServices,
-    ) -> Self {
-        Self::new(
-            provider,
-            app_operation,
-            details,
-            app_clients,
-            app_service_transport,
-            services,
-        )
-    }
-
-    async fn handle(&mut self, command: InputCmd) -> Option<InputCmd> {
-        let command = match command {
-            InputCmd::Apps(command) => {
-                self.apps.handle(command).await;
-                return None;
-            }
-            command => command,
-        };
-        match command {
-            InputCmd::GetDeviceDetails(reply) => {
-                let Some(mut details) = self.details.clone() else {
-                    let _ = reply.send(Err("device metadata is unavailable".to_string()));
-                    return None;
-                };
-                let provider = self.provider.clone();
-                tokio::spawn(async move {
-                    let requested_udid = details.udid.clone();
-                    let (
-                        details_result,
-                        battery_result,
-                        developer_mode_result,
-                        developer_image_result,
-                        activation_state_result,
-                    ) = tokio::join!(
-                        tokio::time::timeout(
-                            Duration::from_secs(3),
-                            read_device_details(provider.as_ref(), requested_udid),
-                        ),
-                        tokio::time::timeout(
-                            Duration::from_secs(3),
-                            read_device_battery(provider.as_ref()),
-                        ),
-                        tokio::time::timeout(
-                            Duration::from_secs(3),
-                            read_device_developer_mode_status(provider.as_ref()),
-                        ),
-                        tokio::time::timeout(
-                            Duration::from_secs(3),
-                            devicehub_runtime::is_developer_image_mounted(
-                                provider.as_ref(),
-                                &details.product_version,
-                            ),
-                        ),
-                        tokio::time::timeout(
-                            Duration::from_secs(3),
-                            read_activation_state(provider.as_ref()),
-                        ),
-                    );
-                    match details_result {
-                        Ok(Some(refreshed)) => details = refreshed,
-                        Ok(None) => tracing::warn!("device metadata refresh unavailable"),
-                        Err(_) => tracing::warn!("device metadata refresh timed out"),
-                    }
-                    match battery_result {
-                        Ok(Ok(battery)) => {
-                            tracing::debug!(
-                                level_percent = ?battery.level_percent,
-                                is_charging = ?battery.is_charging,
-                                cycle_count = ?battery.cycle_count,
-                                "device battery diagnostics refreshed"
-                            );
-                            details.battery = Some(battery);
-                        }
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "device battery diagnostics unavailable");
-                        }
-                        Err(_) => {
-                            tracing::warn!("device battery diagnostics timed out");
-                        }
-                    }
-                    match developer_mode_result {
-                        Ok(Ok(enabled)) => {
-                            tracing::debug!(enabled, "developer mode status refreshed");
-                            details.developer_mode_enabled = Some(enabled);
-                        }
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "developer mode status unavailable");
-                        }
-                        Err(_) => {
-                            tracing::warn!("developer mode status timed out");
-                        }
-                    }
-                    match developer_image_result {
-                        Ok(Ok(mounted)) => {
-                            tracing::debug!(mounted, "developer image status refreshed");
-                            details.developer_image_mounted = Some(mounted);
-                        }
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "developer image status unavailable");
-                        }
-                        Err(_) => {
-                            tracing::warn!("developer image status timed out");
-                        }
-                    }
-                    match activation_state_result {
-                        Ok(Ok(state)) => {
-                            tracing::debug!(?state, "device activation state refreshed");
-                            details.activation_state = Some(state);
-                        }
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "device activation state unavailable");
-                        }
-                        Err(_) => {
-                            tracing::warn!("device activation state timed out");
-                        }
-                    }
-                    let _ = reply.send(Ok(details));
-                });
-                None
-            }
-            InputCmd::RenameDevice { name, reply } => {
-                let provider = self.provider.clone();
-                tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(6),
-                        rename_device(provider.as_ref(), &name),
-                    )
-                    .await
-                    .map_err(|_| "device rename timed out".to_string())
-                    .and_then(|result| result);
-                    let _ = reply.send(result);
-                });
-                None
-            }
-            InputCmd::DeveloperMode(command) => {
-                devicehub_runtime::execute_developer_mode(self.provider.clone(), command);
-                None
-            }
-            InputCmd::ListCompanionDevices(reply) => {
-                let command = devicehub_runtime::CompanionDeviceCommand::List { reply };
-                if let Err(error) = self.services.companions.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("companion device service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("companion device service is unavailable", command)
-                        }
-                    };
-                    match command {
-                        devicehub_runtime::CompanionDeviceCommand::List { reply } => {
-                            let _ = reply.send(Err(reason.into()));
-                        }
-                    }
-                }
-                None
-            }
-            InputCmd::GetHomeScreenLayout(reply) => {
-                let command = devicehub_runtime::HomeScreenCommand::Get { reply };
-                if let Err(error) = self.services.home_screen.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("home screen service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("home screen service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::GetWallpaper { kind, reply } => {
-                let command = devicehub_runtime::HomeScreenCommand::Wallpaper { kind, reply };
-                if let Err(error) = self.services.home_screen.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("home screen service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("home screen service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::RunningProcess(command) => {
-                if let Err(error) = self.services.running_processes.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("running process service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("running process service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::AppLifecycle(command) => {
-                if let Err(error) = self.services.app_lifecycle.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("application lifecycle service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("application lifecycle service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::WdaAutomation(command) => {
-                if let Err(error) = self.services.wda.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("WDA automation service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("WDA automation service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::WdaRunner(command) => {
-                if let Err(error) = self.services.wda_runner.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("WDA runner service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("WDA runner service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::AppConsole(command) => {
-                if let Err(error) = self.services.app_console.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("application console service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("application console service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::GetAppIcon { bundle_id, reply } => {
-                let command = devicehub_runtime::AppIconCommand { bundle_id, reply };
-                if let Err(error) = self.services.icons.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("app icon service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("app icon service is unavailable", command)
-                        }
-                    };
-                    let _ = command.reply.send(Err(reason.into()));
-                }
-                None
-            }
-            InputCmd::TakeScreenshot(reply) => {
-                let command = devicehub_runtime::ScreenCaptureCommand { reply };
-                if let Err(error) = self.services.screen_capture.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("screen capture service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("screen capture service is unavailable", command)
-                        }
-                    };
-                    let _ = command.reply.send(Err(reason.into()));
-                }
-                None
-            }
-            InputCmd::NetworkCapture(command) => {
-                if let Err(error) = self.services.network_capture.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("packet capture service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("packet capture service is unavailable", command)
-                        }
-                    };
-                    reject_network_capture_command(command, reason);
-                }
-                None
-            }
-            InputCmd::BluetoothCapture(command) => {
-                if let Err(error) = self.services.bluetooth_capture.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("Bluetooth capture service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("Bluetooth capture service is unavailable", command)
-                        }
-                    };
-                    reject_bluetooth_capture_command(command, reason);
-                }
-                None
-            }
-            InputCmd::DeviceBackup(command) => {
-                if let Err(error) = self.services.device_backup.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("device backup service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("device backup service is unavailable", command)
-                        }
-                    };
-                    reject_device_backup_command(command, reason);
-                }
-                None
-            }
-            InputCmd::Sysdiagnose(command) => {
-                if let Err(error) = self.services.sysdiagnose.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("sysdiagnose service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("sysdiagnose service is unavailable", command)
-                        }
-                    };
-                    reject_sysdiagnose_command(command, reason);
-                }
-                None
-            }
-            InputCmd::LogArchive(command) => {
-                if let Err(error) = self.services.log_archive.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("log archive service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("log archive service is unavailable", command)
-                        }
-                    };
-                    reject_log_archive_command(command, reason);
-                }
-                None
-            }
-            InputCmd::DeveloperImageMount(command) => {
-                if let Err(error) = self.services.developer_image.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("developer image service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("developer image service is unavailable", command)
-                        }
-                    };
-                    reject_developer_image_command(command, reason);
-                }
-                None
-            }
-            InputCmd::DeviceCondition(command) => {
-                if let Err(error) = self.services.device_conditions.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("device condition service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("device condition service is unavailable", command)
-                        }
-                    };
-                    reject_device_condition_command(command, reason);
-                }
-                None
-            }
-            InputCmd::AppDocuments(command) => {
-                if let Err(error) = self.services.documents.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("application document service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("application document service is unavailable", command)
-                        }
-                    };
-                    reject_app_document_command(command, reason);
-                }
-                None
-            }
-            InputCmd::DeviceFiles(command) => {
-                if let Err(error) = self.services.device_files.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("device file service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("device file service is unavailable", command)
-                        }
-                    };
-                    reject_device_file_command(command, reason);
-                }
-                None
-            }
-            InputCmd::LockDevice(reply) => {
-                self.power.start(DevicePowerAction::Lock, reply);
-                None
-            }
-            InputCmd::RestartDevice(reply) => {
-                self.power.start(DevicePowerAction::Restart, reply);
-                None
-            }
-            InputCmd::ShutdownDevice(reply) => {
-                self.power.start(DevicePowerAction::Shutdown, reply);
-                None
-            }
-            InputCmd::Provisioning(command) => {
-                if let Err(error) = self.services.provisioning.try_send(command) {
-                    let (reason, command) = match error {
-                        tokio::sync::mpsc::error::TrySendError::Full(command) => {
-                            ("provisioning profile service is busy", command)
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(command) => {
-                            ("provisioning profile service is unavailable", command)
-                        }
-                    };
-                    command.reject(reason);
-                }
-                None
-            }
-            InputCmd::ListCrashReports(reply) => {
-                let provider = self.provider.clone();
-                tokio::spawn(async move {
-                    let _ = reply.send(devicehub_runtime::list_crash_reports(provider).await);
-                });
-                None
-            }
-            InputCmd::ReadCrashReport {
-                device_path,
-                max_bytes,
-                reply,
-            } => {
-                let provider = self.provider.clone();
-                tokio::spawn(async move {
-                    let result =
-                        devicehub_runtime::read_crash_report(provider, device_path, max_bytes)
-                            .await;
-                    let _ = reply.send(result);
-                });
-                None
-            }
-            InputCmd::ExportCrashReport {
-                device_path,
-                destination,
-                reply,
-            } => {
-                let provider = self.provider.clone();
-                tokio::spawn(async move {
-                    let result =
-                        crate::crash_reports::export(provider, device_path, &destination).await;
-                    let _ = reply.send(result);
-                });
-                None
-            }
-            InputCmd::DeleteCrashReport { device_path, reply } => {
-                let provider = self.provider.clone();
-                tokio::spawn(async move {
-                    let result =
-                        devicehub_runtime::delete_crash_report(provider, device_path).await;
-                    let _ = reply.send(result);
-                });
-                None
-            }
-            other => Some(other),
-        }
-    }
-}
-
-/// Receive video RTP, depacketize HEVC, and queue complete Annex-B access units
-/// for the WebSocket/WebCodecs publisher. This socket also carries inbound RTCP
-/// under rtcp-mux; those datagrams are split off to [`RtcpShared::note_inbound`].
-async fn video_task(
-    udp: Arc<UdpSocketHandle>,
-    hevc_queue: Arc<HevcQueue>,
-    rtcp: Arc<Mutex<RtcpShared>>,
-    corruption: Arc<Notify>,
-    video_counters: VideoCounters,
-    our_ssrc: u32,
-) {
-    let mut depacketizer = HevcDepacketizer::new();
-    let mut assembler = AccessUnitAssembler::default();
-    // Lock onto a single RTP stream (SSRC) and feed only its packets to the
-    // depacketizer. A stream restart begins a new SSRC with a fresh sequence
-    // number; the device doesn't reliably stop the old sender, so both streams can
-    // arrive interleaved. Migrate only once the locked stream has gone quiet for
-    // `SSRC_TAKEOVER_GRACE` (the old sender really stopped); ignore stray packets
-    // from a competing/leaked SSRC otherwise.
-    let mut locked_ssrc: Option<u32> = None;
-    let mut last_locked = Instant::now();
-
-    // Per-frame ACK is DISABLED by default - it corrupts the stream. Sending
-    // AVConference's `0x00000005` APP ack (even byte-identical to Apple) makes the
-    // encoder's reference diverge from our decoder under motion and never heal.
-    // `DEVICEHUB_FRAME_ACK=1` re-enables it for experiments.
-    let send_frame_ack = std::env::var("DEVICEHUB_FRAME_ACK").is_ok();
-    // Per-access-unit completeness tracking: ACK a frame only if it arrived intact
-    // (packets since the previous marker == sequence span), never vouching for a gap.
-    let mut prev_marker_seq: Option<u16> = None;
-    let mut au_pkts: u32 = 0;
-    let mut metrics_started = Instant::now();
-    let mut metrics_rtp_packets = 0_u64;
-    let mut metrics_rtp_bytes = 0_u64;
-    let mut metrics_access_units = 0_u64;
-    let mut metrics_hevc_bytes = 0_u64;
-    let mut metrics_incomplete_markers = 0_u64;
-    let mut last_rtp_frame_timestamp = None;
-    let mut last_source_frame_at = None;
-    let mut rtp_timestamp_deltas = RunningStats::default();
-    let mut source_frame_intervals_ms = RunningStats::default();
-
-    // DIAGNOSTIC: if `DEVICEHUB_DUMP_HEVC` is set, tee the published Annex-B
-    // bytes to that path for offline inspection.
-    let mut dump = match std::env::var("DEVICEHUB_DUMP_HEVC") {
-        Ok(path) => match tokio::fs::File::create(&path).await {
-            Ok(f) => {
-                tracing::info!("dumping HEVC elementary stream to {path}");
-                Some(f)
-            }
-            Err(e) => {
-                tracing::warn!("could not open HEVC dump {path}: {e}");
-                None
-            }
-        },
-        Err(_) => None,
     };
-
-    loop {
-        match udp.recv().await {
-            Ok(dg) => {
-                let now = Instant::now();
-                video_counters.note_transport_activity();
-                // rtcp-mux: RTCP shares this port; never goes through the depacketizer.
-                if is_rtcp(&dg.data) {
-                    rtcp.lock()
-                        .unwrap()
-                        .note_inbound(&dg.data, dg.source_port, false, now);
-                    continue;
-                }
-                let Some(pkt) = RtpPacket::parse(&dg.data) else {
-                    continue;
-                };
-                // DIAGNOSTIC: log when a keyframe (IRAP slice) starts arriving.
-                {
-                    let p = pkt.payload;
-                    let irap = if p.len() >= 3 && (p[0] >> 1) & 0x3f == 49 {
-                        // FU: only the start fragment, with an IRAP fu-type.
-                        (p[2] & 0x80) != 0 && (16..=23).contains(&(p[2] & 0x3f))
-                    } else if p.len() >= 2 {
-                        (16..=23).contains(&((p[0] >> 1) & 0x3f))
-                    } else {
-                        false
-                    };
-                    if irap {
-                        tracing::info!("received IRAP keyframe (ssrc {:#x})", pkt.ssrc);
-                    }
-                }
-                match locked_ssrc {
-                    Some(s) if s == pkt.ssrc => last_locked = now,
-                    Some(s) => {
-                        // Competing stream: migrate only once the locked one has
-                        // gone silent (old sender stopped).
-                        if now.duration_since(last_locked) < SSRC_TAKEOVER_GRACE {
-                            continue;
-                        }
-                        tracing::info!(
-                            "RTP stream {s:#x} went quiet; migrating to {:#x}",
-                            pkt.ssrc,
-                        );
-                        depacketizer = HevcDepacketizer::new();
-                        assembler.clear();
-                        prev_marker_seq = None;
-                        au_pkts = 0;
-                        last_rtp_frame_timestamp = None;
-                        last_source_frame_at = None;
-                        rtp_timestamp_deltas = RunningStats::default();
-                        source_frame_intervals_ms = RunningStats::default();
-                        let (dropped_access_units, dropped_bytes) = hevc_queue.force_resync();
-                        tracing::info!(
-                            dropped_access_units,
-                            dropped_bytes,
-                            "cleared HEVC queue for RTP stream migration"
-                        );
-                        locked_ssrc = Some(pkt.ssrc);
-                        last_locked = now;
-                        rtcp.lock().unwrap().reset_media_source(pkt.ssrc);
-                    }
-                    None => {
-                        locked_ssrc = Some(pkt.ssrc);
-                        last_locked = now;
-                    }
-                }
-                metrics_rtp_packets += 1;
-                metrics_rtp_bytes += dg.data.len() as u64;
-                rtcp.lock()
-                    .unwrap()
-                    .note_rtp_packet(pkt.ssrc, pkt.sequence_number, pkt.marker);
-                // The marker bit ends an access unit. Track packet completeness
-                // even when experimental frame ACKs are disabled: a complete
-                // marker lets us publish the AU without waiting for the
-                // following frame's AUD. An early/out-of-order marker does not.
-                let belongs_to_current_au = prev_marker_seq.is_none_or(|previous| {
-                    let distance = pkt.sequence_number.wrapping_sub(previous);
-                    distance != 0 && distance < 0x8000
-                });
-                if belongs_to_current_au {
-                    au_pkts = au_pkts.wrapping_add(1);
-                }
-                let complete_access_unit = if pkt.marker {
-                    video_counters.note_source_frame();
-                    if let Some(previous) = last_rtp_frame_timestamp {
-                        let delta = pkt.timestamp.wrapping_sub(previous);
-                        if delta > 0 && delta <= 1_000_000 {
-                            rtp_timestamp_deltas.push(delta as f64);
-                        }
-                    }
-                    last_rtp_frame_timestamp = Some(pkt.timestamp);
-                    if let Some(previous) = last_source_frame_at {
-                        source_frame_intervals_ms
-                            .push(now.duration_since(previous).as_secs_f64() * 1000.0);
-                    }
-                    last_source_frame_at = Some(now);
-                    let complete = match prev_marker_seq {
-                        Some(prev) => {
-                            let expected = pkt.sequence_number.wrapping_sub(prev) as u32;
-                            au_pkts >= expected
-                        }
-                        None => true,
-                    };
-                    if send_frame_ack && complete {
-                        let ack = build_frame_ack(our_ssrc, pkt.timestamp);
-                        udp.send_to(dg.source_port, ack).await.ok();
-                    }
-                    prev_marker_seq = Some(pkt.sequence_number);
-                    au_pkts = 0;
-                    if !complete {
-                        metrics_incomplete_markers += 1;
-                    }
-                    complete
-                } else {
-                    false
-                };
-                depacketizer.push(pkt.sequence_number, pkt.timestamp, pkt.payload);
-                let out = depacketizer.take_output();
-                if !out.is_empty() {
-                    if let Some(f) = &mut dump {
-                        f.write_all(&out).await.ok();
-                    }
-                    let mut access_units = assembler.push(&out, pkt.timestamp);
-                    if complete_access_unit && let Some(access_unit) = assembler.finish() {
-                        access_units.push(access_unit);
-                    }
-                    for access_unit in access_units {
-                        metrics_access_units += 1;
-                        metrics_hevc_bytes += access_unit.bytes.len() as u64;
-                        match hevc_queue.push(access_unit) {
-                            HevcQueuePush::Enqueued | HevcQueuePush::Dropped => {}
-                            HevcQueuePush::NeedsKeyframe {
-                                queued_bytes,
-                                incoming_bytes,
-                            } => {
-                                tracing::warn!(
-                                    queue_limit_bytes = HEVC_QUEUE_MAX_BYTES,
-                                    queued_bytes,
-                                    incoming_bytes,
-                                    "HEVC queue overflow; dropping until IRAP"
-                                );
-                                corruption.notify_one();
-                            }
-                            HevcQueuePush::Recovered {
-                                dropped_access_units,
-                                dropped_bytes,
-                            } => {
-                                tracing::info!(
-                                    dropped_access_units,
-                                    dropped_bytes,
-                                    "HEVC queue resumed at IRAP"
-                                );
-                            }
-                        }
-                    }
-                }
-                if metrics_started.elapsed() >= Duration::from_secs(5) {
-                    let elapsed_ms = metrics_started.elapsed().as_millis() as u64;
-                    let queue = hevc_queue.take_snapshot();
-                    let source_fps = source_frame_intervals_ms
-                        .mean()
-                        .filter(|interval| *interval > 0.0)
-                        .map(|interval| 1000.0 / interval);
-                    tracing::debug!(
-                        target: "devicehub_mask::perf",
-                        elapsed_ms,
-                        rtp_packets = metrics_rtp_packets,
-                        rtp_bytes = metrics_rtp_bytes,
-                        access_units = metrics_access_units,
-                        hevc_bytes = metrics_hevc_bytes,
-                        incomplete_markers = metrics_incomplete_markers,
-                        ?source_fps,
-                        source_frame_interval_ms = ?source_frame_intervals_ms.mean(),
-                        source_frame_interval_min_ms = ?source_frame_intervals_ms.min(),
-                        source_frame_interval_max_ms = ?source_frame_intervals_ms.max(),
-                        source_frame_jitter_ms = ?source_frame_intervals_ms.standard_deviation(),
-                        rtp_timestamp_delta_ticks = ?rtp_timestamp_deltas.mean(),
-                        rtp_timestamp_delta_min_ticks = ?rtp_timestamp_deltas.min(),
-                        rtp_timestamp_delta_max_ticks = ?rtp_timestamp_deltas.max(),
-                        queue_access_units = queue.queued_access_units,
-                        queue_bytes = queue.queued_bytes,
-                        queue_peak_bytes = queue.peak_bytes,
-                        waiting_for_irap = queue.waiting_for_irap,
-                        queue_wait_ms = queue.wait_ms,
-                        queue_wait_max_ms = queue.wait_max_ms,
-                        "video input performance"
-                    );
-                    metrics_started = Instant::now();
-                    metrics_rtp_packets = 0;
-                    metrics_rtp_bytes = 0;
-                    metrics_access_units = 0;
-                    metrics_hevc_bytes = 0;
-                    metrics_incomplete_markers = 0;
-                    rtp_timestamp_deltas = RunningStats::default();
-                    source_frame_intervals_ms = RunningStats::default();
-                }
-            }
-            Err(e) => {
-                tracing::warn!("video udp recv error: {e:?}");
+    tracing::info!(%path, "dumping HEVC elementary stream");
+    let (sender, mut receiver) = mpsc::channel::<Vec<u8>>(8);
+    tokio::spawn(async move {
+        while let Some(bytes) = receiver.recv().await {
+            if let Err(error) = file.write_all(&bytes).await {
+                tracing::warn!(%path, %error, "HEVC diagnostic dump stopped");
                 break;
             }
         }
-    }
-    hevc_queue.close();
-}
-
-async fn browser_video_writer(
-    hevc_queue: Arc<HevcQueue>,
-    frames: crate::browser_video::BrowserVideoSlot,
-    counters: VideoCounters,
-    corruption: Arc<Notify>,
-) {
-    let mut dimensions = None;
-    let mut clock = RtpVideoClock::default();
-    while let Some(access_unit) = hevc_queue.pop().await {
-        if (dimensions.is_none() || access_unit.is_irap)
-            && let Some(parsed) = crate::browser_video::hevc_dimensions(&access_unit.bytes)
-        {
-            dimensions = Some(parsed);
-        }
-        let Some((width, height)) = dimensions else {
-            if access_unit.is_irap {
-                tracing::warn!("browser video keyframe did not contain a readable HEVC SPS");
-                corruption.notify_one();
-            }
-            continue;
-        };
-        counters.note_decoded_frame();
-        frames.publish(
-            clock.timestamp_us(access_unit.rtp_timestamp),
-            access_unit.is_irap,
-            width,
-            height,
-            access_unit.bytes,
-        );
-    }
-}
-
-async fn forward_browser_keyframes(
-    frames: crate::browser_video::BrowserVideoSlot,
-    corruption: Arc<Notify>,
-) {
-    loop {
-        frames.keyframe_requested().await;
-        corruption.notify_one();
-    }
-}
-
-/// An active screen media stream and the UDP sockets the device sends RTP to.
-struct ScreenMediaStream {
-    client: DisplayServiceClient<Box<dyn ReadWrite>>,
-    audio_udp: UdpSocketHandle,
-    video_udp: UdpSocketHandle,
-    /// Video RTCP socket at `video_udp`'s port + 1 (RFC 3550). `None` if that port
-    /// was unavailable, in which case we rely on rtcp-mux.
-    rtcp_udp: Option<UdpSocketHandle>,
-}
-
-fn format_media_start_error(
-    stream: &str,
-    error: IdeviceError,
-    identity: Option<&DeviceDetails>,
-) -> String {
-    let is_ios_27_gate = matches!(
-        &error,
-        IdeviceError::CoreDevice(CoreDeviceError::DeviceError(details))
-            if details.contains("Integer(9021)")
-                || details.contains("Remote control requires iOS 27.0 or later")
-    );
-    if !is_ios_27_gate {
-        return format!("{stream} startMediaStream failed: {error:?}");
-    }
-
-    tracing::debug!(stream, error = ?error, "CoreDevice rejected remote-control capability");
-    let detected = identity.map_or_else(
-        || "this device".to_string(),
-        |identity| {
-            format!(
-                "{} running iOS {}",
-                identity.product_type, identity.product_version
-            )
-        },
-    );
-    format!(
-        "Remote control is unavailable on {detected} (CoreDevice 9021). Apple requires iOS \
-         27.0 or later for this device; update iOS or use a supported newer device. Switching \
-         between USB and Wi-Fi cannot bypass this device-side capability check."
-    )
-}
-
-/// Connect the displayservice and start the audio+video screen-sharing session.
-/// Audio is started first to establish the session, then video on the same
-/// `clientSessionID`.
-async fn start_screen_media_stream(
-    adapter: &mut AdapterHandle,
-    handshake: &mut RsdHandshake,
-    our_ssrc: u32,
-    identity: Option<&DeviceDetails>,
-    connection: ConnKind,
-) -> Result<ScreenMediaStream, String> {
-    let mut client = match DisplayServiceClient::connect_rsd(adapter, handshake).await {
-        Ok(client) => client,
-        Err(IdeviceError::ServiceNotFound) => {
-            let mut related_services = handshake
-                .services
-                .keys()
-                .filter(|name| {
-                    let name = name.to_ascii_lowercase();
-                    ["display", "screen", "media", "capture"]
-                        .iter()
-                        .any(|needle| name.contains(needle))
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            related_services.sort();
-            tracing::warn!(
-                connection = connection.label(),
-                service_count = handshake.services.len(),
-                ?related_services,
-                "RSD did not advertise com.apple.coredevice.displayservice"
-            );
-            tracing::debug!(services = ?handshake.services.keys().collect::<Vec<_>>(), "RSD services");
-
-            let hint = if cfg!(windows) {
-                " USB supports displayservice, but this device has not published the Device Hub service set. Keep it connected and unlocked, then run `.\\scripts\\prepare-windows-device.ps1` to verify Developer Mode and mount the Personalized Developer Disk Image."
-            } else {
-                " The device has not published the Device Hub service set. Verify Developer Mode, the Personalized Developer Disk Image, and Device Hub pairing."
-            };
-            return Err(format!(
-                "display service is unavailable on {} (RSD advertised {} services).{hint}",
-                connection.label(),
-                handshake.services.len()
-            ));
-        }
-        Err(error) => return Err(format!("no display service: {error:?}")),
-    };
-
-    let audio_udp = adapter
-        .bind_udp(0)
-        .await
-        .map_err(|e| format!("bind_udp(audio) failed: {e:?}"))?;
-    let video_udp = adapter
-        .bind_udp(0)
-        .await
-        .map_err(|e| format!("bind_udp(video) failed: {e:?}"))?;
-    let receiver_ip = adapter.host_ip().to_string();
-    let audio_receiver_port = audio_udp.local_port();
-    let receiver_port = video_udp.local_port();
-    let sender_ip = adapter.peer_ip().to_string();
-
-    // Video RTCP socket at receiver_port + 1 (RFC 3550); falls back to mux-only if
-    // unavailable. The send loop auto-detects where the device's RTCP actually is.
-    let rtcp_udp = adapter.bind_udp(receiver_port + 1).await.ok();
-    if rtcp_udp.is_none() {
-        tracing::info!(
-            "RTCP port {} unavailable; relying on rtcp-mux",
-            receiver_port + 1
-        );
-    }
-
-    let call_info = call_info();
-    let session_id = uuid::Uuid::new_v4();
-
-    // Audio stream first (establishes the screen-sharing session).
-    let audio_call_id = uuid::Uuid::new_v4().to_string().to_uppercase();
-    let audio_offer = build_screen_audio_offer(&audio_call_id, &call_info)
-        .map_err(|e| format!("audio offer build failed: {e:?}"))?;
-    let audio_params = build_start_audio_parameters(
-        &receiver_ip,
-        audio_receiver_port,
-        &sender_ip,
-        50000,
-        audio_offer,
-        CLIENT_SUPPORTED_FEATURES,
-        session_id,
-    );
-    let audio_response = client
-        .start_media_stream(audio_params)
-        .await
-        .map_err(|error| format_media_start_error("audio", error, identity))?;
-    log_audio_negotiation(&audio_response);
-
-    // Video stream on the same session.
-    start_video(
-        &mut client,
-        &receiver_ip,
-        receiver_port,
-        &sender_ip,
-        session_id,
-        our_ssrc,
-        identity,
-    )
-    .await?;
-    match client.get_media_stream_server_status().await {
-        Ok(status) => log_media_server_status(&status),
-        Err(error) => tracing::warn!(?error, "unable to query negotiated media stream status"),
-    }
-
-    Ok(ScreenMediaStream {
-        client,
-        audio_udp,
-        video_udp,
-        rtcp_udp,
-    })
-}
-
-fn log_audio_negotiation(response: &plist::Value) {
-    let response_fields = response
-        .as_dictionary()
-        .map(|dictionary| dictionary.keys().cloned().collect::<Vec<_>>());
-    let Some(answer) = find_negotiator_answer(response) else {
-        tracing::warn!(
-            ?response_fields,
-            "audio negotiation response did not contain an answer"
-        );
-        tracing::debug!(response = ?response, "unparsed audio negotiation response");
-        return;
-    };
-    let Ok(negotiation) = parse_answer_media_blob(answer) else {
-        tracing::warn!(
-            ?response_fields,
-            answer_bytes = answer.len(),
-            "unable to parse audio negotiation answer"
-        );
-        return;
-    };
-    tracing::info!(
-        audio_features = negotiation
-            .codec_features
-            .as_ref()
-            .map(|features| features.audio_features),
-        stream_groups = negotiation.stream_groups.len(),
-        "audio media negotiation accepted"
-    );
-    for (group_index, group) in negotiation.stream_groups.iter().enumerate() {
-        for payload in &group.payloads {
-            tracing::info!(
-                group_index,
-                stream_group = group.stream_group,
-                codec_type = payload.codec_type,
-                rtp_payload_type = payload.rtp_payload,
-                packet_time = payload.p_time,
-                rtcp_flags = payload.rtcp_flags,
-                media_flags = payload.media_flags,
-                profile_level_id = payload.profile_level_id,
-                rtp_sample_rate = payload.rtp_sample_rate,
-                cipher_suite = payload.cipher_suite,
-                packed_payload_bytes = payload.packed_payload.len(),
-                encoder_usage = payload.encoder_usage,
-                "negotiated audio payload"
-            );
-        }
-        for stream in &group.streams {
-            tracing::info!(
-                group_index,
-                stream_group = group.stream_group,
-                rtp_ssrc = format_args!("{:#x}", stream.rtp_ssrc),
-                stream_id = stream.stream_id,
-                audio_channels = stream.audio_channel_count,
-                stream_index = stream.stream_index,
-                required_payload_bytes = stream.required_packed_payload.len(),
-                optional_payload_bytes = stream.optional_packed_payload.len(),
-                "negotiated audio stream"
-            );
-        }
-    }
-}
-
-fn log_media_server_status(status: &plist::Value) {
-    let mut fields = Vec::new();
-    collect_plist_fields("media_status", status, &mut fields, 0);
-    tracing::info!(
-        fields = fields.len(),
-        "captured negotiated media stream status"
-    );
-    for (path, value) in fields.into_iter().take(256) {
-        tracing::debug!(target: "devicehub_mask::audio", %path, %value, "media stream status field");
-    }
-}
-
-fn collect_plist_fields(
-    path: &str,
-    value: &plist::Value,
-    fields: &mut Vec<(String, String)>,
-    depth: usize,
-) {
-    if depth > 10 || fields.len() >= 256 {
-        return;
-    }
-    match value {
-        plist::Value::Dictionary(dictionary) => {
-            for (key, value) in dictionary {
-                collect_plist_fields(&format!("{path}.{key}"), value, fields, depth + 1);
-            }
-        }
-        plist::Value::Array(values) => {
-            for (index, value) in values.iter().enumerate() {
-                collect_plist_fields(&format!("{path}[{index}]"), value, fields, depth + 1);
-            }
-        }
-        plist::Value::Data(data) => {
-            fields.push((path.to_string(), format!("data[{}]", data.len())));
-            if let Ok(nested) = plist::from_bytes::<plist::Value>(data) {
-                collect_plist_fields(&format!("{path}.plist"), &nested, fields, depth + 1);
-            }
-        }
-        plist::Value::String(value) => {
-            let normalized_path = path.to_ascii_lowercase();
-            let sensitive = ["address", "ip", "uuid", "sessionid", "deviceid"]
-                .iter()
-                .any(|key| normalized_path.contains(key));
-            let value = if sensitive {
-                "<redacted>".to_string()
-            } else {
-                value.chars().take(160).collect()
-            };
-            fields.push((path.to_string(), value));
-        }
-        plist::Value::Boolean(value) => fields.push((path.to_string(), value.to_string())),
-        plist::Value::Real(value) => fields.push((path.to_string(), value.to_string())),
-        plist::Value::Integer(value) => fields.push((path.to_string(), format!("{value:?}"))),
-        plist::Value::Date(_) => fields.push((path.to_string(), "<date>".into())),
-        plist::Value::Uid(value) => fields.push((path.to_string(), format!("{value:?}"))),
-        _ => fields.push((path.to_string(), format!("{value:?}"))),
-    }
-}
-
-fn find_negotiator_answer(value: &plist::Value) -> Option<&[u8]> {
-    match value {
-        plist::Value::Dictionary(dictionary) => dictionary.iter().find_map(|(key, value)| {
-            if key.to_ascii_lowercase().contains("negotiatoranswer") {
-                value.as_data()
-            } else {
-                find_negotiator_answer(value)
-            }
-        }),
-        plist::Value::Array(values) => values.iter().find_map(find_negotiator_answer),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AacAuHeader {
-    header_bits: u16,
-    access_units: u16,
-    first_access_unit_bytes: u16,
-}
-
-fn parse_aac_au_header(payload: &[u8]) -> Option<AacAuHeader> {
-    let header_bits = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
-    if header_bits == 0 || header_bits % 16 != 0 {
-        return None;
-    }
-    let header_bytes = usize::from(header_bits).div_ceil(8);
-    if payload.len() < 2 + header_bytes || header_bytes < 2 {
-        return None;
-    }
-    let first = u16::from_be_bytes([payload[2], payload[3]]);
-    let first_access_unit_bytes = first >> 3;
-    let encoded_bytes = payload.len() - 2 - header_bytes;
-    if usize::from(first_access_unit_bytes) > encoded_bytes {
-        return None;
-    }
-    Some(AacAuHeader {
-        header_bits,
-        access_units: header_bits / 16,
-        first_access_unit_bytes,
-    })
-}
-
-async fn audio_task(
-    udp: UdpSocketHandle,
-    output: AudioPublisher,
-    decoder: decode::AudioDecoderConfig,
-    enabled: bool,
-) {
-    if !enabled {
-        tracing::info!("device audio playback disabled; draining negotiated audio stream");
-        audio_receive_loop(&udp, None).await;
-        return;
-    }
-
-    let mut restart_attempt = 0_u32;
-    loop {
-        let (mut child, stdout, stderr, rtp_address) = match decode::spawn_audio_ffmpeg(&decoder)
-            .await
-        {
-            Ok(process) => process,
-            Err(error) => {
-                tracing::warn!(%error, "cannot start device audio decoder; draining audio stream");
-                audio_receive_loop(&udp, None).await;
-                return;
-            }
-        };
-        let sender = match tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await {
-            Ok(sender) => sender,
-            Err(error) => {
-                tracing::warn!(%error, "cannot bind audio RTP forwarding socket");
-                audio_receive_loop(&udp, None).await;
-                return;
-            }
-        };
-        let decoder_started = Instant::now();
-        let decoded_output = decode::read_audio_chunks(stdout, output.clone());
-        let errors = watch_audio_errors(stderr);
-        let receive = audio_receive_loop(&udp, Some((&sender, rtp_address)));
-        tokio::pin!(decoded_output, errors, receive);
-        let exit_reason = tokio::select! {
-            _ = &mut decoded_output => "output-ended",
-            _ = &mut errors => "stderr-ended",
-            _ = &mut receive => {
-                tracing::warn!("device audio RTP input ended");
-                return;
-            }
-            status = child.wait() => {
-                tracing::warn!(?status, "device audio decoder stopped");
-                "process-ended"
-            },
-        };
-        let elapsed = decoder_started.elapsed();
-        restart_attempt = if elapsed >= AUDIO_DECODER_STABLE_RUNTIME {
-            1
-        } else {
-            restart_attempt.saturating_add(1)
-        };
-        let retry_delay = audio_decoder_restart_backoff(restart_attempt - 1);
-        tracing::warn!(
-            exit_reason,
-            elapsed_ms = elapsed.as_millis() as u64,
-            restart_attempt,
-            retry_ms = retry_delay.as_millis() as u64,
-            "device audio decoder ended; restarting"
-        );
-        drop(child);
-        if !drain_audio_until_retry(&udp, retry_delay).await {
-            return;
-        }
-    }
-}
-
-async fn drain_audio_until_retry(udp: &UdpSocketHandle, delay: Duration) -> bool {
-    let retry = tokio::time::sleep(delay);
-    tokio::pin!(retry);
-    loop {
-        tokio::select! {
-            _ = &mut retry => return true,
-            packet = udp.recv() => {
-                if let Err(error) = packet {
-                    tracing::warn!(?error, "audio UDP receive failed while restarting decoder");
-                    return false;
-                }
-            }
-        }
-    }
-}
-
-async fn watch_audio_errors(stderr: ChildStderr) {
-    let mut lines = BufReader::new(stderr).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        tracing::warn!(target: "devicehub_mask::audio", message = %line, "ffmpeg audio decode error");
-    }
-}
-
-async fn audio_receive_loop(
-    udp: &UdpSocketHandle,
-    forwarding: Option<(&tokio::net::UdpSocket, std::net::SocketAddr)>,
-) {
-    let mut stream: Option<(u8, u32)> = None;
-    let mut last_sequence = None;
-    let mut last_timestamp = None;
-    let mut timestamp_deltas = RunningStats::default();
-    let mut payload_sizes = RunningStats::default();
-    let mut packets = 0_u64;
-    let mut bytes = 0_u64;
-    let mut lost_packets = 0_u64;
-    let mut marker_packets = 0_u64;
-    let mut rtcp_packets = 0_u64;
-    let mut started = Instant::now();
-    loop {
-        let datagram = match udp.recv().await {
-            Ok(datagram) => datagram,
-            Err(error) => {
-                tracing::warn!(?error, "audio UDP receive failed");
-                return;
-            }
-        };
-        if is_rtcp(&datagram.data) {
-            rtcp_packets += 1;
-            continue;
-        }
-        let Some(packet) = RtpPacket::parse(&datagram.data) else {
-            continue;
-        };
-        if let Some((sender, target)) = forwarding {
-            match add_rfc3640_au_header(&datagram.data) {
-                Ok(packet) => {
-                    if let Err(error) = sender.send_to(&packet, target).await {
-                        tracing::warn!(%error, "failed to forward audio RTP packet to ffmpeg");
-                        return;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        error,
-                        packet_bytes = datagram.data.len(),
-                        "dropping invalid audio RTP packet"
-                    );
-                    continue;
-                }
-            }
-        }
-        if stream != Some((packet.payload_type, packet.ssrc)) {
-            stream = Some((packet.payload_type, packet.ssrc));
-            last_sequence = None;
-            last_timestamp = None;
-            tracing::info!(
-                rtp_payload_type = packet.payload_type,
-                rtp_ssrc = format_args!("{:#x}", packet.ssrc),
-                source_port = datagram.source_port,
-                extension = packet.extension,
-                extension_profile = format_args!("{:#x}", packet.ext_profile),
-                extension_bytes = packet.ext_data.len(),
-                payload_bytes = packet.payload.len(),
-                aac_au_header = ?parse_aac_au_header(packet.payload),
-                "audio RTP stream detected"
-            );
-        }
-        if let Some(previous) = last_sequence {
-            let distance = packet.sequence_number.wrapping_sub(previous);
-            if distance > 1 && distance < 0x8000 {
-                lost_packets += u64::from(distance - 1);
-            }
-        }
-        if let Some(previous) = last_timestamp {
-            let delta = packet.timestamp.wrapping_sub(previous);
-            if delta > 0 && delta < 1_000_000 {
-                timestamp_deltas.push(delta as f64);
-            }
-        }
-        last_sequence = Some(packet.sequence_number);
-        last_timestamp = Some(packet.timestamp);
-        packets += 1;
-        bytes += datagram.data.len() as u64;
-        marker_packets += u64::from(packet.marker);
-        payload_sizes.push(packet.payload.len() as f64);
-
-        if started.elapsed() >= Duration::from_secs(5) {
-            tracing::debug!(
-                target: "devicehub_mask::audio",
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                packets,
-                bytes,
-                lost_packets,
-                marker_packets,
-                rtcp_packets,
-                payload_bytes_mean = ?payload_sizes.mean(),
-                payload_bytes_min = ?payload_sizes.min(),
-                payload_bytes_max = ?payload_sizes.max(),
-                timestamp_delta_ticks = ?timestamp_deltas.mean(),
-                timestamp_delta_min_ticks = ?timestamp_deltas.min(),
-                timestamp_delta_max_ticks = ?timestamp_deltas.max(),
-                "audio RTP diagnostics"
-            );
-            packets = 0;
-            bytes = 0;
-            lost_packets = 0;
-            marker_packets = 0;
-            rtcp_packets = 0;
-            payload_sizes = RunningStats::default();
-            timestamp_deltas = RunningStats::default();
-            started = Instant::now();
-        }
-    }
-}
-
-fn add_rfc3640_au_header(packet: &[u8]) -> Result<Vec<u8>, &'static str> {
-    if packet.len() < 12 || packet[0] >> 6 != 2 {
-        return Err("invalid RTP header");
-    }
-    let csrc_bytes = usize::from(packet[0] & 0x0f)
-        .checked_mul(4)
-        .ok_or("RTP header overflow")?;
-    let mut payload_offset = 12_usize
-        .checked_add(csrc_bytes)
-        .ok_or("RTP header overflow")?;
-    if packet.len() < payload_offset {
-        return Err("truncated RTP CSRC list");
-    }
-    if packet[0] & 0x10 != 0 {
-        if packet.len() < payload_offset + 4 {
-            return Err("truncated RTP extension header");
-        }
-        let extension_words =
-            u16::from_be_bytes([packet[payload_offset + 2], packet[payload_offset + 3]]);
-        payload_offset = payload_offset
-            .checked_add(4 + usize::from(extension_words) * 4)
-            .ok_or("RTP extension overflow")?;
-        if packet.len() < payload_offset {
-            return Err("truncated RTP extension");
-        }
-    }
-    let mut payload_end = packet.len();
-    if packet[0] & 0x20 != 0 {
-        let padding = usize::from(*packet.last().ok_or("missing RTP padding")?);
-        if padding == 0 || padding > payload_end.saturating_sub(payload_offset) {
-            return Err("invalid RTP padding");
-        }
-        payload_end -= padding;
-    }
-    let payload_len = payload_end.saturating_sub(payload_offset);
-    if payload_len == 0 || payload_len > 0x1fff {
-        return Err("AAC access unit length is outside the 13-bit RFC 3640 range");
-    }
-    let mut adapted = Vec::with_capacity(payload_offset + 4 + payload_len);
-    adapted.extend_from_slice(&packet[..payload_offset]);
-    adapted[0] &= !0x20; // output omits the source packet's RTP padding
-    adapted.extend_from_slice(&[0, 16]);
-    adapted.extend_from_slice(&((payload_len as u16) << 3).to_be_bytes());
-    adapted.extend_from_slice(&packet[payload_offset..payload_end]);
-    Ok(adapted)
-}
-
-/// The `VCCallInfoBlob` describing this (host) endpoint. The string values mirror
-/// a captured Device Hub offer the device accepted.
-fn call_info() -> CallInfoBlob {
-    CallInfoBlob {
-        call_id: 0,
-        client_version: 1,
-        device_type: "Mac17,7".into(),
-        framework_version: "2205.3.1".into(),
-        os_version: "25F71".into(),
-        device_name: None,
-        audio_device_uid: None,
-    }
-}
-
-/// Issue the video `startmediastream` on an existing (audio-established) session.
-async fn start_video(
-    client: &mut DisplayServiceClient<Box<dyn ReadWrite>>,
-    receiver_ip: &str,
-    receiver_port: u16,
-    sender_ip: &str,
-    session_id: uuid::Uuid,
-    our_ssrc: u32,
-    identity: Option<&DeviceDetails>,
-) -> Result<(), String> {
-    let call_id = uuid::Uuid::new_v4().to_string().to_uppercase();
-    let offer = build_screen_video_offer(&call_id, &call_info(), our_ssrc)
-        .map_err(|e| format!("video offer build failed: {e:?}"))?;
-    let params = build_start_video_parameters(
-        receiver_ip,
-        receiver_port,
-        sender_ip,
-        50001,
-        offer,
-        CLIENT_SUPPORTED_FEATURES,
-        1,
-        session_id,
-    );
-    client
-        .start_media_stream(params)
-        .await
-        .map_err(|error| format_media_start_error("video", error, identity))?;
-    Ok(())
+    });
+    Some(sender)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::transport::UsbmuxdEndpoint;
     use super::*;
+    use devicehub_runtime::{UsbmuxdEndpoint, select_preferred_usbmuxd_device};
     use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
 
     #[tokio::test]
@@ -2043,8 +329,7 @@ mod tests {
         let mut usbmuxd = UsbmuxdConnection::default().await.expect("connect usbmuxd");
         let devices = usbmuxd.get_devices().await.expect("list devices");
         let endpoint = SessionEndpoint::Usbmuxd(Box::new(UsbmuxdEndpoint {
-            device: transport::select_preferred_usbmuxd_device(devices, None)
-                .expect("connected device"),
+            device: select_preferred_usbmuxd_device(devices, None).expect("connected device"),
             address: UsbmuxdAddr::default(),
         }));
         let (provider, _) = connect_provider(endpoint)
@@ -2054,91 +339,5 @@ mod tests {
             .await
             .expect("query developer mode");
         eprintln!("developer mode enabled: {enabled}");
-    }
-
-    #[test]
-    fn recognizes_rfc3640_aac_access_unit_headers_without_reading_audio_data() {
-        // 16 header bits, one 13-bit AU size (4 bytes) plus a 3-bit index.
-        let payload = [0x00, 0x10, 0x00, 0x20, 1, 2, 3, 4];
-        assert_eq!(
-            parse_aac_au_header(&payload),
-            Some(AacAuHeader {
-                header_bits: 16,
-                access_units: 1,
-                first_access_unit_bytes: 4,
-            })
-        );
-        assert_eq!(parse_aac_au_header(&[0x00, 0x10, 0x01, 0x00, 1]), None);
-        assert_eq!(parse_aac_au_header(&[0x00, 0x07, 0, 0]), None);
-    }
-
-    #[test]
-    fn adds_rfc3640_header_to_raw_aac_rtp() {
-        let mut packet = vec![0x80, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4];
-        packet.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
-        let adapted = add_rfc3640_au_header(&packet).unwrap();
-        assert_eq!(&adapted[..12], &packet[..12]);
-        assert_eq!(&adapted[12..16], &[0, 16, 0, 24]);
-        assert_eq!(&adapted[16..], &[0xaa, 0xbb, 0xcc]);
-    }
-
-    #[test]
-    fn preserves_rtp_extensions_and_removes_padding() {
-        let mut packet = vec![0xb1, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4];
-        packet.extend_from_slice(&[9, 8, 7, 6]); // one CSRC
-        packet.extend_from_slice(&[0xbe, 0xde, 0, 1, 1, 2, 3, 4]);
-        packet.extend_from_slice(&[0xaa, 0xbb, 0, 0, 3]);
-        let adapted = add_rfc3640_au_header(&packet).unwrap();
-        assert_eq!(adapted[0], 0x91);
-        assert_eq!(
-            &adapted[..24],
-            &[
-                0x91, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4, 9, 8, 7, 6, 0xbe, 0xde, 0, 1, 1, 2, 3, 4
-            ]
-        );
-        assert_eq!(&adapted[24..], &[0, 16, 0, 16, 0xaa, 0xbb]);
-    }
-
-    #[test]
-    fn rejects_oversized_or_truncated_audio_rtp() {
-        let mut oversized = vec![0x80, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4];
-        oversized.resize(12 + 0x2000, 0);
-        assert!(add_rfc3640_au_header(&oversized).is_err());
-        assert!(add_rfc3640_au_header(&[0x90, 101, 0, 1, 0, 0, 1, 224, 1, 2, 3, 4]).is_err());
-    }
-
-    #[test]
-    fn summarizes_coredevice_9021_without_binary_plist_dump() {
-        let error = IdeviceError::CoreDevice(CoreDeviceError::DeviceError(
-            r#"Dictionary({"code": Integer(9021), "NSLocalizedDescription": String("Remote control requires iOS 27.0 or later on this device.")})"#.into(),
-        ));
-        let identity = DeviceDetails {
-            udid: "phone".into(),
-            name: "Test iPhone".into(),
-            product_type: "iPhone11,2".into(),
-            product_version: "26.0".into(),
-            build_version: None,
-            device_class: None,
-            cpu_architecture: None,
-            model_number: None,
-            hardware_model: None,
-            device_color: None,
-            enclosure_color: None,
-            serial_number: None,
-            ecid: None,
-            total_disk_capacity: None,
-            storage: None,
-            activation_state: None,
-            developer_mode_enabled: None,
-            developer_image_mounted: None,
-            regional_settings: None,
-            battery: None,
-        };
-
-        let message = format_media_start_error("audio", error, Some(&identity));
-        assert!(message.contains("CoreDevice 9021"));
-        assert!(message.contains("iPhone11,2 running iOS 26.0"));
-        assert!(message.contains("iOS 27.0 or later"));
-        assert!(!message.contains("Dictionary"));
     }
 }

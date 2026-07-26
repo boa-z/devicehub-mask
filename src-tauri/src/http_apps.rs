@@ -71,7 +71,7 @@ async fn device_apps(
             reply,
         },
     )))?;
-    let apps = tokio::time::timeout(crate::session::APP_LIST_REQUEST_TIMEOUT, response)
+    let apps = tokio::time::timeout(devicehub_runtime::APP_LIST_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
             (
@@ -165,7 +165,7 @@ async fn launch_app(
     require_active_session(state.input.try_send(InputCmd::Apps(
         devicehub_runtime::AppCommand::Launch { bundle_id, reply },
     )))?;
-    tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
+    tokio::time::timeout(devicehub_runtime::APP_CONTROL_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
             (
@@ -262,16 +262,17 @@ async fn stop_app(
     require_active_session(state.input.try_send(InputCmd::Apps(
         devicehub_runtime::AppCommand::Stop { bundle_id, reply },
     )))?;
-    let was_running = tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                "app stop request timed out".into(),
-            )
-        })?
-        .map_err(|_| session_ended())?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+    let was_running =
+        tokio::time::timeout(devicehub_runtime::APP_CONTROL_REQUEST_TIMEOUT, response)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "app stop request timed out".into(),
+                )
+            })?
+            .map_err(|_| session_ended())?
+            .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(serde_json::json!({ "was_running": was_running })))
 }
 

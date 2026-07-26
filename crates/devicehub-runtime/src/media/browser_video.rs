@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
+use devicehub_core::VideoCounters;
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
+
+use super::session::{HevcQueue, RtpVideoClock};
 
 // Cover short WebSocket stalls while a large IRAP access unit is copied into the
 // platform WebView. At 60 FPS this retains roughly half a second of compressed data.
@@ -89,6 +92,49 @@ impl BrowserVideoSlot {
 
     pub async fn keyframe_requested(&self) {
         self.0.keyframe.notified().await;
+    }
+}
+
+/// Publishes complete HEVC access units to browser consumers while preserving
+/// source cadence and requesting recovery when an IRAP lacks a readable SPS.
+pub async fn publish_hevc_queue(
+    hevc_queue: Arc<HevcQueue>,
+    frames: BrowserVideoSlot,
+    counters: VideoCounters,
+    corruption: Arc<Notify>,
+) {
+    let mut dimensions = None;
+    let mut clock = RtpVideoClock::default();
+    while let Some(access_unit) = hevc_queue.pop().await {
+        if (dimensions.is_none() || access_unit.is_irap)
+            && let Some(parsed) = hevc_dimensions(&access_unit.bytes)
+        {
+            dimensions = Some(parsed);
+        }
+        let Some((width, height)) = dimensions else {
+            if access_unit.is_irap {
+                tracing::warn!("browser video keyframe did not contain a readable HEVC SPS");
+                corruption.notify_one();
+            }
+            continue;
+        };
+        counters.note_decoded_frame();
+        frames.publish(
+            clock.timestamp_us(access_unit.rtp_timestamp),
+            access_unit.is_irap,
+            width,
+            height,
+            access_unit.bytes,
+        );
+    }
+}
+
+/// Converts browser-side resynchronization requests into the session's shared
+/// corruption signal, which the RTCP loop services with PLI and FIR packets.
+pub async fn forward_keyframe_requests(frames: BrowserVideoSlot, corruption: Arc<Notify>) {
+    loop {
+        frames.keyframe_requested().await;
+        corruption.notify_one();
     }
 }
 

@@ -20,8 +20,8 @@ pub use conditions::{
     validate_identifiers as validate_device_condition_identifiers,
 };
 pub use crash_reports::{
-    MAX_CRASH_REPORT_READ_BYTES, delete_crash_report, download_crash_report, list_crash_reports,
-    read_crash_report, validate_crash_report_path,
+    CrashReportExportCommand, MAX_CRASH_REPORT_READ_BYTES, delete_crash_report,
+    download_crash_report, list_crash_reports, read_crash_report, validate_crash_report_path,
 };
 pub use details::{
     read_activation_state, read_device_battery, read_device_details,
