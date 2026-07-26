@@ -5,19 +5,19 @@ mod control;
 use tokio::sync::mpsc::UnboundedSender;
 
 use devicehub_core::{
-    ActiveSlot, AppOperationSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot,
-    StatusSlot, VideoCounters,
+    ActiveSlot, AppDocumentActivitySlot, AppOperationSlot, BluetoothCaptureSlot,
+    DeveloperImageMountSlot, DeviceBackupSlot, DeviceConditionSlot, DeviceFileActivitySlot,
+    DeviceListSlot, DeviceLogSlot, ErrorSlot, LocationStatusSlot, LogArchiveSlot,
+    NetworkCaptureSlot, OrientationSlot, PerformanceSlot, ServiceRegistry, StatusSlot,
+    SysdiagnoseSlot, VideoCounters,
 };
 
 pub use control::{DeviceControlError, DeviceControlService};
 
 use crate::runtime::CoreRuntimeState;
 use crate::{
-    AppDocumentActivitySlot, BluetoothCaptureSlot, BrowserVideoSlot, ClipboardSlot,
-    DeveloperImageMountSlot, DeviceBackupSlot, DeviceConditionSlot, DeviceEventSlot,
-    DeviceFileActivitySlot, DeviceLogDemand, DeviceLogSlot, LogArchiveSlot, NetworkCaptureSlot,
-    PerformanceDemand, PerformanceSlot, ServiceRegistry, SessionCommandSlot, SessionControlCommand,
-    SysdiagnoseSlot,
+    BrowserVideoSlot, ClipboardSlot, DeviceEventSlot, DeviceLogDemand, PerformanceDemand,
+    SessionCommandSlot, SessionControlCommand,
 };
 
 /// Shared state and command surface consumed by HTTP, WebSocket, MCP, and

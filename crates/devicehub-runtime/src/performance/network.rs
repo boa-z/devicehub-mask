@@ -12,8 +12,8 @@ use idevice::tcp::handle::AdapterHandle;
 use idevice::{ReadWrite, RsdService};
 use tokio::sync::watch;
 
-use super::PerformanceSlot;
 use super::source::{SETUP_TIMEOUT, connect_remote, wait_until_enabled};
+use super::{PerformanceSlot, update_network_sample};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(3);
@@ -207,7 +207,7 @@ async fn run_once(
                 Ok(event) => accumulator.observe(event, Instant::now()),
                 Err(error) => return Err(format!("DVT network monitor stream failed: {error:?}")),
             },
-            _ = tick.tick() => slot.update_network(accumulator.sample(Instant::now())),
+            _ = tick.tick() => update_network_sample(&slot, accumulator.sample(Instant::now())),
         }
     }
 }

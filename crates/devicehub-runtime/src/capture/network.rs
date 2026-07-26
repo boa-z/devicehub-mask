@@ -1,10 +1,11 @@
 //! Bounded device packet capture through pcapd.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use devicehub_core::{
-    ConnKind, NetworkCaptureState, NetworkCaptureStatus, NetworkCaptureStopReason,
+    ConnKind, NetworkCaptureSlot, NetworkCaptureState, NetworkCaptureStatus,
+    NetworkCaptureStopReason,
 };
 use idevice::pcapd::{DevicePacket, PcapdClient};
 use idevice::provider::IdeviceProvider;
@@ -30,23 +31,6 @@ const PCAP_HEADER: [u8; 24] = [
     0x00, 0x04, 0x00, 0x00, // 256 KiB snapshot length
     0x00, 0x00, 0x00, 0x01, // LINKTYPE_ETHERNET
 ];
-
-#[derive(Clone, Default)]
-pub struct NetworkCaptureSlot(Arc<Mutex<NetworkCaptureStatus>>);
-
-impl NetworkCaptureSlot {
-    pub fn set(&self, status: NetworkCaptureStatus) {
-        *self.0.lock().unwrap() = status;
-    }
-
-    pub fn get(&self) -> NetworkCaptureStatus {
-        self.0.lock().unwrap().clone()
-    }
-
-    pub fn reset(&self) {
-        self.set(NetworkCaptureStatus::default());
-    }
-}
 
 #[derive(Debug)]
 pub enum NetworkCaptureCommand<Destination> {

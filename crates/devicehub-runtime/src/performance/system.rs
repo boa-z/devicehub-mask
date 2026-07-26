@@ -11,7 +11,7 @@ use plist::Value;
 use tokio::sync::watch;
 
 use super::source::{SETUP_TIMEOUT, connect_remote, wait_until_enabled};
-use super::{PerformanceSlot, network};
+use super::{PerformanceSlot, network, update_hardware, update_network_interfaces, update_system};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 const SAMPLE_INTERVAL_MS: u32 = 1_000;
@@ -90,7 +90,7 @@ async fn run_once(
     let cpu_count = cpu_count(&hardware).ok_or_else(|| {
         "DVT hardware information did not report a valid logical CPU count".to_string()
     })?;
-    slot.update_hardware(&hardware);
+    update_hardware(&slot, &hardware);
     let process_schema = ProcessSchema::new(&process_attributes);
     let mut client = SysmontapClient::new(&mut remote)
         .await
@@ -114,7 +114,7 @@ async fn run_once(
                 network_catalog_pending = false;
                 match result {
                     Ok(network) => {
-                        slot.update_network_interfaces(&network);
+                        update_network_interfaces(&slot, &network);
                         tracing::debug!(
                             count = slot.get().network_interfaces.len(),
                             "DVT network interface catalog updated"
@@ -136,7 +136,7 @@ async fn run_once(
                 }
             }
             sample = client.next_sample() => match sample {
-                Ok(sample) => slot.update_system(&sample, cpu_count, &process_schema),
+                Ok(sample) => update_system(&slot, &sample, cpu_count, &process_schema),
                 Err(error) => return Err(format!("DVT sysmontap stream failed: {error:?}")),
             }
         }

@@ -3,17 +3,20 @@
 use std::future::Future;
 use std::future::pending;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use devicehub_core::{
+    DeveloperImageMountSlot, DeveloperImageMountState, DeveloperImageMountStatus,
+    developer_image_type_for_version as image_type_for_version,
+};
 use idevice::services::lockdown::LockdownClient;
 use idevice::services::mobile_image_mounter::ImageMounter;
 use idevice::{IdeviceService, provider::IdeviceProvider};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::{
-    developer_image_type_for_version as image_type_for_version,
     is_developer_image_mounted as is_mounted, read_device_product_version as read_product_version,
 };
 use crate::supervisor::ServiceReporter;
@@ -42,55 +45,6 @@ pub trait DeveloperImageAssetLoader: Clone + Send + Sync + 'static {
         label: &'a str,
         max_bytes: u64,
     ) -> DeveloperImageAssetFuture<'a>;
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeveloperImageMountState {
-    #[default]
-    Idle,
-    Validating,
-    Personalizing,
-    Uploading,
-    Mounting,
-    Unmounting,
-    Mounted,
-    Unmounted,
-    Cancelled,
-    Failed,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct DeveloperImageMountStatus {
-    pub state: DeveloperImageMountState,
-    pub progress_percent: Option<f64>,
-    pub product_version: Option<String>,
-    pub image_type: Option<String>,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Default)]
-pub struct DeveloperImageMountSlot(Arc<Mutex<DeveloperImageMountStatus>>);
-
-impl DeveloperImageMountSlot {
-    pub(crate) fn set(&self, status: DeveloperImageMountStatus) {
-        *self.0.lock().expect("developer image status lock poisoned") = status;
-    }
-
-    pub(crate) fn update(&self, update: impl FnOnce(&mut DeveloperImageMountStatus)) {
-        update(&mut self.0.lock().expect("developer image status lock poisoned"));
-    }
-
-    pub fn get(&self) -> DeveloperImageMountStatus {
-        self.0
-            .lock()
-            .expect("developer image status lock poisoned")
-            .clone()
-    }
-
-    pub(crate) fn reset(&self) {
-        self.set(DeveloperImageMountStatus::default());
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -12,8 +12,10 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use devicehub_core::{AppActivityEvent, PerformanceSnapshot};
-use devicehub_runtime::{PerformanceDemand, PerformanceSlot};
+use devicehub_core::{
+    AppActivityEvent, DeviceConditionSlot, DeviceLogSlot, PerformanceSlot, PerformanceSnapshot,
+};
+use devicehub_runtime::PerformanceDemand;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
@@ -24,9 +26,9 @@ use tokio::sync::oneshot;
 pub(crate) struct PerformanceHttpState {
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
-    device_logs: devicehub_runtime::DeviceLogSlot,
+    device_logs: DeviceLogSlot,
     device_log_demand: devicehub_runtime::DeviceLogDemand,
-    device_conditions: devicehub_runtime::DeviceConditionSlot,
+    device_conditions: DeviceConditionSlot,
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     services: ServiceRegistry,
@@ -38,9 +40,9 @@ impl PerformanceHttpState {
     pub(crate) fn new(
         performance: PerformanceSlot,
         performance_demand: PerformanceDemand,
-        device_logs: devicehub_runtime::DeviceLogSlot,
+        device_logs: DeviceLogSlot,
         device_log_demand: devicehub_runtime::DeviceLogDemand,
-        device_conditions: devicehub_runtime::DeviceConditionSlot,
+        device_conditions: DeviceConditionSlot,
         network_capture: crate::network_capture::NetworkCaptureSlot,
         bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
         services: ServiceRegistry,
@@ -448,9 +450,9 @@ mod tests {
             PerformanceHttpState::new(
                 PerformanceSlot::default(),
                 PerformanceDemand::default(),
-                devicehub_runtime::DeviceLogSlot::default(),
+                DeviceLogSlot::default(),
                 devicehub_runtime::DeviceLogDemand::default(),
-                devicehub_runtime::DeviceConditionSlot::default(),
+                DeviceConditionSlot::default(),
                 crate::network_capture::NetworkCaptureSlot::default(),
                 crate::bluetooth_capture::BluetoothCaptureSlot::default(),
                 ServiceRegistry::default(),

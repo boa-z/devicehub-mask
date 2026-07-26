@@ -53,16 +53,19 @@ fn hardware_metrics_are_retained_across_partial_samples() {
             Value::Integer(6_442_450_944_u64.into()),
         ),
     ]);
-    slot.update_hardware(&hardware);
-    slot.update_graphics(&idevice::dvt::graphics::GraphicsSample {
-        timestamp: 1,
-        fps: 60.0,
-        alloc_system_memory: 10,
-        in_use_system_memory: 8,
-        in_use_system_memory_driver: 3,
-        gpu_bundle_name: "Built-In".into(),
-        recovery_count: 0,
-    });
+    update_hardware(&slot, &hardware);
+    update_graphics(
+        &slot,
+        &idevice::dvt::graphics::GraphicsSample {
+            timestamp: 1,
+            fps: 60.0,
+            alloc_system_memory: 10,
+            in_use_system_memory: 8,
+            in_use_system_memory_driver: 3,
+            gpu_bundle_name: "Built-In".into(),
+            recovery_count: 0,
+        },
+    );
     let snapshot = slot.get();
     assert_eq!(snapshot.logical_cpu_count, Some(8));
     assert_eq!(snapshot.physical_cpu_count, Some(6));
@@ -113,19 +116,22 @@ fn network_interface_catalog_is_classified_sanitized_and_bounded() {
 #[test]
 fn network_interface_catalog_is_retained_and_serialized_without_addresses() {
     let slot = PerformanceSlot::default();
-    slot.update_network_interfaces(&plist::Dictionary::from_iter([(
-        String::from("en0"),
-        Value::String("Wi-Fi".into()),
-    )]));
-    slot.update_graphics(&idevice::dvt::graphics::GraphicsSample {
-        timestamp: 1,
-        fps: 60.0,
-        alloc_system_memory: 10,
-        in_use_system_memory: 8,
-        in_use_system_memory_driver: 3,
-        gpu_bundle_name: "Built-In".into(),
-        recovery_count: 0,
-    });
+    update_network_interfaces(
+        &slot,
+        &plist::Dictionary::from_iter([(String::from("en0"), Value::String("Wi-Fi".into()))]),
+    );
+    update_graphics(
+        &slot,
+        &idevice::dvt::graphics::GraphicsSample {
+            timestamp: 1,
+            fps: 60.0,
+            alloc_system_memory: 10,
+            in_use_system_memory: 8,
+            in_use_system_memory_driver: 3,
+            gpu_bundle_name: "Built-In".into(),
+            recovery_count: 0,
+        },
+    );
     let serialized = serde_json::to_value(slot.get()).unwrap();
     assert_eq!(serialized["network_interfaces"][0]["name"], "en0");
     assert_eq!(serialized["network_interfaces"][0]["kind"], "wifi");
@@ -142,7 +148,8 @@ fn partial_system_samples_preserve_the_latest_metrics() {
     cpu.insert("CPU_TotalLoad".into(), Value::Real(240.0));
     let mut processes = plist::Dictionary::new();
     processes.insert("1".into(), Value::Array(Vec::new()));
-    slot.update_system(
+    update_system(
+        &slot,
         &SysmontapSample {
             processes: Some(processes),
             system: None,
@@ -151,7 +158,8 @@ fn partial_system_samples_preserve_the_latest_metrics() {
         6,
         &ProcessSchema::default(),
     );
-    slot.update_system(
+    update_system(
+        &slot,
         &SysmontapSample {
             processes: None,
             system: None,
@@ -233,15 +241,18 @@ fn top_processes_include_cpu_and_memory_leaders() {
 #[test]
 fn performance_slot_merges_independent_sources() {
     let slot = PerformanceSlot::default();
-    slot.update_graphics(&idevice::dvt::graphics::GraphicsSample {
-        timestamp: 1,
-        fps: 59.5,
-        alloc_system_memory: 10,
-        in_use_system_memory: 8,
-        in_use_system_memory_driver: 3,
-        gpu_bundle_name: "Built-In".into(),
-        recovery_count: 0,
-    });
+    update_graphics(
+        &slot,
+        &idevice::dvt::graphics::GraphicsSample {
+            timestamp: 1,
+            fps: 59.5,
+            alloc_system_memory: 10,
+            in_use_system_memory: 8,
+            in_use_system_memory_driver: 3,
+            gpu_bundle_name: "Built-In".into(),
+            recovery_count: 0,
+        },
+    );
     let snapshot = slot.get();
     assert_eq!(snapshot.graphics_fps, Some(59.5));
     assert_eq!(snapshot.gpu_in_use_bytes, Some(8));
@@ -252,14 +263,17 @@ fn performance_slot_merges_independent_sources() {
 fn app_activity_is_sanitized_bounded_and_reset_with_the_session() {
     let slot = PerformanceSlot::default();
     for index in 0..=MAX_ACTIVITY_EVENTS {
-        slot.publish_app_activity(NotificationInfo {
-            notification_type: " application\nstate ".into(),
-            mach_absolute_time: index as i64,
-            exec_name: " Example\tGame ".into(),
-            app_name: " Example  Game ".into(),
-            pid: (index + 1) as u32,
-            state_description: " foreground\nactive ".into(),
-        });
+        publish_app_activity(
+            &slot,
+            NotificationInfo {
+                notification_type: " application\nstate ".into(),
+                mach_absolute_time: index as i64,
+                exec_name: " Example\tGame ".into(),
+                app_name: " Example  Game ".into(),
+                pid: (index + 1) as u32,
+                state_description: " foreground\nactive ".into(),
+            },
+        );
     }
 
     let events = slot.app_activity();
@@ -291,57 +305,65 @@ fn app_activity_is_sanitized_bounded_and_reset_with_the_session() {
 #[test]
 fn energy_sampling_tracks_ranked_processes_and_sanitizes_scores() {
     let slot = PerformanceSlot::default();
-    slot.replace_top_processes(
-        (0..20)
-            .map(|index| ProcessPerformance {
-                pid: 100 - index,
-                name: format!("rank-{index}"),
-                cpu_percent: Some(f64::from(20 - index)),
-                memory_bytes: None,
-            })
-            .collect(),
-    );
+    slot.observe(devicehub_core::PerformanceObservation::System {
+        logical_cpu_count: 1,
+        processes: Some(devicehub_core::ProcessPerformanceObservation {
+            process_count: 20,
+            top_processes: (0..20)
+                .map(|index| ProcessPerformance {
+                    pid: 100 - index,
+                    name: format!("rank-{index}"),
+                    cpu_percent: Some(f64::from(20 - index)),
+                    memory_bytes: None,
+                })
+                .collect(),
+        }),
+        system_cpu_percent: None,
+    });
     let targets = slot.energy_targets();
     assert_eq!(targets.len(), MAX_ENERGY_PROCESSES);
     assert!(targets.contains(&100));
     assert!(targets.contains(&85));
     assert!(!targets.contains(&84));
 
-    slot.update_energy(vec![
-        EnergySample {
-            pid: 100,
-            timestamp: 1,
-            total_energy: 5.0,
-            cpu_energy: f64::NAN,
-            gpu_energy: -2.0,
-            networking_energy: 1.5,
-            display_energy: 0.5,
-            location_energy: 0.0,
-            appstate_energy: f64::INFINITY,
-        },
-        EnergySample {
-            pid: 99,
-            timestamp: 1,
-            total_energy: 8.0,
-            cpu_energy: 3.0,
-            gpu_energy: 2.0,
-            networking_energy: 1.0,
-            display_energy: 1.0,
-            location_energy: 0.5,
-            appstate_energy: 0.5,
-        },
-        EnergySample {
-            pid: 777,
-            timestamp: 1,
-            total_energy: 99.0,
-            cpu_energy: 99.0,
-            gpu_energy: 0.0,
-            networking_energy: 0.0,
-            display_energy: 0.0,
-            location_energy: 0.0,
-            appstate_energy: 0.0,
-        },
-    ]);
+    update_energy(
+        &slot,
+        vec![
+            EnergySample {
+                pid: 100,
+                timestamp: 1,
+                total_energy: 5.0,
+                cpu_energy: f64::NAN,
+                gpu_energy: -2.0,
+                networking_energy: 1.5,
+                display_energy: 0.5,
+                location_energy: 0.0,
+                appstate_energy: f64::INFINITY,
+            },
+            EnergySample {
+                pid: 99,
+                timestamp: 1,
+                total_energy: 8.0,
+                cpu_energy: 3.0,
+                gpu_energy: 2.0,
+                networking_energy: 1.0,
+                display_energy: 1.0,
+                location_energy: 0.5,
+                appstate_energy: 0.5,
+            },
+            EnergySample {
+                pid: 777,
+                timestamp: 1,
+                total_energy: 99.0,
+                cpu_energy: 99.0,
+                gpu_energy: 0.0,
+                networking_energy: 0.0,
+                display_energy: 0.0,
+                location_energy: 0.0,
+                appstate_energy: 0.0,
+            },
+        ],
+    );
     let snapshot = slot.get();
     assert_eq!(snapshot.energy_processes.len(), 2);
     assert_eq!(snapshot.energy_processes[0].pid, 99);

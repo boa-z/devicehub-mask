@@ -7,6 +7,7 @@
 mod applications;
 mod capture;
 mod clipboard;
+mod developer_image;
 mod device;
 mod device_conditions;
 mod device_events;
@@ -18,7 +19,9 @@ mod location;
 mod media;
 mod performance;
 mod provisioning;
+mod service_health;
 mod state;
+mod storage;
 
 pub use applications::{
     AppLifecycleStatus, AppLifecycleWaitResult, AppOperationKind, AppOperationState,
@@ -35,27 +38,35 @@ pub use applications::{
     validate_wda_selector, validate_wda_text, validate_wda_wait_timeout,
 };
 pub use capture::{
-    BluetoothCaptureState, BluetoothCaptureStatus, BluetoothCaptureStopReason, NetworkCaptureState,
-    NetworkCaptureStatus, NetworkCaptureStopReason,
+    BluetoothCaptureSlot, BluetoothCaptureState, BluetoothCaptureStatus,
+    BluetoothCaptureStopReason, NetworkCaptureSlot, NetworkCaptureState, NetworkCaptureStatus,
+    NetworkCaptureStopReason,
 };
 pub use clipboard::{ClipboardContentKind, ClipboardEvent, clipboard_preview, validate_paste_text};
+pub use developer_image::{
+    DeveloperImageMountSlot, DeveloperImageMountState, DeveloperImageMountStatus,
+    developer_image_type_for_version,
+};
 pub use device::{
     CompanionDevice, ConnKind, DeviceActivationState, DeviceBattery, DeviceDetails, DeviceInfo,
     DevicePairingState, DeviceRegionalSettings, DeviceStorage, ForgetDeviceOutcome,
     ForgetDeviceResult, PairDeviceOutcome, PairDeviceResult, device_selector, validate_device_name,
 };
 pub use device_conditions::{
-    ActiveDeviceCondition, DeviceConditionGroup, DeviceConditionProfile, DeviceConditionStatus,
+    ActiveDeviceCondition, DeviceConditionGroup, DeviceConditionProfile, DeviceConditionSlot,
+    DeviceConditionStatus,
 };
 pub use device_events::{DeviceEvent, DeviceEventKind};
 pub use device_logs::{
-    DeviceLogBatch, DeviceLogEntry, DeviceLogLevel, DeviceLogSource, MAX_DEVICE_LOG_BATCH_ENTRIES,
+    DeviceLogBatch, DeviceLogEntry, DeviceLogLevel, DeviceLogMetadata, DeviceLogSlot,
+    DeviceLogSource, MAX_DEVICE_LOG_BATCH_ENTRIES,
 };
 pub use diagnostics::{
-    CrashReportFormat, CrashReportKind, DeviceBackupState, DeviceBackupStatus, DeviceCrashReport,
-    DeviceCrashReportContent, DeviceCrashReportList, DeviceCrashReportSummary, LogArchiveState,
-    LogArchiveStatus, SysdiagnoseState, SysdiagnoseStatus, build_crash_report_content,
-    device_id_fingerprint, validate_crash_report_path,
+    CrashReportFormat, CrashReportKind, DeviceBackupSlot, DeviceBackupState, DeviceBackupStatus,
+    DeviceCrashReport, DeviceCrashReportContent, DeviceCrashReportList, DeviceCrashReportSummary,
+    LogArchiveSlot, LogArchiveState, LogArchiveStatus, SysdiagnoseSlot, SysdiagnoseState,
+    SysdiagnoseStatus, build_crash_report_content, device_id_fingerprint,
+    validate_crash_report_path,
 };
 pub use home_screen::{
     HomeScreenAppLocation, HomeScreenContainer, HomeScreenFolderStep, HomeScreenIconMetrics,
@@ -68,11 +79,24 @@ pub use input::{
 pub use location::{LocationBackend, LocationStatus};
 pub use media::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 pub use performance::{
-    AppActivityEvent, DeviceNetworkInterface, DeviceNetworkInterfaceKind, PerformanceSnapshot,
-    ProcessEnergy, ProcessPerformance,
+    AppActivityEvent, AppActivityObservation, DeviceNetworkInterface, DeviceNetworkInterfaceKind,
+    EnergyMeasurement, MAX_APP_ACTIVITY_EVENTS, MAX_ENERGY_PROCESSES, PerformanceObservation,
+    PerformanceSlot, PerformanceSnapshot, ProcessEnergy, ProcessPerformance,
+    ProcessPerformanceObservation,
 };
 pub use provisioning::ProvisioningProfile;
+pub use service_health::{ServiceHealth, ServicePhase, ServiceRegistry};
 pub use state::{
     ActiveSlot, AppOperationSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot,
     StatusSlot, VideoCounterSnapshot, VideoCounters,
+};
+pub use storage::{
+    APP_DOCUMENT_TRANSFER_CANCELLED, AppDocumentActivityKind, AppDocumentActivitySlot,
+    AppDocumentActivityState, AppDocumentActivityView, AppDocumentEntry, AppDocumentKind,
+    AppDocumentList, AppDocumentTransfer, AppStorageScope, DEVICE_FILE_TRANSFER_CANCELLED,
+    DeviceFileActivityKind, DeviceFileActivitySlot, DeviceFileActivityState,
+    DeviceFileActivityView, DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer,
+    is_app_document_transfer_cancelled, is_device_file_transfer_cancelled, join_app_document_path,
+    join_device_file_path, normalize_app_document_path, normalize_device_file_path,
+    validate_app_bundle_id, validate_app_document_name, validate_device_file_name,
 };

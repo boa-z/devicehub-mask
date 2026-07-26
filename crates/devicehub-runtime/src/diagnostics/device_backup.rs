@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use devicehub_core::{ConnKind, DeviceBackupState, DeviceBackupStatus};
+use devicehub_core::{ConnKind, DeviceBackupSlot, DeviceBackupState, DeviceBackupStatus};
 use idevice::mobilebackup2::{BackupDelegate, DirEntryInfo, FsBackupDelegate, MobileBackup2Client};
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
@@ -20,30 +20,6 @@ use crate::supervisor::ServiceReporter;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_ERROR_BYTES: usize = 1_024;
-
-#[derive(Clone, Default)]
-pub struct DeviceBackupSlot(Arc<Mutex<DeviceBackupStatus>>);
-
-impl DeviceBackupSlot {
-    pub fn set(&self, status: DeviceBackupStatus) {
-        *self.0.lock().expect("device backup status lock poisoned") = status;
-    }
-
-    pub fn update(&self, update: impl FnOnce(&mut DeviceBackupStatus)) {
-        update(&mut self.0.lock().expect("device backup status lock poisoned"));
-    }
-
-    pub fn get(&self) -> DeviceBackupStatus {
-        self.0
-            .lock()
-            .expect("device backup status lock poisoned")
-            .clone()
-    }
-
-    pub fn reset(&self) {
-        self.set(DeviceBackupStatus::default());
-    }
-}
 
 #[derive(Debug)]
 pub enum DeviceBackupCommand<Destination> {

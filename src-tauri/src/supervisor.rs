@@ -1,3 +1,3 @@
-//! Compatibility imports for service supervision owned by `devicehub-runtime`.
+//! Desktop imports for host-independent service health observations.
 
-pub(crate) use devicehub_runtime::{ServiceHealth, ServiceRegistry};
+pub(crate) use devicehub_core::{ServiceHealth, ServiceRegistry};

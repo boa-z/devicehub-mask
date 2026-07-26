@@ -5,8 +5,8 @@ use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use tokio::sync::watch;
 
-use super::PerformanceSlot;
 use super::source::{SETUP_TIMEOUT, connect_remote, wait_until_enabled};
+use super::{PerformanceSlot, update_graphics};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 pub(crate) async fn supervise_performance_graphics(
@@ -84,7 +84,7 @@ async fn run_once(
                 }
             }
             sample = client.sample() => match sample {
-                Ok(sample) => slot.update_graphics(&sample),
+                Ok(sample) => update_graphics(&slot, &sample),
                 Err(error) => return Err(format!("DVT graphics stream failed: {error:?}")),
             }
         }

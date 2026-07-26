@@ -31,11 +31,10 @@ pub use audio::{
     DeviceAudioSource, PcmAudioConsumer,
 };
 pub use capture::{
-    BluetoothCaptureCommand, BluetoothCaptureSlot, CaptureFileFuture, CaptureFileIo,
-    CaptureFileKind, CaptureFileWriter, MAX_BLUETOOTH_CAPTURE_DURATION_SECONDS,
-    MAX_NETWORK_CAPTURE_DURATION_SECONDS, MIN_BLUETOOTH_CAPTURE_DURATION_SECONDS,
-    MIN_NETWORK_CAPTURE_DURATION_SECONDS, NetworkCaptureCommand, NetworkCaptureSlot,
-    validate_bluetooth_capture_duration, validate_network_capture_duration,
+    BluetoothCaptureCommand, CaptureFileFuture, CaptureFileIo, CaptureFileKind, CaptureFileWriter,
+    MAX_BLUETOOTH_CAPTURE_DURATION_SECONDS, MAX_NETWORK_CAPTURE_DURATION_SECONDS,
+    MIN_BLUETOOTH_CAPTURE_DURATION_SECONDS, MIN_NETWORK_CAPTURE_DURATION_SECONDS,
+    NetworkCaptureCommand, validate_bluetooth_capture_duration, validate_network_capture_duration,
 };
 #[cfg(feature = "test-support")]
 pub use client::RuntimeClientFixture;
@@ -45,26 +44,24 @@ pub use demand::{Demand, DemandLease};
 pub use device::{
     CompanionDeviceCommand, CrashReportExportCommand, DeveloperImageAssetFuture,
     DeveloperImageAssetLoader, DeveloperImageMountCommand, DeveloperImageMountRequest,
-    DeveloperImageMountSlot, DeveloperImageMountState, DeveloperImageMountStatus,
-    DeveloperModeCommand, DeveloperModePreparation, DeviceConditionCommand, DeviceConditionSlot,
-    DeviceEventSlot, DeviceLogDemand, DeviceLogSlot, HomeScreenCommand, LocationCommand,
-    MAX_CRASH_REPORT_READ_BYTES, MAX_PROVISIONING_PROFILE_BYTES, ProvisioningCommand,
-    ProvisioningFailure, ProvisioningInstall, ProvisioningProfileFuture, ProvisioningProfileLoader,
-    ScreenCaptureCommand, developer_image_type_for_version, parse_provisioning_profile,
-    prepare_provisioning_install, profiles_from_raw, unreadable_profile,
-    validate_device_condition_identifiers,
+    DeveloperModeCommand, DeveloperModePreparation, DeviceConditionCommand, DeviceEventSlot,
+    DeviceLogDemand, HomeScreenCommand, LocationCommand, MAX_CRASH_REPORT_READ_BYTES,
+    MAX_PROVISIONING_PROFILE_BYTES, ProvisioningCommand, ProvisioningFailure, ProvisioningInstall,
+    ProvisioningProfileFuture, ProvisioningProfileLoader, ScreenCaptureCommand,
+    parse_provisioning_profile, prepare_provisioning_install, profiles_from_raw,
+    unreadable_profile, validate_device_condition_identifiers,
 };
 pub use diagnostics::{
     ALLOWED_LOG_ARCHIVE_AGE_LIMIT_HOURS, DeviceBackupCommand, DeviceBackupDestination,
-    DeviceBackupPrepareFuture, DeviceBackupSlot, LogArchiveCommand, LogArchiveSlot,
-    SysdiagnoseCommand, SysdiagnoseSlot, validate_log_archive_age_limit_hours,
+    DeviceBackupPrepareFuture, LogArchiveCommand, SysdiagnoseCommand,
+    validate_log_archive_age_limit_hours,
 };
 pub use media::{
     BrowserFrameDecision, BrowserVideoFrame, BrowserVideoSlot, FrameCredit, FramePacer,
     FramePacerMetrics, RtcpOptions, audio_decoder_restart_backoff, browser_frame_decision,
     configured_in_flight_frames, duration_average_ms, encode_packet,
 };
-pub use performance::{PerformanceDemand, PerformanceSlot};
+pub use performance::PerformanceDemand;
 pub use preferences::RuntimePreferences;
 pub use runtime::{CoreRuntime, OWNER_THREAD_STACK_BYTES};
 pub use session::{
@@ -73,15 +70,9 @@ pub use session::{
     StartedRuntime, start_runtime,
 };
 pub use storage::{
-    APP_DOCUMENT_TRANSFER_CANCELLED, AppDocumentActivityKind, AppDocumentActivitySlot,
-    AppDocumentActivityState, AppDocumentActivityView, AppDocumentCommand, AppDocumentEntry,
-    AppDocumentKind, AppDocumentList, AppDocumentTransfer, AppStorageScope, DeviceFileActivityKind,
-    DeviceFileActivitySlot, DeviceFileActivityState, DeviceFileActivityView, DeviceFileCommand,
-    DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer, HostDirectoryEntry,
-    HostFileFuture, HostFileIo, HostFileKind, HostFileMetadata, HostFileReader, HostFileWrite,
-    HostFileWriter, TRANSFER_CANCELLED, is_app_document_transfer_cancelled, is_transfer_cancelled,
+    AppDocumentCommand, DeviceFileCommand, HostDirectoryEntry, HostFileFuture, HostFileIo,
+    HostFileKind, HostFileMetadata, HostFileReader, HostFileWrite, HostFileWriter,
 };
-pub use supervisor::{ServiceHealth, ServicePhase, ServiceRegistry};
 pub(crate) use supervisor::{
     ServiceReporter, ServiceSupervisor, reconnect_backoff, wait_for_retry,
 };

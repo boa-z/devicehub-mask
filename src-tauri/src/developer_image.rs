@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 
 #[cfg(test)]
-pub(crate) use devicehub_runtime::DeveloperImageMountState;
-pub(crate) use devicehub_runtime::{DeveloperImageMountSlot, DeveloperImageMountStatus};
+pub(crate) use devicehub_core::DeveloperImageMountState;
+pub(crate) use devicehub_core::{DeveloperImageMountSlot, DeveloperImageMountStatus};
 
 const MAX_PATH_BYTES: usize = 4_096;
 

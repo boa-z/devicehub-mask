@@ -1,9 +1,8 @@
 //! User-initiated, cancellable CoreDevice sysdiagnose export.
 
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use devicehub_core::{SysdiagnoseState, SysdiagnoseStatus};
+use devicehub_core::{SysdiagnoseSlot, SysdiagnoseState, SysdiagnoseStatus};
 use futures_util::StreamExt;
 use idevice::RsdService;
 use idevice::core_device::DiagnostisServiceClient;
@@ -21,30 +20,6 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_ERROR_BYTES: usize = 1_024;
 const MAX_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SYSDIAGNOSE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-
-#[derive(Clone, Default)]
-pub struct SysdiagnoseSlot(Arc<Mutex<SysdiagnoseStatus>>);
-
-impl SysdiagnoseSlot {
-    pub fn set(&self, status: SysdiagnoseStatus) {
-        *self.0.lock().expect("sysdiagnose status lock poisoned") = status;
-    }
-
-    pub fn update(&self, update: impl FnOnce(&mut SysdiagnoseStatus)) {
-        update(&mut self.0.lock().expect("sysdiagnose status lock poisoned"));
-    }
-
-    pub fn get(&self) -> SysdiagnoseStatus {
-        self.0
-            .lock()
-            .expect("sysdiagnose status lock poisoned")
-            .clone()
-    }
-
-    pub fn reset(&self) {
-        self.set(SysdiagnoseStatus::default());
-    }
-}
 
 #[derive(Debug)]
 pub enum SysdiagnoseCommand<Destination> {

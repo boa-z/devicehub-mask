@@ -6,8 +6,8 @@ use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use tokio::sync::watch;
 
-use super::PerformanceSlot;
 use super::source::{SETUP_TIMEOUT, connect_remote, wait_until_enabled};
+use super::{PerformanceSlot, publish_app_activity};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 pub(crate) async fn supervise_performance_app_activity(
@@ -85,7 +85,7 @@ async fn run_once(
                 }
             }
             notification = client.get_notification() => match notification {
-                Ok(notification) => slot.publish_app_activity(notification),
+                Ok(notification) => publish_app_activity(&slot, notification),
                 Err(error) => return Err(format!("DVT app activity stream failed: {error:?}")),
             }
         }

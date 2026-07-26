@@ -26,7 +26,8 @@ use crate::device_runtime::{ControlCmd, InputCmd};
 use devicehub_core::hardware_button;
 #[cfg(test)]
 use devicehub_core::{
-    ActiveSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot, StatusSlot,
+    ActiveSlot, DeviceConditionSlot, DeviceListSlot, DeviceLogSlot, ErrorSlot, LocationStatusSlot,
+    OrientationSlot, PerformanceSlot, StatusSlot,
 };
 use devicehub_core::{
     DeviceInputCommand, DeviceLogEntry, DeviceLogLevel, MAX_DEVICE_LOG_BATCH_ENTRIES, Orientation,
@@ -34,11 +35,11 @@ use devicehub_core::{
 };
 #[cfg(test)]
 use devicehub_runtime::DeviceEventSlot;
+#[cfg(test)]
+use devicehub_runtime::DeviceLogDemand;
+#[cfg(test)]
+use devicehub_runtime::PerformanceDemand;
 use devicehub_runtime::RuntimeClient;
-#[cfg(test)]
-use devicehub_runtime::{DeviceLogDemand, DeviceLogSlot};
-#[cfg(test)]
-use devicehub_runtime::{PerformanceDemand, PerformanceSlot};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
 const DEFAULT_MAX_DIM: u32 = 1024;
@@ -78,7 +79,7 @@ const DEVICE_CONDITION_WAIT: Duration = Duration::from_secs(8);
 #[derive(Clone, Default)]
 struct McpObservability {
     device_events: DeviceEventSlot,
-    device_conditions: devicehub_runtime::DeviceConditionSlot,
+    device_conditions: DeviceConditionSlot,
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
     device_logs: DeviceLogSlot,

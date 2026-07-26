@@ -12,19 +12,19 @@ use std::thread::JoinHandle;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use devicehub_core::{
-    ActiveSlot, AppOperationSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot,
-    StatusSlot, VideoCounters,
+    ActiveSlot, AppDocumentActivitySlot, AppOperationSlot, BluetoothCaptureSlot,
+    DeveloperImageMountSlot, DeviceBackupSlot, DeviceConditionSlot, DeviceFileActivitySlot,
+    DeviceListSlot, DeviceLogSlot, ErrorSlot, LocationStatusSlot, LogArchiveSlot,
+    NetworkCaptureSlot, OrientationSlot, PerformanceSlot, ServiceRegistry, StatusSlot,
+    SysdiagnoseSlot, VideoCounters,
 };
 
 use crate::session::{
     ConnectedSessionViews, RuntimeHostServiceViews, RuntimeServiceViews, SessionManagerViews,
 };
 use crate::{
-    AppDocumentActivitySlot, BluetoothCaptureSlot, BrowserVideoSlot, ClipboardSlot,
-    DeveloperImageMountSlot, DeviceBackupSlot, DeviceConditionSlot, DeviceEventSlot,
-    DeviceFileActivitySlot, DeviceLogDemand, DeviceLogSlot, LogArchiveSlot, NetworkCaptureSlot,
-    PerformanceDemand, PerformanceSlot, RuntimeClient, ServiceRegistry, SessionCommandSlot,
-    SessionControlCommand, SysdiagnoseSlot,
+    BrowserVideoSlot, ClipboardSlot, DeviceEventSlot, DeviceLogDemand, PerformanceDemand,
+    RuntimeClient, SessionCommandSlot, SessionControlCommand,
 };
 
 const OWNER_THREAD_NAME: &str = "devicehub-coredevice";

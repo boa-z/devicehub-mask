@@ -2,11 +2,10 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use devicehub_core::{LogArchiveState, LogArchiveStatus};
+use devicehub_core::{LogArchiveSlot, LogArchiveState, LogArchiveStatus};
 use idevice::RsdService;
 use idevice::os_trace_relay::OsTraceRelayClient;
 use idevice::rsd::RsdHandshake;
@@ -26,30 +25,6 @@ const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const TAR_BLOCK_BYTES: u64 = 512;
 const TAR_END_BYTES: usize = 1_024;
 pub const ALLOWED_LOG_ARCHIVE_AGE_LIMIT_HOURS: [u16; 3] = [1, 6, 24];
-
-#[derive(Clone, Default)]
-pub struct LogArchiveSlot(Arc<Mutex<LogArchiveStatus>>);
-
-impl LogArchiveSlot {
-    pub fn set(&self, status: LogArchiveStatus) {
-        *self.0.lock().expect("log archive status lock poisoned") = status;
-    }
-
-    pub fn update(&self, update: impl FnOnce(&mut LogArchiveStatus)) {
-        update(&mut self.0.lock().expect("log archive status lock poisoned"));
-    }
-
-    pub fn get(&self) -> LogArchiveStatus {
-        self.0
-            .lock()
-            .expect("log archive status lock poisoned")
-            .clone()
-    }
-
-    pub fn reset(&self) {
-        self.set(LogArchiveStatus::default());
-    }
-}
 
 #[derive(Debug)]
 pub enum LogArchiveCommand<Destination> {

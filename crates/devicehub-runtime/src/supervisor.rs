@@ -1,69 +1,14 @@
 //! Shared lifecycle and health reporting for optional device services.
 
-use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::Duration;
 
-use serde::Serialize;
+use devicehub_core::{ServicePhase, ServiceRegistry};
 use tokio::sync::watch;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 const MAX_BACKOFF: Duration = Duration::from_secs(8);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ServicePhase {
-    Connecting,
-    Ready,
-    Recovering,
-    Unavailable,
-    Stopped,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ServiceHealth {
-    pub name: String,
-    pub phase: ServicePhase,
-    pub attempts: u32,
-    pub restarts: u32,
-    pub last_error: Option<String>,
-    pub updated_at_ms: u64,
-}
-
-#[derive(Clone, Default)]
-pub struct ServiceRegistry(Arc<Mutex<BTreeMap<String, ServiceHealth>>>);
-
-impl ServiceRegistry {
-    pub fn snapshot(&self) -> Vec<ServiceHealth> {
-        self.0.lock().unwrap().values().cloned().collect()
-    }
-
-    pub(crate) fn clear(&self) {
-        self.0.lock().unwrap().clear();
-    }
-
-    fn update(&self, name: &str, phase: ServicePhase, attempt: u32, error: Option<String>) {
-        let mut services = self.0.lock().unwrap();
-        let previous_restarts = services.get(name).map_or(0, |service| service.restarts);
-        let restarts = if matches!(phase, ServicePhase::Recovering | ServicePhase::Unavailable) {
-            previous_restarts.saturating_add(1)
-        } else {
-            previous_restarts
-        };
-        services.insert(
-            name.into(),
-            ServiceHealth {
-                name: name.into(),
-                phase,
-                attempts: attempt,
-                restarts,
-                last_error: error,
-                updated_at_ms: unix_millis(),
-            },
-        );
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct ServiceReporter {
@@ -74,12 +19,12 @@ pub(crate) struct ServiceReporter {
 impl ServiceReporter {
     pub(crate) fn connecting(&self, attempt: u32) {
         self.registry
-            .update(&self.name, ServicePhase::Connecting, attempt, None);
+            .record(&self.name, ServicePhase::Connecting, attempt, None);
     }
 
     pub(crate) fn ready(&self, attempt: u32) {
         self.registry
-            .update(&self.name, ServicePhase::Ready, attempt, None);
+            .record(&self.name, ServicePhase::Ready, attempt, None);
     }
 
     pub(crate) fn recovering(&self, attempt: u32, error: impl Into<String>) {
@@ -92,11 +37,11 @@ impl ServiceReporter {
             "device service will reconnect"
         );
         self.registry
-            .update(&self.name, ServicePhase::Recovering, attempt, Some(error));
+            .record(&self.name, ServicePhase::Recovering, attempt, Some(error));
     }
 
     pub(crate) fn unavailable(&self, attempt: u32, error: impl Into<String>) {
-        self.registry.update(
+        self.registry.record(
             &self.name,
             ServicePhase::Unavailable,
             attempt,
@@ -115,7 +60,7 @@ impl ServiceReporter {
 
     pub(crate) fn stopped(&self, attempt: u32) {
         self.registry
-            .update(&self.name, ServicePhase::Stopped, attempt, None);
+            .record(&self.name, ServicePhase::Stopped, attempt, None);
     }
 }
 
@@ -187,35 +132,9 @@ pub(crate) async fn wait_for_retry(shutdown: &mut watch::Receiver<bool>, delay: 
     }
 }
 
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn service_health_tracks_recovery_without_losing_restart_count() {
-        let registry = ServiceRegistry::default();
-        let reporter = ServiceReporter {
-            name: Arc::from("graphics"),
-            registry: registry.clone(),
-        };
-        reporter.connecting(1);
-        reporter.ready(1);
-        reporter.recovering(1, "closed");
-        reporter.connecting(2);
-        reporter.ready(2);
-        let health = registry.snapshot().pop().unwrap();
-        assert_eq!(health.phase, ServicePhase::Ready);
-        assert_eq!(health.attempts, 2);
-        assert_eq!(health.restarts, 1);
-        assert_eq!(health.last_error, None);
-    }
 
     #[test]
     fn reconnect_backoff_is_bounded() {

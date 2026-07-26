@@ -7,6 +7,7 @@ use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
+use devicehub_core::PerformanceSlot;
 #[cfg(test)]
 use devicehub_core::{DeviceNetworkInterfaceKind, ProcessPerformance};
 #[cfg(test)]
@@ -48,11 +49,15 @@ use network::{
     TEST_MAX_INTERFACES as MAX_NETWORK_INTERFACES,
     normalize_interfaces as normalize_network_interfaces,
 };
-pub use slot::{PerformanceDemand, PerformanceSlot};
+pub use slot::PerformanceDemand;
 #[cfg(test)]
 use slot::{
     TEST_MAX_ACTIVITY_EVENTS as MAX_ACTIVITY_EVENTS,
     TEST_MAX_ENERGY_PROCESSES as MAX_ENERGY_PROCESSES,
+};
+use slot::{
+    publish_app_activity, update_energy, update_graphics, update_hardware,
+    update_network as update_network_sample, update_network_interfaces, update_system,
 };
 pub(crate) use system::supervise_performance_system;
 #[cfg(test)]

@@ -1,10 +1,11 @@
 //! Bounded Bluetooth HCI capture through BTPacketLogger.
 
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use devicehub_core::{BluetoothCaptureState, BluetoothCaptureStatus, BluetoothCaptureStopReason};
+use devicehub_core::{
+    BluetoothCaptureSlot, BluetoothCaptureState, BluetoothCaptureStatus, BluetoothCaptureStopReason,
+};
 use futures_util::{Stream, StreamExt};
 use idevice::RsdService;
 use idevice::bt_packet_logger::{BtFrame, BtPacketKind, BtPacketLoggerClient};
@@ -29,23 +30,6 @@ const PCAP_HEADER: [u8; 24] = [
     0x00, 0x00, 0xff, 0xff, // 65535-byte snapshot length
     0x00, 0x00, 0x00, 0xc9, // DLT_BLUETOOTH_HCI_H4_WITH_PHDR (201)
 ];
-
-#[derive(Clone, Default)]
-pub struct BluetoothCaptureSlot(Arc<Mutex<BluetoothCaptureStatus>>);
-
-impl BluetoothCaptureSlot {
-    pub fn set(&self, status: BluetoothCaptureStatus) {
-        *self.0.lock().unwrap() = status;
-    }
-
-    pub fn get(&self) -> BluetoothCaptureStatus {
-        self.0.lock().unwrap().clone()
-    }
-
-    pub fn reset(&self) {
-        self.set(BluetoothCaptureStatus::default());
-    }
-}
 
 #[derive(Debug)]
 pub enum BluetoothCaptureCommand<Destination> {

@@ -1,7 +1,6 @@
 //! Supervised DVT network and thermal condition simulation.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[cfg(test)]
@@ -14,7 +13,8 @@ use idevice::{ReadWrite, RsdService};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use devicehub_core::{
-    ActiveDeviceCondition, DeviceConditionGroup, DeviceConditionProfile, DeviceConditionStatus,
+    ActiveDeviceCondition, DeviceConditionGroup, DeviceConditionProfile, DeviceConditionSlot,
+    DeviceConditionStatus,
 };
 
 use crate::{ServiceReporter, reconnect_backoff, wait_for_retry};
@@ -26,23 +26,6 @@ const MAX_GROUPS: usize = 32;
 const MAX_PROFILES: usize = 256;
 const MAX_IDENTIFIER_BYTES: usize = 256;
 const MAX_DESCRIPTION_CHARS: usize = 512;
-
-#[derive(Clone, Default)]
-pub struct DeviceConditionSlot(Arc<Mutex<DeviceConditionStatus>>);
-
-impl DeviceConditionSlot {
-    pub fn set(&self, status: DeviceConditionStatus) {
-        *self.0.lock().unwrap() = status;
-    }
-
-    pub fn get(&self) -> DeviceConditionStatus {
-        self.0.lock().unwrap().clone()
-    }
-
-    pub fn reset(&self) {
-        self.set(DeviceConditionStatus::default());
-    }
-}
 
 #[derive(Debug)]
 pub enum DeviceConditionCommand {

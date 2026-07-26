@@ -38,6 +38,12 @@ WebSocket 传输带版本头的 Annex-B HEVC Access Unit 和类型化控制消�
 
 性能工作台 HTTP 路由同样是有界适配层。其专用状态只包含性能与设备日志槽、需求计数器、抓取与设备条件状态、服务健康注册表和活动会话命令入口。子路由会先取得该状态，再合并到私有 API，因此 handler 无法提取宽泛的 HTTP 应用状态，也不能访问文件、应用管理、视频、剪贴板或配置存储。构造适配层只会克隆轻量句柄，不会启动采样或抓取任务；这些资源仍由设备会话所有，并受需求门控。
 
+有界设备日志缓冲、游标语义、元数据清理规则和设备条件观察槽与其规范化值一并位于 `devicehub-core`。runtime worker 将统一日志、syslog 与 DVT 响应转换到这些端口，但继续持有需求门控、连接监督、设备 client 和条件命令。宿主适配器直接观察 core 端口，不能通过这些端口取得 Apple 协议 client。
+
+网络抓包、蓝牙抓包、备份、sysdiagnose 与日志归档的状态槽和对应的规范化 DTO 一并位于 `devicehub-core`。runtime worker 更新这些宿主无关端口，同时继续持有设备 client、命令通道、超时和持久化端口。桌面 HTTP 适配器因此通过 core 观察操作状态，仅在分发具体设备工作时依赖 runtime。
+
+Developer Disk Image 状态、进度和基于 iOS 主版本选择镜像类型的策略同样属于 `devicehub-core`。runtime 继续持有不透明的宿主资源请求、加载端口、TSS 个性化、镜像挂载 client、取消和受监督命令 worker。桌面适配器提供经过校验的本机文件且不向 core 暴露路径，未来无头宿主可以实现相同的加载契约。
+
 设备备份、sysdiagnose 与统一日志归档路由使用独立的诊断 HTTP 适配器。其状态仅包含活动会话命令入口和三个只读操作状态槽。请求校验与有界确认超时属于适配器，MobileBackup2、DiagnosticsService 和日志流 worker 仍由设备会话持有。构造或合并该子路由不会启动导出、设备连接、计时器或轮询任务，handler 也无法访问视频、App 管理、性能、剪贴板或配置状态。
 
 App 发现、图标、生命周期控制、卸载与有界控制台抓取使用独立的 App HTTP 适配器。其状态仅包含活动会话命令入口和共享的 App 操作进度槽。Bundle ID 校验、响应期限与 HTTP 错误映射保留在该边界；CoreDevice、DVT、InstallationProxy 与控制台资源仍由会话持有。该适配器无法访问视频、文件、性能、诊断、剪贴板或配置状态，构造时也不会启动设备任务。
@@ -45,6 +51,8 @@ App 发现、图标、生命周期控制、卸载与有界控制台抓取使用�
 崩溃报告列表、有界摘要、导出与删除使用独立的崩溃报告 HTTP 适配器，状态仅包含活动会话命令入口。设备路径校验、响应期限与仅披露摘要的约束属于该边界，CrashReportCopyMobile worker 与传输仍由会话持有。构造适配器不会启动服务或传输，也不能访问无关应用状态。
 
 设备 AFC 与单 App 存储路由使用另一层有界 HTTP 适配器。其状态只包含活动会话命令入口和两个按范围隔离的传输活动槽，因此文件 handler 无法访问视频、应用管理、性能服务、剪贴板或配置存储。传输 worker 与 AFC client 继续由活动设备会话所有；构造或合并该适配器不会启动任务、连接或轮询。
+
+公共 AFC 与应用容器的条目、列表、传输计数、活动状态机、取消语义、Bundle ID 校验和设备路径约束规则归 `devicehub-core` 所有。`devicehub-runtime` 只持有类型化执行命令以及 AFC、House Arrest 传输，宿主则提供不透明的本机文件系统路径和流式文件 I/O。桌面适配器直接从 core 导入存储领域值，不再依赖 runtime 的兼容转发。
 
 按键映射配置路由组成仅限桌面本地的适配器，只持有不可变的配置目录句柄。配置名称、映射结构、坐标、App 绑定和硬件按键冲突均在该模块内校验后才进行异步文件访问。该适配器无法访问设备会话、视频、MCP 或受监督服务，构造时也不会启动任务或文件监视器。
 
@@ -71,6 +79,10 @@ USB Lockdown 配对属于管理器级操作，而不是活动会话的输入命�
 直接 Wi-Fi 传输只会通过显式 USB 授权流程创建 RemotePairing 凭据，随后通过 Bonjour 执行仅验证握手。任何验证错误都不会启动替代配对或覆盖已保存身份。短读、连接重置、BrokenPipe 和超时会使用全新 socket 重试，然后由父隧道按照一至八秒的有界指数延时重建。明确的 Pair Verify 拒绝会停止自动重试，并要求用户显式移除 USB 信任后重新授权；瞬时断流会保留凭据。结构化日志保留底层错误分类和尝试次数，公开错误则说明应保持设备唤醒还是重建授权。
 
 可选设备服务统一运行在该 runtime 内的 Tokio `LocalSet` 和服务监督器下。这样不可 `Send` 的 DVT channel 始终留在 CoreDevice 所有者线程，而 HTTP、WebSocket 和 MCP 传输仍可使用多线程 runtime。每项服务发布统一的阶段、尝试次数、重启次数、最后错误和 更新时间。虚拟定位、Condition Inducer、Sysmontap、Graphics、NetworkMonitor 与 EnergyMonitor 通道分别使用有上限的指数退避恢复；单个通道断开不会终止视频或 HID。
+
+规范化服务健康记录、状态转换策略和共享注册表位于 `devicehub-core`，桌面、未来无头宿主和多设备宿主因此观察同一契约。只有 runtime 持有 reporter、tracing、重连退避、关闭信号、`LocalSet` 任务和强制终止期限。
+
+性能快照、类型化规范观察、部分样本合并语义、有界 App 活动历史、能耗目标选择和分数规范化位于 `devicehub-core`。runtime 将 Sysmontap、DeviceInfo、Graphics、NetworkMonitor、EnergyMonitor 和通知值转换为该契约，同时保留 DVT client、采样节奏、需求订阅和重连监督。宿主适配器直接读取 core 观察槽，不能提交原始 plist 或 DVT 值。
 
 虚拟定位优先使用隔离的 DVT RemoteServer channel。DVT 连接或 channel 在有界时间内失败后，每轮监督尝试只会通过当前 `IdeviceProvider` 回退一次 `com.apple.dt.simulatelocation`，以支持较早的开发者镜像工作流。两个后端共享同一命令队列和归一化的 `dvt`/`legacy` 状态；legacy wire 格式使用有限且不依赖 locale 的坐标文本，后端恢复时保留并重放当前坐标，会话退出时执行有界的清理。两次探测均失败后进入正常指数退避，不会持续轮询任一服务。
 

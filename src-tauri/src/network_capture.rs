@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 
 use devicehub_runtime::{CaptureFileIo, CaptureFileKind};
 
-pub(crate) use devicehub_core::NetworkCaptureStatus;
-pub(crate) use devicehub_runtime::NetworkCaptureSlot;
+pub(crate) use devicehub_core::{NetworkCaptureSlot, NetworkCaptureStatus};
 pub(crate) type NetworkCaptureCommand = devicehub_runtime::NetworkCaptureCommand<PathBuf>;
 
 pub(crate) async fn validate_request(path: &Path, duration_seconds: u64) -> Result<(), String> {

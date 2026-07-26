@@ -1,7 +1,6 @@
 //! Sandboxed application storage access through House Arrest and AFC.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use idevice::afc::AfcClient;
@@ -11,11 +10,18 @@ use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use idevice::{IdeviceService, RsdService};
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use devicehub_core::ConnKind;
+#[cfg(test)]
+use devicehub_core::AppDocumentActivityState;
+use devicehub_core::{
+    APP_DOCUMENT_TRANSFER_CANCELLED as TRANSFER_CANCELLED, AppDocumentActivityKind,
+    AppDocumentActivitySlot, AppDocumentEntry, AppDocumentKind, AppDocumentList,
+    AppDocumentTransfer, AppStorageScope, ConnKind, join_app_document_path as join_path,
+    normalize_app_document_path as normalize_path, validate_app_bundle_id as validate_bundle_id,
+    validate_app_document_name as validate_name,
+};
 
 use super::{HostFileIo, HostFileKind};
 
@@ -23,214 +29,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_DIRECTORY_ENTRIES: usize = 500;
-const MAX_PATH_BYTES: usize = 1_024;
 const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_TRANSFER_ENTRIES: usize = 100_000;
 const MAX_TRANSFER_DEPTH: usize = 64;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-pub const TRANSFER_CANCELLED: &str = "application storage transfer cancelled";
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AppStorageScope {
-    #[default]
-    Documents,
-    Container,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AppDocumentEntry {
-    pub name: String,
-    pub path: String,
-    pub kind: AppDocumentKind,
-    pub size_bytes: u64,
-    pub modified: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AppDocumentKind {
-    File,
-    Directory,
-    Other,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AppDocumentList {
-    pub path: String,
-    pub entries: Vec<AppDocumentEntry>,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub struct AppDocumentTransfer {
-    pub bytes_transferred: u64,
-    pub files_transferred: u64,
-    pub directories_transferred: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AppDocumentActivityKind {
-    Export,
-    Import,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AppDocumentActivityState {
-    #[default]
-    Idle,
-    Running,
-    Succeeded,
-    Cancelled,
-    Failed,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct AppDocumentActivityView {
-    pub id: u64,
-    pub bundle_id: Option<String>,
-    pub scope: Option<AppStorageScope>,
-    pub kind: Option<AppDocumentActivityKind>,
-    pub state: AppDocumentActivityState,
-    pub path: Option<String>,
-    pub bytes_transferred: u64,
-    pub bytes_total: Option<u64>,
-    pub files_transferred: u64,
-    pub directories_transferred: u64,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Default)]
-pub struct AppDocumentActivitySlot {
-    view: Arc<Mutex<AppDocumentActivityView>>,
-    active_id: Arc<AtomicU64>,
-    cancelled: Arc<AtomicBool>,
-}
-
-impl AppDocumentActivitySlot {
-    pub(crate) fn start(
-        &self,
-        bundle_id: &str,
-        scope: AppStorageScope,
-        kind: AppDocumentActivityKind,
-        path: String,
-        bytes_total: Option<u64>,
-    ) -> u64 {
-        let mut view = self
-            .view
-            .lock()
-            .expect("app document activity lock poisoned");
-        let id = view.id.wrapping_add(1).max(1);
-        self.cancelled.store(false, Ordering::Release);
-        self.active_id.store(id, Ordering::Release);
-        *view = AppDocumentActivityView {
-            id,
-            bundle_id: Some(bundle_id.to_owned()),
-            scope: Some(scope),
-            kind: Some(kind),
-            state: AppDocumentActivityState::Running,
-            path: Some(path),
-            bytes_total,
-            ..AppDocumentActivityView::default()
-        };
-        id
-    }
-
-    fn update(&self, id: u64, transfer: AppDocumentTransfer) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("app document activity lock poisoned");
-        if view.id == id && view.state == AppDocumentActivityState::Running {
-            view.bytes_transferred = transfer.bytes_transferred;
-            view.files_transferred = transfer.files_transferred;
-            view.directories_transferred = transfer.directories_transferred;
-        }
-    }
-
-    fn set_total(&self, id: u64, bytes_total: u64) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("app document activity lock poisoned");
-        if view.id == id && view.state == AppDocumentActivityState::Running {
-            view.bytes_total = Some(bytes_total);
-        }
-    }
-
-    fn finish(&self, id: u64, result: &Result<(), String>) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("app document activity lock poisoned");
-        if view.id != id || view.state != AppDocumentActivityState::Running {
-            return;
-        }
-        match result {
-            Ok(()) => {
-                view.state = AppDocumentActivityState::Succeeded;
-                if let Some(total) = view.bytes_total {
-                    view.bytes_transferred = total;
-                }
-            }
-            Err(error) if is_transfer_cancelled(error) => {
-                view.state = AppDocumentActivityState::Cancelled;
-            }
-            Err(error) => {
-                view.state = AppDocumentActivityState::Failed;
-                view.error = Some(error.chars().take(512).collect());
-            }
-        }
-        self.active_id.store(0, Ordering::Release);
-    }
-
-    pub fn get(&self, bundle_id: &str) -> AppDocumentActivityView {
-        let view = self
-            .view
-            .lock()
-            .expect("app document activity lock poisoned");
-        if view.bundle_id.as_deref() == Some(bundle_id) {
-            view.clone()
-        } else {
-            AppDocumentActivityView::default()
-        }
-    }
-
-    pub fn cancel(&self, bundle_id: &str) -> bool {
-        let view = self
-            .view
-            .lock()
-            .expect("app document activity lock poisoned");
-        if view.state != AppDocumentActivityState::Running
-            || view.bundle_id.as_deref() != Some(bundle_id)
-        {
-            return false;
-        }
-        self.cancelled.store(true, Ordering::Release);
-        true
-    }
-
-    fn is_cancelled(&self, id: u64) -> bool {
-        self.active_id.load(Ordering::Acquire) == id && self.cancelled.load(Ordering::Acquire)
-    }
-
-    fn reset(&self) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("app document activity lock poisoned");
-        self.cancelled.store(false, Ordering::Release);
-        self.active_id.store(0, Ordering::Release);
-        *view = AppDocumentActivityView::default();
-    }
-}
-
-pub fn is_transfer_cancelled(error: &str) -> bool {
-    error.contains(TRANSFER_CANCELLED)
-}
-
 struct TransferProgress {
     slot: AppDocumentActivitySlot,
     id: u64,
@@ -1283,65 +1085,6 @@ async fn ensure_no_symlink_components(
         }
     }
     Ok(())
-}
-
-fn validate_bundle_id(bundle_id: &str) -> Result<(), String> {
-    if bundle_id.len() > 255
-        || !bundle_id.contains('.')
-        || bundle_id.split('.').any(|part| {
-            part.is_empty()
-                || part.len() > 63
-                || !part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-    {
-        return Err("invalid application bundle identifier".into());
-    }
-    Ok(())
-}
-
-fn normalize_path(path: &str, allow_root: bool) -> Result<String, String> {
-    if path.len() > MAX_PATH_BYTES || path.contains(['\0', '\\']) {
-        return Err("invalid application document path".into());
-    }
-    let components = path
-        .trim_matches('/')
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .map(validate_name)
-        .collect::<Result<Vec<_>, _>>()?;
-    if components.is_empty() {
-        return if allow_root {
-            Ok("/".into())
-        } else {
-            Err("the application storage root cannot be modified".into())
-        };
-    }
-    Ok(format!("/{}", components.join("/")))
-}
-
-fn validate_name(name: &str) -> Result<&str, String> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.len() > 255
-        || name.contains(['/', '\\', '\0'])
-    {
-        Err("invalid application document name".into())
-    } else {
-        Ok(name)
-    }
-}
-
-fn join_path(directory: &str, name: &str) -> Result<String, String> {
-    validate_name(name)?;
-    let joined = if directory == "/" {
-        format!("/{name}")
-    } else {
-        format!("{directory}/{name}")
-    };
-    normalize_path(&joined, false)
 }
 
 fn parent_path(path: &str) -> String {

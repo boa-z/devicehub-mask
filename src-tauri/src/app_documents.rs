@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 #[cfg(test)]
-pub(crate) use devicehub_runtime::{
+pub(crate) use devicehub_core::{
     APP_DOCUMENT_TRANSFER_CANCELLED as TRANSFER_CANCELLED, AppDocumentActivityState,
     AppDocumentKind, AppDocumentTransfer,
 };
-pub(crate) use devicehub_runtime::{
+pub(crate) use devicehub_core::{
     AppDocumentActivitySlot, AppDocumentActivityView, AppDocumentEntry, AppDocumentList,
     AppStorageScope, is_app_document_transfer_cancelled as is_transfer_cancelled,
 };

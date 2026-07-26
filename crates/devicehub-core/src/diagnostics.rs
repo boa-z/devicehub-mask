@@ -1,5 +1,7 @@
 //! Bounded crash-report metadata exposed to diagnostics adapters.
 
+use std::sync::{Arc, Mutex};
+
 use serde::Serialize;
 
 mod crash_reports;
@@ -31,6 +33,30 @@ pub struct DeviceBackupStatus {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Default)]
+pub struct DeviceBackupSlot(Arc<Mutex<DeviceBackupStatus>>);
+
+impl DeviceBackupSlot {
+    pub fn set(&self, status: DeviceBackupStatus) {
+        *self.0.lock().expect("device backup status lock poisoned") = status;
+    }
+
+    pub fn update(&self, update: impl FnOnce(&mut DeviceBackupStatus)) {
+        update(&mut self.0.lock().expect("device backup status lock poisoned"));
+    }
+
+    pub fn get(&self) -> DeviceBackupStatus {
+        self.0
+            .lock()
+            .expect("device backup status lock poisoned")
+            .clone()
+    }
+
+    pub fn reset(&self) {
+        self.set(DeviceBackupStatus::default());
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SysdiagnoseState {
@@ -55,6 +81,30 @@ pub struct SysdiagnoseStatus {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Default)]
+pub struct SysdiagnoseSlot(Arc<Mutex<SysdiagnoseStatus>>);
+
+impl SysdiagnoseSlot {
+    pub fn set(&self, status: SysdiagnoseStatus) {
+        *self.0.lock().expect("sysdiagnose status lock poisoned") = status;
+    }
+
+    pub fn update(&self, update: impl FnOnce(&mut SysdiagnoseStatus)) {
+        update(&mut self.0.lock().expect("sysdiagnose status lock poisoned"));
+    }
+
+    pub fn get(&self) -> SysdiagnoseStatus {
+        self.0
+            .lock()
+            .expect("sysdiagnose status lock poisoned")
+            .clone()
+    }
+
+    pub fn reset(&self) {
+        self.set(SysdiagnoseStatus::default());
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogArchiveState {
@@ -77,6 +127,30 @@ pub struct LogArchiveStatus {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Default)]
+pub struct LogArchiveSlot(Arc<Mutex<LogArchiveStatus>>);
+
+impl LogArchiveSlot {
+    pub fn set(&self, status: LogArchiveStatus) {
+        *self.0.lock().expect("log archive status lock poisoned") = status;
+    }
+
+    pub fn update(&self, update: impl FnOnce(&mut LogArchiveStatus)) {
+        update(&mut self.0.lock().expect("log archive status lock poisoned"));
+    }
+
+    pub fn get(&self) -> LogArchiveStatus {
+        self.0
+            .lock()
+            .expect("log archive status lock poisoned")
+            .clone()
+    }
+
+    pub fn reset(&self) {
+        self.set(LogArchiveStatus::default());
+    }
+}
+
 /// Stable, non-reversible identifier used to correlate device logs without
 /// exposing the device UDID.
 pub fn device_id_fingerprint(udid: &str) -> String {
@@ -88,7 +162,7 @@ pub fn device_id_fingerprint(udid: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::device_id_fingerprint;
+    use super::*;
 
     #[test]
     fn device_fingerprint_is_stable_and_does_not_expose_the_udid() {
@@ -97,6 +171,36 @@ mod tests {
         assert_eq!(fingerprint, device_id_fingerprint(udid));
         assert_eq!(fingerprint.len(), 8);
         assert!(!fingerprint.contains(udid));
+    }
+
+    #[test]
+    fn cloned_diagnostic_slots_share_updates_and_reset() {
+        let backup = DeviceBackupSlot::default();
+        let backup_reader = backup.clone();
+        backup.update(|status| {
+            status.state = DeviceBackupState::BackingUp;
+            status.files_received = 4;
+        });
+        assert_eq!(backup_reader.get().files_received, 4);
+
+        let sysdiagnose = SysdiagnoseSlot::default();
+        let sysdiagnose_reader = sysdiagnose.clone();
+        sysdiagnose.set(SysdiagnoseStatus {
+            state: SysdiagnoseState::Downloading,
+            bytes_written: 8,
+            ..SysdiagnoseStatus::default()
+        });
+        assert_eq!(sysdiagnose_reader.get().bytes_written, 8);
+
+        let archive = LogArchiveSlot::default();
+        let archive_reader = archive.clone();
+        archive.set(LogArchiveStatus {
+            state: LogArchiveState::Exporting,
+            bytes_written: 16,
+            ..LogArchiveStatus::default()
+        });
+        archive.reset();
+        assert_eq!(archive_reader.get(), LogArchiveStatus::default());
     }
 }
 

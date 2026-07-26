@@ -9,15 +9,14 @@ mod network;
 mod output;
 
 pub use bluetooth::{
-    BluetoothCaptureCommand, BluetoothCaptureSlot, MAX_BLUETOOTH_CAPTURE_DURATION_SECONDS,
+    BluetoothCaptureCommand, MAX_BLUETOOTH_CAPTURE_DURATION_SECONDS,
     MIN_BLUETOOTH_CAPTURE_DURATION_SECONDS,
     validate_duration as validate_bluetooth_capture_duration,
 };
 pub(crate) use bluetooth::{BluetoothCaptureTransport, serve as serve_bluetooth_capture};
 pub use network::{
     MAX_NETWORK_CAPTURE_DURATION_SECONDS, MIN_NETWORK_CAPTURE_DURATION_SECONDS,
-    NetworkCaptureCommand, NetworkCaptureSlot,
-    validate_duration as validate_network_capture_duration,
+    NetworkCaptureCommand, validate_duration as validate_network_capture_duration,
 };
 pub(crate) use network::{NetworkCaptureTransport, serve as serve_network_capture};
 pub use output::{CaptureFileFuture, CaptureFileIo, CaptureFileKind, CaptureFileWriter};

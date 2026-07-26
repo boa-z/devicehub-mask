@@ -18,8 +18,7 @@ pub use companions::CompanionDeviceCommand;
 pub(crate) use companions::serve_companion_devices;
 pub(crate) use conditions::supervise_device_conditions;
 pub use conditions::{
-    DeviceConditionCommand, DeviceConditionSlot,
-    validate_identifiers as validate_device_condition_identifiers,
+    DeviceConditionCommand, validate_identifiers as validate_device_condition_identifiers,
 };
 pub use crash_reports::{CrashReportExportCommand, MAX_CRASH_REPORT_READ_BYTES};
 pub(crate) use crash_reports::{
@@ -32,8 +31,7 @@ pub(crate) use details::{
 pub(crate) use developer_image::serve_developer_image_mount;
 pub use developer_image::{
     DeveloperImageAssetFuture, DeveloperImageAssetLoader, DeveloperImageMountCommand,
-    DeveloperImageMountRequest, DeveloperImageMountSlot, DeveloperImageMountState,
-    DeveloperImageMountStatus, developer_image_type_for_version,
+    DeveloperImageMountRequest,
 };
 pub(crate) use developer_image::{
     is_developer_image_mounted, is_developer_image_mounted_for_device,
@@ -46,8 +44,8 @@ pub use home_screen::HomeScreenCommand;
 pub(crate) use home_screen::serve_home_screen;
 pub use location::LocationCommand;
 pub(crate) use location::supervise_location;
+pub use logs::DeviceLogDemand;
 pub(crate) use logs::supervise_device_logs;
-pub use logs::{DeviceLogDemand, DeviceLogSlot};
 pub(crate) use power::{DevicePowerAction, DevicePowerController};
 pub(crate) use provisioning::supervise_provisioning;
 pub use provisioning::{

@@ -24,6 +24,16 @@ devicehub-mcp -----------------------------------> devicehub-core
 
 `devicehub-core` must not depend on `idevice`, Tauri, Axum, tower-http, rmcp, FFmpeg, rodio, React assets, native dialogs, or updater and window APIs. It owns normalized DTOs, bounded validation, business rules, control leases, stable errors, events, and service contracts. It must contain real policy rather than becoming an empty collection of traits.
 
+Device storage follows that ownership directly: core defines public AFC and application-container DTOs, transfer activity policy, cancellation classification, bundle-identifier validation, and confined device-path normalization. Runtime owns the AFC and House Arrest execution commands and transports, and hosts retain opaque local paths plus filesystem stream implementations.
+
+Core also owns bounded observation ports whose behavior is independent of Apple transports, including capture and diagnostic status, device-condition state, and the normalized device-log ring buffer. Runtime owns the producers: protocol translation, demand gating, retries, deadlines, and command workers remain implementation details.
+
+Developer Image mount state and version-to-image-type policy follow the same rule. Core exposes the normalized observation; runtime owns opaque asset requests, host-injected loading, personalization, device transport, and operation supervision.
+
+Core owns the normalized service-health registry and restart-count transition policy. Runtime owns the reporters and all executable supervision behavior, including tracing, retry delays, shutdown signals, task spawning, and forced aborts.
+
+Core also owns the merged performance observation slot and its bounded history and ranking policies. Runtime-specific converters accept Apple DVT and plist samples and emit typed normalized observations; demand signals, sampling workers, and device channels stay in runtime.
+
 `devicehub-runtime` may depend on core, `idevice`, Tokio, serialization, media helpers, and platform-neutral filesystem and networking APIs. It must not depend on Tauri, Axum, rmcp, frontend assets, HTTP authentication, or window state. It does not read the host environment or resolve and launch operating-system processes. Raw XPC, plist, CoreDevice client, and device transport types never cross its public API.
 
 Adapters depend on core services and cannot directly open CoreDevice, DVT, Lockdown, AFC, House Arrest, Installation Proxy, or diagnostics clients. During migration, existing bounded command sinks and slots may be re-exported as compatibility APIs, but new adapter behavior must use typed services. Input commands plus capture and diagnostic status values are imported from core directly; runtime no longer republishes those domain types.
@@ -77,6 +87,12 @@ Starting runtime creates no HTTP, MCP, Tauri, or frontend task. Starting an adap
 7. Add headless and LAN hosting only after desktop behavior and the library boundaries are stable.
 
 Each step is a separate commit. Source-moving steps preserve behavior, pass `npm run verify:full`, build only the unpackaged Debug desktop application locally, and keep Windows, macOS, and Linux source compatibility. Hardware behavior is finally checked on an iPhone 13 Pro Max over USB and Wi-Fi.
+
+## Next Host Milestones
+
+After the module extraction is complete, the next repository-level target is a headless CLI service host. It will compose the same `devicehub-runtime` and core services without linking Tauri, window APIs, desktop audio output, or frontend assets. CLI configuration will own listener addresses, authentication material, data directories, pairing storage, sidecar resolution, logging, shutdown signals, and explicitly enabled HTTP/WebSocket/MCP adapters. The first version remains loopback-only by default; LAN publication still requires the security boundary below.
+
+Multi-device connection support follows the headless host because that host provides the clearest lifecycle test. The current single-runtime graph will evolve into a host-owned runtime registry plus one isolated `DeviceRuntime` per selected physical device. Discovery and trust storage become shared coordination services, while each device retains its own owner thread, session, supervisor tree, commands, media flow control, demand counters, and deterministic shutdown. USB and Wi-Fi endpoints for the same physical device must resolve to one logical device and one active transport, and global CPU, memory, decoder, audio-output, and reconnect limits must be explicit rather than hidden in process-wide state.
 
 ## Boundaries And Acceptance
 

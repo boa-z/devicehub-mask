@@ -24,6 +24,16 @@ devicehub-mcp -----------------------------------> devicehub-core
 
 `devicehub-core` 不得依赖 `idevice`、Tauri、Axum、tower-http、rmcp、FFmpeg、rodio、React 产物、原生对话框、更新器或窗口 API。它持有归一化 DTO、有界校验、业务规则、控制租约、稳定错误、事件和服务契约，并应包含真实策略，而不是空洞的 trait 集合。
 
+设备存储直接遵循该归属：core 定义公共 AFC 与应用容器 DTO、传输活动策略、取消分类、Bundle ID 校验和设备路径约束规范化。runtime 持有 AFC 与 House Arrest 执行命令和传输，宿主保留不透明的本机路径及文件系统流实现。
+
+core 也持有行为不依赖 Apple 传输的有界观察端口，包括抓取与诊断状态、设备条件状态和规范化设备日志环形缓冲。runtime 持有这些端口的生产者；协议转换、需求门控、重试、截止时间和命令 worker 仍是实现细节。
+
+Developer Image 挂载状态与版本到镜像类型的策略遵循相同规则。core 暴露规范化观察结果；runtime 持有不透明的资源请求、宿主注入加载、个性化、设备传输和操作监督。
+
+core 持有规范化服务健康注册表和重启计数转换策略。runtime 持有 reporter 及全部可执行监督行为，包括 tracing、重试延迟、关闭信号、任务创建和强制终止。
+
+core 还持有合并后的性能观察槽及其有界历史和排序策略。runtime 专用转换器接收 Apple DVT 与 plist 样本并产生类型化规范观察；需求信号、采样 worker 和设备 channel 留在 runtime。
+
 `devicehub-runtime` 可以依赖 core、`idevice`、Tokio、序列化、媒体辅助模块，以及跨平台文件系统和网络 API。它不得依赖 Tauri、Axum、rmcp、前端资源、HTTP 鉴权或窗口状态，也不得自行读取宿主环境或解析、启动操作系统进程。原始 XPC、plist、CoreDevice client 和设备传输类型不得越过其公共 API。
 
 适配器依赖 core 服务，不能直接打开 CoreDevice、DVT、Lockdown、AFC、House Arrest、Installation Proxy 或诊断 client。迁移期间可以把现有有界命令入口和状态槽作为兼容 API 重新导出，但新增适配器行为必须使用类型化服务。输入命令以及抓包与诊断状态值由适配器直接从 core 导入，runtime 不再转发这些领域类型。
@@ -77,6 +87,12 @@ impl DeviceRuntime {
 7. 只有桌面行为与库边界稳定后，才加入无头入口和局域网宿主。
 
 每一步都使用独立 commit。源码迁移阶段保持行为不变，通过 `npm run verify:full`，本地只构建不打包的 Debug 桌面程序，并保持 Windows、macOS 与 Linux 源码兼容。最后在 iPhone 13 Pro Max 上通过 USB 与 Wi-Fi 检查硬件行为。
+
+## 后续宿主目标
+
+模块提取完成后的下一个仓库级目标是无头 CLI 服务宿主。它组合相同的 `devicehub-runtime` 与 core 服务，但不链接 Tauri、窗口 API、桌面音频输出或前端资源。CLI 配置负责监听地址、鉴权材料、数据目录、配对存储、sidecar 解析、日志、关闭信号，以及显式启用的 HTTP/WebSocket/MCP 适配器。首个版本默认仍只监听回环地址；发布到局域网仍必须满足下述安全边界。
+
+多设备保持连接安排在无头宿主之后，因为无头宿主能最清楚地验证生命周期边界。当前单 runtime 状态图将演进为宿主持有的 runtime registry，加上每个已选物理设备一个隔离的 `DeviceRuntime`。设备发现与信任存储成为共享协调服务，每台设备则保留独立 owner 线程、会话、监督树、命令、媒体流控、需求计数器和确定性关闭。属于同一物理设备的 USB 与 Wi-Fi 端点必须归并为一个逻辑设备和一条活动传输，同时显式定义全局 CPU、内存、解码器、音频输出和重连限额，不能依赖进程级隐式状态。
 
 ## 边界与验收
 

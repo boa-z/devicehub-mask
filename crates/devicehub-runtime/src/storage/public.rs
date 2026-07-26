@@ -1,7 +1,6 @@
 //! Bounded file management for the device's public AFC media container.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use idevice::afc::AfcClient;
@@ -10,11 +9,17 @@ use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use idevice::{IdeviceService, RsdService};
-use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use devicehub_core::ConnKind;
+#[cfg(test)]
+use devicehub_core::DeviceFileActivityState;
+use devicehub_core::{
+    ConnKind, DEVICE_FILE_TRANSFER_CANCELLED as TRANSFER_CANCELLED, DeviceFileActivityKind,
+    DeviceFileActivitySlot, DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer,
+    is_device_file_transfer_cancelled as is_transfer_cancelled, join_device_file_path as join_path,
+    normalize_device_file_path as normalize_path, validate_device_file_name as validate_name,
+};
 
 use super::{HostFileIo, HostFileKind};
 use crate::supervisor::ServiceReporter;
@@ -23,187 +28,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_DIRECTORY_ENTRIES: usize = 1_000;
-const MAX_PATH_BYTES: usize = 1_024;
 const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_TRANSFER_ENTRIES: usize = 100_000;
 const MAX_TRANSFER_DEPTH: usize = 64;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
-pub const TRANSFER_CANCELLED: &str = "device file transfer cancelled";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceFileKind {
-    File,
-    Directory,
-    Other,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DeviceFileEntry {
-    pub name: String,
-    pub path: String,
-    pub kind: DeviceFileKind,
-    pub size_bytes: u64,
-    pub modified: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DeviceFileList {
-    pub path: String,
-    pub entries: Vec<DeviceFileEntry>,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub struct DeviceFileTransfer {
-    pub bytes_transferred: u64,
-    pub files_transferred: u64,
-    pub directories_transferred: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceFileActivityKind {
-    Export,
-    Import,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceFileActivityState {
-    #[default]
-    Idle,
-    Running,
-    Succeeded,
-    Cancelled,
-    Failed,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct DeviceFileActivityView {
-    pub id: u64,
-    pub kind: Option<DeviceFileActivityKind>,
-    pub state: DeviceFileActivityState,
-    pub path: Option<String>,
-    pub bytes_transferred: u64,
-    pub bytes_total: Option<u64>,
-    pub files_transferred: u64,
-    pub directories_transferred: u64,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Default)]
-pub struct DeviceFileActivitySlot {
-    view: Arc<Mutex<DeviceFileActivityView>>,
-    active_id: Arc<AtomicU64>,
-    cancelled: Arc<AtomicBool>,
-}
-
-impl DeviceFileActivitySlot {
-    pub(crate) fn start(&self, kind: DeviceFileActivityKind, path: String) -> u64 {
-        let mut view = self
-            .view
-            .lock()
-            .expect("device file activity lock poisoned");
-        let id = view.id.wrapping_add(1).max(1);
-        self.cancelled.store(false, Ordering::Release);
-        self.active_id.store(id, Ordering::Release);
-        *view = DeviceFileActivityView {
-            id,
-            kind: Some(kind),
-            state: DeviceFileActivityState::Running,
-            path: Some(path),
-            ..DeviceFileActivityView::default()
-        };
-        id
-    }
-
-    fn update(&self, id: u64, transfer: DeviceFileTransfer) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("device file activity lock poisoned");
-        if view.id == id && view.state == DeviceFileActivityState::Running {
-            view.bytes_transferred = transfer.bytes_transferred;
-            view.files_transferred = transfer.files_transferred;
-            view.directories_transferred = transfer.directories_transferred;
-        }
-    }
-
-    fn set_total(&self, id: u64, bytes_total: u64) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("device file activity lock poisoned");
-        if view.id == id && view.state == DeviceFileActivityState::Running {
-            view.bytes_total = Some(bytes_total);
-        }
-    }
-
-    fn finish(&self, id: u64, result: &Result<(), String>) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("device file activity lock poisoned");
-        if view.id != id || view.state != DeviceFileActivityState::Running {
-            return;
-        }
-        match result {
-            Ok(()) => {
-                view.state = DeviceFileActivityState::Succeeded;
-                if let Some(total) = view.bytes_total {
-                    view.bytes_transferred = total;
-                }
-            }
-            Err(error) if is_transfer_cancelled(error) => {
-                view.state = DeviceFileActivityState::Cancelled;
-            }
-            Err(error) => {
-                view.state = DeviceFileActivityState::Failed;
-                view.error = Some(error.chars().take(512).collect());
-            }
-        }
-        self.active_id.store(0, Ordering::Release);
-    }
-
-    pub fn get(&self) -> DeviceFileActivityView {
-        self.view
-            .lock()
-            .expect("device file activity lock poisoned")
-            .clone()
-    }
-
-    pub fn cancel(&self) -> bool {
-        let view = self
-            .view
-            .lock()
-            .expect("device file activity lock poisoned");
-        if view.state != DeviceFileActivityState::Running {
-            return false;
-        }
-        self.cancelled.store(true, Ordering::Release);
-        true
-    }
-
-    fn is_cancelled(&self, id: u64) -> bool {
-        self.active_id.load(Ordering::Acquire) == id && self.cancelled.load(Ordering::Acquire)
-    }
-
-    fn reset(&self) {
-        let mut view = self
-            .view
-            .lock()
-            .expect("device file activity lock poisoned");
-        self.cancelled.store(false, Ordering::Release);
-        self.active_id.store(0, Ordering::Release);
-        *view = DeviceFileActivityView::default();
-    }
-}
-
-pub fn is_transfer_cancelled(error: &str) -> bool {
-    error.contains(TRANSFER_CANCELLED)
-}
-
 struct TransferProgress {
     slot: DeviceFileActivitySlot,
     id: u64,
@@ -999,51 +827,6 @@ fn entry_from_info(name: String, path: String, info: &idevice::afc::FileInfo) ->
         size_bytes: info.size as u64,
         modified: info.modified.and_utc().to_rfc3339(),
     }
-}
-
-fn normalize_path(path: &str, allow_root: bool) -> Result<String, String> {
-    if path.len() > MAX_PATH_BYTES || path.contains(['\0', '\\']) {
-        return Err("invalid device file path".into());
-    }
-    let components = path
-        .trim_matches('/')
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .map(validate_name)
-        .collect::<Result<Vec<_>, _>>()?;
-    if components.is_empty() {
-        return if allow_root {
-            Ok("/".into())
-        } else {
-            Err("the AFC root cannot be exported".into())
-        };
-    }
-    Ok(format!("/{}", components.join("/")))
-}
-
-fn validate_name(name: &str) -> Result<&str, String> {
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.len() > 255
-        || name.contains(['/', '\\', '\0'])
-    {
-        Err("invalid device file name".into())
-    } else {
-        Ok(name)
-    }
-}
-
-fn join_path(directory: &str, name: &str) -> Result<String, String> {
-    validate_name(name)?;
-    normalize_path(
-        &if directory == "/" {
-            format!("/{name}")
-        } else {
-            format!("{directory}/{name}")
-        },
-        false,
-    )
 }
 
 fn parent_path(path: &str) -> String {

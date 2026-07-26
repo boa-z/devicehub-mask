@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use devicehub_core::{ConnKind, LocationStatus, LocationStatusSlot};
+use devicehub_core::{
+    ConnKind, DeviceConditionSlot, DeviceLogSlot, LocationStatus, LocationStatusSlot,
+    PerformanceSlot, ServiceRegistry,
+};
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
@@ -41,10 +44,7 @@ use crate::{
     WdaAutomationCommand, WdaRunnerCommand,
 };
 
-use crate::{
-    DeviceConditionSlot, DeviceEventSlot, DeviceLogDemand, DeviceLogSlot, PerformanceDemand,
-    PerformanceSlot, ServiceRegistry, ServiceSupervisor,
-};
+use crate::{DeviceEventSlot, DeviceLogDemand, PerformanceDemand, ServiceSupervisor};
 
 /// Location endpoint retained by session input dispatch and status reporting.
 pub(crate) struct LocationServicePort {
@@ -112,14 +112,14 @@ pub(crate) struct RuntimeDeviceServicePorts {
 /// Host-visible state shared with filesystem-backed runtime services.
 #[derive(Clone)]
 pub(crate) struct RuntimeHostServiceViews {
-    pub(crate) app_documents: crate::AppDocumentActivitySlot,
-    pub(crate) device_files: crate::DeviceFileActivitySlot,
-    pub(crate) network_capture: crate::NetworkCaptureSlot,
-    pub(crate) bluetooth_capture: crate::BluetoothCaptureSlot,
-    pub(crate) device_backup: crate::DeviceBackupSlot,
-    pub(crate) sysdiagnose: crate::SysdiagnoseSlot,
-    pub(crate) log_archive: crate::LogArchiveSlot,
-    pub(crate) developer_image: crate::DeveloperImageMountSlot,
+    pub(crate) app_documents: devicehub_core::AppDocumentActivitySlot,
+    pub(crate) device_files: devicehub_core::DeviceFileActivitySlot,
+    pub(crate) network_capture: devicehub_core::NetworkCaptureSlot,
+    pub(crate) bluetooth_capture: devicehub_core::BluetoothCaptureSlot,
+    pub(crate) device_backup: devicehub_core::DeviceBackupSlot,
+    pub(crate) sysdiagnose: devicehub_core::SysdiagnoseSlot,
+    pub(crate) log_archive: devicehub_core::LogArchiveSlot,
+    pub(crate) developer_image: devicehub_core::DeveloperImageMountSlot,
 }
 
 /// Host capabilities injected once while the runtime owns service lifecycle.
@@ -482,7 +482,7 @@ impl RuntimeSessionServices {
         connection: ConnKind,
         adapter: AdapterHandle,
         handshake: RsdHandshake,
-        activity: crate::AppDocumentActivitySlot,
+        activity: devicehub_core::AppDocumentActivitySlot,
         files: Files,
     ) -> mpsc::Sender<AppDocumentCommand<Files::Path>>
     where
@@ -506,7 +506,7 @@ impl RuntimeSessionServices {
         connection: ConnKind,
         adapter: AdapterHandle,
         handshake: RsdHandshake,
-        activity: crate::DeviceFileActivitySlot,
+        activity: devicehub_core::DeviceFileActivitySlot,
         files: Files,
     ) -> mpsc::Sender<DeviceFileCommand<Files::Path>>
     where
@@ -531,7 +531,7 @@ impl RuntimeSessionServices {
         connection: ConnKind,
         adapter: AdapterHandle,
         handshake: RsdHandshake,
-        status: crate::NetworkCaptureSlot,
+        status: devicehub_core::NetworkCaptureSlot,
         files: Files,
     ) -> mpsc::Sender<NetworkCaptureCommand<Files::Destination>>
     where
@@ -554,7 +554,7 @@ impl RuntimeSessionServices {
         &mut self,
         adapter: AdapterHandle,
         handshake: RsdHandshake,
-        status: crate::BluetoothCaptureSlot,
+        status: devicehub_core::BluetoothCaptureSlot,
         files: Files,
     ) -> mpsc::Sender<BluetoothCaptureCommand<Files::Destination>>
     where
@@ -581,7 +581,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         source_identifier: String,
-        status: crate::DeviceBackupSlot,
+        status: devicehub_core::DeviceBackupSlot,
         executor: Executor,
     ) -> mpsc::Sender<DeviceBackupCommand<Executor::Destination>>
     where
@@ -604,7 +604,7 @@ impl RuntimeSessionServices {
         &mut self,
         adapter: AdapterHandle,
         handshake: RsdHandshake,
-        status: crate::SysdiagnoseSlot,
+        status: devicehub_core::SysdiagnoseSlot,
         files: Files,
     ) -> mpsc::Sender<SysdiagnoseCommand<Files::Path>>
     where
@@ -628,7 +628,7 @@ impl RuntimeSessionServices {
         &mut self,
         adapter: AdapterHandle,
         handshake: RsdHandshake,
-        status: crate::LogArchiveSlot,
+        status: devicehub_core::LogArchiveSlot,
         files: Files,
     ) -> mpsc::Sender<LogArchiveCommand<Files::Path>>
     where
@@ -651,7 +651,7 @@ impl RuntimeSessionServices {
     fn start_developer_image<Assets>(
         &mut self,
         provider: Arc<dyn IdeviceProvider>,
-        status: crate::DeveloperImageMountSlot,
+        status: devicehub_core::DeveloperImageMountSlot,
         assets: Assets,
     ) -> mpsc::Sender<DeveloperImageMountCommand<Assets::Source>>
     where

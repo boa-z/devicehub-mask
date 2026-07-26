@@ -376,6 +376,14 @@ const runtimeSupervisor = readFileSync(
   "crates/devicehub-runtime/src/supervisor.rs",
   "utf8",
 );
+const coreServiceHealth = readFileSync(
+  "crates/devicehub-core/src/service_health.rs",
+  "utf8",
+);
+const tauriServiceHealth = readFileSync(
+  "src-tauri/src/supervisor.rs",
+  "utf8",
+);
 const publicInputFacade = runtimeFacade.match(/pub use input::\{([^}]*)\};/)?.[1] ?? "";
 const publicSupervisorFacade =
   runtimeFacade.match(/pub use supervisor::\{([^}]*)\};/)?.[1] ?? "";
@@ -398,6 +406,18 @@ if (
   runtimeSupervisor.includes("pub struct ServiceSupervisor") ||
   runtimeSupervisor.includes("pub fn reconnect_backoff(") ||
   runtimeSupervisor.includes("pub async fn wait_for_retry(") ||
+  runtimeSupervisor.includes("pub enum ServicePhase") ||
+  runtimeSupervisor.includes("pub struct ServiceHealth") ||
+  runtimeSupervisor.includes("pub struct ServiceRegistry") ||
+  runtimeFacade.includes("ServiceHealth") ||
+  runtimeFacade.includes("ServicePhase") ||
+  runtimeFacade.includes("ServiceRegistry") ||
+  !coreServiceHealth.includes("pub enum ServicePhase") ||
+  !coreServiceHealth.includes("pub struct ServiceHealth") ||
+  !coreServiceHealth.includes("pub struct ServiceRegistry") ||
+  !coreServiceHealth.includes("pub fn record(") ||
+  tauriServiceHealth.includes("devicehub_runtime") ||
+  !tauriServiceHealth.includes("devicehub_core::{ServiceHealth, ServiceRegistry}") ||
   !coreInput.includes("pub enum DeviceInputCommand") ||
   !coreInput.includes("pub struct TouchContact") ||
   runtimeInput.includes("pub enum DeviceInputCommand") ||
@@ -410,15 +430,23 @@ if (
   process.exit(1);
 }
 console.log(
-  "devicehub-core owns input commands while runtime execution internals stay private.",
+  "devicehub-core owns input and service-health contracts while runtime execution internals stay private.",
 );
 
 const runtimeCaptureFacade = readFileSync(
   "crates/devicehub-runtime/src/capture.rs",
   "utf8",
 );
+const coreCapture = readFileSync(
+  "crates/devicehub-core/src/capture.rs",
+  "utf8",
+);
 const runtimeDiagnosticsFacade = readFileSync(
   "crates/devicehub-runtime/src/diagnostics.rs",
+  "utf8",
+);
+const coreDiagnostics = readFileSync(
+  "crates/devicehub-core/src/diagnostics.rs",
   "utf8",
 );
 const runtimeCrashReports = readFileSync(
@@ -437,10 +465,25 @@ const tauriDiagnosticBindings = [
 if (
   runtimeCaptureFacade.includes("pub use devicehub_core") ||
   runtimeDiagnosticsFacade.includes("pub use devicehub_core") ||
+  runtimeCaptureFacade.includes("NetworkCaptureSlot") ||
+  runtimeCaptureFacade.includes("BluetoothCaptureSlot") ||
+  runtimeDiagnosticsFacade.includes("DeviceBackupSlot") ||
+  runtimeDiagnosticsFacade.includes("SysdiagnoseSlot") ||
+  runtimeDiagnosticsFacade.includes("LogArchiveSlot") ||
   runtimeCrashReports.includes("pub use devicehub_core::validate_crash_report_path") ||
   runtimeFacade.includes("validate_crash_report_path,") ||
+  !coreCapture.includes("pub struct NetworkCaptureSlot") ||
+  !coreCapture.includes("pub struct BluetoothCaptureSlot") ||
+  !coreDiagnostics.includes("pub struct DeviceBackupSlot") ||
+  !coreDiagnostics.includes("pub struct SysdiagnoseSlot") ||
+  !coreDiagnostics.includes("pub struct LogArchiveSlot") ||
   !tauriCaptureBindings.includes("pub(crate) use devicehub_core::") ||
-  !tauriDiagnosticBindings.includes("pub(crate) use devicehub_core::")
+  !tauriDiagnosticBindings.includes("pub(crate) use devicehub_core::") ||
+  tauriCaptureBindings.includes("devicehub_runtime::NetworkCaptureSlot") ||
+  tauriCaptureBindings.includes("devicehub_runtime::BluetoothCaptureSlot") ||
+  tauriDiagnosticBindings.includes("devicehub_runtime::DeviceBackupSlot") ||
+  tauriDiagnosticBindings.includes("devicehub_runtime::SysdiagnoseSlot") ||
+  tauriDiagnosticBindings.includes("devicehub_runtime::LogArchiveSlot")
 ) {
   console.error(
     "Rust boundary check failed: capture or diagnostic domain values are re-exported through runtime",
@@ -448,6 +491,52 @@ if (
   process.exit(1);
 }
 console.log("devicehub-core owns capture and diagnostic domain values directly.");
+
+const coreDeveloperImage = readFileSync(
+  "crates/devicehub-core/src/developer_image.rs",
+  "utf8",
+);
+const runtimeDeveloperImage = readFileSync(
+  "crates/devicehub-runtime/src/device/developer_image.rs",
+  "utf8",
+);
+const runtimeDeveloperImageMount = readFileSync(
+  "crates/devicehub-runtime/src/device/developer_image/mount.rs",
+  "utf8",
+);
+const tauriDeveloperImage = readFileSync(
+  "src-tauri/src/developer_image.rs",
+  "utf8",
+);
+const requiredCoreDeveloperImage = [
+  "pub enum DeveloperImageMountState",
+  "pub struct DeveloperImageMountStatus",
+  "pub struct DeveloperImageMountSlot",
+  "pub fn developer_image_type_for_version",
+];
+const missingCoreDeveloperImage = requiredCoreDeveloperImage.filter(
+  (definition) => !coreDeveloperImage.includes(definition),
+);
+if (
+  missingCoreDeveloperImage.length > 0 ||
+  runtimeDeveloperImage.includes("pub fn developer_image_type_for_version") ||
+  runtimeDeveloperImageMount.includes("pub enum DeveloperImageMountState") ||
+  runtimeDeveloperImageMount.includes("pub struct DeveloperImageMountStatus") ||
+  runtimeDeveloperImageMount.includes("pub struct DeveloperImageMountSlot") ||
+  runtimeFacade.includes("DeveloperImageMountState") ||
+  runtimeFacade.includes("DeveloperImageMountStatus") ||
+  runtimeFacade.includes("DeveloperImageMountSlot") ||
+  runtimeFacade.includes("developer_image_type_for_version") ||
+  tauriDeveloperImage.includes("devicehub_runtime::DeveloperImageMountState") ||
+  tauriDeveloperImage.includes("devicehub_runtime::{DeveloperImageMountSlot") ||
+  !tauriDeveloperImage.includes("devicehub_core::{DeveloperImageMountSlot")
+) {
+  console.error(
+    `Rust boundary check failed: Developer Image domain state is not owned directly by core: ${missingCoreDeveloperImage.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-core owns Developer Image state and version policy.");
 
 const coreDeviceLogs = readFileSync(
   "crates/devicehub-core/src/device_logs.rs",
@@ -465,6 +554,8 @@ const deviceLogDomainDefinitions = [
   "pub struct DeviceLogBatch",
   "pub struct DeviceLogEntry",
   "pub enum DeviceLogLevel",
+  "pub struct DeviceLogMetadata",
+  "pub struct DeviceLogSlot",
   "pub enum DeviceLogSource",
   "pub const MAX_DEVICE_LOG_BATCH_ENTRIES",
 ];
@@ -479,11 +570,14 @@ if (
   runtimeFacade.includes("DeviceLogBatch") ||
   runtimeFacade.includes("DeviceLogEntry") ||
   runtimeFacade.includes("DeviceLogLevel") ||
+  runtimeFacade.includes("DeviceLogMetadata") ||
+  runtimeFacade.includes("DeviceLogSlot") ||
   runtimeFacade.includes("DeviceLogSource") ||
   runtimeFacade.includes("MAX_DEVICE_LOG_BATCH_ENTRIES") ||
   tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceLogBatch") ||
   tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceLogEntry") ||
   tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceLogLevel") ||
+  tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceLogSlot") ||
   !tauriDeviceLogAdapters.includes("devicehub_core::DeviceLogBatch") ||
   !tauriDeviceLogAdapters.includes("use devicehub_core::{")
 ) {
@@ -493,6 +587,64 @@ if (
   process.exit(1);
 }
 console.log("devicehub-core owns device log domain values directly.");
+
+const coreDeviceConditions = readFileSync(
+  "crates/devicehub-core/src/device_conditions.rs",
+  "utf8",
+);
+const runtimeDeviceConditions = readFileSync(
+  "crates/devicehub-runtime/src/device/conditions.rs",
+  "utf8",
+);
+if (
+  !coreDeviceConditions.includes("pub struct DeviceConditionSlot") ||
+  runtimeDeviceConditions.includes("pub struct DeviceConditionSlot") ||
+  runtimeFacade.includes("DeviceConditionSlot") ||
+  tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceConditionSlot")
+) {
+  console.error(
+    "Rust boundary check failed: device condition observations are not owned directly by core",
+  );
+  process.exit(1);
+}
+console.log("devicehub-core owns device condition observations directly.");
+
+const corePerformance = readFileSync(
+  "crates/devicehub-core/src/performance.rs",
+  "utf8",
+);
+const runtimePerformanceSlot = readFileSync(
+  "crates/devicehub-runtime/src/performance/slot.rs",
+  "utf8",
+);
+const tauriPerformanceAdapters = [
+  readFileSync("src-tauri/src/http_performance.rs", "utf8"),
+  readFileSync("src-tauri/src/mcp.rs", "utf8"),
+].join("\n");
+const requiredCorePerformance = [
+  "pub enum PerformanceObservation",
+  "pub struct PerformanceSlot",
+  "pub fn observe(",
+  "pub fn energy_targets(",
+  "pub fn publish_app_activity(",
+];
+const missingCorePerformance = requiredCorePerformance.filter(
+  (definition) => !corePerformance.includes(definition),
+);
+if (
+  missingCorePerformance.length > 0 ||
+  runtimePerformanceSlot.includes("pub struct PerformanceSlot") ||
+  runtimeFacade.includes("PerformanceSlot") ||
+  tauriPerformanceAdapters.includes("devicehub_runtime::PerformanceSlot") ||
+  tauriPerformanceAdapters.includes("devicehub_runtime::{PerformanceDemand, PerformanceSlot}") ||
+  !tauriPerformanceAdapters.includes("PerformanceSlot, PerformanceSnapshot")
+) {
+  console.error(
+    `Rust boundary check failed: performance observations are not owned directly by core: ${missingCorePerformance.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-core owns normalized performance observation policy.");
 
 const coreWda = readFileSync(
   "crates/devicehub-core/src/applications/wda.rs",
@@ -951,3 +1103,66 @@ if (exposedProtocolExecutors.length > 0) {
   process.exit(1);
 }
 console.log("devicehub-runtime raw device protocol executors stay private.");
+
+const coreStorage = readFileSync(
+  "crates/devicehub-core/src/storage.rs",
+  "utf8",
+);
+const runtimeStorageFacade = runtimeFacade.match(
+  /pub use storage::\{([\s\S]*?)\n\};/,
+)?.[1] ?? "";
+const requiredCoreStoragePolicy = [
+  "pub struct DeviceFileEntry",
+  "pub struct DeviceFileActivitySlot",
+  "pub struct AppDocumentEntry",
+  "pub struct AppDocumentActivitySlot",
+  "pub fn normalize_device_file_path(",
+  "pub fn normalize_app_document_path(",
+  "pub fn validate_app_bundle_id(",
+];
+const missingCoreStoragePolicy = requiredCoreStoragePolicy.filter(
+  (signature) => !coreStorage.includes(signature),
+);
+const forbiddenRuntimeStorageDomainExports = [
+  "AppDocumentActivityKind",
+  "AppDocumentActivitySlot",
+  "AppDocumentActivityState",
+  "AppDocumentActivityView",
+  "AppDocumentEntry",
+  "AppDocumentKind",
+  "AppDocumentList",
+  "AppDocumentTransfer",
+  "AppStorageScope",
+  "DeviceFileActivityKind",
+  "DeviceFileActivitySlot",
+  "DeviceFileActivityState",
+  "DeviceFileActivityView",
+  "DeviceFileEntry",
+  "DeviceFileKind",
+  "DeviceFileList",
+  "DeviceFileTransfer",
+];
+const leakedRuntimeStorageDomain = forbiddenRuntimeStorageDomainExports.filter(
+  (name) => runtimeStorageFacade.includes(name),
+);
+const tauriDeviceFiles = readFileSync("src-tauri/src/device_files.rs", "utf8");
+const tauriAppDocuments = readFileSync(
+  "src-tauri/src/app_documents.rs",
+  "utf8",
+);
+if (
+  missingCoreStoragePolicy.length > 0 ||
+  leakedRuntimeStorageDomain.length > 0 ||
+  !tauriDeviceFiles.includes("pub(crate) use devicehub_core::") ||
+  !tauriAppDocuments.includes("pub(crate) use devicehub_core::") ||
+  tauriDeviceFiles.includes("devicehub_runtime::{\n    DeviceFileActivity") ||
+  tauriAppDocuments.includes("devicehub_runtime::{\n    AppDocumentActivity")
+) {
+  console.error(
+    `Rust boundary check failed: storage domain ownership drifted (core missing: ${missingCoreStoragePolicy.join(", ")}; runtime leaked: ${leakedRuntimeStorageDomain.join(", ")})`,
+  );
+  process.exit(1);
+}
+console.log(
+  "devicehub-core owns AFC and application-storage domain models and policy.",
+);

@@ -8,8 +8,8 @@ use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use tokio::sync::watch;
 
-use super::PerformanceSlot;
 use super::source::{connect_remote, wait_until_enabled};
+use super::{PerformanceSlot, update_energy};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -86,7 +86,7 @@ async fn run_once(
             changed = enabled.changed() => {
                 if changed.is_err() || !*enabled.borrow() {
                     stop_sampling(&mut client, &sampled_pids).await;
-                    slot.update_energy(Vec::new());
+                    update_energy(&slot, Vec::new());
                     return Ok(());
                 }
             }
@@ -116,7 +116,7 @@ async fn run_once(
                     }
                     sampled_pids = targets;
                     if sampled_pids.is_empty() {
-                        slot.update_energy(Vec::new());
+                        update_energy(&slot, Vec::new());
                     }
                 }
                 if !sampled_pids.is_empty() {
@@ -129,7 +129,7 @@ async fn run_once(
                     .map_err(|error| format!("DVT energy sample failed: {error:?}"))?;
                     let samples = EnergySample::from_bytes(&bytes)
                         .map_err(|error| format!("DVT energy sample decode failed: {error:?}"))?;
-                    slot.update_energy(samples);
+                    update_energy(&slot, samples);
                 }
             }
         }
