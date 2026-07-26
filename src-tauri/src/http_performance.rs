@@ -10,6 +10,8 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
+use devicehub_core::{AppActivityEvent, PerformanceSnapshot};
+use devicehub_runtime::{PerformanceDemand, PerformanceSlot};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
@@ -21,11 +23,11 @@ use crate::supervisor::ServiceRegistry;
 /// sampler, capture, or background task.
 #[derive(Clone, Default)]
 pub(crate) struct PerformanceHttpState {
-    performance: crate::performance::PerformanceSlot,
-    performance_demand: crate::performance::PerformanceDemand,
-    device_logs: crate::device_logs::DeviceLogSlot,
-    device_log_demand: crate::device_logs::DeviceLogDemand,
-    device_conditions: crate::device_conditions::DeviceConditionSlot,
+    performance: PerformanceSlot,
+    performance_demand: PerformanceDemand,
+    device_logs: devicehub_runtime::DeviceLogSlot,
+    device_log_demand: devicehub_runtime::DeviceLogDemand,
+    device_conditions: devicehub_runtime::DeviceConditionSlot,
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     services: ServiceRegistry,
@@ -35,11 +37,11 @@ pub(crate) struct PerformanceHttpState {
 impl PerformanceHttpState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        performance: crate::performance::PerformanceSlot,
-        performance_demand: crate::performance::PerformanceDemand,
-        device_logs: crate::device_logs::DeviceLogSlot,
-        device_log_demand: crate::device_logs::DeviceLogDemand,
-        device_conditions: crate::device_conditions::DeviceConditionSlot,
+        performance: PerformanceSlot,
+        performance_demand: PerformanceDemand,
+        device_logs: devicehub_runtime::DeviceLogSlot,
+        device_log_demand: devicehub_runtime::DeviceLogDemand,
+        device_conditions: devicehub_runtime::DeviceConditionSlot,
         network_capture: crate::network_capture::NetworkCaptureSlot,
         bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
         services: ServiceRegistry,
@@ -97,13 +99,13 @@ where
 
 #[derive(Serialize)]
 struct PerformanceView {
-    sample: crate::performance::PerformanceSnapshot,
-    app_activity: Vec<crate::performance::AppActivityEvent>,
+    sample: PerformanceSnapshot,
+    app_activity: Vec<AppActivityEvent>,
     services: Vec<crate::supervisor::ServiceHealth>,
     sampling: bool,
     network_capture: crate::network_capture::NetworkCaptureStatus,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureStatus,
-    device_conditions: crate::device_conditions::DeviceConditionStatus,
+    device_conditions: crate::domain::DeviceConditionStatus,
 }
 
 async fn performance(State(state): State<PerformanceHttpState>) -> Json<PerformanceView> {
@@ -120,10 +122,10 @@ async fn performance(State(state): State<PerformanceHttpState>) -> Json<Performa
 
 async fn running_processes(
     State(state): State<PerformanceHttpState>,
-) -> Result<Json<crate::running_processes::RunningProcessList>, (StatusCode, String)> {
+) -> Result<Json<crate::domain::RunningProcessList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::RunningProcess(
-        crate::running_processes::RunningProcessCommand::List { reply },
+        devicehub_runtime::RunningProcessCommand::List { reply },
     )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -158,14 +160,14 @@ async fn apply_device_condition(
     State(state): State<PerformanceHttpState>,
     Json(request): Json<ApplyDeviceConditionRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    crate::device_conditions::validate_identifiers(
+    devicehub_runtime::validate_device_condition_identifiers(
         &request.group_identifier,
         &request.profile_identifier,
     )
     .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::DeviceCondition(
-        crate::device_conditions::DeviceConditionCommand::Apply {
+        devicehub_runtime::DeviceConditionCommand::Apply {
             group_identifier: request.group_identifier,
             profile_identifier: request.profile_identifier,
             expires_at: tokio::time::Instant::now() + Duration::from_secs(7),
@@ -186,7 +188,7 @@ async fn clear_device_condition(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::DeviceCondition(
-        crate::device_conditions::DeviceConditionCommand::Clear {
+        devicehub_runtime::DeviceConditionCommand::Clear {
             expires_at: tokio::time::Instant::now() + Duration::from_secs(7),
             reply,
         },
@@ -403,7 +405,7 @@ async fn device_logs(
     Json(DeviceLogsView {
         batch: state.device_logs.snapshot(
             query.after,
-            query.limit.unwrap_or(crate::device_logs::MAX_BATCH_ENTRIES),
+            query.limit.unwrap_or(devicehub_runtime::MAX_BATCH_ENTRIES),
             state.device_log_demand.enabled(),
         ),
         service,
@@ -413,7 +415,7 @@ async fn device_logs(
 #[derive(Serialize)]
 struct DeviceLogsView {
     #[serde(flatten)]
-    batch: crate::device_logs::DeviceLogBatch,
+    batch: devicehub_runtime::DeviceLogBatch,
     service: Option<crate::supervisor::ServiceHealth>,
 }
 
@@ -443,11 +445,11 @@ mod tests {
         input.set(Some(input_tx));
         (
             PerformanceHttpState::new(
-                crate::performance::PerformanceSlot::default(),
-                crate::performance::PerformanceDemand::default(),
-                crate::device_logs::DeviceLogSlot::default(),
-                crate::device_logs::DeviceLogDemand::default(),
-                crate::device_conditions::DeviceConditionSlot::default(),
+                PerformanceSlot::default(),
+                PerformanceDemand::default(),
+                devicehub_runtime::DeviceLogSlot::default(),
+                devicehub_runtime::DeviceLogDemand::default(),
+                devicehub_runtime::DeviceConditionSlot::default(),
                 crate::network_capture::NetworkCaptureSlot::default(),
                 crate::bluetooth_capture::BluetoothCaptureSlot::default(),
                 ServiceRegistry::default(),
@@ -486,7 +488,7 @@ mod tests {
                 profile_identifier: "Lossy LTE".into(),
             }),
         ));
-        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Apply {
+        let InputCmd::DeviceCondition(devicehub_runtime::DeviceConditionCommand::Apply {
             group_identifier,
             profile_identifier,
             reply,
@@ -501,7 +503,7 @@ mod tests {
         assert_eq!(apply.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
         let clear = tokio::spawn(clear_device_condition(State(state)));
-        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Clear {
+        let InputCmd::DeviceCondition(devicehub_runtime::DeviceConditionCommand::Clear {
             reply,
             ..
         }) = input_rx.recv().await.unwrap()
@@ -681,15 +683,14 @@ mod tests {
     async fn running_process_endpoint_dispatches_a_bounded_read_only_query() {
         let (state, mut input_rx) = test_state();
         let request = tokio::spawn(running_processes(State(state)));
-        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::List {
-            reply,
-        }) = input_rx.recv().await.unwrap()
+        let InputCmd::RunningProcess(devicehub_runtime::RunningProcessCommand::List { reply }) =
+            input_rx.recv().await.unwrap()
         else {
             panic!("expected running process query");
         };
         reply
-            .send(Ok(crate::running_processes::RunningProcessList {
-                processes: vec![crate::running_processes::RunningProcess {
+            .send(Ok(crate::domain::RunningProcessList {
+                processes: vec![crate::domain::RunningProcess {
                     pid: 42,
                     name: "Example".into(),
                     app_name: Some("Example App".into()),

@@ -43,6 +43,7 @@ pub struct SettingsStatus {
 pub struct AppSettings {
     path: PathBuf,
     persisted: RwLock<PersistedSettings>,
+    runtime: crate::device_runtime::RuntimePreferences,
 }
 
 impl AppSettings {
@@ -63,9 +64,14 @@ impl AppSettings {
                 PersistedSettings::default()
             }
         };
+        let runtime = crate::device_runtime::RuntimePreferences::new(
+            persisted.audio_enabled,
+            persisted.clipboard_sync_enabled,
+        );
         let settings = Self {
             path,
             persisted: RwLock::new(persisted),
+            runtime,
         };
         let status = settings.status();
         tracing::info!(
@@ -92,18 +98,8 @@ impl AppSettings {
         }
     }
 
-    pub fn audio_enabled(&self) -> bool {
-        self.persisted
-            .read()
-            .expect("application settings lock poisoned")
-            .audio_enabled
-    }
-
-    pub fn clipboard_sync_enabled(&self) -> bool {
-        self.persisted
-            .read()
-            .expect("application settings lock poisoned")
-            .clipboard_sync_enabled
+    pub(crate) fn runtime_preferences(&self) -> crate::device_runtime::RuntimePreferences {
+        self.runtime.clone()
     }
 
     pub fn set_audio_enabled(&self, audio_enabled: bool) -> Result<SettingsStatus, String> {
@@ -117,6 +113,7 @@ impl AppSettings {
         };
         self.save_locked(&mut persisted, next)?;
         drop(persisted);
+        self.runtime.set_audio_enabled(audio_enabled);
         tracing::info!(
             audio_enabled,
             "device audio setting changed; applies to next session"
@@ -165,6 +162,8 @@ impl AppSettings {
         };
         self.save_locked(&mut persisted, next)?;
         drop(persisted);
+        self.runtime
+            .set_clipboard_sync_enabled(clipboard_sync_enabled);
         tracing::info!(
             clipboard_sync_enabled,
             "clipboard sync setting changed; applies to next session"
@@ -208,10 +207,12 @@ mod tests {
         let settings = AppSettings {
             path: path.clone(),
             persisted: RwLock::new(PersistedSettings::default()),
+            runtime: crate::device_runtime::RuntimePreferences::new(false, false),
         };
 
         let status = settings.set_audio_enabled(true).unwrap();
         assert!(status.audio_enabled);
+        assert!(settings.runtime_preferences().audio_enabled());
         let saved: PersistedSettings =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.audio_enabled);
@@ -227,6 +228,7 @@ mod tests {
 
         let status = settings.set_clipboard_sync_enabled(true).unwrap();
         assert!(status.clipboard_sync_enabled);
+        assert!(settings.runtime_preferences().clipboard_sync_enabled());
         let saved: PersistedSettings =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.audio_enabled);
@@ -234,6 +236,7 @@ mod tests {
 
         let status = settings.set_audio_enabled(false).unwrap();
         assert!(!status.audio_enabled);
+        assert!(!settings.runtime_preferences().audio_enabled());
         assert!(status.clipboard_sync_enabled);
 
         std::fs::remove_file(path).unwrap();
@@ -250,5 +253,30 @@ mod tests {
         assert!(!saved.audio_muted);
         assert_eq!(saved.audio_volume, DEFAULT_AUDIO_VOLUME);
         assert!(!saved.clipboard_sync_enabled);
+    }
+
+    #[test]
+    fn failed_persistence_does_not_change_runtime_preferences() {
+        let directory = std::env::temp_dir().join(format!(
+            "devicehub-mask-settings-failure-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let blocking_file = directory.join("not-a-directory");
+        std::fs::write(&blocking_file, b"block settings parent").unwrap();
+        let settings = AppSettings {
+            path: blocking_file.join("settings.json"),
+            persisted: RwLock::new(PersistedSettings::default()),
+            runtime: crate::device_runtime::RuntimePreferences::new(false, false),
+        };
+
+        assert!(settings.set_audio_enabled(true).is_err());
+        assert!(settings.set_clipboard_sync_enabled(true).is_err());
+        let runtime = settings.runtime_preferences();
+        assert!(!runtime.audio_enabled());
+        assert!(!runtime.clipboard_sync_enabled());
+
+        std::fs::remove_file(blocking_file).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 }

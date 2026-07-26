@@ -33,11 +33,13 @@ pub(super) struct DeviceDiscovery {
     wifi: Option<WifiDiscovery>,
     pairing_dir: PathBuf,
     prefer_netmuxd: bool,
+    system_usbmuxd: super::transport::SystemUsbmuxdConfig,
 }
 
 impl DeviceDiscovery {
-    pub(super) fn new(pairing_dir: PathBuf, resource_dir: Option<PathBuf>) -> Self {
-        let netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), resource_dir);
+    pub(super) fn new(pairing_dir: PathBuf, config: super::DeviceTransportConfig) -> Self {
+        let netmuxd_config = config.netmuxd;
+        let netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), netmuxd_config);
         let prefer_netmuxd = netmuxd.is_forced();
         let wifi = start_wifi_discovery(&pairing_dir);
         Self {
@@ -46,6 +48,7 @@ impl DeviceDiscovery {
             wifi,
             pairing_dir,
             prefer_netmuxd,
+            system_usbmuxd: config.system_usbmuxd,
         }
     }
 
@@ -87,8 +90,8 @@ impl DeviceDiscovery {
         if self.wifi.is_none() {
             self.wifi = start_wifi_discovery(&self.pairing_dir);
         }
-        let system_addr = UsbmuxdAddr::from_env_var().map_err(|error| {
-            tracing::warn!(?error, "invalid usbmuxd address; USB discovery disabled");
+        let system_addr = self.system_usbmuxd.address().map_err(|error| {
+            tracing::warn!(%error, "invalid usbmuxd address; USB discovery disabled");
         });
         let mut candidates = Vec::new();
         if let Some(address) = netmuxd_addr {

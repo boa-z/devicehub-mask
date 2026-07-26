@@ -5,12 +5,12 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
-use crate::audio_output::AudioOutput;
+use crate::device_runtime::AudioPublisher;
 use crate::protocol::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 
 const AUDIO_CHUNK_MILLIS: usize = 20;
@@ -18,11 +18,44 @@ const AUDIO_DIAGNOSTIC_CHUNKS: u64 = 5_000 / AUDIO_CHUNK_MILLIS as u64;
 const AUDIO_ACTIVE_SAMPLE_THRESHOLD: i32 = 32;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-pub fn set_resource_dir(resource_dir: Option<PathBuf>) {
-    if let Some(resource_dir) = resource_dir {
-        let _ = RESOURCE_DIR.set(resource_dir);
+#[derive(Clone, Debug)]
+pub(crate) struct AudioDecoderConfig {
+    candidates: Arc<[PathBuf]>,
+}
+
+impl AudioDecoderConfig {
+    /// Build a lazy FFmpeg search plan from host-resolved process inputs.
+    /// Candidate existence is checked only when device audio is enabled.
+    pub(crate) fn from_host(
+        configured: Option<OsString>,
+        search_path: Option<OsString>,
+        resource_dir: Option<&std::path::Path>,
+        current_exe: Option<&std::path::Path>,
+    ) -> Self {
+        Self {
+            candidates: ffmpeg_candidates(configured, search_path, resource_dir, current_exe)
+                .into(),
+        }
+    }
+
+    fn resolve(&self) -> std::io::Result<PathBuf> {
+        if let Some(path) = self.candidates.iter().find(|path| path.is_file()) {
+            return Ok(path.clone());
+        }
+        let searched = self
+            .candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "ffmpeg was not found; install it and add it to PATH, or set \
+                 DEVICEHUB_FFMPEG to its absolute path (searched: {searched})"
+            ),
+        ))
     }
 }
 
@@ -68,9 +101,10 @@ impl AudioSignalWindow {
     }
 }
 
-pub async fn spawn_audio_ffmpeg()
--> std::io::Result<(Child, ChildStdout, ChildStderr, std::net::SocketAddr)> {
-    let ffmpeg = resolve_ffmpeg()?;
+pub async fn spawn_audio_ffmpeg(
+    config: &AudioDecoderConfig,
+) -> std::io::Result<(Child, ChildStdout, ChildStderr, std::net::SocketAddr)> {
+    let ffmpeg = config.resolve()?;
     let reservation = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let rtp_address = reservation.local_addr()?;
     drop(reservation);
@@ -101,7 +135,7 @@ pub async fn spawn_audio_ffmpeg()
     Ok((child, stdout, stderr, rtp_address))
 }
 
-pub async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioOutput) {
+pub async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioPublisher) {
     let frames_per_chunk = AUDIO_SAMPLE_RATE as usize * AUDIO_CHUNK_MILLIS / 1_000;
     let mut chunk = vec![0_u8; frames_per_chunk * usize::from(AUDIO_CHANNELS) * 2];
     let mut chunks = 0_u64;
@@ -142,31 +176,6 @@ pub async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioOutput) {
             }
         }
     }
-}
-
-fn resolve_ffmpeg() -> std::io::Result<PathBuf> {
-    let candidates = ffmpeg_candidates(
-        std::env::var_os("DEVICEHUB_FFMPEG"),
-        std::env::var_os("PATH"),
-        RESOURCE_DIR.get().map(PathBuf::as_path),
-        std::env::current_exe().ok().as_deref(),
-    );
-    if let Some(path) = candidates.iter().find(|path| path.is_file()) {
-        return Ok(path.clone());
-    }
-
-    let searched = candidates
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        format!(
-            "ffmpeg was not found; install it and add it to PATH, or set \
-             DEVICEHUB_FFMPEG to its absolute path (searched: {searched})"
-        ),
-    ))
 }
 
 fn ffmpeg_candidates(

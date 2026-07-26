@@ -428,10 +428,10 @@ async fn rename_device(
 
 async fn reveal_developer_mode(
     State(state): State<AppState>,
-) -> Result<Json<crate::developer_mode::DeveloperModePreparation>, (StatusCode, String)> {
+) -> Result<Json<devicehub_runtime::DeveloperModePreparation>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::DeveloperMode(
-        crate::developer_mode::DeveloperModeCommand::RevealOption { reply },
+        devicehub_runtime::DeveloperModeCommand::RevealOption { reply },
     )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -636,10 +636,10 @@ struct StartWdaRunnerRequest {
 
 async fn wda_runner_status(
     State(state): State<AppState>,
-) -> Result<Json<crate::wda_runner::WdaRunnerStatus>, (StatusCode, String)> {
+) -> Result<Json<devicehub_runtime::WdaRunnerStatus>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::WdaRunner(
-        crate::wda_runner::WdaRunnerCommand::Status { reply },
+        devicehub_runtime::WdaRunnerCommand::Status { reply },
     )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -666,12 +666,12 @@ async fn wda_runner_status(
 async fn start_wda_runner(
     State(state): State<AppState>,
     Json(request): Json<StartWdaRunnerRequest>,
-) -> Result<Json<crate::wda_runner::WdaRunnerStatus>, (StatusCode, String)> {
-    crate::wda_runner::validate_runner_bundle_id(&request.bundle_id)
+) -> Result<Json<devicehub_runtime::WdaRunnerStatus>, (StatusCode, String)> {
+    devicehub_runtime::validate_runner_bundle_id(&request.bundle_id)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.into()))?;
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::WdaRunner(
-        crate::wda_runner::WdaRunnerCommand::Start {
+        devicehub_runtime::WdaRunnerCommand::Start {
             bundle_id: request.bundle_id,
             reply,
         },
@@ -708,10 +708,10 @@ async fn start_wda_runner(
 
 async fn stop_wda_runner(
     State(state): State<AppState>,
-) -> Result<Json<crate::wda_runner::WdaRunnerStatus>, (StatusCode, String)> {
+) -> Result<Json<devicehub_runtime::WdaRunnerStatus>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::WdaRunner(
-        crate::wda_runner::WdaRunnerCommand::Stop { reply },
+        devicehub_runtime::WdaRunnerCommand::Stop { reply },
     )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -738,7 +738,7 @@ async fn stop_wda_runner(
 
 async fn device_companions(
     State(state): State<AppState>,
-) -> Result<Json<Vec<crate::companion_devices::CompanionDevice>>, (StatusCode, String)> {
+) -> Result<Json<Vec<crate::domain::CompanionDevice>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::ListCompanionDevices(reply)) {
         return Err((
@@ -766,7 +766,7 @@ async fn device_companions(
 
 async fn device_home_screen(
     State(state): State<AppState>,
-) -> Result<Json<crate::home_screen::HomeScreenLayout>, (StatusCode, String)> {
+) -> Result<Json<crate::domain::HomeScreenLayout>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::GetHomeScreenLayout(reply)) {
         return Err((
@@ -796,7 +796,7 @@ async fn device_wallpaper(
     State(state): State<AppState>,
     Path(kind): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let kind = crate::home_screen::WallpaperKind::parse(&kind).ok_or_else(|| {
+    let kind = crate::domain::WallpaperKind::parse(&kind).ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
             "wallpaper kind must be home or lock".into(),
@@ -861,7 +861,7 @@ async fn install_provisioning_profile(
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::Provisioning(
         crate::provisioning::ProvisioningCommand::Install {
-            path: request.path,
+            source: request.path,
             expires_at: tokio::time::Instant::now() + Duration::from_secs(20),
             reply,
         },
@@ -987,6 +987,7 @@ mod tests {
         crash_report_summary, delete_crash_report, export_crash_report,
     };
     use crate::protocol::{Orientation, norm};
+    use devicehub_runtime::DeviceInputCommand;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     fn test_state() -> (AppState, UnboundedReceiver<InputCmd>) {
@@ -1156,14 +1157,14 @@ mod tests {
             }),
         ));
         let InputCmd::Provisioning(crate::provisioning::ProvisioningCommand::Install {
-            path,
+            source,
             reply,
             ..
         }) = input_rx.recv().await.unwrap()
         else {
             panic!("expected provisioning install command");
         };
-        assert_eq!(path, PathBuf::from("/tmp/Game.mobileprovision"));
+        assert_eq!(source, PathBuf::from("/tmp/Game.mobileprovision"));
         let profile = crate::protocol::ProvisioningProfile {
             name: "Game Development".into(),
             uuid: "00000000-1111-2222-3333-444444444444".into(),
@@ -1517,12 +1518,18 @@ mod tests {
             &mut pressed,
         );
 
-        assert!(matches!(input_rx.try_recv(), Ok(InputCmd::KeyboardDown(4))));
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InputCmd::DeviceInput(DeviceInputCommand::KeyboardDown(4)))
+        ));
         assert!(input_rx.try_recv().is_err());
         assert_eq!(pressed, HashSet::from([4]));
 
         handle_test_client_message(&state, r#"{"type":"keyboard_up","usage":4}"#, &mut pressed);
-        assert!(matches!(input_rx.try_recv(), Ok(InputCmd::KeyboardUp(4))));
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(4)))
+        ));
         assert!(pressed.is_empty());
     }
 
@@ -1543,7 +1550,8 @@ mod tests {
 
         assert!(matches!(
             input_rx.try_recv(),
-            Ok(InputCmd::Text(text)) if text == "Hello, iPhone!"
+            Ok(InputCmd::DeviceInput(DeviceInputCommand::Text(text)))
+                if text == "Hello, iPhone!"
         ));
         assert!(input_rx.try_recv().is_err());
     }
@@ -1584,16 +1592,14 @@ mod tests {
         send_all_up(&state.input, &HashSet::from([0x04, 0xe1]));
 
         let commands: Vec<_> = std::iter::from_fn(|| input_rx.try_recv().ok()).collect();
-        assert!(
-            commands
-                .iter()
-                .any(|command| matches!(command, InputCmd::KeyboardUp(0x04)))
-        );
-        assert!(
-            commands
-                .iter()
-                .any(|command| matches!(command, InputCmd::KeyboardUp(0xe1)))
-        );
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(0x04))
+        )));
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(0xe1))
+        )));
     }
 
     #[test]
@@ -1632,7 +1638,7 @@ mod tests {
             panic!("expected companion device query");
         };
         reply
-            .send(Ok(vec![crate::companion_devices::CompanionDevice {
+            .send(Ok(vec![crate::domain::CompanionDevice {
                 identifier: "watch-id".into(),
                 name: Some("Test Watch".into()),
                 product_type: Some("Watch7,5".into()),
@@ -1653,17 +1659,17 @@ mod tests {
             panic!("expected home screen layout query");
         };
         reply
-            .send(Ok(crate::home_screen::HomeScreenLayout {
-                apps: vec![crate::home_screen::HomeScreenAppLocation {
+            .send(Ok(crate::domain::HomeScreenLayout {
+                apps: vec![crate::domain::HomeScreenAppLocation {
                     bundle_id: "com.example.game".into(),
                     name: Some("Game".into()),
-                    container: crate::home_screen::HomeScreenContainer::Page,
+                    container: crate::domain::HomeScreenContainer::Page,
                     page: Some(2),
                     position: 3,
                     folders: Vec::new(),
                 }],
                 page_count: 2,
-                metrics: Some(crate::home_screen::HomeScreenIconMetrics {
+                metrics: Some(crate::domain::HomeScreenIconMetrics {
                     screen_width: Some(810),
                     screen_height: Some(1080),
                     icon_width: Some(68),
@@ -1698,7 +1704,7 @@ mod tests {
         let request = tokio::spawn(device_wallpaper(State(state), Path("lock".into())));
         match input_rx.recv().await.unwrap() {
             InputCmd::GetWallpaper { kind, reply } => {
-                assert_eq!(kind, crate::home_screen::WallpaperKind::Lock);
+                assert_eq!(kind, crate::domain::WallpaperKind::Lock);
                 reply.send(Ok(vec![1, 2, 3])).unwrap();
             }
             _ => panic!("expected lock-screen wallpaper query"),
@@ -1712,15 +1718,15 @@ mod tests {
     #[tokio::test]
     async fn wda_runner_endpoints_validate_and_dispatch_lifecycle_commands() {
         let (state, mut input_rx) = test_state();
-        let running = crate::wda_runner::WdaRunnerStatus {
-            phase: crate::wda_runner::WdaRunnerPhase::Running,
+        let running = devicehub_runtime::WdaRunnerStatus {
+            phase: devicehub_runtime::WdaRunnerPhase::Running,
             managed: true,
             runner_bundle_id: Some("com.example.WDARunner.xctrunner".into()),
             last_error: None,
         };
 
         let status_request = tokio::spawn(wda_runner_status(State(state.clone())));
-        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Status { reply }) =
+        let InputCmd::WdaRunner(devicehub_runtime::WdaRunnerCommand::Status { reply }) =
             input_rx.recv().await.unwrap()
         else {
             panic!("expected WDA runner status command");
@@ -1734,7 +1740,7 @@ mod tests {
                 bundle_id: "com.example.WDARunner.xctrunner".into(),
             }),
         ));
-        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Start { bundle_id, reply }) =
+        let InputCmd::WdaRunner(devicehub_runtime::WdaRunnerCommand::Start { bundle_id, reply }) =
             input_rx.recv().await.unwrap()
         else {
             panic!("expected WDA runner start command");
@@ -1744,17 +1750,17 @@ mod tests {
         assert_eq!(start_request.await.unwrap().unwrap().0, running);
 
         let stop_request = tokio::spawn(stop_wda_runner(State(state.clone())));
-        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Stop { reply }) =
+        let InputCmd::WdaRunner(devicehub_runtime::WdaRunnerCommand::Stop { reply }) =
             input_rx.recv().await.unwrap()
         else {
             panic!("expected WDA runner stop command");
         };
         reply
-            .send(Ok(crate::wda_runner::WdaRunnerStatus::default()))
+            .send(Ok(devicehub_runtime::WdaRunnerStatus::default()))
             .unwrap();
         assert_eq!(
             stop_request.await.unwrap().unwrap().0,
-            crate::wda_runner::WdaRunnerStatus::default()
+            devicehub_runtime::WdaRunnerStatus::default()
         );
 
         assert!(matches!(
@@ -1873,14 +1879,14 @@ mod tests {
     async fn developer_mode_reveal_dispatches_a_typed_amfi_command() {
         let (state, mut input_rx) = test_state();
         let request = tokio::spawn(reveal_developer_mode(State(state)));
-        let InputCmd::DeveloperMode(crate::developer_mode::DeveloperModeCommand::RevealOption {
+        let InputCmd::DeveloperMode(devicehub_runtime::DeveloperModeCommand::RevealOption {
             reply,
         }) = input_rx.recv().await.unwrap()
         else {
             panic!("unexpected command");
         };
         reply
-            .send(Ok(crate::developer_mode::DeveloperModePreparation {
+            .send(Ok(devicehub_runtime::DeveloperModePreparation {
                 already_enabled: false,
             }))
             .unwrap();
@@ -2092,7 +2098,7 @@ mod tests {
             panic!("expected crash report read command");
         };
         assert_eq!(device_path, "/Report.ips");
-        assert_eq!(max_bytes, crate::crash_reports::MAX_READ_BYTES);
+        assert_eq!(max_bytes, devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES);
         reply
             .send(Ok(crate::protocol::DeviceCrashReportContent {
                 device_path,

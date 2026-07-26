@@ -12,6 +12,7 @@ Use this documentation by task rather than reading it in order.
 - [MCP Automation Guide](mcp.md): agent setup, screenshot and semantic control, low-latency game workflows, diagnostics, WDA, security, and tool boundaries
 - [Feature Reference](features.md): current desktop workspaces, device-management operations, idevice service coverage, MCP tools, and intentional boundaries
 - [Architecture](architecture.md): process boundaries, private transport, CoreDevice sessions, video pipeline, HID validation, and data ownership
+- [Core and Runtime Extraction](core-runtime.md): host-independent libraries, ownership, dependency rules, migration sequence, and acceptance criteria
 - [Development](development.md): repository layout, environment variables, validation, local production builds, and platform packaging
 - [Distribution](distribution.md): GitHub Actions, nightly artifacts, updater signing, Apple signing, and release versioning
 - [Troubleshooting](troubleshooting.md): blank windows, device audio, Windows device preparation, CoreDevice errors, touch coordinates, and updater failures

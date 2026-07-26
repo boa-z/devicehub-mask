@@ -13,23 +13,13 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+pub use devicehub_runtime::WifiEndpoint;
 use idevice::pairing_file::PairingFile;
 use mdns_sd::{Receiver, ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent};
 
 const SERVICE_TYPE: &str = "_apple-mobdev2._tcp.local.";
 const REMOTE_PAIRING_SERVICE_TYPE: &str = "_remotepairing._tcp.local.";
 const SERVICE_REMOVAL_GRACE: Duration = Duration::from_secs(10);
-
-#[derive(Clone, Debug)]
-pub struct WifiEndpoint {
-    pub udid: String,
-    pub address: IpAddr,
-    pub scope_id: Option<u32>,
-    pub remote_pairing_address: IpAddr,
-    pub remote_pairing_scope_id: Option<u32>,
-    pub remote_pairing_port: u16,
-    pub pairing_file: PairingFile,
-}
 
 pub struct WifiDiscovery {
     pairing_dir: PathBuf,

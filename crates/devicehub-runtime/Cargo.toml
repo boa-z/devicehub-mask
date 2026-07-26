@@ -1,0 +1,59 @@
+[package]
+name = "devicehub-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Host-independent Apple device runtime for DeviceHub"
+license = "MIT"
+
+[dependencies]
+bytes = "1"
+cms = "0.3.0-pre.2"
+der = "0.8.1"
+devicehub-core = { path = "../devicehub-core" }
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
+idevice = { git = "https://github.com/boa-z/idevice.git", rev = "87a3e12", features = [
+  "amfi",
+  "afc",
+  "bt_packet_logger",
+  "core_device_proxy",
+  "companion_proxy",
+  "condition_inducer",
+  "crashreportcopymobile",
+  "display_stream",
+  "diagnostics_relay",
+  "device_info",
+  "graphics",
+  "notification_proxy",
+  "heartbeat",
+  "house_arrest",
+  "application_listing",
+  "dvt",
+  "installation_proxy",
+  "location_simulation",
+  "misagent",
+  "mobile_image_mounter",
+  "mobileactivationd",
+  "mobilebackup2",
+  "network_monitor",
+  "pair",
+  "pcapd",
+  "remote_pairing",
+  "rsd",
+  "screenshotr",
+  "springboardservices",
+  "sysmontap",
+  "syslog_relay",
+  "tcp",
+  "tunnel_tcp_stack",
+  "tss",
+  "usbmuxd",
+  "wda",
+  "xctest",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+plist = "1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

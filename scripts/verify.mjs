@@ -8,12 +8,13 @@ const full = process.argv.includes("--full");
 
 const checks = [
   [npm, [...npmPrefix, "run", "docs:check"], "documentation"],
+  [npm, [...npmPrefix, "run", "rust:boundaries"], "Rust architecture boundaries"],
   [npm, [...npmPrefix, "run", "lint"], "frontend lint"],
   [npm, [...npmPrefix, "run", "test"], "frontend tests"],
   [npm, [...npmPrefix, "run", "build"], "frontend build"],
-  [cargo, ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--all", "--", "--check"], "Rust formatting"],
-  [cargo, ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked"], "Rust tests"],
-  [cargo, ["clippy", "--manifest-path", "src-tauri/Cargo.toml", "--all-targets", "--locked", "--", "-D", "warnings"], "Rust lint"],
+  [cargo, ["fmt", "--manifest-path", "Cargo.toml", "--all", "--", "--check"], "Rust formatting"],
+  [cargo, ["test", "--manifest-path", "Cargo.toml", "--workspace", "--locked"], "Rust tests"],
+  [cargo, ["clippy", "--manifest-path", "Cargo.toml", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"], "Rust lint"],
 ];
 
 if (full) {

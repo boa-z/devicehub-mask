@@ -23,14 +23,7 @@ use tokio::sync::oneshot;
 use crate::application::ApplicationServices;
 #[cfg(test)]
 use crate::application::{DeviceControlService, DeviceStateSlots, ObservabilitySlots};
-#[cfg(test)]
-use crate::device_events::DeviceEventSlot;
-#[cfg(test)]
-use crate::device_logs::{DeviceLogDemand, DeviceLogSlot};
-use crate::device_logs::{DeviceLogEntry, DeviceLogLevel};
-use crate::hid::TouchContact;
-#[cfg(test)]
-use crate::performance::{PerformanceDemand, PerformanceSlot};
+use crate::domain::hardware_button;
 #[cfg(test)]
 use crate::protocol::{
     ActiveSlot, DeviceListSlot, ErrorSlot, InputSink, LocationStatusSlot, OrientationSlot,
@@ -39,6 +32,14 @@ use crate::protocol::{
 use crate::protocol::{
     ControlCmd, InputCmd, Orientation, RotateDir, norm, unrotate_norm, validate_paste_text,
 };
+#[cfg(test)]
+use devicehub_runtime::DeviceEventSlot;
+use devicehub_runtime::{DeviceInputCommand, TouchContact};
+#[cfg(test)]
+use devicehub_runtime::{DeviceLogDemand, DeviceLogSlot};
+use devicehub_runtime::{DeviceLogEntry, DeviceLogLevel};
+#[cfg(test)]
+use devicehub_runtime::{PerformanceDemand, PerformanceSlot};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
 const DEFAULT_MAX_DIM: u32 = 1024;
@@ -78,7 +79,7 @@ const DEVICE_CONDITION_WAIT: Duration = Duration::from_secs(8);
 #[derive(Clone, Default)]
 struct McpObservability {
     device_events: DeviceEventSlot,
-    device_conditions: crate::device_conditions::DeviceConditionSlot,
+    device_conditions: devicehub_runtime::DeviceConditionSlot,
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
     device_logs: DeviceLogSlot,
@@ -910,12 +911,18 @@ impl DeviceHub {
         let interval = Duration::from_millis((hold_ms / samples).max(1));
         let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
-        self.send(InputCmd::TouchDown { x, y })?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::TouchDown {
+            x,
+            y,
+        }))?;
         for _ in 0..samples {
             tokio::time::sleep(interval).await;
-            self.send(InputCmd::TouchMove { x, y })?;
+            self.send(InputCmd::DeviceInput(DeviceInputCommand::TouchMove {
+                x,
+                y,
+            }))?;
         }
-        self.send(InputCmd::TouchUp { x, y })?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::TouchUp { x, y }))?;
         if params.wait_for_settle.unwrap_or(true) {
             self.settle().await;
         }
@@ -951,18 +958,24 @@ impl DeviceHub {
         let steps = (duration / 16).clamp(2, 150);
         let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
-        self.send(InputCmd::TouchDown {
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::TouchDown {
             x: start_x,
             y: start_y,
-        })?;
+        }))?;
         for step in 1..=steps {
             let progress = step as f32 / steps as f32;
             let x = (start_x as f32 + (end_x as f32 - start_x as f32) * progress).round() as u16;
             let y = (start_y as f32 + (end_y as f32 - start_y as f32) * progress).round() as u16;
-            self.send(InputCmd::TouchMove { x, y })?;
+            self.send(InputCmd::DeviceInput(DeviceInputCommand::TouchMove {
+                x,
+                y,
+            }))?;
             tokio::time::sleep(Duration::from_millis((duration / steps).max(1))).await;
         }
-        self.send(InputCmd::TouchUp { x: end_x, y: end_y })?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::TouchUp {
+            x: end_x,
+            y: end_y,
+        }))?;
         if params.wait_for_settle.unwrap_or(true) {
             self.settle().await;
         }
@@ -1017,13 +1030,19 @@ impl DeviceHub {
         };
         let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
-        self.send(InputCmd::MultiTouchFrame(contacts_at(0.0, true)))?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
+            contacts_at(0.0, true),
+        )))?;
         for step in 1..=steps {
             let progress = step as f32 / steps as f32;
-            self.send(InputCmd::MultiTouchFrame(contacts_at(progress, true)))?;
+            self.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
+                contacts_at(progress, true),
+            )))?;
             tokio::time::sleep(interval).await;
         }
-        self.send(InputCmd::MultiTouchFrame(contacts_at(1.0, false)))?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
+            contacts_at(1.0, false),
+        )))?;
         if params.wait_for_settle.unwrap_or(false) {
             self.settle().await;
         }
@@ -1069,7 +1088,7 @@ impl DeviceHub {
         Parameters(params): Parameters<TextParams>,
     ) -> Result<CallToolResult, McpError> {
         let count = params.text.chars().count();
-        self.send(InputCmd::Text(params.text))?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::Text(params.text)))?;
         ok_text(format!("Typed {count} characters."))
     }
 
@@ -1105,7 +1124,7 @@ impl DeviceHub {
         let usage = key_usage(&params.key).ok_or_else(|| {
             McpError::invalid_params(format!("unknown key: {}", params.key), None)
         })?;
-        self.send(InputCmd::KeyUsage(usage))?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::KeyUsage(usage)))?;
         self.settle().await;
         ok_text(format!("Pressed {}.", params.key))
     }
@@ -1120,7 +1139,9 @@ impl DeviceHub {
         let button = button_label(&params.button).ok_or_else(|| {
             McpError::invalid_params(format!("unknown hardware button: {}", params.button), None)
         })?;
-        self.send(InputCmd::Button(button))?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::Button(
+            hardware_button(button).expect("known hardware button must resolve"),
+        )))?;
         self.settle().await;
         ok_text(format!("Pressed {button}."))
     }
@@ -1154,7 +1175,7 @@ impl DeviceHub {
                 ));
             }
         };
-        self.send(InputCmd::Rotate(direction))?;
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::Rotate(direction)))?;
         self.settle().await;
         ok_text(format!("Rotated {}.", params.direction))
     }
@@ -1169,11 +1190,11 @@ impl DeviceHub {
         let include_system = params.include_system.unwrap_or(false);
         let include_app_clips = params.include_app_clips.unwrap_or(false);
         let (reply, response) = oneshot::channel();
-        self.send(InputCmd::ListApps {
+        self.send(InputCmd::Apps(devicehub_runtime::AppCommand::List {
             include_system,
             include_app_clips,
             reply,
-        })?;
+        }))?;
         let mut apps = tokio::time::timeout(crate::session::APP_LIST_REQUEST_TIMEOUT, response)
             .await
             .map_err(|_| McpError::internal_error("app list request timed out", None))?
@@ -1246,7 +1267,7 @@ impl DeviceHub {
     async fn list_processes(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::RunningProcess(
-            crate::running_processes::RunningProcessCommand::List { reply },
+            devicehub_runtime::RunningProcessCommand::List { reply },
         ))?;
         let list = tokio::time::timeout(APP_WAIT, response)
             .await
@@ -1271,7 +1292,7 @@ impl DeviceHub {
         validate_process_pid(params.pid)?;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::RunningProcess(
-            crate::running_processes::RunningProcessCommand::Inspect {
+            devicehub_runtime::RunningProcessCommand::Inspect {
                 pid: params.pid,
                 reply,
             },
@@ -1316,7 +1337,7 @@ impl DeviceHub {
         let expected_running = matches!(params.state, RunningProcessWaitState::Running);
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::RunningProcess(
-            crate::running_processes::RunningProcessCommand::Wait {
+            devicehub_runtime::RunningProcessCommand::Wait {
                 pid: params.pid,
                 expected_running,
                 timeout_ms: timeout.as_millis() as u64,
@@ -1351,7 +1372,7 @@ impl DeviceHub {
         }
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::AppLifecycle(
-            crate::app_lifecycle::AppLifecycleCommand::Inspect {
+            devicehub_runtime::AppLifecycleCommand::Inspect {
                 bundle_id: params.bundle_id,
                 reply,
             },
@@ -1399,7 +1420,7 @@ impl DeviceHub {
         let expected_running = matches!(params.state, AppWaitState::Running);
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::AppLifecycle(
-            crate::app_lifecycle::AppLifecycleCommand::Wait {
+            devicehub_runtime::AppLifecycleCommand::Wait {
                 bundle_id: params.bundle_id,
                 expected_running,
                 timeout_ms: timeout.as_millis() as u64,
@@ -1425,7 +1446,7 @@ impl DeviceHub {
     async fn wda_runner_status(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaRunner(
-            crate::wda_runner::WdaRunnerCommand::Status { reply },
+            devicehub_runtime::WdaRunnerCommand::Status { reply },
         ))?;
         let status = tokio::time::timeout(APP_WAIT, response)
             .await
@@ -1446,11 +1467,11 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaStartParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_runner::validate_runner_bundle_id(&params.runner_bundle_id)
+        devicehub_runtime::validate_runner_bundle_id(&params.runner_bundle_id)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaRunner(
-            crate::wda_runner::WdaRunnerCommand::Start {
+            devicehub_runtime::WdaRunnerCommand::Start {
                 bundle_id: params.runner_bundle_id,
                 reply,
             },
@@ -1474,7 +1495,7 @@ impl DeviceHub {
     async fn wda_stop(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaRunner(
-            crate::wda_runner::WdaRunnerCommand::Stop { reply },
+            devicehub_runtime::WdaRunnerCommand::Stop { reply },
         ))?;
         let status = tokio::time::timeout(APP_WAIT, response)
             .await
@@ -1495,7 +1516,7 @@ impl DeviceHub {
     async fn wda_status(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::Status {
+            devicehub_runtime::WdaAutomationCommand::Status {
                 expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
                 reply,
             },
@@ -1516,7 +1537,7 @@ impl DeviceHub {
     async fn wda_device_state(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::DeviceState {
+            devicehub_runtime::WdaAutomationCommand::DeviceState {
                 expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
                 reply,
             },
@@ -1541,7 +1562,7 @@ impl DeviceHub {
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::Unlock {
+            devicehub_runtime::WdaAutomationCommand::Unlock {
                 expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
                 reply,
             },
@@ -1568,19 +1589,19 @@ impl DeviceHub {
     ) -> Result<CallToolResult, McpError> {
         let max_characters = params
             .max_characters
-            .unwrap_or(crate::wda_automation::DEFAULT_SOURCE_CHARS);
-        if !(1..=crate::wda_automation::MAX_SOURCE_CHARS).contains(&max_characters) {
+            .unwrap_or(devicehub_runtime::DEFAULT_SOURCE_CHARS);
+        if !(1..=devicehub_runtime::MAX_SOURCE_CHARS).contains(&max_characters) {
             return Err(McpError::invalid_params(
                 format!(
                     "max_characters must be between 1 and {}",
-                    crate::wda_automation::MAX_SOURCE_CHARS
+                    devicehub_runtime::MAX_SOURCE_CHARS
                 ),
                 None,
             ));
         }
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::Source {
+            devicehub_runtime::WdaAutomationCommand::Source {
                 max_characters,
                 expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
                 reply,
@@ -1603,21 +1624,21 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaFindParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_selector(&params.using, &params.value)
+        devicehub_runtime::validate_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let limit = params.limit.unwrap_or(10);
-        if !(1..=crate::wda_automation::MAX_ELEMENTS).contains(&limit) {
+        if !(1..=devicehub_runtime::MAX_ELEMENTS).contains(&limit) {
             return Err(McpError::invalid_params(
                 format!(
                     "limit must be between 1 and {}",
-                    crate::wda_automation::MAX_ELEMENTS
+                    devicehub_runtime::MAX_ELEMENTS
                 ),
                 None,
             ));
         }
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::Find {
+            devicehub_runtime::WdaAutomationCommand::Find {
                 using: params.using,
                 value: params.value,
                 limit,
@@ -1647,21 +1668,21 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_selector(&params.using, &params.value)
+        devicehub_runtime::validate_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= crate::wda_automation::MAX_ELEMENTS {
+        if index >= devicehub_runtime::MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    crate::wda_automation::MAX_ELEMENTS - 1
+                    devicehub_runtime::MAX_ELEMENTS - 1
                 ),
                 None,
             ));
         }
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::Inspect {
+            devicehub_runtime::WdaAutomationCommand::Inspect {
                 using: params.using,
                 value: params.value,
                 index,
@@ -1689,27 +1710,27 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaWaitForElementParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_selector(&params.using, &params.value)
+        devicehub_runtime::validate_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= crate::wda_automation::MAX_ELEMENTS {
+        if index >= devicehub_runtime::MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    crate::wda_automation::MAX_ELEMENTS - 1
+                    devicehub_runtime::MAX_ELEMENTS - 1
                 ),
                 None,
             ));
         }
         let expected_state =
-            crate::wda_automation::parse_wait_state(params.state.as_deref().unwrap_or("present"))
+            devicehub_runtime::parse_wait_state(params.state.as_deref().unwrap_or("present"))
                 .map_err(|error| McpError::invalid_params(error, None))?;
         let timeout_ms = params.timeout_ms.unwrap_or(5_000);
-        crate::wda_automation::validate_wait_timeout(timeout_ms)
+        devicehub_runtime::validate_wait_timeout(timeout_ms)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::WaitForElement {
+            devicehub_runtime::WdaAutomationCommand::WaitForElement {
                 using: params.using,
                 value: params.value,
                 index,
@@ -1739,14 +1760,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_selector(&params.using, &params.value)
+        devicehub_runtime::validate_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= crate::wda_automation::MAX_ELEMENTS {
+        if index >= devicehub_runtime::MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    crate::wda_automation::MAX_ELEMENTS - 1
+                    devicehub_runtime::MAX_ELEMENTS - 1
                 ),
                 None,
             ));
@@ -1754,7 +1775,7 @@ impl DeviceHub {
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::Click {
+            devicehub_runtime::WdaAutomationCommand::Click {
                 using: params.using,
                 value: params.value,
                 index,
@@ -1777,12 +1798,12 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaTypeTextParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_text(&params.text)
+        devicehub_runtime::validate_text(&params.text)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::TypeText {
+            devicehub_runtime::WdaAutomationCommand::TypeText {
                 text: params.text,
                 expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
                 reply,
@@ -1803,14 +1824,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_selector(&params.using, &params.value)
+        devicehub_runtime::validate_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= crate::wda_automation::MAX_ELEMENTS {
+        if index >= devicehub_runtime::MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    crate::wda_automation::MAX_ELEMENTS - 1
+                    devicehub_runtime::MAX_ELEMENTS - 1
                 ),
                 None,
             ));
@@ -1818,7 +1839,7 @@ impl DeviceHub {
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::DoubleTap {
+            devicehub_runtime::WdaAutomationCommand::DoubleTap {
                 using: params.using,
                 value: params.value,
                 index,
@@ -1841,16 +1862,16 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaTouchAndHoldParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_selector(&params.using, &params.value)
+        devicehub_runtime::validate_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
-        crate::wda_automation::validate_hold_duration(params.duration_ms)
+        devicehub_runtime::validate_hold_duration(params.duration_ms)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= crate::wda_automation::MAX_ELEMENTS {
+        if index >= devicehub_runtime::MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    crate::wda_automation::MAX_ELEMENTS - 1
+                    devicehub_runtime::MAX_ELEMENTS - 1
                 ),
                 None,
             ));
@@ -1858,7 +1879,7 @@ impl DeviceHub {
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::TouchAndHold {
+            devicehub_runtime::WdaAutomationCommand::TouchAndHold {
                 using: params.using,
                 value: params.value,
                 index,
@@ -1889,12 +1910,12 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaScrollParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_scroll_direction(&params.direction)
+        devicehub_runtime::validate_scroll_direction(&params.direction)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::Scroll {
+            devicehub_runtime::WdaAutomationCommand::Scroll {
                 direction: params.direction.clone(),
                 expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
                 reply,
@@ -1915,12 +1936,12 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaBackgroundAppParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::wda_automation::validate_background_duration(params.restore_after_ms)
+        devicehub_runtime::validate_background_duration(params.restore_after_ms)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
         self.send(InputCmd::WdaAutomation(
-            crate::wda_automation::WdaAutomationCommand::BackgroundApp {
+            devicehub_runtime::WdaAutomationCommand::BackgroundApp {
                 restore_after_ms: params.restore_after_ms,
                 expires_at: tokio::time::Instant::now() + WDA_COMMAND_DEADLINE,
                 reply,
@@ -1953,10 +1974,10 @@ impl DeviceHub {
         let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
         let (reply, response) = oneshot::channel();
-        self.send(InputCmd::LaunchApp {
+        self.send(InputCmd::Apps(devicehub_runtime::AppCommand::Launch {
             bundle_id: params.bundle_id.clone(),
             reply,
-        })?;
+        }))?;
         tokio::time::timeout(APP_WAIT, response)
             .await
             .map_err(|_| McpError::internal_error("app launch request timed out", None))?
@@ -1989,10 +2010,10 @@ impl DeviceHub {
         let frame_version = self.frame_version();
         let _gesture = self.gesture_lock.lock().await;
         let (reply, response) = oneshot::channel();
-        self.send(InputCmd::StopApp {
+        self.send(InputCmd::Apps(devicehub_runtime::AppCommand::Stop {
             bundle_id: params.bundle_id.clone(),
             reply,
-        })?;
+        }))?;
         let was_running = tokio::time::timeout(APP_WAIT, response)
             .await
             .map_err(|_| McpError::internal_error("app stop request timed out", None))?
@@ -2055,14 +2076,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<CrashReportReadParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::crash_reports::validate_device_path(&params.device_path)
+        devicehub_runtime::validate_crash_report_path(&params.device_path)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let max_bytes = params.max_bytes.unwrap_or(DEFAULT_CRASH_REPORT_BYTES);
-        if !(1..=crate::crash_reports::MAX_READ_BYTES).contains(&max_bytes) {
+        if !(1..=devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES).contains(&max_bytes) {
             return Err(McpError::invalid_params(
                 format!(
                     "max_bytes must be between 1 and {}",
-                    crate::crash_reports::MAX_READ_BYTES
+                    devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES
                 ),
                 None,
             ));
@@ -2369,14 +2390,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<DeviceConditionParams>,
     ) -> Result<CallToolResult, McpError> {
-        crate::device_conditions::validate_identifiers(
+        devicehub_runtime::validate_device_condition_identifiers(
             &params.group_identifier,
             &params.profile_identifier,
         )
         .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::DeviceCondition(
-            crate::device_conditions::DeviceConditionCommand::Apply {
+            devicehub_runtime::DeviceConditionCommand::Apply {
                 group_identifier: params.group_identifier,
                 profile_identifier: params.profile_identifier,
                 expires_at: tokio::time::Instant::now() + DEVICE_CONDITION_COMMAND_DEADLINE,
@@ -2396,7 +2417,7 @@ impl DeviceHub {
     async fn clear_device_condition(&self) -> Result<CallToolResult, McpError> {
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::DeviceCondition(
-            crate::device_conditions::DeviceConditionCommand::Clear {
+            devicehub_runtime::DeviceConditionCommand::Clear {
                 expires_at: tokio::time::Instant::now() + DEVICE_CONDITION_COMMAND_DEADLINE,
                 reply,
             },
@@ -2463,7 +2484,7 @@ impl DeviceHub {
         let limit = params
             .limit
             .unwrap_or(100)
-            .clamp(1, crate::device_logs::MAX_BATCH_ENTRIES);
+            .clamp(1, devicehub_runtime::MAX_BATCH_ENTRIES);
         let wait = Duration::from_millis(
             params
                 .wait_ms
@@ -2476,7 +2497,7 @@ impl DeviceHub {
         let (batch, mut entries) = loop {
             let batch = self.application.device_logs.snapshot(
                 params.after,
-                crate::device_logs::MAX_BATCH_ENTRIES,
+                devicehub_runtime::MAX_BATCH_ENTRIES,
                 true,
             );
             let entries = batch
@@ -2864,7 +2885,7 @@ mod tests {
             panic!("expected companion device command");
         };
         reply
-            .send(Ok(vec![crate::companion_devices::CompanionDevice {
+            .send(Ok(vec![crate::domain::CompanionDevice {
                 identifier: "watch-id".into(),
                 name: Some("Test Watch".into()),
                 product_type: Some("Watch7,5".into()),
@@ -2901,15 +2922,14 @@ mod tests {
             control,
         );
         let task = tokio::spawn(async move { hub.list_processes().await.unwrap() });
-        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::List {
-            reply,
-        }) = input_rx.recv().await.unwrap()
+        let InputCmd::RunningProcess(devicehub_runtime::RunningProcessCommand::List { reply }) =
+            input_rx.recv().await.unwrap()
         else {
             panic!("expected running process command");
         };
         reply
-            .send(Ok(crate::running_processes::RunningProcessList {
-                processes: vec![crate::running_processes::RunningProcess {
+            .send(Ok(crate::domain::RunningProcessList {
+                processes: vec![crate::domain::RunningProcess {
                     pid: 42,
                     name: "Example".into(),
                     app_name: Some("Example App".into()),
@@ -2955,7 +2975,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::Inspect {
+        let InputCmd::RunningProcess(devicehub_runtime::RunningProcessCommand::Inspect {
             pid,
             reply,
         }) = input_rx.recv().await.unwrap()
@@ -2964,7 +2984,7 @@ mod tests {
         };
         assert_eq!(pid, 42);
         reply
-            .send(Ok(crate::running_processes::RunningProcessStatus {
+            .send(Ok(crate::domain::RunningProcessStatus {
                 pid,
                 running: true,
                 executable_name: Some("Example".into()),
@@ -3001,7 +3021,7 @@ mod tests {
             .await
             .unwrap()
         });
-        let InputCmd::RunningProcess(crate::running_processes::RunningProcessCommand::Wait {
+        let InputCmd::RunningProcess(devicehub_runtime::RunningProcessCommand::Wait {
             pid,
             expected_running,
             timeout_ms,
@@ -3014,11 +3034,11 @@ mod tests {
         assert!(!expected_running);
         assert_eq!(timeout_ms, 500);
         reply
-            .send(Ok(crate::running_processes::RunningProcessWaitResult {
+            .send(Ok(crate::domain::RunningProcessWaitResult {
                 condition_met: true,
                 expected_running,
                 elapsed_ms: 250,
-                process: crate::running_processes::RunningProcessStatus {
+                process: crate::domain::RunningProcessStatus {
                     pid,
                     running: false,
                     executable_name: None,
@@ -3061,7 +3081,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::AppLifecycle(crate::app_lifecycle::AppLifecycleCommand::Inspect {
+        let InputCmd::AppLifecycle(devicehub_runtime::AppLifecycleCommand::Inspect {
             bundle_id,
             reply,
         }) = input_rx.recv().await.unwrap()
@@ -3070,7 +3090,7 @@ mod tests {
         };
         assert_eq!(bundle_id, "com.example.game");
         reply
-            .send(Ok(crate::app_lifecycle::AppLifecycleStatus {
+            .send(Ok(crate::domain::AppLifecycleStatus {
                 bundle_id,
                 installed: true,
                 running: true,
@@ -3109,7 +3129,7 @@ mod tests {
             .await
             .unwrap()
         });
-        let InputCmd::AppLifecycle(crate::app_lifecycle::AppLifecycleCommand::Wait {
+        let InputCmd::AppLifecycle(devicehub_runtime::AppLifecycleCommand::Wait {
             bundle_id,
             expected_running,
             timeout_ms,
@@ -3122,11 +3142,11 @@ mod tests {
         assert!(!expected_running);
         assert_eq!(timeout_ms, 500);
         reply
-            .send(Ok(crate::app_lifecycle::AppLifecycleWaitResult {
+            .send(Ok(crate::domain::AppLifecycleWaitResult {
                 condition_met: true,
                 expected_running,
                 elapsed_ms: 250,
-                app: crate::app_lifecycle::AppLifecycleStatus {
+                app: crate::domain::AppLifecycleStatus {
                     bundle_id,
                     installed: true,
                     running: false,
@@ -3195,17 +3215,17 @@ mod tests {
             panic!("expected home screen command");
         };
         reply
-            .send(Ok(crate::home_screen::HomeScreenLayout {
-                apps: vec![crate::home_screen::HomeScreenAppLocation {
+            .send(Ok(crate::domain::HomeScreenLayout {
+                apps: vec![crate::domain::HomeScreenAppLocation {
                     bundle_id: "com.example.game".into(),
                     name: Some("Game".into()),
-                    container: crate::home_screen::HomeScreenContainer::Dock,
+                    container: crate::domain::HomeScreenContainer::Dock,
                     page: None,
                     position: 2,
                     folders: Vec::new(),
                 }],
                 page_count: 3,
-                metrics: Some(crate::home_screen::HomeScreenIconMetrics {
+                metrics: Some(crate::domain::HomeScreenIconMetrics {
                     screen_width: Some(810),
                     screen_height: Some(1080),
                     icon_width: Some(68),
@@ -3255,7 +3275,7 @@ mod tests {
 
         let status_hub = hub.clone();
         let status_task = tokio::spawn(async move { status_hub.wda_status().await.unwrap() });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Status {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::Status {
             reply,
             expires_at,
         }) = input_rx.recv().await.unwrap()
@@ -3264,7 +3284,7 @@ mod tests {
         };
         assert!(expires_at > tokio::time::Instant::now());
         reply
-            .send(Ok(crate::wda_automation::WdaStatus {
+            .send(Ok(devicehub_runtime::WdaStatus {
                 reachable: true,
                 ready: Some(true),
                 message: None,
@@ -3280,7 +3300,7 @@ mod tests {
         let device_state_hub = hub.clone();
         let device_state_task =
             tokio::spawn(async move { device_state_hub.wda_device_state().await.unwrap() });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::DeviceState {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::DeviceState {
             reply,
             ..
         }) = input_rx.recv().await.unwrap()
@@ -3288,14 +3308,14 @@ mod tests {
             panic!("expected WDA device state command");
         };
         reply
-            .send(Ok(crate::wda_automation::WdaDeviceState {
+            .send(Ok(devicehub_runtime::WdaDeviceState {
                 locked: false,
-                orientation: crate::wda_automation::WdaOrientation::Portrait,
-                window: crate::wda_automation::WdaSize {
+                orientation: devicehub_runtime::WdaOrientation::Portrait,
+                window: devicehub_runtime::WdaSize {
                     width: 430.0,
                     height: 932.0,
                 },
-                viewport: Some(crate::wda_automation::WdaRect {
+                viewport: Some(devicehub_runtime::WdaRect {
                     x: 0.0,
                     y: 59.0,
                     width: 430.0,
@@ -3321,7 +3341,7 @@ mod tests {
 
         let unlock_hub = hub.clone();
         let unlock_task = tokio::spawn(async move { unlock_hub.wda_unlock().await.unwrap() });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Unlock {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::Unlock {
             reply,
             expires_at,
         }) = input_rx.recv().await.unwrap()
@@ -3330,7 +3350,7 @@ mod tests {
         };
         assert!(expires_at > tokio::time::Instant::now());
         reply
-            .send(Ok(crate::wda_automation::WdaUnlockResult {
+            .send(Ok(devicehub_runtime::WdaUnlockResult {
                 was_locked: true,
                 unlocked: true,
             }))
@@ -3352,7 +3372,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Source {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::Source {
             max_characters,
             reply,
             ..
@@ -3362,7 +3382,7 @@ mod tests {
         };
         assert_eq!(max_characters, 4096);
         reply
-            .send(Ok(crate::wda_automation::WdaUiTree {
+            .send(Ok(devicehub_runtime::WdaUiTree {
                 xml: "<App/>".into(),
                 total_characters: 6,
                 truncated: false,
@@ -3385,7 +3405,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Find {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::Find {
             using,
             value,
             limit,
@@ -3417,7 +3437,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Inspect {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::Inspect {
             using,
             value,
             index,
@@ -3432,9 +3452,9 @@ mod tests {
             ("name", "Continue", 1)
         );
         reply
-            .send(Ok(crate::wda_automation::WdaElementDetails {
-                element: crate::wda_automation::WdaElement { index, rect: None },
-                element_type: Some(crate::wda_automation::WdaBoundedText {
+            .send(Ok(devicehub_runtime::WdaElementDetails {
+                element: devicehub_runtime::WdaElement { index, rect: None },
+                element_type: Some(devicehub_runtime::WdaBoundedText {
                     text: "Button".into(),
                     total_characters: 6,
                     truncated: false,
@@ -3468,7 +3488,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::WaitForElement {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::WaitForElement {
             using,
             value,
             index,
@@ -3492,12 +3512,12 @@ mod tests {
                 "accessibility id",
                 "Loading",
                 0,
-                crate::wda_automation::WdaElementWaitState::Absent,
+                devicehub_runtime::WdaElementWaitState::Absent,
                 2_500
             )
         );
         reply
-            .send(Ok(crate::wda_automation::WdaElementWaitResult {
+            .send(Ok(devicehub_runtime::WdaElementWaitResult {
                 condition_met: true,
                 expected_state,
                 expected_present: Some(false),
@@ -3525,7 +3545,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Click {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::Click {
             using,
             value,
             index,
@@ -3540,7 +3560,7 @@ mod tests {
             ("name", "Continue", 1)
         );
         reply
-            .send(Ok(crate::wda_automation::WdaElement { index, rect: None }))
+            .send(Ok(devicehub_runtime::WdaElement { index, rect: None }))
             .unwrap();
         assert!(click_task.await.unwrap().content.iter().any(|content| {
             content
@@ -3557,7 +3577,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::TypeText {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::TypeText {
             text,
             reply,
             ..
@@ -3584,7 +3604,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::DoubleTap {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::DoubleTap {
             using,
             value,
             index,
@@ -3599,7 +3619,7 @@ mod tests {
             ("accessibility id", "Zoom", 0)
         );
         reply
-            .send(Ok(crate::wda_automation::WdaElement { index, rect: None }))
+            .send(Ok(devicehub_runtime::WdaElement { index, rect: None }))
             .unwrap();
         assert!(
             double_tap_task
@@ -3626,7 +3646,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::TouchAndHold {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::TouchAndHold {
             using,
             value,
             index,
@@ -3642,7 +3662,7 @@ mod tests {
             ("name", "Context menu", 2, 750)
         );
         reply
-            .send(Ok(crate::wda_automation::WdaElement { index, rect: None }))
+            .send(Ok(devicehub_runtime::WdaElement { index, rect: None }))
             .unwrap();
         assert!(hold_task.await.unwrap().content.iter().any(|content| {
             content.as_text().is_some_and(|text| {
@@ -3659,7 +3679,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::Scroll {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::Scroll {
             direction,
             reply,
             ..
@@ -3685,7 +3705,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaAutomation(crate::wda_automation::WdaAutomationCommand::BackgroundApp {
+        let InputCmd::WdaAutomation(devicehub_runtime::WdaAutomationCommand::BackgroundApp {
             restore_after_ms,
             reply,
             expires_at,
@@ -3760,14 +3780,14 @@ mod tests {
                 value: "Done".into(),
                 index: None,
                 state: None,
-                timeout_ms: Some(crate::wda_automation::MAX_WAIT_TIMEOUT_MS + 1),
+                timeout_ms: Some(devicehub_runtime::MAX_WAIT_TIMEOUT_MS + 1),
             }))
             .await
             .is_err()
         );
         assert!(
             hub.wda_background_app(Parameters(WdaBackgroundAppParams {
-                restore_after_ms: Some(crate::wda_automation::MAX_BACKGROUND_DURATION_MS + 1,),
+                restore_after_ms: Some(devicehub_runtime::MAX_BACKGROUND_DURATION_MS + 1,),
             }))
             .await
             .is_err()
@@ -3793,8 +3813,8 @@ mod tests {
             McpObservability::default(),
             control,
         );
-        let running = crate::wda_runner::WdaRunnerStatus {
-            phase: crate::wda_runner::WdaRunnerPhase::Running,
+        let running = devicehub_runtime::WdaRunnerStatus {
+            phase: devicehub_runtime::WdaRunnerPhase::Running,
             managed: true,
             runner_bundle_id: Some("com.example.WDARunner.xctrunner".into()),
             last_error: None,
@@ -3803,7 +3823,7 @@ mod tests {
         let status_hub = hub.clone();
         let status_task =
             tokio::spawn(async move { status_hub.wda_runner_status().await.unwrap() });
-        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Status { reply }) =
+        let InputCmd::WdaRunner(devicehub_runtime::WdaRunnerCommand::Status { reply }) =
             input_rx.recv().await.unwrap()
         else {
             panic!("expected WDA runner status command");
@@ -3824,7 +3844,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Start { bundle_id, reply }) =
+        let InputCmd::WdaRunner(devicehub_runtime::WdaRunnerCommand::Start { bundle_id, reply }) =
             input_rx.recv().await.unwrap()
         else {
             panic!("expected WDA runner start command");
@@ -3834,13 +3854,13 @@ mod tests {
         start_task.await.unwrap();
 
         let stop_task = tokio::spawn(async move { hub.wda_stop().await.unwrap() });
-        let InputCmd::WdaRunner(crate::wda_runner::WdaRunnerCommand::Stop { reply }) =
+        let InputCmd::WdaRunner(devicehub_runtime::WdaRunnerCommand::Stop { reply }) =
             input_rx.recv().await.unwrap()
         else {
             panic!("expected WDA runner stop command");
         };
         reply
-            .send(Ok(crate::wda_runner::WdaRunnerStatus::default()))
+            .send(Ok(devicehub_runtime::WdaRunnerStatus::default()))
             .unwrap();
         stop_task.await.unwrap();
     }
@@ -3850,7 +3870,7 @@ mod tests {
         let observability = McpObservability::default();
         observability
             .device_events
-            .publish(crate::device_events::DeviceEventKind::AppInstalled);
+            .publish(crate::domain::DeviceEventKind::AppInstalled);
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             crate::browser_video::BrowserVideoSlot::default(),
@@ -3891,7 +3911,7 @@ mod tests {
         tokio::task::yield_now().await;
         observability
             .device_events
-            .publish(crate::device_events::DeviceEventKind::RegionalSettingsChanged);
+            .publish(crate::domain::DeviceEventKind::RegionalSettingsChanged);
         let future = waiter.await.unwrap();
         assert!(future.content.iter().any(|content| {
             content
@@ -3921,11 +3941,11 @@ mod tests {
         let observability = McpObservability::default();
         observability
             .device_conditions
-            .set(crate::device_conditions::DeviceConditionStatus {
+            .set(crate::domain::DeviceConditionStatus {
                 available: true,
-                groups: vec![crate::device_conditions::DeviceConditionGroup {
+                groups: vec![crate::domain::DeviceConditionGroup {
                     identifier: "Network".into(),
-                    profiles: vec![crate::device_conditions::DeviceConditionProfile {
+                    profiles: vec![crate::domain::DeviceConditionProfile {
                         identifier: "LTE".into(),
                         description: "LTE profile".into(),
                     }],
@@ -3974,7 +3994,7 @@ mod tests {
                 .await
                 .unwrap()
         });
-        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Apply {
+        let InputCmd::DeviceCondition(devicehub_runtime::DeviceConditionCommand::Apply {
             group_identifier,
             profile_identifier,
             expires_at,
@@ -3990,7 +4010,7 @@ mod tests {
         apply.await.unwrap();
 
         let clear = tokio::spawn(async move { hub.clear_device_condition().await.unwrap() });
-        let InputCmd::DeviceCondition(crate::device_conditions::DeviceConditionCommand::Clear {
+        let InputCmd::DeviceCondition(devicehub_runtime::DeviceConditionCommand::Clear {
             expires_at,
             reply,
         }) = input_rx.recv().await.unwrap()
@@ -4235,10 +4255,11 @@ mod tests {
         .unwrap();
 
         let sent = std::iter::from_fn(|| input_rx.try_recv().ok()).collect::<Vec<_>>();
-        let InputCmd::MultiTouchFrame(first) = &sent[0] else {
+        let InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(first)) = &sent[0] else {
             panic!("first command must be a multi-touch frame");
         };
-        let InputCmd::MultiTouchFrame(last) = sent.last().unwrap() else {
+        let InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(last)) = sent.last().unwrap()
+        else {
             panic!("last command must be a multi-touch frame");
         };
         assert_eq!(first.len(), 2);

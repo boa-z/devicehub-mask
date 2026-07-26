@@ -64,11 +64,13 @@ async fn device_apps(
     Query(query): Query<DeviceAppsQuery>,
 ) -> Result<Json<Vec<crate::protocol::DeviceApp>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::ListApps {
-        include_system: query.include_system,
-        include_app_clips: query.include_app_clips,
-        reply,
-    }))?;
+    require_active_session(state.input.try_send(InputCmd::Apps(
+        devicehub_runtime::AppCommand::List {
+            include_system: query.include_system,
+            include_app_clips: query.include_app_clips,
+            reply,
+        },
+    )))?;
     let apps = tokio::time::timeout(crate::session::APP_LIST_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -124,11 +126,9 @@ async fn uninstall_app(
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(
-        state
-            .input
-            .try_send(InputCmd::UninstallApp { bundle_id, reply }),
-    )?;
+    require_active_session(state.input.try_send(InputCmd::Apps(
+        devicehub_runtime::AppCommand::Uninstall { bundle_id, reply },
+    )))?;
     await_app_operation_acceptance(response, "app uninstall").await?;
     Ok(StatusCode::ACCEPTED)
 }
@@ -162,11 +162,9 @@ async fn launch_app(
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(
-        state
-            .input
-            .try_send(InputCmd::LaunchApp { bundle_id, reply }),
-    )?;
+    require_active_session(state.input.try_send(InputCmd::Apps(
+        devicehub_runtime::AppCommand::Launch { bundle_id, reply },
+    )))?;
     tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -190,11 +188,11 @@ struct AppConsoleQuery {
 async fn start_app_console(
     State(state): State<AppHttpState>,
     Path(bundle_id): Path<String>,
-) -> Result<Json<crate::app_console::AppConsoleSnapshot>, (StatusCode, String)> {
+) -> Result<Json<devicehub_runtime::AppConsoleSnapshot>, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     require_active_session(state.input.try_send(InputCmd::AppConsole(
-        crate::app_console::AppConsoleCommand::Start { bundle_id, reply },
+        devicehub_runtime::AppConsoleCommand::Start { bundle_id, reply },
     )))?;
     let snapshot = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
         .await
@@ -212,10 +210,10 @@ async fn start_app_console(
 async fn app_console_snapshot(
     State(state): State<AppHttpState>,
     Query(query): Query<AppConsoleQuery>,
-) -> Result<Json<crate::app_console::AppConsoleSnapshot>, (StatusCode, String)> {
+) -> Result<Json<devicehub_runtime::AppConsoleSnapshot>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     require_active_session(state.input.try_send(InputCmd::AppConsole(
-        crate::app_console::AppConsoleCommand::Snapshot {
+        devicehub_runtime::AppConsoleCommand::Snapshot {
             after: query.after,
             reply,
         },
@@ -235,10 +233,10 @@ async fn app_console_snapshot(
 async fn stop_app_console(
     State(state): State<AppHttpState>,
     Query(query): Query<AppConsoleQuery>,
-) -> Result<Json<crate::app_console::AppConsoleSnapshot>, (StatusCode, String)> {
+) -> Result<Json<devicehub_runtime::AppConsoleSnapshot>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     require_active_session(state.input.try_send(InputCmd::AppConsole(
-        crate::app_console::AppConsoleCommand::Stop {
+        devicehub_runtime::AppConsoleCommand::Stop {
             clear: query.clear,
             reply,
         },
@@ -261,7 +259,9 @@ async fn stop_app(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::StopApp { bundle_id, reply }))?;
+    require_active_session(state.input.try_send(InputCmd::Apps(
+        devicehub_runtime::AppCommand::Stop { bundle_id, reply },
+    )))?;
     let was_running = tokio::time::timeout(crate::session::APP_CONTROL_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -328,9 +328,9 @@ mod tests {
     }
 
     fn console_snapshot_fixture(
-        phase: crate::app_console::AppConsolePhase,
-    ) -> crate::app_console::AppConsoleSnapshot {
-        crate::app_console::AppConsoleSnapshot {
+        phase: devicehub_runtime::AppConsolePhase,
+    ) -> devicehub_runtime::AppConsoleSnapshot {
+        devicehub_runtime::AppConsoleSnapshot {
             phase,
             bundle_id: Some("com.example.game".into()),
             started_at_ms: Some(1),
@@ -340,7 +340,7 @@ mod tests {
             dropped_lines: 0,
             next_sequence: 2,
             reset: false,
-            lines: vec![crate::app_console::AppConsoleLine {
+            lines: vec![devicehub_runtime::AppConsoleLine {
                 sequence: 1,
                 text: "ready".into(),
             }],
@@ -358,11 +358,11 @@ mod tests {
                 include_app_clips: true,
             }),
         ));
-        let InputCmd::ListApps {
+        let InputCmd::Apps(devicehub_runtime::AppCommand::List {
             include_system,
             include_app_clips,
             reply,
-        } = input_rx.recv().await.unwrap()
+        }) = input_rx.recv().await.unwrap()
         else {
             panic!("expected app list command");
         };
@@ -414,7 +414,7 @@ mod tests {
             Path("com.example.game".into()),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::LaunchApp { bundle_id, reply } => {
+            InputCmd::Apps(devicehub_runtime::AppCommand::Launch { bundle_id, reply }) => {
                 assert_eq!(bundle_id, "com.example.game");
                 reply.send(Ok(())).unwrap();
             }
@@ -424,7 +424,7 @@ mod tests {
 
         let stop = tokio::spawn(stop_app(State(state), Path("com.example.game".into())));
         match input_rx.recv().await.unwrap() {
-            InputCmd::StopApp { bundle_id, reply } => {
+            InputCmd::Apps(devicehub_runtime::AppCommand::Stop { bundle_id, reply }) => {
                 assert_eq!(bundle_id, "com.example.game");
                 reply.send(Ok(true)).unwrap();
             }
@@ -448,14 +448,14 @@ mod tests {
             Path("com.example.game".into()),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::AppConsole(crate::app_console::AppConsoleCommand::Start {
+            InputCmd::AppConsole(devicehub_runtime::AppConsoleCommand::Start {
                 bundle_id,
                 reply,
             }) => {
                 assert_eq!(bundle_id, "com.example.game");
                 reply
                     .send(Ok(console_snapshot_fixture(
-                        crate::app_console::AppConsolePhase::Running,
+                        devicehub_runtime::AppConsolePhase::Running,
                     )))
                     .unwrap();
             }
@@ -463,7 +463,7 @@ mod tests {
         }
         assert_eq!(
             start.await.unwrap().unwrap().0.phase,
-            crate::app_console::AppConsolePhase::Running
+            devicehub_runtime::AppConsolePhase::Running
         );
 
         let snapshot = tokio::spawn(app_console_snapshot(
@@ -474,14 +474,14 @@ mod tests {
             }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::AppConsole(crate::app_console::AppConsoleCommand::Snapshot {
+            InputCmd::AppConsole(devicehub_runtime::AppConsoleCommand::Snapshot {
                 after,
                 reply,
             }) => {
                 assert_eq!(after, Some(7));
                 reply
                     .send(console_snapshot_fixture(
-                        crate::app_console::AppConsolePhase::Running,
+                        devicehub_runtime::AppConsolePhase::Running,
                     ))
                     .unwrap();
             }
@@ -497,11 +497,11 @@ mod tests {
             }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::AppConsole(crate::app_console::AppConsoleCommand::Stop { clear, reply }) => {
+            InputCmd::AppConsole(devicehub_runtime::AppConsoleCommand::Stop { clear, reply }) => {
                 assert!(clear);
                 reply
                     .send(console_snapshot_fixture(
-                        crate::app_console::AppConsolePhase::Stopped,
+                        devicehub_runtime::AppConsolePhase::Stopped,
                     ))
                     .unwrap();
             }
@@ -509,7 +509,7 @@ mod tests {
         }
         assert_eq!(
             stop.await.unwrap().unwrap().0.phase,
-            crate::app_console::AppConsolePhase::Stopped
+            devicehub_runtime::AppConsolePhase::Stopped
         );
     }
 
@@ -543,7 +543,7 @@ mod tests {
         let id = state
             .operation
             .start(
-                crate::protocol::AppOperationKind::Uninstall,
+                devicehub_core::AppOperationKind::Uninstall,
                 "com.example.app".into(),
             )
             .unwrap();

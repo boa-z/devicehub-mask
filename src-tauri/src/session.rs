@@ -7,19 +7,17 @@ mod clipboard;
 mod discovery;
 mod manager;
 mod media;
-mod orientation;
 mod rtcp;
 mod services;
 mod transport;
 mod trust;
 
-pub(crate) use apps::{APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT};
+pub(crate) use devicehub_runtime::{APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT};
 pub(crate) use manager::manage;
 
 use apps::{AppClientSet, AppManagement, AppServiceTransport};
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,44 +27,36 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use idevice::{
-    IdeviceError, IdeviceService, ReadWrite, RsdService,
+    IdeviceError, ReadWrite, RsdService,
     core_device::{
         CallInfoBlob, CoreDeviceError, DisplayServiceClient, HevcDepacketizer,
-        Orientation as DevOrientation, OrientationServiceClient, PasteboardServiceClient,
-        RotationDirection, RtpPacket, build_frame_ack, build_screen_audio_offer,
-        build_screen_video_offer, build_start_audio_parameters, build_start_video_parameters,
-        hid::{
-            ButtonState, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, IndigoHidClient,
-            TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
-        },
-        is_rtcp, parse_answer_media_blob,
+        OrientationServiceClient, PasteboardServiceClient, RtpPacket, build_frame_ack,
+        build_screen_audio_offer, build_screen_video_offer, build_start_audio_parameters,
+        build_start_video_parameters, hid::IndigoHidClient, is_rtcp, parse_answer_media_blob,
     },
-    diagnostics_relay::DiagnosticsRelayClient,
-    lockdown::LockdownClient,
-    mobile_image_mounter::ImageMounter,
-    mobileactivationd::MobileActivationdClient,
     provider::IdeviceProvider,
     rsd::RsdHandshake,
     tcp::handle::{AdapterHandle, UdpSocketHandle},
 };
 
-use crate::audio_output::AudioOutput;
 use crate::decode;
-use crate::developer_mode;
-use crate::hid::{UniversalHidClient, build_multitouch_report};
-use crate::location::LocationCommand;
+use crate::device_runtime::AudioPublisher;
+use crate::domain::ascii_key_usage;
 use crate::protocol::{
-    AppOperationSlot, ClipboardSlot, ConnKind, DeviceActivationState, DeviceBattery, DeviceDetails,
-    DeviceRegionalSettings, DeviceStorage, InputCmd, KeyMods, Orientation, OrientationSlot,
-    RotateDir, VideoCounterSnapshot, VideoCounters,
+    AppOperationSlot, ClipboardSlot, ConnKind, DeviceDetails, InputCmd, KeyMods, VideoCounters,
 };
 use clipboard::ClipboardBridge;
+use devicehub_runtime::LocationCommand;
+use devicehub_runtime::{
+    DeviceInputCommand, DeviceInputDispatcher, DevicePowerAction, DevicePowerController,
+    OrientationWatcher, UniversalHidClient, read_activation_state, read_device_battery,
+    read_device_details, read_device_developer_mode_status, rename_device,
+};
 use manager::{SessionVideo, SessionViews};
 use media::{
     AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RtpVideoClock,
-    RunningStats, audio_decoder_restart_backoff,
+    RunningStats, audio_decoder_restart_backoff, stall_watchdog,
 };
-use orientation::OrientationWatcher;
 use rtcp::{RtcpShared, receive_task as rtcp_receive_task, send_task as rtcp_send_task};
 use services::{DeviceManagementServices, LocationBridge, SessionServices};
 use transport::{SessionEndpoint, connect_core_tunnel, connect_provider};
@@ -74,60 +64,26 @@ use transport::{SessionEndpoint, connect_core_tunnel, connect_provider};
 /// `clientSupportedFeatures` the controller advertises for screen sharing.
 const CLIENT_SUPPORTED_FEATURES: u64 = 140;
 
-/// Named iOS hardware buttons -> (usage_page, usage_code, hold_ms). Consumer-page
-/// (`0x0C`) codes come from CoreDevice's `HIDUsageCode<ConsumerPage>` table; the
-/// action button (iPhone 15 Pro+) lives on the telephony page (`0x0B`) usage `0x2D`.
-pub const NAMED_BUTTONS: &[(&str, u64, u64, u64)] = &[
-    ("home", 0x0C, 0x40, 80),
-    ("lock", 0x0C, 0x30, 200),
-    ("volume-up", 0x0C, 0xE9, 80),
-    ("volume-down", 0x0C, 0xEA, 80),
-    ("mute", 0x0C, 0xE2, 80),
-    ("siri", 0x0C, 0xCF, 1200),
-    ("action", 0x0B, 0x2D, 80),
-];
-
-/// HID Keyboard/Keypad usages for the left-hand modifier keys.
-const KEY_LEFT_CTRL: u64 = 0xE0;
-const KEY_LEFT_SHIFT: u64 = 0xE1;
-const KEY_LEFT_ALT: u64 = 0xE2;
-const KEY_LEFT_CMD: u64 = 0xE3;
-const KEY_V: u64 = 0x19;
-
-/// Sample transport/source/decode progress without treating a legitimately static
-/// screen as a decoder failure. A fully silent transport is retried only after
-/// several consecutive samples so normal RTCP sender-report spacing is covered.
-const VIDEO_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
-const VIDEO_TRANSPORT_SILENT_WINDOWS: u8 = 3;
 /// How long the locked stream must go silent before we migrate to a different
 /// SSRC: long enough to ignore stray packets from a competing/leaked sender,
 /// short enough to pick up a real stream restart promptly.
 const SSRC_TAKEOVER_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
-#[derive(Debug, Clone, Copy)]
-enum DevicePowerAction {
-    Lock,
-    Restart,
-    Shutdown,
+#[derive(Clone, Debug)]
+pub(crate) struct DeviceTransportConfig {
+    pub(crate) netmuxd: crate::netmuxd::NetmuxdConfig,
+    pub(crate) system_usbmuxd: transport::SystemUsbmuxdConfig,
 }
 
-#[derive(Clone, Default)]
-struct DevicePowerSlot(Arc<AtomicBool>);
-
-impl DevicePowerSlot {
-    fn try_start(&self) -> Result<DevicePowerLease, String> {
-        self.0
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| DevicePowerLease(self.clone()))
-            .map_err(|_| "another device power command is already running".into())
-    }
-}
-
-struct DevicePowerLease(DevicePowerSlot);
-
-impl Drop for DevicePowerLease {
-    fn drop(&mut self) {
-        self.0.0.store(false, Ordering::Release);
+impl DeviceTransportConfig {
+    pub(crate) fn from_host(
+        netmuxd: crate::netmuxd::NetmuxdConfig,
+        system_usbmuxd: Option<String>,
+    ) -> Self {
+        Self {
+            netmuxd,
+            system_usbmuxd: transport::SystemUsbmuxdConfig::from_host(system_usbmuxd),
+        }
     }
 }
 
@@ -137,6 +93,7 @@ impl Drop for DevicePowerLease {
 async fn run(
     endpoint: SessionEndpoint,
     pairing_dir: PathBuf,
+    system_usbmuxd: transport::SystemUsbmuxdConfig,
     video: SessionVideo,
     clipboard: ClipboardSlot,
     views: SessionViews,
@@ -155,8 +112,14 @@ async fn run(
     }
 
     let mut app_clients = AppClientSet::connect_installation_proxy(&*provider).await;
-    let (mut adapter, mut handshake) =
-        connect_core_tunnel(&endpoint, &*provider, &pairing_dir, &views.status).await?;
+    let (mut adapter, mut handshake) = connect_core_tunnel(
+        &endpoint,
+        &*provider,
+        &pairing_dir,
+        &views.status,
+        &system_usbmuxd,
+    )
+    .await?;
 
     let mut session_services = SessionServices::start(
         provider.clone(),
@@ -214,8 +177,8 @@ async fn run(
     let mut touch = UniversalHidClient::connect_rsd(&mut adapter, &mut handshake)
         .await
         .map_err(|e| format!("no universalhidservice: {e:?}"))?;
-    touch.dump_services_from_env().await;
-    let mut indigo = IndigoHidClient::connect_rsd(&mut adapter, &mut handshake)
+    crate::hid::dump_services_from_env(&mut touch).await;
+    let indigo = IndigoHidClient::connect_rsd(&mut adapter, &mut handshake)
         .await
         .map_err(|e| format!("no hid.indigo: {e:?}"))?;
 
@@ -238,7 +201,7 @@ async fn run(
     };
 
     // Orientation control is best-effort too: run without rotate if unavailable.
-    let mut orientation =
+    let orientation =
         match OrientationServiceClient::connect_rsd(&mut adapter, &mut handshake).await {
             Ok(c) => Some(c),
             Err(e) => {
@@ -328,7 +291,12 @@ async fn run(
         ) => {
             tracing::warn!("video task ended early");
         }
-        _ = audio_task(media.audio_udp, video.audio, video.audio_enabled) => {
+        _ = audio_task(
+            media.audio_udp,
+            video.audio,
+            video.audio_decoder,
+            video.audio_enabled,
+        ) => {
             tracing::warn!("audio task ended early");
         }
         result = decode_pipeline => {
@@ -352,9 +320,7 @@ async fn run(
         ) => {}
         _ = orientation_task => {}
         _ = input_loop(
-            &mut touch,
-            &mut indigo,
-            &mut orientation,
+            DeviceInputDispatcher::new(touch, indigo, orientation, views.orientation.clone()),
             DeviceManagement::new(
                 provider,
                 views.app_operation.clone(),
@@ -365,7 +331,6 @@ async fn run(
             ),
             &mut input_rx,
             InputBridges {
-                orientation: &views.orientation,
                 location: session_services.location(),
                 clipboard: &clipboard_bridge,
             },
@@ -382,15 +347,12 @@ async fn run(
 
 /// Dispatch input until the UI shuts us down or the channel closes.
 struct InputBridges<'a> {
-    orientation: &'a OrientationSlot,
     location: &'a LocationBridge,
     clipboard: &'a ClipboardBridge,
 }
 
 async fn input_loop(
-    touch: &mut UniversalHidClient<Box<dyn ReadWrite>>,
-    indigo: &mut IndigoHidClient<Box<dyn ReadWrite>>,
-    orientation: &mut Option<OrientationServiceClient<Box<dyn ReadWrite>>>,
+    mut device_input: DeviceInputDispatcher,
     mut management: DeviceManagement,
     input_rx: &mut UnboundedReceiver<InputCmd>,
     bridges: InputBridges<'_>,
@@ -408,23 +370,27 @@ async fn input_loop(
         if let InputCmd::PasteText { text, reply } = cmd {
             let result = async {
                 bridges.clipboard.set_text(text).await?;
-                type_key(
-                    indigo,
-                    KEY_V,
-                    KeyMods {
-                        cmd: true,
-                        ..KeyMods::default()
-                    },
-                )
-                .await
-                .map_err(|error| format!("unable to send paste shortcut: {error:?}"))
+                let (paste_usage, _) =
+                    ascii_key_usage('v').expect("ASCII v must have a keyboard usage");
+                device_input
+                    .dispatch(DeviceInputCommand::KeyCombo {
+                        usage: paste_usage,
+                        mods: KeyMods {
+                            cmd: true,
+                            ..KeyMods::default()
+                        },
+                    })
+                    .await
+                    .map_err(|error| format!("unable to send paste shortcut: {error:?}"))
             }
             .await;
             let _ = reply.send(result);
             continue;
         }
-        if let Err(e) = dispatch(touch, indigo, orientation, bridges.orientation, cmd).await {
-            tracing::warn!("input dispatch failed: {e:?}");
+        if let InputCmd::DeviceInput(command) = cmd
+            && let Err(error) = device_input.dispatch(command).await
+        {
+            tracing::warn!("input dispatch failed: {error:?}");
         }
     }
 }
@@ -487,77 +453,11 @@ fn forward_location_command(command: InputCmd, location: &LocationBridge) -> Opt
     None
 }
 
-fn reject_provisioning_command(command: crate::provisioning::ProvisioningCommand, reason: &str) {
-    use crate::provisioning::ProvisioningCommand;
-
-    let failure = || crate::provisioning::ProvisioningFailure::Unavailable(reason.into());
-    match command {
-        ProvisioningCommand::List { reply, .. } => {
-            let _ = reply.send(Err(failure()));
-        }
-        ProvisioningCommand::Install { reply, .. } => {
-            let _ = reply.send(Err(failure()));
-        }
-        ProvisioningCommand::Remove { reply, .. } => {
-            let _ = reply.send(Err(failure()));
-        }
-        ProvisioningCommand::TrustSigner { reply, .. } => {
-            let _ = reply.send(Err(failure()));
-        }
-    }
-}
-
-fn reject_wda_command(command: crate::wda_automation::WdaAutomationCommand, reason: &str) {
-    use crate::wda_automation::WdaAutomationCommand;
-
-    match command {
-        WdaAutomationCommand::Status { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::Source { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::DeviceState { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::Unlock { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::Find { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::Inspect { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::WaitForElement { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::Click { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::TypeText { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::DoubleTap { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::TouchAndHold { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::Scroll { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-        WdaAutomationCommand::BackgroundApp { reply, .. } => {
-            let _ = reply.send(Err(reason.into()));
-        }
-    }
-}
-
 fn reject_device_condition_command(
-    command: crate::device_conditions::DeviceConditionCommand,
+    command: devicehub_runtime::DeviceConditionCommand,
     reason: &str,
 ) {
-    use crate::device_conditions::DeviceConditionCommand;
+    use devicehub_runtime::DeviceConditionCommand;
 
     match command {
         DeviceConditionCommand::Apply { reply, .. }
@@ -682,7 +582,7 @@ fn reject_device_file_command(command: crate::device_files::DeviceFileCommand, r
 
 struct DeviceManagement {
     provider: Arc<dyn IdeviceProvider>,
-    power: DevicePowerSlot,
+    power: DevicePowerController,
     details: Option<DeviceDetails>,
     apps: AppManagement,
     services: DeviceManagementServices,
@@ -703,9 +603,10 @@ impl DeviceManagement {
             app_clients,
             app_service_transport,
         );
+        let power = DevicePowerController::new(provider.clone());
         Self {
             provider,
-            power: DevicePowerSlot::default(),
+            power,
             details,
             apps,
             services,
@@ -731,7 +632,13 @@ impl DeviceManagement {
     }
 
     async fn handle(&mut self, command: InputCmd) -> Option<InputCmd> {
-        let command = self.apps.handle(command).await?;
+        let command = match command {
+            InputCmd::Apps(command) => {
+                self.apps.handle(command).await;
+                return None;
+            }
+            command => command,
+        };
         match command {
             InputCmd::GetDeviceDetails(reply) => {
                 let Some(mut details) = self.details.clone() else {
@@ -758,11 +665,11 @@ impl DeviceManagement {
                         ),
                         tokio::time::timeout(
                             Duration::from_secs(3),
-                            read_developer_mode_status(provider.as_ref()),
+                            read_device_developer_mode_status(provider.as_ref()),
                         ),
                         tokio::time::timeout(
                             Duration::from_secs(3),
-                            crate::developer_image::is_mounted(
+                            devicehub_runtime::is_developer_image_mounted(
                                 provider.as_ref(),
                                 &details.product_version,
                             ),
@@ -849,11 +756,11 @@ impl DeviceManagement {
                 None
             }
             InputCmd::DeveloperMode(command) => {
-                developer_mode::execute(self.provider.clone(), command);
+                devicehub_runtime::execute_developer_mode(self.provider.clone(), command);
                 None
             }
             InputCmd::ListCompanionDevices(reply) => {
-                let command = crate::companion_devices::CompanionDeviceCommand::List { reply };
+                let command = devicehub_runtime::CompanionDeviceCommand::List { reply };
                 if let Err(error) = self.services.companions.try_send(command) {
                     let (reason, command) = match error {
                         tokio::sync::mpsc::error::TrySendError::Full(command) => {
@@ -864,7 +771,7 @@ impl DeviceManagement {
                         }
                     };
                     match command {
-                        crate::companion_devices::CompanionDeviceCommand::List { reply } => {
+                        devicehub_runtime::CompanionDeviceCommand::List { reply } => {
                             let _ = reply.send(Err(reason.into()));
                         }
                     }
@@ -872,7 +779,7 @@ impl DeviceManagement {
                 None
             }
             InputCmd::GetHomeScreenLayout(reply) => {
-                let command = crate::home_screen::HomeScreenCommand::Get { reply };
+                let command = devicehub_runtime::HomeScreenCommand::Get { reply };
                 if let Err(error) = self.services.home_screen.try_send(command) {
                     let (reason, command) = match error {
                         tokio::sync::mpsc::error::TrySendError::Full(command) => {
@@ -887,7 +794,7 @@ impl DeviceManagement {
                 None
             }
             InputCmd::GetWallpaper { kind, reply } => {
-                let command = crate::home_screen::HomeScreenCommand::Wallpaper { kind, reply };
+                let command = devicehub_runtime::HomeScreenCommand::Wallpaper { kind, reply };
                 if let Err(error) = self.services.home_screen.try_send(command) {
                     let (reason, command) = match error {
                         tokio::sync::mpsc::error::TrySendError::Full(command) => {
@@ -939,7 +846,7 @@ impl DeviceManagement {
                             ("WDA automation service is unavailable", command)
                         }
                     };
-                    reject_wda_command(command, reason);
+                    command.reject(reason);
                 }
                 None
             }
@@ -972,7 +879,7 @@ impl DeviceManagement {
                 None
             }
             InputCmd::GetAppIcon { bundle_id, reply } => {
-                let command = crate::app_icons::AppIconCommand { bundle_id, reply };
+                let command = devicehub_runtime::AppIconCommand { bundle_id, reply };
                 if let Err(error) = self.services.icons.try_send(command) {
                     let (reason, command) = match error {
                         tokio::sync::mpsc::error::TrySendError::Full(command) => {
@@ -987,7 +894,7 @@ impl DeviceManagement {
                 None
             }
             InputCmd::TakeScreenshot(reply) => {
-                let command = crate::screen_capture::ScreenCaptureCommand { reply };
+                let command = devicehub_runtime::ScreenCaptureCommand { reply };
                 if let Err(error) = self.services.screen_capture.try_send(command) {
                     let (reason, command) = match error {
                         tokio::sync::mpsc::error::TrySendError::Full(command) => {
@@ -1128,15 +1035,15 @@ impl DeviceManagement {
                 None
             }
             InputCmd::LockDevice(reply) => {
-                self.start_power_action(DevicePowerAction::Lock, reply);
+                self.power.start(DevicePowerAction::Lock, reply);
                 None
             }
             InputCmd::RestartDevice(reply) => {
-                self.start_power_action(DevicePowerAction::Restart, reply);
+                self.power.start(DevicePowerAction::Restart, reply);
                 None
             }
             InputCmd::ShutdownDevice(reply) => {
-                self.start_power_action(DevicePowerAction::Shutdown, reply);
+                self.power.start(DevicePowerAction::Shutdown, reply);
                 None
             }
             InputCmd::Provisioning(command) => {
@@ -1149,14 +1056,14 @@ impl DeviceManagement {
                             ("provisioning profile service is unavailable", command)
                         }
                     };
-                    reject_provisioning_command(command, reason);
+                    command.reject(reason);
                 }
                 None
             }
             InputCmd::ListCrashReports(reply) => {
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    let _ = reply.send(crate::crash_reports::list(provider).await);
+                    let _ = reply.send(devicehub_runtime::list_crash_reports(provider).await);
                 });
                 None
             }
@@ -1167,7 +1074,9 @@ impl DeviceManagement {
             } => {
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    let result = crate::crash_reports::read(provider, device_path, max_bytes).await;
+                    let result =
+                        devicehub_runtime::read_crash_report(provider, device_path, max_bytes)
+                            .await;
                     let _ = reply.send(result);
                 });
                 None
@@ -1188,7 +1097,8 @@ impl DeviceManagement {
             InputCmd::DeleteCrashReport { device_path, reply } => {
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    let result = crate::crash_reports::delete(provider, device_path).await;
+                    let result =
+                        devicehub_runtime::delete_crash_report(provider, device_path).await;
                     let _ = reply.send(result);
                 });
                 None
@@ -1196,228 +1106,6 @@ impl DeviceManagement {
             other => Some(other),
         }
     }
-
-    fn start_power_action(
-        &self,
-        action: DevicePowerAction,
-        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    ) {
-        match self.power.try_start() {
-            Ok(lease) => {
-                spawn_device_power_action(self.provider.clone(), action, reply, lease);
-            }
-            Err(error) => {
-                let _ = reply.send(Err(error));
-            }
-        }
-    }
-}
-
-fn spawn_device_power_action(
-    provider: Arc<dyn IdeviceProvider>,
-    action: DevicePowerAction,
-    reply: tokio::sync::oneshot::Sender<Result<(), String>>,
-    _lease: DevicePowerLease,
-) {
-    tokio::spawn(async move {
-        let result = tokio::time::timeout(Duration::from_secs(8), async {
-            let mut diagnostics = DiagnosticsRelayClient::connect(provider.as_ref())
-                .await
-                .map_err(|error| format!("cannot connect diagnostics relay: {error:?}"))?;
-            match action {
-                DevicePowerAction::Lock => diagnostics.sleep().await,
-                DevicePowerAction::Restart => diagnostics.restart().await,
-                DevicePowerAction::Shutdown => diagnostics.shutdown().await,
-            }
-            .map_err(|error| format!("device power command failed: {error:?}"))
-        })
-        .await
-        .unwrap_or_else(|_| Err("device power command timed out".into()));
-        match &result {
-            Ok(()) => tracing::info!(?action, "device power command accepted"),
-            Err(error) => tracing::warn!(?action, %error, "device power command failed"),
-        }
-        let _ = reply.send(result);
-    });
-}
-
-/// Dispatch one [`InputCmd`] to the appropriate HID surface.
-async fn dispatch(
-    touch: &mut UniversalHidClient<Box<dyn ReadWrite>>,
-    indigo: &mut IndigoHidClient<Box<dyn ReadWrite>>,
-    orientation: &mut Option<OrientationServiceClient<Box<dyn ReadWrite>>>,
-    orientation_view: &OrientationSlot,
-    cmd: InputCmd,
-) -> Result<(), idevice::IdeviceError> {
-    match cmd {
-        InputCmd::Tap { x, y } => touch.tap(x, y).await,
-        InputCmd::TouchDown { x, y } | InputCmd::TouchMove { x, y } => {
-            touch
-                .send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y, None)
-                .await
-        }
-        InputCmd::TouchUp { x, y } => {
-            touch
-                .send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, y, None)
-                .await
-        }
-        InputCmd::MultiTouchFrame(contacts) => match build_multitouch_report(&contacts, None) {
-            Ok(report) => {
-                touch
-                    .send_report(DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, report)
-                    .await
-            }
-            Err(error) => {
-                tracing::warn!("dropping invalid multi-touch frame: {error}");
-                Ok(())
-            }
-        },
-        InputCmd::Text(text) => {
-            for ch in text.chars() {
-                if let Some((usage, shift)) = ascii_to_usage(ch) {
-                    type_key(
-                        indigo,
-                        usage,
-                        KeyMods {
-                            shift,
-                            ..KeyMods::default()
-                        },
-                    )
-                    .await?;
-                }
-            }
-            Ok(())
-        }
-        InputCmd::PasteText { .. } => Ok(()),
-        InputCmd::KeyUsage(usage) => type_key(indigo, usage, KeyMods::default()).await,
-        InputCmd::KeyCombo { usage, mods } => type_key(indigo, usage, mods).await,
-        InputCmd::KeyboardDown(usage) => indigo.send_keyboard(usage, ButtonState::Down).await,
-        InputCmd::KeyboardUp(usage) => indigo.send_keyboard(usage, ButtonState::Up).await,
-        InputCmd::Button(name) => {
-            if let Some(&(_, page, code, hold_ms)) =
-                NAMED_BUTTONS.iter().find(|(n, _, _, _)| *n == name)
-            {
-                indigo.send_button(page, code, ButtonState::Down).await?;
-                tokio::time::sleep(std::time::Duration::from_millis(hold_ms)).await;
-                indigo.send_button(page, code, ButtonState::Up).await?;
-            }
-            Ok(())
-        }
-        InputCmd::ButtonDown(name) => {
-            if let Some(&(_, page, code, _)) = NAMED_BUTTONS.iter().find(|(n, _, _, _)| *n == name)
-            {
-                indigo.send_button(page, code, ButtonState::Down).await?;
-            }
-            Ok(())
-        }
-        InputCmd::ButtonUp(name) => {
-            if let Some(&(_, page, code, _)) = NAMED_BUTTONS.iter().find(|(n, _, _, _)| *n == name)
-            {
-                indigo.send_button(page, code, ButtonState::Up).await?;
-            }
-            Ok(())
-        }
-        InputCmd::Rotate(dir) => {
-            if let Some(client) = orientation {
-                let direction = match dir {
-                    RotateDir::Left => RotationDirection::Left,
-                    RotateDir::Right => RotationDirection::Right,
-                };
-                let state = client.rotate(direction).await?;
-                tracing::info!(
-                    "rotated {dir:?} -> {:?} (non-flat {:?})",
-                    state.orientation,
-                    state.non_flat_orientation,
-                );
-                // Use the non-flat orientation so the display stays sensible even
-                // when the device is lying face up/down.
-                let view = match state.non_flat_orientation {
-                    DevOrientation::Portrait => Some(Orientation::Portrait),
-                    DevOrientation::PortraitUpsideDown => Some(Orientation::PortraitUpsideDown),
-                    DevOrientation::LandscapeLeft => Some(Orientation::LandscapeLeft),
-                    DevOrientation::LandscapeRight => Some(Orientation::LandscapeRight),
-                    DevOrientation::FaceUp
-                    | DevOrientation::FaceDown
-                    | DevOrientation::Unknown(_) => None,
-                };
-                if let Some(view) = view {
-                    orientation_view.set(view);
-                }
-            } else {
-                tracing::warn!("rotate requested but orientation service unavailable");
-            }
-            Ok(())
-        }
-        InputCmd::GetDeviceDetails(_)
-        | InputCmd::RenameDevice { .. }
-        | InputCmd::DeveloperMode(_)
-        | InputCmd::ListApps { .. }
-        | InputCmd::ListCompanionDevices(_)
-        | InputCmd::GetHomeScreenLayout(_)
-        | InputCmd::GetWallpaper { .. }
-        | InputCmd::RunningProcess(_)
-        | InputCmd::AppLifecycle(_)
-        | InputCmd::WdaAutomation(_)
-        | InputCmd::WdaRunner(_)
-        | InputCmd::AppConsole(_)
-        | InputCmd::GetAppIcon { .. }
-        | InputCmd::TakeScreenshot(_)
-        | InputCmd::NetworkCapture(_)
-        | InputCmd::BluetoothCapture(_)
-        | InputCmd::DeviceBackup(_)
-        | InputCmd::Sysdiagnose(_)
-        | InputCmd::LogArchive(_)
-        | InputCmd::DeveloperImageMount(_)
-        | InputCmd::DeviceCondition(_)
-        | InputCmd::AppDocuments(_)
-        | InputCmd::DeviceFiles(_)
-        | InputCmd::LockDevice(_)
-        | InputCmd::RestartDevice(_)
-        | InputCmd::ShutdownDevice(_)
-        | InputCmd::Provisioning(_)
-        | InputCmd::LaunchApp { .. }
-        | InputCmd::StopApp { .. }
-        | InputCmd::ListCrashReports(_)
-        | InputCmd::ReadCrashReport { .. }
-        | InputCmd::ExportCrashReport { .. }
-        | InputCmd::DeleteCrashReport { .. }
-        | InputCmd::UninstallApp { .. }
-        | InputCmd::SetLocation { .. }
-        | InputCmd::ClearLocation { .. } => Ok(()),
-        InputCmd::Shutdown => Ok(()),
-    }
-}
-
-/// Press a key (down then up), bracketing with any held modifier keys. Modifiers
-/// are pressed in a stable order and released in reverse so iOS reads a clean
-/// chord (e.g. ⌘C, ⌘Space).
-async fn type_key(
-    indigo: &mut IndigoHidClient<Box<dyn ReadWrite>>,
-    usage: u64,
-    mods: KeyMods,
-) -> Result<(), idevice::IdeviceError> {
-    // (usage, held) pairs in press order; release walks this in reverse.
-    let modifiers = [
-        (KEY_LEFT_CTRL, mods.ctrl),
-        (KEY_LEFT_ALT, mods.alt),
-        (KEY_LEFT_CMD, mods.cmd),
-        (KEY_LEFT_SHIFT, mods.shift),
-    ];
-    for (m, held) in modifiers {
-        if held {
-            indigo.send_keyboard(m, ButtonState::Down).await?;
-        }
-    }
-    indigo.send_keyboard(usage, ButtonState::Down).await?;
-    indigo.send_keyboard(usage, ButtonState::Up).await?;
-    for (m, held) in modifiers.iter().rev() {
-        if *held {
-            indigo.send_keyboard(*m, ButtonState::Up).await?;
-        }
-    }
-    // A small gap so the device registers discrete keystrokes.
-    tokio::time::sleep(std::time::Duration::from_millis(12)).await;
-    Ok(())
 }
 
 /// Receive video RTP, depacketize HEVC, and queue complete Annex-B access units
@@ -1735,328 +1423,6 @@ struct ScreenMediaStream {
     rtcp_udp: Option<UdpSocketHandle>,
 }
 
-async fn read_device_details(
-    provider: &dyn IdeviceProvider,
-    requested_udid: String,
-) -> Option<DeviceDetails> {
-    let mut lockdown = LockdownClient::connect(provider).await.ok()?;
-    let values = lockdown.get_value(None, None).await.ok()?;
-    let values = values.as_dictionary()?;
-    let integer = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
-    let disk_usage = lockdown
-        .get_value(None, Some("com.apple.disk_usage"))
-        .await
-        .ok()
-        .and_then(plist::Value::into_dictionary);
-    let storage = disk_usage.as_ref().and_then(device_storage_from_disk_usage);
-    let mut total_disk_capacity = disk_usage
-        .as_ref()
-        .and_then(|values| values.get("TotalDiskCapacity"))
-        .and_then(plist::Value::as_unsigned_integer)
-        .or_else(|| integer("TotalDiskCapacity"));
-    if total_disk_capacity.is_none() {
-        total_disk_capacity = lockdown
-            .get_value(Some("TotalDiskCapacity"), Some("com.apple.disk_usage"))
-            .await
-            .ok()
-            .and_then(|value| value.as_unsigned_integer());
-    }
-    Some(DeviceDetails {
-        udid: device_identity_token(values, "UniqueDeviceID", 128).unwrap_or(requested_udid),
-        name: device_display_name(values).unwrap_or_else(|| "iOS Device".to_string()),
-        product_type: device_identity_token(values, "ProductType", 32)
-            .unwrap_or_else(|| "Unknown".to_string()),
-        product_version: device_identity_token(values, "ProductVersion", 32)
-            .unwrap_or_else(|| "Unknown".to_string()),
-        build_version: device_identity_token(values, "BuildVersion", 32),
-        device_class: device_identity_token(values, "DeviceClass", 32),
-        cpu_architecture: device_identity_token(values, "CPUArchitecture", 32),
-        model_number: device_identity_token(values, "ModelNumber", 32),
-        hardware_model: device_identity_token(values, "HardwareModel", 32),
-        device_color: device_identity_token(values, "DeviceColor", 32),
-        enclosure_color: device_identity_token(values, "EnclosureColor", 32),
-        serial_number: device_identity_token(values, "SerialNumber", 64),
-        ecid: integer("UniqueChipID").map(|value| value.to_string()),
-        total_disk_capacity,
-        storage,
-        activation_state: None,
-        developer_mode_enabled: None,
-        developer_image_mounted: None,
-        regional_settings: device_regional_settings(values),
-        battery: None,
-    })
-}
-
-fn device_display_name(values: &plist::Dictionary) -> Option<String> {
-    let value = values.get("DeviceName")?.as_string()?.trim();
-    let characters = value.chars().count();
-    (!value.is_empty()
-        && value.len() <= 255
-        && characters <= 64
-        && !value.chars().any(char::is_control))
-    .then(|| value.to_string())
-}
-
-fn device_identity_token(
-    values: &plist::Dictionary,
-    key: &str,
-    max_characters: usize,
-) -> Option<String> {
-    let value = values.get(key)?.as_string()?.trim();
-    (!value.is_empty()
-        && value.len() <= 128
-        && value.chars().count() <= max_characters
-        && value.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '-' | '_' | '.' | '#' | '/' | ',')
-        }))
-    .then(|| value.to_string())
-}
-
-fn device_regional_settings(values: &plist::Dictionary) -> Option<DeviceRegionalSettings> {
-    let token = |key: &str, max_chars: usize, allowed: fn(char) -> bool| {
-        values
-            .get(key)
-            .and_then(plist::Value::as_string)
-            .map(str::trim)
-            .filter(|value| {
-                !value.is_empty()
-                    && value.chars().count() <= max_chars
-                    && value.chars().all(allowed)
-            })
-            .map(ToOwned::to_owned)
-    };
-    let regional = DeviceRegionalSettings {
-        language: token("Language", 35, |character| {
-            character.is_ascii_alphanumeric() || character == '-'
-        }),
-        locale: token("Locale", 64, |character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-        }),
-        time_zone: token("TimeZone", 64, |character| {
-            character.is_ascii_alphanumeric() || matches!(character, '/' | '_' | '-' | '+' | '.')
-        }),
-        uses_24_hour_clock: values
-            .get("Uses24HourClock")
-            .and_then(plist::Value::as_boolean),
-    };
-    (regional.language.is_some()
-        || regional.locale.is_some()
-        || regional.time_zone.is_some()
-        || regional.uses_24_hour_clock.is_some())
-    .then_some(regional)
-}
-
-async fn rename_device(
-    provider: &dyn IdeviceProvider,
-    requested_name: &str,
-) -> Result<String, String> {
-    let name = crate::protocol::validate_device_name(requested_name).map_err(str::to_string)?;
-    let mut lockdown = LockdownClient::connect(provider)
-        .await
-        .map_err(|error| format!("cannot connect Lockdown for device rename: {error}"))?;
-    let pairing_file = provider
-        .get_pairing_file()
-        .await
-        .map_err(|error| format!("cannot load pairing record for device rename: {error}"))?;
-    lockdown
-        .start_session(&pairing_file)
-        .await
-        .map_err(|error| format!("cannot start Lockdown session for device rename: {error}"))?;
-    let rename_result: Result<(), String> = async {
-        lockdown
-            .set_value("DeviceName", plist::Value::String(name.clone()), None)
-            .await
-            .map_err(|error| format!("device rejected the new name: {error}"))?;
-        let verified = lockdown
-            .get_value(Some("DeviceName"), None)
-            .await
-            .map_err(|error| format!("cannot verify the new device name: {error}"))?
-            .into_string()
-            .ok_or_else(|| "device returned an invalid name after rename".to_string())?;
-        if verified != name {
-            return Err("device did not retain the requested name".into());
-        }
-        Ok(())
-    }
-    .await;
-    match tokio::time::timeout(Duration::from_secs(1), lockdown.stop_session()).await {
-        Ok(Ok(())) => tracing::debug!("device rename Lockdown session stopped"),
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "unable to stop device rename Lockdown session")
-        }
-        Err(_) => tracing::warn!("stopping device rename Lockdown session timed out"),
-    }
-    rename_result?;
-    tracing::info!(
-        name_chars = name.chars().count(),
-        "device name changed through Lockdown"
-    );
-    Ok(name)
-}
-
-async fn read_activation_state(
-    provider: &dyn IdeviceProvider,
-) -> Result<DeviceActivationState, String> {
-    let raw = MobileActivationdClient::new(provider)
-        .state()
-        .await
-        .map_err(|error| format!("cannot read activation state: {error:?}"))?;
-    Ok(normalize_activation_state(&raw))
-}
-
-fn normalize_activation_state(value: &str) -> DeviceActivationState {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "activated" => DeviceActivationState::Activated,
-        "unactivated" => DeviceActivationState::Unactivated,
-        "factoryactivated" | "factory_activated" => DeviceActivationState::FactoryActivated,
-        "softactivated" | "soft_activated" => DeviceActivationState::SoftActivated,
-        _ => DeviceActivationState::Unknown,
-    }
-}
-
-fn device_storage_from_disk_usage(values: &plist::Dictionary) -> Option<DeviceStorage> {
-    let unsigned = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
-    let storage = DeviceStorage {
-        data_capacity_bytes: unsigned("TotalDataCapacity"),
-        data_available_bytes: unsigned("TotalDataAvailable"),
-        system_capacity_bytes: unsigned("TotalSystemCapacity"),
-        system_available_bytes: unsigned("TotalSystemAvailable"),
-    };
-    if storage.data_capacity_bytes.is_none()
-        && storage.data_available_bytes.is_none()
-        && storage.system_capacity_bytes.is_none()
-        && storage.system_available_bytes.is_none()
-    {
-        None
-    } else {
-        Some(storage)
-    }
-}
-
-async fn read_developer_mode_status(provider: &dyn IdeviceProvider) -> Result<bool, String> {
-    match tokio::time::timeout(
-        Duration::from_millis(1_500),
-        developer_mode::read_status(provider),
-    )
-    .await
-    {
-        Ok(Ok(enabled)) => return Ok(enabled),
-        Ok(Err(error)) => {
-            tracing::debug!(%error, "AMFI developer mode status unavailable; falling back to MobileImageMounter");
-        }
-        Err(_) => tracing::debug!(
-            "AMFI developer mode status timed out; falling back to MobileImageMounter"
-        ),
-    }
-    let mut mounter = ImageMounter::connect(provider)
-        .await
-        .map_err(|error| format!("cannot connect mobile image mounter: {error:?}"))?;
-    mounter
-        .query_developer_mode_status()
-        .await
-        .map_err(|error| format!("cannot query developer mode: {error:?}"))
-}
-
-async fn read_device_battery(provider: &dyn IdeviceProvider) -> Result<DeviceBattery, String> {
-    let mut diagnostics = DiagnosticsRelayClient::connect(provider)
-        .await
-        .map_err(|error| format!("cannot connect diagnostics relay: {error:?}"))?;
-    let values = diagnostics
-        .ioregistry(None, Some("AppleSmartBattery"), None)
-        .await
-        .map_err(|error| format!("cannot query AppleSmartBattery: {error:?}"))?
-        .ok_or_else(|| "AppleSmartBattery returned no data".to_string())?;
-    Ok(device_battery_from_ioregistry(&values))
-}
-
-fn device_battery_from_ioregistry(values: &plist::Dictionary) -> DeviceBattery {
-    let unsigned = |dictionary: &plist::Dictionary, key: &str, maximum: u64| {
-        dictionary
-            .get(key)
-            .and_then(plist::Value::as_unsigned_integer)
-            .filter(|value| *value <= maximum)
-    };
-    let signed = |dictionary: &plist::Dictionary, key: &str, absolute_maximum: i64| {
-        dictionary
-            .get(key)
-            .and_then(plist::Value::as_signed_integer)
-            .filter(|value| value.unsigned_abs() <= absolute_maximum as u64)
-    };
-    let boolean = |dictionary: &plist::Dictionary, key: &str| {
-        dictionary.get(key).and_then(|value| {
-            value
-                .as_boolean()
-                .or_else(|| value.as_unsigned_integer().map(|value| value != 0))
-        })
-    };
-    let battery_data = values
-        .get("BatteryData")
-        .and_then(plist::Value::as_dictionary);
-    let adapter = values
-        .get("AdapterDetails")
-        .and_then(plist::Value::as_dictionary);
-    let charger_data = values
-        .get("ChargerData")
-        .and_then(plist::Value::as_dictionary);
-    let design_capacity_mah =
-        battery_data.and_then(|data| unsigned(data, "DesignCapacity", 100_000));
-    let full_charge_capacity_mah =
-        battery_data.and_then(|data| unsigned(data, "FullChargeCapacity", 100_000));
-    let health_percent = unsigned(values, "MaximumCapacityPercent", 100)
-        .or_else(|| battery_data.and_then(|data| unsigned(data, "MaximumCapacityPercent", 100)))
-        .map(|value| value as f64)
-        .or_else(|| {
-            design_capacity_mah
-                .filter(|capacity| *capacity > 0)
-                .zip(full_charge_capacity_mah)
-                .map(|(design, full)| (full as f64 * 100.0 / design as f64).clamp(0.0, 100.0))
-        });
-    let temperature_celsius = signed(values, "Temperature", 8_000)
-        .or_else(|| signed(values, "BatteryTemperature", 8_000))
-        .or_else(|| battery_data.and_then(|data| signed(data, "Temperature", 8_000)))
-        .map(|value| value as f64 / 100.0)
-        .filter(|value| (-20.0..=80.0).contains(value));
-
-    DeviceBattery {
-        level_percent: unsigned(values, "CurrentCapacity", 100)
-            .or_else(|| battery_data.and_then(|data| unsigned(data, "CurrentCapacity", 100)))
-            .map(|value| value as u8),
-        temperature_celsius,
-        is_charging: boolean(values, "IsCharging")
-            .or_else(|| charger_data.and_then(|data| boolean(data, "IsCharging"))),
-        external_connected: boolean(values, "ExternalConnected")
-            .or_else(|| boolean(values, "AppleRawExternalConnected")),
-        fully_charged: boolean(values, "FullyCharged")
-            .or_else(|| battery_data.and_then(|data| boolean(data, "FullyCharged"))),
-        cycle_count: unsigned(values, "CycleCount", 100_000),
-        voltage_mv: unsigned(values, "Voltage", 30_000)
-            .or_else(|| unsigned(values, "AppleRawBatteryVoltage", 30_000)),
-        instant_amperage_ma: signed(values, "InstantAmperage", 100_000)
-            .or_else(|| signed(values, "Amperage", 100_000)),
-        design_capacity_mah,
-        full_charge_capacity_mah,
-        health_percent,
-        time_remaining_minutes: unsigned(values, "TimeRemaining", 7 * 24 * 60)
-            .or_else(|| unsigned(values, "AvgTimeToEmpty", 7 * 24 * 60)),
-        adapter_watts: adapter.and_then(|details| unsigned(details, "Watts", 1_000)),
-        adapter_name: adapter
-            .and_then(|details| details.get("Name"))
-            .and_then(plist::Value::as_string)
-            .and_then(normalized_diagnostic_label),
-    }
-}
-
-fn normalized_diagnostic_label(value: &str) -> Option<String> {
-    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    (!value.is_empty()
-        && value.chars().count() <= 64
-        && value
-            .chars()
-            .all(|character| !character.is_control() && !matches!(character, '/' | '\\')))
-    .then_some(value)
-}
-
 fn format_media_start_error(
     stream: &str,
     error: IdeviceError,
@@ -2369,7 +1735,12 @@ fn parse_aac_au_header(payload: &[u8]) -> Option<AacAuHeader> {
     })
 }
 
-async fn audio_task(udp: UdpSocketHandle, output: AudioOutput, enabled: bool) {
+async fn audio_task(
+    udp: UdpSocketHandle,
+    output: AudioPublisher,
+    decoder: decode::AudioDecoderConfig,
+    enabled: bool,
+) {
     if !enabled {
         tracing::info!("device audio playback disabled; draining negotiated audio stream");
         audio_receive_loop(&udp, None).await;
@@ -2378,7 +1749,9 @@ async fn audio_task(udp: UdpSocketHandle, output: AudioOutput, enabled: bool) {
 
     let mut restart_attempt = 0_u32;
     loop {
-        let (mut child, stdout, stderr, rtp_address) = match decode::spawn_audio_ffmpeg().await {
+        let (mut child, stdout, stderr, rtp_address) = match decode::spawn_audio_ffmpeg(&decoder)
+            .await
+        {
             Ok(process) => process,
             Err(error) => {
                 tracing::warn!(%error, "cannot start device audio decoder; draining audio stream");
@@ -2658,151 +2031,11 @@ async fn start_video(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VideoWatchdogObservation {
-    Decoded,
-    SourceWithoutDecode,
-    TransportOnly,
-    Silent,
-}
-
-fn video_watchdog_observation(
-    previous: VideoCounterSnapshot,
-    current: VideoCounterSnapshot,
-) -> VideoWatchdogObservation {
-    if current.decoded_frames != previous.decoded_frames {
-        VideoWatchdogObservation::Decoded
-    } else if current.source_frames != previous.source_frames {
-        VideoWatchdogObservation::SourceWithoutDecode
-    } else if current.transport_events != previous.transport_events {
-        VideoWatchdogObservation::TransportOnly
-    } else {
-        VideoWatchdogObservation::Silent
-    }
-}
-
-/// Recover only from evidence of a decoder stall or a genuinely silent transport.
-/// RTCP-only activity is healthy for a static screen and must not trigger PLI.
-async fn stall_watchdog(counters: VideoCounters, corruption: &Notify) {
-    let mut previous = counters.snapshot();
-    let mut silent_windows = 0_u8;
-    loop {
-        tokio::time::sleep(VIDEO_WATCHDOG_INTERVAL).await;
-        let current = counters.snapshot();
-        match video_watchdog_observation(previous, current) {
-            VideoWatchdogObservation::Decoded | VideoWatchdogObservation::TransportOnly => {
-                silent_windows = 0;
-            }
-            VideoWatchdogObservation::SourceWithoutDecode => {
-                silent_windows = 0;
-                tracing::warn!(
-                    interval_ms = VIDEO_WATCHDOG_INTERVAL.as_millis() as u64,
-                    "video source advanced without decoded output; requesting keyframe"
-                );
-                corruption.notify_one();
-            }
-            VideoWatchdogObservation::Silent => {
-                silent_windows = silent_windows.saturating_add(1);
-                if silent_windows >= VIDEO_TRANSPORT_SILENT_WINDOWS {
-                    tracing::warn!(
-                        silent_ms =
-                            VIDEO_WATCHDOG_INTERVAL.as_millis() as u64 * u64::from(silent_windows),
-                        "video RTP/RTCP transport is silent; requesting keyframe"
-                    );
-                    corruption.notify_one();
-                    silent_windows = 0;
-                }
-            }
-        }
-        previous = current;
-    }
-}
-
-/// Map an ASCII character to its HID Keyboard/Keypad usage and whether Shift is
-/// required (US layout). Ported from idevice-tools' `hid` command.
-fn ascii_to_usage(c: char) -> Option<(u64, bool)> {
-    Some(match c {
-        'a'..='z' => (0x04 + (c as u64 - 'a' as u64), false),
-        'A'..='Z' => (0x04 + (c as u64 - 'A' as u64), true),
-        '1'..='9' => (0x1E + (c as u64 - '1' as u64), false),
-        '0' => (0x27, false),
-        '\n' => (0x28, false), // Return
-        '\t' => (0x2B, false), // Tab
-        ' ' => (0x2C, false),  // Space
-        '!' => (0x1E, true),
-        '@' => (0x1F, true),
-        '#' => (0x20, true),
-        '$' => (0x21, true),
-        '%' => (0x22, true),
-        '^' => (0x23, true),
-        '&' => (0x24, true),
-        '*' => (0x25, true),
-        '(' => (0x26, true),
-        ')' => (0x27, true),
-        '-' => (0x2D, false),
-        '_' => (0x2D, true),
-        '=' => (0x2E, false),
-        '+' => (0x2E, true),
-        '[' => (0x2F, false),
-        '{' => (0x2F, true),
-        ']' => (0x30, false),
-        '}' => (0x30, true),
-        '\\' => (0x31, false),
-        '|' => (0x31, true),
-        ';' => (0x33, false),
-        ':' => (0x33, true),
-        '\'' => (0x34, false),
-        '"' => (0x34, true),
-        '`' => (0x35, false),
-        '~' => (0x35, true),
-        ',' => (0x36, false),
-        '<' => (0x36, true),
-        '.' => (0x37, false),
-        '>' => (0x37, true),
-        '/' => (0x38, false),
-        '?' => (0x38, true),
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::transport::UsbmuxdEndpoint;
     use super::*;
     use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
-
-    fn video_snapshot(
-        transport_events: u64,
-        source_frames: u64,
-        decoded_frames: u64,
-    ) -> VideoCounterSnapshot {
-        VideoCounterSnapshot {
-            transport_events,
-            source_frames,
-            decoded_frames,
-        }
-    }
-
-    #[test]
-    fn video_watchdog_distinguishes_static_transport_from_decoder_stalls() {
-        let previous = video_snapshot(10, 5, 5);
-        assert_eq!(
-            video_watchdog_observation(previous, video_snapshot(11, 5, 5)),
-            VideoWatchdogObservation::TransportOnly
-        );
-        assert_eq!(
-            video_watchdog_observation(previous, video_snapshot(12, 6, 5)),
-            VideoWatchdogObservation::SourceWithoutDecode
-        );
-        assert_eq!(
-            video_watchdog_observation(previous, video_snapshot(12, 6, 6)),
-            VideoWatchdogObservation::Decoded
-        );
-        assert_eq!(
-            video_watchdog_observation(previous, previous),
-            VideoWatchdogObservation::Silent
-        );
-    }
 
     #[tokio::test]
     #[ignore = "requires a connected physical device"]
@@ -2817,19 +2050,10 @@ mod tests {
         let (provider, _) = connect_provider(endpoint)
             .await
             .expect("connect device provider");
-        let enabled = read_developer_mode_status(provider.as_ref())
+        let enabled = read_device_developer_mode_status(provider.as_ref())
             .await
             .expect("query developer mode");
         eprintln!("developer mode enabled: {enabled}");
-    }
-
-    #[test]
-    fn device_power_slot_rejects_concurrent_commands_and_releases_on_drop() {
-        let slot = DevicePowerSlot::default();
-        let lease = slot.try_start().unwrap();
-        assert!(slot.try_start().is_err());
-        drop(lease);
-        assert!(slot.try_start().is_ok());
     }
 
     #[test]
@@ -2916,309 +2140,5 @@ mod tests {
         assert!(message.contains("iPhone11,2 running iOS 26.0"));
         assert!(message.contains("iOS 27.0 or later"));
         assert!(!message.contains("Dictionary"));
-    }
-
-    #[test]
-    fn activation_states_are_reduced_to_a_stable_public_enum() {
-        assert_eq!(
-            normalize_activation_state("Activated"),
-            DeviceActivationState::Activated
-        );
-        assert_eq!(
-            normalize_activation_state(" Unactivated "),
-            DeviceActivationState::Unactivated
-        );
-        assert_eq!(
-            normalize_activation_state("FactoryActivated"),
-            DeviceActivationState::FactoryActivated
-        );
-        assert_eq!(
-            normalize_activation_state("soft_activated"),
-            DeviceActivationState::SoftActivated
-        );
-        assert_eq!(
-            normalize_activation_state("future-state\nprivate-data"),
-            DeviceActivationState::Unknown
-        );
-    }
-
-    #[test]
-    fn normalizes_bounded_lockdown_regional_settings() {
-        let values = plist::Dictionary::from_iter([
-            (
-                String::from("DeviceName"),
-                plist::Value::String(" Boa 的 iPhone ".into()),
-            ),
-            (
-                String::from("ProductType"),
-                plist::Value::String("iPhone14,3".into()),
-            ),
-            (
-                String::from("Language"),
-                plist::Value::String(" zh-Hant ".into()),
-            ),
-            (String::from("Locale"), plist::Value::String("zh_TW".into())),
-            (
-                String::from("TimeZone"),
-                plist::Value::String("Asia/Taipei".into()),
-            ),
-            (String::from("Uses24HourClock"), plist::Value::Boolean(true)),
-        ]);
-        assert_eq!(
-            device_display_name(&values).as_deref(),
-            Some("Boa 的 iPhone")
-        );
-        assert_eq!(
-            device_identity_token(&values, "ProductType", 32).as_deref(),
-            Some("iPhone14,3")
-        );
-        let regional = device_regional_settings(&values).unwrap();
-        assert_eq!(regional.language.as_deref(), Some("zh-Hant"));
-        assert_eq!(regional.locale.as_deref(), Some("zh_TW"));
-        assert_eq!(regional.time_zone.as_deref(), Some("Asia/Taipei"));
-        assert_eq!(regional.uses_24_hour_clock, Some(true));
-    }
-
-    #[test]
-    fn normalizes_bounded_non_unique_device_identity() {
-        let values = plist::Dictionary::from_iter([
-            (
-                String::from("DeviceClass"),
-                plist::Value::String(" iPhone ".into()),
-            ),
-            (
-                String::from("CPUArchitecture"),
-                plist::Value::String("arm64e".into()),
-            ),
-            (
-                String::from("ModelNumber"),
-                plist::Value::String("MU663CH/A".into()),
-            ),
-            (
-                String::from("DeviceColor"),
-                plist::Value::String("#3b3b3c".into()),
-            ),
-            (
-                String::from("EnclosureColor"),
-                plist::Value::String("black-1".into()),
-            ),
-        ]);
-        assert_eq!(
-            device_identity_token(&values, "DeviceClass", 32).as_deref(),
-            Some("iPhone")
-        );
-        assert_eq!(
-            device_identity_token(&values, "CPUArchitecture", 32).as_deref(),
-            Some("arm64e")
-        );
-        assert_eq!(
-            device_identity_token(&values, "ModelNumber", 32).as_deref(),
-            Some("MU663CH/A")
-        );
-        assert_eq!(
-            device_identity_token(&values, "DeviceColor", 32).as_deref(),
-            Some("#3b3b3c")
-        );
-        assert_eq!(
-            device_identity_token(&values, "EnclosureColor", 32).as_deref(),
-            Some("black-1")
-        );
-
-        let invalid = plist::Dictionary::from_iter([
-            (
-                String::from("DeviceName"),
-                plist::Value::String("phone\nprivate".into()),
-            ),
-            (
-                String::from("Control"),
-                plist::Value::String("phone\nprivate".into()),
-            ),
-            (String::from("Long"), plist::Value::String("x".repeat(33))),
-            (
-                String::from("Unicode"),
-                plist::Value::String("iPhone Pro".into()),
-            ),
-        ]);
-        assert!(device_display_name(&invalid).is_none());
-        assert!(device_identity_token(&invalid, "Control", 32).is_none());
-        assert!(device_identity_token(&invalid, "Long", 32).is_none());
-        assert!(device_identity_token(&invalid, "Unicode", 32).is_none());
-    }
-
-    #[test]
-    fn rejects_unbounded_or_nonstandard_regional_values() {
-        let values = plist::Dictionary::from_iter([
-            (
-                String::from("Language"),
-                plist::Value::String("x".repeat(36)),
-            ),
-            (
-                String::from("Locale"),
-                plist::Value::String("en_US\nprivate".into()),
-            ),
-            (
-                String::from("TimeZone"),
-                plist::Value::String("Asia/Taipei;secret".into()),
-            ),
-            (
-                String::from("Uses24HourClock"),
-                plist::Value::String("true".into()),
-            ),
-        ]);
-        assert!(device_regional_settings(&values).is_none());
-        assert!(device_regional_settings(&plist::Dictionary::new()).is_none());
-    }
-
-    #[test]
-    fn normalizes_lockdown_disk_usage_without_inventing_missing_values() {
-        let values = plist::Dictionary::from_iter([
-            (
-                String::from("TotalDataCapacity"),
-                plist::Value::Integer(120_000_000_000_u64.into()),
-            ),
-            (
-                String::from("TotalDataAvailable"),
-                plist::Value::Integer(45_000_000_000_u64.into()),
-            ),
-            (
-                String::from("TotalSystemCapacity"),
-                plist::Value::Integer(8_000_000_000_u64.into()),
-            ),
-        ]);
-
-        let storage = device_storage_from_disk_usage(&values).unwrap();
-        assert_eq!(storage.data_capacity_bytes, Some(120_000_000_000));
-        assert_eq!(storage.data_available_bytes, Some(45_000_000_000));
-        assert_eq!(storage.system_capacity_bytes, Some(8_000_000_000));
-        assert_eq!(storage.system_available_bytes, None);
-        assert!(device_storage_from_disk_usage(&plist::Dictionary::new()).is_none());
-    }
-
-    #[test]
-    fn normalizes_battery_diagnostics_without_exposing_serials() {
-        let battery_data = plist::Dictionary::from_iter([
-            (
-                String::from("DesignCapacity"),
-                plist::Value::Integer(4325.into()),
-            ),
-            (
-                String::from("FullChargeCapacity"),
-                plist::Value::Integer(3482.into()),
-            ),
-        ]);
-        let adapter = plist::Dictionary::from_iter([
-            (
-                String::from("Name"),
-                plist::Value::String("20W USB-C Power Adapter".into()),
-            ),
-            (String::from("Watts"), plist::Value::Integer(20.into())),
-            (
-                String::from("SerialString"),
-                plist::Value::String("must-not-leak".into()),
-            ),
-        ]);
-        let values = plist::Dictionary::from_iter([
-            (
-                String::from("CurrentCapacity"),
-                plist::Value::Integer(52.into()),
-            ),
-            (String::from("IsCharging"), plist::Value::Boolean(true)),
-            (
-                String::from("ExternalConnected"),
-                plist::Value::Boolean(true),
-            ),
-            (String::from("FullyCharged"), plist::Value::Boolean(false)),
-            (
-                String::from("CycleCount"),
-                plist::Value::Integer(1554.into()),
-            ),
-            (String::from("Voltage"), plist::Value::Integer(4009.into())),
-            (
-                String::from("Temperature"),
-                plist::Value::Integer(3150.into()),
-            ),
-            (
-                String::from("InstantAmperage"),
-                plist::Value::Integer(2153.into()),
-            ),
-            (
-                String::from("TimeRemaining"),
-                plist::Value::Integer(146.into()),
-            ),
-            (
-                String::from("BatteryData"),
-                plist::Value::Dictionary(battery_data),
-            ),
-            (
-                String::from("AdapterDetails"),
-                plist::Value::Dictionary(adapter),
-            ),
-        ]);
-
-        let battery = device_battery_from_ioregistry(&values);
-        assert_eq!(battery.level_percent, Some(52));
-        assert_eq!(battery.is_charging, Some(true));
-        assert_eq!(battery.cycle_count, Some(1554));
-        assert_eq!(battery.voltage_mv, Some(4009));
-        assert_eq!(battery.temperature_celsius, Some(31.5));
-        assert_eq!(battery.instant_amperage_ma, Some(2153));
-        assert_eq!(battery.adapter_watts, Some(20));
-        assert_eq!(
-            battery.adapter_name.as_deref(),
-            Some("20W USB-C Power Adapter")
-        );
-        assert!((battery.health_percent.unwrap() - 80.508_670_52).abs() < 1e-6);
-        assert!(!format!("{battery:?}").contains("must-not-leak"));
-    }
-
-    #[test]
-    fn bounds_untrusted_battery_diagnostics() {
-        let adapter = plist::Dictionary::from_iter([
-            (
-                String::from("Name"),
-                plist::Value::String("private/path\0adapter".into()),
-            ),
-            (String::from("Watts"), plist::Value::Integer(50_000.into())),
-        ]);
-        let values = plist::Dictionary::from_iter([
-            (
-                String::from("CurrentCapacity"),
-                plist::Value::Integer(101.into()),
-            ),
-            (
-                String::from("Temperature"),
-                plist::Value::Integer(12_000.into()),
-            ),
-            (
-                String::from("CycleCount"),
-                plist::Value::Integer(1_000_000.into()),
-            ),
-            (
-                String::from("Voltage"),
-                plist::Value::Integer(100_000.into()),
-            ),
-            (
-                String::from("InstantAmperage"),
-                plist::Value::Integer(1_000_000.into()),
-            ),
-            (
-                String::from("MaximumCapacityPercent"),
-                plist::Value::Integer(96.into()),
-            ),
-            (
-                String::from("AdapterDetails"),
-                plist::Value::Dictionary(adapter),
-            ),
-        ]);
-
-        let battery = device_battery_from_ioregistry(&values);
-        assert_eq!(battery.health_percent, Some(96.0));
-        assert!(battery.level_percent.is_none());
-        assert!(battery.temperature_celsius.is_none());
-        assert!(battery.cycle_count.is_none());
-        assert!(battery.voltage_mv.is_none());
-        assert!(battery.instant_amperage_ma.is_none());
-        assert!(battery.adapter_watts.is_none());
-        assert!(battery.adapter_name.is_none());
     }
 }

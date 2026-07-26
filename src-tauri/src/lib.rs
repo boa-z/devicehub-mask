@@ -1,49 +1,37 @@
-mod app_console;
 mod app_documents;
-mod app_icons;
-mod app_lifecycle;
 mod application;
 mod audio_output;
 mod bluetooth_capture;
 mod browser_video;
 mod build_info;
-mod companion_devices;
+mod capture_files;
 mod crash_reports;
 mod decode;
-mod demand;
 mod developer_image;
-mod developer_mode;
 mod device_backup;
-mod device_conditions;
-mod device_events;
 mod device_files;
-mod device_logs;
+mod device_runtime;
+mod diagnostic_files;
 mod diagnostics;
-mod heartbeat;
+mod domain;
 mod hid;
-mod home_screen;
+mod host_files;
 mod http_apps;
 mod http_crash_reports;
 mod http_diagnostics;
 mod http_performance;
 mod http_profiles;
 mod http_storage;
-mod location;
 mod log_archive;
 mod mcp;
 mod netmuxd;
 mod network_capture;
-mod performance;
 mod protocol;
 mod provisioning;
-mod running_processes;
-mod screen_capture;
 mod session;
 mod settings;
 mod supervisor;
 mod sysdiagnose;
-mod wda_automation;
-mod wda_runner;
 mod web;
 mod web_status;
 mod websocket_flow;
@@ -56,23 +44,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use protocol::{
-    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, ErrorSlot, InputSink,
-    LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
-};
 use serde::Serialize;
-use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-// RSD handshakes decode nested XPC dictionaries recursively. The device owner
-// also hosts a LocalSet for non-Send DVT channels, so the platform thread
-// default (2 MiB on macOS) is not enough for larger iOS 27 service catalogs.
-const COREDEVICE_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
-
 struct BackendHandle {
-    control: mpsc::UnboundedSender<ControlCmd>,
     origin: String,
     token: String,
+    runtime: device_runtime::DeviceRuntime,
     shutdown: Mutex<Option<oneshot::Sender<()>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -171,13 +149,13 @@ fn set_clipboard_sync_enabled(
 
 impl BackendHandle {
     fn stop(&self) {
-        let _ = self.control.send(ControlCmd::Quit);
         if let Some(shutdown) = self.shutdown.lock().unwrap().take() {
             let _ = shutdown.send(());
         }
         if let Some(thread) = self.thread.lock().unwrap().take() {
             let _ = thread.join();
         }
+        self.runtime.stop();
     }
 }
 
@@ -185,151 +163,73 @@ fn spawn_backend(
     initial_udid: Option<String>,
     profile_dir: PathBuf,
     pairing_dir: PathBuf,
-    resource_dir: Option<PathBuf>,
-    settings: Arc<settings::AppSettings>,
-    audio: audio_output::AudioOutput,
+    transport: session::DeviceTransportConfig,
+    preferences: device_runtime::RuntimePreferences,
+    audio: device_runtime::AudioPublisher,
+    audio_decoder: decode::AudioDecoderConfig,
 ) -> Result<BackendHandle, String> {
-    let (control_tx, control_rx) = mpsc::unbounded_channel::<ControlCmd>();
-    let thread_control = control_tx.clone();
+    let runtime = device_runtime::DeviceRuntime::start(device_runtime::RuntimeConfig {
+        initial_udid,
+        pairing_dir,
+        transport,
+        preferences,
+        audio,
+        audio_decoder,
+    })?;
+    let services = runtime.services();
+    let runtime_control = services.application.control.clone();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let token = uuid::Uuid::new_v4().simple().to_string();
     let server_token = token.clone();
 
     let thread = std::thread::Builder::new()
-        .name("devicehub-coredevice".into())
-        .stack_size(COREDEVICE_THREAD_STACK_BYTES)
+        .name("devicehub-private-server".into())
         .spawn(move || {
-            tracing::info!(
-                stack_bytes = COREDEVICE_THREAD_STACK_BYTES,
-                "CoreDevice owner thread started"
-            );
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
-                .expect("build CoreDevice runtime");
-            let device_tasks = tokio::task::LocalSet::new();
-            runtime.block_on(device_tasks.run_until(async move {
-                let browser_frames = browser_video::BrowserVideoSlot::default();
-                let video_counters = VideoCounters::default();
-                let status = StatusSlot::default();
-                let clipboard = ClipboardSlot::default();
-                let device_events = device_events::DeviceEventSlot::default();
-                let network_capture = network_capture::NetworkCaptureSlot::default();
-                let bluetooth_capture = bluetooth_capture::BluetoothCaptureSlot::default();
-                let device_backup = device_backup::DeviceBackupSlot::default();
-                let sysdiagnose = sysdiagnose::SysdiagnoseSlot::default();
-                let log_archive = log_archive::LogArchiveSlot::default();
-                let developer_image = developer_image::DeveloperImageMountSlot::default();
-                let device_conditions = device_conditions::DeviceConditionSlot::default();
-                let orientation = OrientationSlot::default();
-                let devices = DeviceListSlot::default();
-                let active = ActiveSlot::default();
-                let error = ErrorSlot::default();
-                let input = InputSink::default();
-                let app_operation = AppOperationSlot::default();
-                let app_document_activity = app_documents::AppDocumentActivitySlot::default();
-                let device_file_activity = device_files::DeviceFileActivitySlot::default();
-                let location = LocationStatusSlot::default();
-                let performance = performance::PerformanceSlot::default();
-                let performance_demand = performance::PerformanceDemand::default();
-                let device_logs = device_logs::DeviceLogSlot::default();
-                let device_log_demand = device_logs::DeviceLogDemand::default();
-                let services = supervisor::ServiceRegistry::default();
-                let device_control =
-                    application::DeviceControlService::new(browser_frames.clone(), input.clone());
-                let application_services = application::ApplicationServices::new(
-                    device_control,
-                    application::DeviceStateSlots {
-                        orientation: orientation.clone(),
-                        devices: devices.clone(),
-                        active: active.clone(),
-                        error: error.clone(),
-                        status: status.clone(),
-                        location: location.clone(),
-                    },
-                    application::ObservabilitySlots {
-                        device_events: device_events.clone(),
-                        device_conditions: device_conditions.clone(),
-                        performance: performance.clone(),
-                        performance_demand: performance_demand.clone(),
-                        device_logs: device_logs.clone(),
-                        device_log_demand: device_log_demand.clone(),
-                    },
-                    thread_control.clone(),
-                );
-
-                tokio::spawn(mcp::serve(application_services.clone()));
-
-                let manager = session::manage(
-                    initial_udid,
-                    pairing_dir,
-                    resource_dir,
-                    settings.clone(),
-                    video_counters.clone(),
-                    browser_frames.clone(),
-                    audio.clone(),
-                    status.clone(),
-                    clipboard.clone(),
-                    device_events.clone(),
-                    network_capture.clone(),
-                    bluetooth_capture.clone(),
-                    device_backup.clone(),
-                    sysdiagnose.clone(),
-                    log_archive.clone(),
-                    developer_image.clone(),
-                    device_conditions.clone(),
-                    orientation.clone(),
-                    devices.clone(),
-                    active.clone(),
-                    error.clone(),
-                    app_operation.clone(),
-                    app_document_activity.clone(),
-                    device_file_activity.clone(),
-                    location.clone(),
-                    performance.clone(),
-                    performance_demand.clone(),
-                    device_logs.clone(),
-                    device_log_demand.clone(),
-                    services.clone(),
-                    input.clone(),
-                    control_rx,
-                );
+                .expect("build private server runtime");
+            runtime.block_on(async move {
+                tokio::spawn(mcp::serve(services.application.clone()));
                 let app = web::router(
                     web::AppState {
-                        application: application_services,
+                        application: services.application,
                         performance_http: http_performance::PerformanceHttpState::new(
-                            performance,
-                            performance_demand,
-                            device_logs,
-                            device_log_demand,
-                            device_conditions,
-                            network_capture,
-                            bluetooth_capture,
-                            services,
-                            input.clone(),
+                            services.performance,
+                            services.performance_demand,
+                            services.device_logs,
+                            services.device_log_demand,
+                            services.device_conditions,
+                            services.network_capture,
+                            services.bluetooth_capture,
+                            services.service_registry,
+                            services.input.clone(),
                         ),
                         profiles_http: http_profiles::ProfileHttpState::new(profile_dir),
                         storage_http: http_storage::StorageHttpState::new(
-                            input.clone(),
-                            app_document_activity,
-                            device_file_activity,
+                            services.input.clone(),
+                            services.app_document_activity,
+                            services.device_file_activity,
                         ),
                         diagnostics_http: http_diagnostics::DiagnosticsHttpState::new(
-                            input.clone(),
-                            device_backup,
-                            sysdiagnose,
-                            log_archive,
+                            services.input.clone(),
+                            services.device_backup,
+                            services.sysdiagnose,
+                            services.log_archive,
                         ),
-                        apps_http: http_apps::AppHttpState::new(input.clone(), app_operation),
+                        apps_http: http_apps::AppHttpState::new(
+                            services.input.clone(),
+                            services.app_operation,
+                        ),
                         crash_reports_http: http_crash_reports::CrashReportHttpState::new(
-                            input.clone(),
+                            services.input.clone(),
                         ),
-                        browser_frames,
-                        clipboard,
-                        developer_image,
-                        video_counters,
-                        input,
+                        browser_frames: services.browser_frames,
+                        clipboard: services.clipboard,
+                        developer_image: services.developer_image,
+                        video_counters: services.video_counters,
+                        input: services.input,
                     },
                     server_token,
                 );
@@ -359,32 +259,34 @@ fn spawn_backend(
                 let server = axum::serve(listener, app).with_graceful_shutdown(async {
                     let _ = shutdown_rx.await;
                 });
-                tokio::select! {
-                    result = server => {
-                        if let Err(error) = result {
-                            tracing::error!("control API stopped: {error}");
-                        }
-                    }
-                    _ = manager => tracing::warn!("device manager stopped"),
+                if let Err(error) = server.await {
+                    tracing::error!("control API stopped: {error}");
                 }
-                let _ = thread_control.send(ControlCmd::Quit);
-            }));
+            });
+            let _ = runtime_control.send(protocol::ControlCmd::Quit);
         })
-        .map_err(|error| format!("cannot start CoreDevice thread: {error}"))?;
+        .map_err(|error| format!("cannot start private server thread: {error}"))?;
 
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(origin)) => Ok(BackendHandle {
-            control: control_tx,
             origin,
             token,
+            runtime,
             shutdown: Mutex::new(Some(shutdown_tx)),
             thread: Mutex::new(Some(thread)),
         }),
         Ok(Err(error)) => {
+            let _ = shutdown_tx.send(());
             let _ = thread.join();
+            runtime.stop();
             Err(error)
         }
-        Err(error) => Err(format!("CoreDevice backend did not start: {error}")),
+        Err(error) => {
+            let _ = shutdown_tx.send(());
+            let _ = thread.join();
+            runtime.stop();
+            Err(format!("CoreDevice backend did not start: {error}"))
+        }
     }
 }
 
@@ -428,6 +330,7 @@ pub fn run() {
                 app.path().app_config_dir()?.join("settings.json"),
             ));
             let audio_settings = settings.status();
+            let runtime_preferences = settings.runtime_preferences();
             let audio_output = audio_output::AudioOutput::spawn(
                 audio_settings.audio_muted,
                 audio_settings.audio_volume,
@@ -437,7 +340,23 @@ pub fn run() {
             app.manage(settings.clone());
             let app_data_dir = app.path().app_data_dir()?;
             let resource_dir = app.path().resource_dir().ok();
-            decode::set_resource_dir(resource_dir.clone());
+            let current_exe = std::env::current_exe().ok();
+            let audio_decoder = decode::AudioDecoderConfig::from_host(
+                std::env::var_os("DEVICEHUB_FFMPEG"),
+                std::env::var_os("PATH"),
+                resource_dir.as_deref(),
+                current_exe.as_deref(),
+            );
+            let system_usbmuxd = std::env::var("USBMUXD_SOCKET_ADDRESS").ok();
+            let netmuxd = netmuxd::NetmuxdConfig::from_host(
+                std::env::var_os("DEVICEHUB_NETMUXD"),
+                std::env::var("DEVICEHUB_NETMUXD_LOG").ok(),
+                system_usbmuxd.clone(),
+                std::env::var_os("PATH"),
+                resource_dir.as_deref(),
+                current_exe.as_deref(),
+            );
+            let transport = session::DeviceTransportConfig::from_host(netmuxd, system_usbmuxd);
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| app_data_dir.join("profiles"));
@@ -446,9 +365,10 @@ pub fn run() {
                 initial_udid,
                 profile_dir,
                 app_data_dir.join("pairings"),
-                resource_dir,
-                settings,
-                audio_output,
+                transport,
+                runtime_preferences,
+                device_runtime::AudioPublisher::new(audio_output),
+                audio_decoder,
             )
             .map_err(std::io::Error::other)?;
             app.manage(backend);

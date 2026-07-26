@@ -63,12 +63,12 @@ pub(crate) async fn crash_report_summary(
     State(state): State<CrashReportHttpState>,
     Query(query): Query<CrashReportSummaryQuery>,
 ) -> Result<Json<crate::protocol::DeviceCrashReportSummary>, (StatusCode, String)> {
-    crate::crash_reports::validate_device_path(&query.device_path)
+    devicehub_runtime::validate_crash_report_path(&query.device_path)
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     require_active_session(state.input.try_send(InputCmd::ReadCrashReport {
         device_path: query.device_path,
-        max_bytes: crate::crash_reports::MAX_READ_BYTES,
+        max_bytes: devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES,
         reply,
     }))?;
     let report = await_session_result(response, "crash report summary request").await?;
@@ -246,7 +246,7 @@ mod tests {
             panic!("expected crash report read command");
         };
         assert_eq!(device_path, "/Report.ips");
-        assert_eq!(max_bytes, crate::crash_reports::MAX_READ_BYTES);
+        assert_eq!(max_bytes, devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES);
         reply
             .send(Ok(crate::protocol::DeviceCrashReportContent {
                 device_path,

@@ -7,21 +7,21 @@
 //! endpoint by itself.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::discovery::DeviceDiscovery;
-use super::transport::{WIFI_REAUTHORIZE_REQUIRED, resolve_device_selection};
+use super::transport::resolve_device_selection;
 use super::{run, trust};
-use crate::audio_output::AudioOutput;
+use crate::device_runtime::AudioPublisher;
 use crate::protocol::{
-    ActiveSlot, AppOperationSlot, ClipboardSlot, ConnKind, ControlCmd, DeviceListSlot,
-    DevicePairingState, ErrorSlot, ForgetDeviceResult, InputCmd, InputSink, LocationStatus,
-    LocationStatusSlot, OrientationSlot, PairDeviceResult, StatusSlot, VideoCounters,
+    ActiveSlot, AppOperationSlot, ClipboardSlot, ControlCmd, DeviceListSlot, DevicePairingState,
+    ErrorSlot, ForgetDeviceResult, InputCmd, InputSink, LocationStatus, LocationStatusSlot,
+    OrientationSlot, PairDeviceResult, StatusSlot, VideoCounters,
 };
-use crate::{performance, supervisor};
+use crate::supervisor;
+use devicehub_runtime::{SessionFailureAction, SessionRetry, SessionRetryPolicy};
 
 /// Idle discovery remains responsive without continuously probing mux services.
 const IDLE_RESCAN: Duration = Duration::from_secs(2);
@@ -30,20 +30,13 @@ const IDLE_RESCAN: Duration = Duration::from_secs(2);
 const ACTIVE_RESCAN: Duration = Duration::from_secs(8);
 /// A user transition must not leave two media sessions fighting for the device.
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
-/// A dropped Wi-Fi child service cannot repair its parent RemotePairing tunnel.
-/// Repeated setup failures back off so a sleeping device or stale Bonjour
-/// record cannot create a connection storm.
-const WIFI_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(8);
-const WIFI_STABLE_SESSION: Duration = Duration::from_secs(30);
-
-fn wifi_reconnect_delay(attempt: u32) -> Duration {
-    Duration::from_secs(1_u64 << attempt.min(3)).min(WIFI_RECONNECT_MAX_DELAY)
-}
-
 /// What the manager should do once the current session is no longer running.
 enum Next {
     Switch(String),
-    RetryWifi(String),
+    RetryWifi {
+        selection_id: String,
+        retry: SessionRetry,
+    },
     Pair {
         selection_id: String,
         reply: tokio::sync::oneshot::Sender<PairDeviceResult>,
@@ -54,14 +47,6 @@ enum Next {
     },
     Idle,
     Quit,
-}
-
-fn next_after_session_error(connection: ConnKind, selection_id: &str, error_message: &str) -> Next {
-    if connection == ConnKind::Network && error_message != WIFI_REAUTHORIZE_REQUIRED {
-        Next::RetryWifi(selection_id.to_owned())
-    } else {
-        Next::Idle
-    }
 }
 
 fn interrupts_active_session(next: &Next) -> bool {
@@ -80,19 +65,19 @@ pub(super) struct SessionViews {
     pub(super) app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     pub(super) device_file_activity: crate::device_files::DeviceFileActivitySlot,
     pub(super) location: LocationStatusSlot,
-    pub(super) performance: performance::PerformanceSlot,
-    pub(super) performance_demand: performance::PerformanceDemand,
-    pub(super) device_logs: crate::device_logs::DeviceLogSlot,
-    pub(super) device_log_demand: crate::device_logs::DeviceLogDemand,
+    pub(super) performance: devicehub_runtime::PerformanceSlot,
+    pub(super) performance_demand: devicehub_runtime::PerformanceDemand,
+    pub(super) device_logs: devicehub_runtime::DeviceLogSlot,
+    pub(super) device_log_demand: devicehub_runtime::DeviceLogDemand,
     pub(super) services: supervisor::ServiceRegistry,
-    pub(super) device_events: crate::device_events::DeviceEventSlot,
+    pub(super) device_events: devicehub_runtime::DeviceEventSlot,
     pub(super) network_capture: crate::network_capture::NetworkCaptureSlot,
     pub(super) bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     pub(super) device_backup: crate::device_backup::DeviceBackupSlot,
     pub(super) sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     pub(super) log_archive: crate::log_archive::LogArchiveSlot,
     pub(super) developer_image: crate::developer_image::DeveloperImageMountSlot,
-    pub(super) device_conditions: crate::device_conditions::DeviceConditionSlot,
+    pub(super) device_conditions: devicehub_runtime::DeviceConditionSlot,
 }
 
 #[derive(Clone)]
@@ -101,7 +86,8 @@ pub(super) struct SessionVideo {
     pub(super) browser_frames: crate::browser_video::BrowserVideoSlot,
     pub(super) audio_enabled: bool,
     pub(super) clipboard_sync_enabled: bool,
-    pub(super) audio: AudioOutput,
+    pub(super) audio: AudioPublisher,
+    pub(super) audio_decoder: crate::decode::AudioDecoderConfig,
 }
 
 /// Supervise discovery and ensure exactly one device session owns the media and
@@ -110,21 +96,22 @@ pub(super) struct SessionVideo {
 pub(crate) async fn manage(
     initial_udid: Option<String>,
     pairing_dir: PathBuf,
-    resource_dir: Option<PathBuf>,
-    settings: Arc<crate::settings::AppSettings>,
+    transport: super::DeviceTransportConfig,
+    preferences: crate::device_runtime::RuntimePreferences,
     video_counters: VideoCounters,
     browser_frames: crate::browser_video::BrowserVideoSlot,
-    audio: AudioOutput,
+    audio: AudioPublisher,
+    audio_decoder: crate::decode::AudioDecoderConfig,
     status: StatusSlot,
     clipboard: ClipboardSlot,
-    device_events: crate::device_events::DeviceEventSlot,
+    device_events: devicehub_runtime::DeviceEventSlot,
     network_capture: crate::network_capture::NetworkCaptureSlot,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
     device_backup: crate::device_backup::DeviceBackupSlot,
     sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
     log_archive: crate::log_archive::LogArchiveSlot,
     developer_image: crate::developer_image::DeveloperImageMountSlot,
-    device_conditions: crate::device_conditions::DeviceConditionSlot,
+    device_conditions: devicehub_runtime::DeviceConditionSlot,
     orientation_view: OrientationSlot,
     device_list: DeviceListSlot,
     active: ActiveSlot,
@@ -133,20 +120,21 @@ pub(crate) async fn manage(
     app_document_activity: crate::app_documents::AppDocumentActivitySlot,
     device_file_activity: crate::device_files::DeviceFileActivitySlot,
     location: LocationStatusSlot,
-    performance: performance::PerformanceSlot,
-    performance_demand: performance::PerformanceDemand,
-    device_logs: crate::device_logs::DeviceLogSlot,
-    device_log_demand: crate::device_logs::DeviceLogDemand,
+    performance: devicehub_runtime::PerformanceSlot,
+    performance_demand: devicehub_runtime::PerformanceDemand,
+    device_logs: devicehub_runtime::DeviceLogSlot,
+    device_log_demand: devicehub_runtime::DeviceLogDemand,
     services: supervisor::ServiceRegistry,
     input_sink: InputSink,
     mut control_rx: UnboundedReceiver<ControlCmd>,
 ) {
-    let mut discovery = DeviceDiscovery::new(pairing_dir.clone(), resource_dir);
+    let system_usbmuxd = transport.system_usbmuxd.clone();
+    let mut discovery = DeviceDiscovery::new(pairing_dir.clone(), transport);
     // Auto-pick only before the first connection. Returning to idle after a
     // session ends prevents a persistent hardware failure from hot-looping.
     let mut auto_pick = initial_udid.is_none();
     let mut target = initial_udid;
-    let mut wifi_retry_attempt = 0_u32;
+    let mut retry_policy = SessionRetryPolicy::default();
 
     loop {
         let (devices, endpoints) = discovery.refresh().await;
@@ -257,12 +245,14 @@ pub(crate) async fn manage(
         let session = run(
             endpoint,
             pairing_dir.clone(),
+            system_usbmuxd.clone(),
             SessionVideo {
                 counters: video_counters.clone(),
                 browser_frames: browser_frames.clone(),
-                audio_enabled: settings.audio_enabled(),
-                clipboard_sync_enabled: settings.clipboard_sync_enabled(),
+                audio_enabled: preferences.audio_enabled(),
+                clipboard_sync_enabled: preferences.clipboard_sync_enabled(),
                 audio: audio.clone(),
+                audio_decoder: audio_decoder.clone(),
             },
             clipboard.clone(),
             SessionViews {
@@ -303,17 +293,18 @@ pub(crate) async fn manage(
                     Ok(()) => break Next::Idle,
                     Err(error_message) => {
                         tracing::error!(connection = connection.label(), "session ended: {error_message}");
-                        let next = next_after_session_error(
+                        let next = match retry_policy.after_failure(
                             connection,
-                            &selection_id,
                             &error_message,
-                        );
+                            session_started.elapsed(),
+                        ) {
+                            SessionFailureAction::Stop => Next::Idle,
+                            SessionFailureAction::Retry(retry) => Next::RetryWifi {
+                                selection_id: selection_id.clone(),
+                                retry,
+                            },
+                        };
                         error.set(Some(error_message));
-                        if connection == ConnKind::Network
-                            && session_started.elapsed() >= WIFI_STABLE_SESSION
-                        {
-                            wifi_retry_attempt = 0;
-                        }
                         break next;
                     }
                 },
@@ -355,26 +346,27 @@ pub(crate) async fn manage(
 
         match outcome {
             Next::Switch(id) => {
-                wifi_retry_attempt = 0;
+                retry_policy.reset();
                 target = Some(id);
             }
-            Next::RetryWifi(id) => {
-                let retry_delay = wifi_reconnect_delay(wifi_retry_attempt);
-                wifi_retry_attempt = wifi_retry_attempt.saturating_add(1);
+            Next::RetryWifi {
+                selection_id,
+                retry,
+            } => {
                 status.set("Wi-Fi control interrupted - retrying connection...");
                 tracing::info!(
-                    attempt = wifi_retry_attempt,
-                    retry_ms = retry_delay.as_millis(),
+                    attempt = retry.attempt,
+                    retry_ms = retry.delay.as_millis(),
                     "Wi-Fi session transport dropped; rebuilding the complete tunnel"
                 );
-                target = Some(id);
-                tokio::time::sleep(retry_delay).await;
+                target = Some(selection_id);
+                tokio::time::sleep(retry.delay).await;
             }
             Next::Pair {
                 selection_id,
                 reply,
             } => {
-                wifi_retry_attempt = 0;
+                retry_policy.reset();
                 let requested = selection_id.clone();
                 target = trust::pair(selection_id, reply, &endpoints, &status)
                     .await
@@ -385,13 +377,13 @@ pub(crate) async fn manage(
                 selection_id,
                 reply,
             } => {
-                wifi_retry_attempt = 0;
+                retry_policy.reset();
                 trust::forget(selection_id, reply, &endpoints, &status, &mut discovery).await;
                 target = None;
                 discovery.invalidate();
             }
             Next::Idle => {
-                wifi_retry_attempt = 0;
+                retry_policy.reset();
                 target = None;
             }
             Next::Quit => return,
@@ -401,37 +393,8 @@ pub(crate) async fn manage(
 
 #[cfg(test)]
 mod tests {
-    use super::{Next, interrupts_active_session, next_after_session_error, wifi_reconnect_delay};
-    use crate::protocol::{ConnKind, ForgetDeviceResult, PairDeviceResult};
-
-    #[test]
-    fn only_network_failures_rebuild_the_parent_tunnel() {
-        assert!(matches!(
-            next_after_session_error(ConnKind::Network, "wifi:device", "transient failure"),
-            Next::RetryWifi(id) if id == "wifi:device"
-        ));
-        assert!(matches!(
-            next_after_session_error(ConnKind::Usb, "usb:device", "transport failure"),
-            Next::Idle
-        ));
-        assert!(matches!(
-            next_after_session_error(
-                ConnKind::Network,
-                "wifi:device",
-                super::WIFI_REAUTHORIZE_REQUIRED,
-            ),
-            Next::Idle
-        ));
-    }
-
-    #[test]
-    fn repeated_wifi_failures_use_bounded_backoff() {
-        assert_eq!(wifi_reconnect_delay(0), std::time::Duration::from_secs(1));
-        assert_eq!(wifi_reconnect_delay(1), std::time::Duration::from_secs(2));
-        assert_eq!(wifi_reconnect_delay(2), std::time::Duration::from_secs(4));
-        assert_eq!(wifi_reconnect_delay(3), std::time::Duration::from_secs(8));
-        assert_eq!(wifi_reconnect_delay(20), std::time::Duration::from_secs(8));
-    }
+    use super::{Next, interrupts_active_session};
+    use crate::protocol::{ForgetDeviceResult, PairDeviceResult};
 
     #[test]
     fn user_transitions_stop_the_active_session_before_handoff() {
@@ -448,8 +411,12 @@ mod tests {
         }));
         assert!(interrupts_active_session(&Next::Quit));
         assert!(!interrupts_active_session(&Next::Idle));
-        assert!(!interrupts_active_session(&Next::RetryWifi(
-            "wifi:device".into()
-        )));
+        assert!(!interrupts_active_session(&Next::RetryWifi {
+            selection_id: "wifi:device".into(),
+            retry: devicehub_runtime::SessionRetry {
+                attempt: 1,
+                delay: std::time::Duration::from_secs(1),
+            },
+        }));
     }
 }

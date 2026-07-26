@@ -6,13 +6,13 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::browser_video::BrowserVideoSlot;
-use crate::device_events::DeviceEventSlot;
-use crate::device_logs::{DeviceLogDemand, DeviceLogSlot};
-use crate::performance::{PerformanceDemand, PerformanceSlot};
 use crate::protocol::{
     ActiveSlot, ControlCmd, DeviceListSlot, ErrorSlot, InputCmd, InputSink, LocationStatusSlot,
     OrientationSlot, StatusSlot,
 };
+use devicehub_runtime::DeviceEventSlot;
+use devicehub_runtime::{DeviceLogDemand, DeviceLogSlot};
+use devicehub_runtime::{PerformanceDemand, PerformanceSlot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceControlError {
@@ -52,7 +52,7 @@ pub struct DeviceStateSlots {
 #[derive(Clone, Default)]
 pub struct ObservabilitySlots {
     pub(crate) device_events: DeviceEventSlot,
-    pub(crate) device_conditions: crate::device_conditions::DeviceConditionSlot,
+    pub(crate) device_conditions: devicehub_runtime::DeviceConditionSlot,
     pub(crate) performance: PerformanceSlot,
     pub(crate) performance_demand: PerformanceDemand,
     pub(crate) device_logs: DeviceLogSlot,
@@ -80,7 +80,7 @@ pub struct ApplicationServices {
     pub(crate) status: StatusSlot,
     pub(crate) location: LocationStatusSlot,
     pub(crate) device_events: DeviceEventSlot,
-    pub(crate) device_conditions: crate::device_conditions::DeviceConditionSlot,
+    pub(crate) device_conditions: devicehub_runtime::DeviceConditionSlot,
     pub(crate) performance: PerformanceSlot,
     pub(crate) performance_demand: PerformanceDemand,
     pub(crate) device_logs: DeviceLogSlot,

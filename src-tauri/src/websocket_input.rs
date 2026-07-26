@@ -10,10 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Deserialize;
 
 use crate::browser_video::BrowserVideoSlot;
-use crate::hid::TouchContact;
+use crate::domain::hardware_button;
 use crate::protocol::{
     HARDWARE_BUTTON_NAMES, InputCmd, InputSink, Orientation, RotateDir, norm, unrotate_norm,
 };
+use devicehub_runtime::{DeviceInputCommand, TouchContact};
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -180,44 +181,52 @@ pub(crate) fn handle_client_message(
         }
         ClientMessage::MultiTouch { contacts } => {
             if let Some(contacts) = validate_contacts(contacts, orientation) {
-                input.send(InputCmd::MultiTouchFrame(contacts));
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
+                    contacts,
+                )));
             }
         }
         ClientMessage::Button { name } => {
-            if let Some(name) = hardware_button_name(&name) {
-                input.send(InputCmd::Button(name));
+            if let Some(button) = hardware_button(&name) {
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::Button(button)));
             }
         }
         ClientMessage::ButtonDown { name } => {
-            if let Some(name) = hardware_button_name(&name) {
-                input.send(InputCmd::ButtonDown(name));
+            if let Some(button) = hardware_button(&name) {
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::ButtonDown(
+                    button,
+                )));
             }
         }
         ClientMessage::ButtonUp { name } => {
-            if let Some(name) = hardware_button_name(&name) {
-                input.send(InputCmd::ButtonUp(name));
+            if let Some(button) = hardware_button(&name) {
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::ButtonUp(button)));
             }
         }
         ClientMessage::KeyboardDown { usage } => {
             if valid_keyboard_usage(usage) && pressed_keyboard.insert(usage) {
-                input.send(InputCmd::KeyboardDown(usage));
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::KeyboardDown(
+                    usage,
+                )));
             }
         }
         ClientMessage::KeyboardUp { usage } => {
             if valid_keyboard_usage(usage) && pressed_keyboard.remove(&usage) {
-                input.send(InputCmd::KeyboardUp(usage));
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(usage)));
             }
         }
         ClientMessage::Text { text } => {
             if !text.is_empty() && text.len() <= 512 && text.chars().count() <= 128 {
-                input.send(InputCmd::Text(text));
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::Text(text)));
             }
         }
         ClientMessage::Rotate { direction } => {
-            input.send(InputCmd::Rotate(match direction {
-                RotateRequest::Left => RotateDir::Left,
-                RotateRequest::Right => RotateDir::Right,
-            }));
+            input.send(InputCmd::DeviceInput(DeviceInputCommand::Rotate(
+                match direction {
+                    RotateRequest::Left => RotateDir::Left,
+                    RotateRequest::Right => RotateDir::Right,
+                },
+            )));
         }
     }
     ClientVideoFeedback::None
@@ -279,7 +288,7 @@ pub(crate) fn validate_contacts(
 }
 
 pub(crate) fn send_all_up(input: &InputSink, pressed_keyboard: &HashSet<u64>) {
-    input.send(InputCmd::MultiTouchFrame(
+    input.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
         (0..5)
             .map(|identity| TouchContact {
                 identity,
@@ -288,21 +297,19 @@ pub(crate) fn send_all_up(input: &InputSink, pressed_keyboard: &HashSet<u64>) {
                 y: 0,
             })
             .collect(),
-    ));
+    )));
     for name in HARDWARE_BUTTON_NAMES {
-        input.send(InputCmd::ButtonUp(name));
+        input.send(InputCmd::DeviceInput(DeviceInputCommand::ButtonUp(
+            hardware_button(name).expect("known hardware button must resolve"),
+        )));
     }
     for usage in pressed_keyboard {
-        input.send(InputCmd::KeyboardUp(*usage));
+        input.send(InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(
+            *usage,
+        )));
     }
 }
 
 pub(crate) fn valid_keyboard_usage(usage: u64) -> bool {
     matches!(usage, 0x04..=0x73 | 0x85 | 0x87 | 0x89 | 0xe0..=0xe7)
-}
-
-fn hardware_button_name(name: &str) -> Option<&'static str> {
-    HARDWARE_BUTTON_NAMES
-        .into_iter()
-        .find(|candidate| *candidate == name)
 }

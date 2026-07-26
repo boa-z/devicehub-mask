@@ -281,12 +281,7 @@ pub fn record_frontend_event(event: FrontendLogEvent) -> Result<(), String> {
     Ok(())
 }
 
-pub fn device_id_fingerprint(udid: &str) -> String {
-    let hash = udid.as_bytes().iter().fold(0x811c_9dc5_u32, |hash, byte| {
-        (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
-    });
-    format!("{hash:08x}")
-}
+pub use devicehub_core::device_id_fingerprint;
 
 fn bounded_field(name: &str, value: String, max_chars: usize) -> Result<String, String> {
     let trimmed = value.trim();

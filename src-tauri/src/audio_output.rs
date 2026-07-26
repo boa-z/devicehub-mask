@@ -124,6 +124,12 @@ impl AudioOutput {
     }
 }
 
+impl crate::device_runtime::PcmAudioConsumer for AudioOutput {
+    fn publish(&self, pcm: Bytes) {
+        AudioOutput::publish(self, pcm);
+    }
+}
+
 fn validate_volume(volume: f32) -> Result<f32, String> {
     if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
         return Err("audio volume must be a finite value between 0 and 1".into());

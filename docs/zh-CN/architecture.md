@@ -20,6 +20,8 @@ idevice：CoreDevice、Lockdown、Installation Proxy、Misagent、Universal HID
 
 仓库采用标准 Tauri 2 结构。Vite 从 `src/` 构建 React 界面，Rust 桌面代码和 Tauri 配置位于 `src-tauri/`。生产前端资源由 Tauri 嵌入，应用生命周期也由 Tauri 管理。
 
+已接受的[Core 与 Runtime 提取](core-runtime.md)会把该结构逐步演进为同一仓库内的宿主无关库。迁移完成前桌面端仍是组合根；新增代码必须提前遵守文档规定的所有权与依赖方向。
+
 Rust 传输适配器不应分别实现设备控制规则。第一条迁移到 `application` 应用服务层的纵向链路包含活动会话命令、截图超时、最新原生帧、浏览器画面尺寸和联合帧版本。HTTP 截图与 MCP 截图、输入和帧等待把各自的请求/响应格式映射到同一个 `DeviceControlService`；等待新画面由原生 `watch` 或浏览器帧广播直接唤醒，不在适配器中轮询。后续设备能力应沿用“传输适配器 -> 应用服务 -> 会话能力”的依赖方向。
 
 前端的 `useDeviceVideoStream` controller 独占视频 WebSocket、WebCodecs 解码、Canvas 呈现、重连、画面需求、停滞检测和前端性能指标。`useDeviceInput` 独立持有键盘与 Pointer 监听、按住状态、直接触控释放计时器、帧去重和断连清理；它只依赖视频控制器的连接状态与窄化命令 sink，两个控制器不再互相调用生命周期回调。`App` 只负责将这些能力与页面及配置工作流组合。`useDeviceMediaCapture` 独立拥有截图对象 URL、原生截图请求互斥、`MediaRecorder`、捕获轨道和卸载清理；它只接收视频控制器的 Canvas 能力与当前设备上下文，因此捕获工作流既不能参与解码器生命周期，也不能在工作区结束后继续保留资源。
@@ -53,6 +55,8 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 设备信息会复用刷新后的 Lockdown 快照生成规范化身份与区域上下文。设备类别、CPU 架构、型号编号和设备/机身颜色只允许较短的单行 ASCII token；它们是非唯一描述字段，与 UDID、序列号和 ECID 的标识符策略保持分离。语言、地区格式、时区和 12/24 小时制字符串会经过 trim、长度和字符校验，再组合为一个可空对象；没有任何有效字段时会整体丢弃。原始 Lockdown 字典不会越过私有 API 或 MCP 边界。
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
+
+内部 `DeviceRuntime` 现已统一创建共享服务状态，并独占 CoreDevice 线程与 session manager。桌面宿主根据可克隆的服务句柄，在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
 
 会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。独立的 RTCP 传输模块拥有 peer 探测、接收统计、liveness report、RCTL 实验和带防抖的 PLI/FIR 请求；RTP 接收只能记录 packet、重置已替换媒体源或提交复用 RTCP，不能直接修改 RTCP 计数或构造反馈 packet。两个模块都不持有设备客户端、解码进程或应用命令，因此传输与会话编排可以独立于缓冲及反馈策略演进。
 
@@ -145,6 +149,14 @@ Canvas 使用同一个比例 contain-fit 旋转后的源画面。鼠标坐标只
 ## 音频管线
 
 CoreDevice 协商 48 kHz 双声道 AAC-ELD，每个 RTP 包包含一个 10 ms Access Unit。设备发送 裸 Access Unit，因此后端先补充 RFC 3640 AU header，再将 RTP 转发给 FFmpeg。FFmpeg 解码为交错 S16LE，并把有界的 20 ms PCM 块交给独立原生输出线程。Rodio 将音频转换为 主机默认输出格式；排队超过 240 ms 时清除旧音频，因此输出背压不会阻塞 RTP、视频或输入。 PCM 不再经过 WebSocket 或 WebView。
+
+桌面组合入口根据显式覆盖、打包资源目录、可执行文件位置与宿主 `PATH` 构造不可变 FFmpeg 搜索计划，再通过 `RuntimeConfig` 注入每个设备会话。解码器不再读取环境变量，也不持有全局资源目录状态；候选文件仍在启用音频时才检查，因此关闭音频不会让 FFmpeg 成为启动前置条件。
+
+同一个宿主边界还会解析可选的 netmuxd 可执行文件、日志过滤器和上游 usbmuxd 地址。runtime 的设备发现只接收不可变 sidecar 配置并负责进程监督，不再检查宿主环境变量或可执行文件位置。
+
+设置持久化仍由桌面宿主负责。runtime 只接收包含会话策略的可克隆原子偏好句柄；宿主成功写盘后才更新该句柄，每个新设备会话读取音频与剪贴板启用状态，但不感知设置文件路径或格式。
+
+解码后的 PCM 通过有界 consumer 契约跨越 runtime 边界。桌面宿主提供原生 rodio 输出，并持有播放状态、静音、音量与声卡恢复；runtime 只负责发布固定格式 PCM，使未来无头宿主可以选择远程或空 consumer，而无需修改设备媒体协商。
 
 设备音频默认关闭。静音和音量由后端持久化并直接作用于原生输出，不依赖浏览器自动播放 策略或页面可见性。输出设备故障和解码器运行中退出都会有界重试；若解码器根本无法启动， 则继续静默 drain 协商后的流，不会终止视频或输入。
 

@@ -1,5 +1,6 @@
 //! Supervision for the optional netmuxd Wi-Fi transport sidecar.
 
+use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -15,6 +16,38 @@ use tokio::process::{Child, Command};
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const RESTART_BACKOFF: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Debug)]
+pub(crate) struct NetmuxdConfig {
+    binary: Option<PathBuf>,
+    forced: bool,
+    log_filter: String,
+    upstream_usbmuxd: String,
+}
+
+impl NetmuxdConfig {
+    /// Resolve process-level overrides at the host boundary. The runtime owns
+    /// sidecar supervision, but never reads the host process environment.
+    pub(crate) fn from_host(
+        configured: Option<OsString>,
+        log_filter: Option<String>,
+        upstream_usbmuxd: Option<String>,
+        search_path: Option<OsString>,
+        resource_dir: Option<&Path>,
+        current_exe: Option<&Path>,
+    ) -> Self {
+        let forced = configured
+            .as_ref()
+            .is_some_and(|value| !value.is_empty() && value != "off");
+        Self {
+            binary: find_binary(configured, search_path, resource_dir, current_exe),
+            forced,
+            log_filter: log_filter.unwrap_or_else(|| "warn".into()),
+            upstream_usbmuxd: upstream_usbmuxd
+                .unwrap_or_else(|| default_system_usbmuxd_address().into()),
+        }
+    }
+}
+
 pub struct NetmuxdSupervisor {
     binary: Option<PathBuf>,
     forced: bool,
@@ -22,19 +55,21 @@ pub struct NetmuxdSupervisor {
     child: Option<Child>,
     address: Option<SocketAddr>,
     retry_after: Option<Instant>,
+    log_filter: String,
+    upstream_usbmuxd: String,
 }
 
 impl NetmuxdSupervisor {
-    pub fn new(pairing_dir: PathBuf, resource_dir: Option<PathBuf>) -> Self {
-        let forced = std::env::var_os("DEVICEHUB_NETMUXD")
-            .is_some_and(|value| !value.is_empty() && value != "off");
+    pub(crate) fn new(pairing_dir: PathBuf, config: NetmuxdConfig) -> Self {
         Self {
-            binary: find_binary(resource_dir.as_deref()),
-            forced,
+            binary: config.binary,
+            forced: config.forced,
             pairing_dir,
             child: None,
             address: None,
             retry_after: None,
+            log_filter: config.log_filter,
+            upstream_usbmuxd: config.upstream_usbmuxd,
         }
     }
 
@@ -120,13 +155,10 @@ impl NetmuxdSupervisor {
             // interfaces and can open duplicate TLS sessions for one device.
             .arg("--disable-heartbeat")
             .arg("--upstream-usbmuxd")
-            .arg(system_usbmuxd_address())
+            .arg(&self.upstream_usbmuxd)
             .arg("--plist-storage")
             .arg(&self.pairing_dir)
-            .env(
-                "RUST_LOG",
-                std::env::var("DEVICEHUB_NETMUXD_LOG").unwrap_or_else(|_| "warn".into()),
-            )
+            .env("RUST_LOG", &self.log_filter)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -191,8 +223,13 @@ impl Drop for NetmuxdSupervisor {
     }
 }
 
-fn find_binary(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Some(value) = std::env::var_os("DEVICEHUB_NETMUXD") {
+fn find_binary(
+    configured: Option<OsString>,
+    search_path: Option<OsString>,
+    resource_dir: Option<&Path>,
+    current_exe: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(value) = configured {
         if value.is_empty() || value == "off" {
             tracing::info!("netmuxd sidecar disabled by DEVICEHUB_NETMUXD");
             return None;
@@ -210,15 +247,13 @@ fn find_binary(resource_dir: Option<&Path>) -> Option<PathBuf> {
     {
         return Some(path);
     }
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(parent) = executable.parent()
-    {
+    if let Some(parent) = current_exe.and_then(Path::parent) {
         let path = parent.join(name);
         if path.is_file() {
             return Some(path);
         }
     }
-    path_binary(name).or_else(|| {
+    path_binary(search_path, name).or_else(|| {
         tracing::info!(
             "netmuxd sidecar not installed; set DEVICEHUB_NETMUXD or use a packaged build"
         );
@@ -226,21 +261,19 @@ fn find_binary(resource_dir: Option<&Path>) -> Option<PathBuf> {
     })
 }
 
-fn path_binary(name: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
+fn path_binary(paths: Option<OsString>, name: &str) -> Option<PathBuf> {
+    let paths = paths?;
     std::env::split_paths(&paths)
         .map(|directory| directory.join(name))
         .find(|path| path.is_file())
 }
 
-fn system_usbmuxd_address() -> String {
-    std::env::var("USBMUXD_SOCKET_ADDRESS").unwrap_or_else(|_| {
-        if cfg!(unix) {
-            "/var/run/usbmuxd".into()
-        } else {
-            "127.0.0.1:27015".into()
-        }
-    })
+fn default_system_usbmuxd_address() -> &'static str {
+    if cfg!(unix) {
+        "/var/run/usbmuxd"
+    } else {
+        "127.0.0.1:27015"
+    }
 }
 
 async fn forward_output<R>(reader: R, stderr: bool)
@@ -263,9 +296,26 @@ mod tests {
 
     #[test]
     fn explicit_disable_has_no_binary() {
-        // Binary resolution itself is covered through the pure PATH helper; changing
-        // process environment in parallel tests would be racy.
-        assert_eq!(path_binary("definitely-not-a-devicehub-binary"), None);
+        let config = NetmuxdConfig::from_host(Some("off".into()), None, None, None, None, None);
+        assert!(config.binary.is_none());
+        assert!(!config.forced);
+    }
+
+    #[test]
+    fn explicit_binary_is_forced_without_environment_reads() {
+        let binary = PathBuf::from("/configured/netmuxd");
+        let config = NetmuxdConfig::from_host(
+            Some(binary.clone().into_os_string()),
+            Some("debug".into()),
+            Some("configured-usbmuxd".into()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(config.binary, Some(binary));
+        assert!(config.forced);
+        assert_eq!(config.log_filter, "debug");
+        assert_eq!(config.upstream_usbmuxd, "configured-usbmuxd");
     }
 
     #[test]

@@ -11,9 +11,9 @@ use std::sync::Arc;
 use idevice::{provider::IdeviceProvider, rsd::RsdHandshake, tcp::handle::AdapterHandle};
 
 use super::manager::SessionViews;
-use crate::location::{self, LocationCommand};
 use crate::protocol::{ConnKind, LocationStatus, LocationStatusSlot};
 use crate::supervisor::ServiceSupervisor;
+use devicehub_runtime::LocationCommand;
 
 pub(super) struct LocationBridge {
     pub(super) sender: tokio::sync::mpsc::Sender<LocationCommand>,
@@ -24,20 +24,18 @@ pub(super) struct LocationBridge {
 /// one value makes service availability follow the lifetime of a device session
 /// instead of leaking individual senders into the outer connection manager.
 pub(super) struct DeviceManagementServices {
-    pub(super) icons: tokio::sync::mpsc::Sender<crate::app_icons::AppIconCommand>,
-    pub(super) companions:
-        tokio::sync::mpsc::Sender<crate::companion_devices::CompanionDeviceCommand>,
-    pub(super) home_screen: tokio::sync::mpsc::Sender<crate::home_screen::HomeScreenCommand>,
+    pub(super) icons: tokio::sync::mpsc::Sender<devicehub_runtime::AppIconCommand>,
+    pub(super) companions: tokio::sync::mpsc::Sender<devicehub_runtime::CompanionDeviceCommand>,
+    pub(super) home_screen: tokio::sync::mpsc::Sender<devicehub_runtime::HomeScreenCommand>,
     pub(super) running_processes:
-        tokio::sync::mpsc::Sender<crate::running_processes::RunningProcessCommand>,
-    pub(super) app_lifecycle: tokio::sync::mpsc::Sender<crate::app_lifecycle::AppLifecycleCommand>,
-    pub(super) wda: tokio::sync::mpsc::Sender<crate::wda_automation::WdaAutomationCommand>,
-    pub(super) wda_runner: tokio::sync::mpsc::Sender<crate::wda_runner::WdaRunnerCommand>,
-    pub(super) app_console: tokio::sync::mpsc::Sender<crate::app_console::AppConsoleCommand>,
+        tokio::sync::mpsc::Sender<devicehub_runtime::RunningProcessCommand>,
+    pub(super) app_lifecycle: tokio::sync::mpsc::Sender<devicehub_runtime::AppLifecycleCommand>,
+    pub(super) wda: tokio::sync::mpsc::Sender<devicehub_runtime::WdaAutomationCommand>,
+    pub(super) wda_runner: tokio::sync::mpsc::Sender<devicehub_runtime::WdaRunnerCommand>,
+    pub(super) app_console: tokio::sync::mpsc::Sender<devicehub_runtime::AppConsoleCommand>,
     pub(super) documents: tokio::sync::mpsc::Sender<crate::app_documents::AppDocumentCommand>,
     pub(super) device_files: tokio::sync::mpsc::Sender<crate::device_files::DeviceFileCommand>,
-    pub(super) screen_capture:
-        tokio::sync::mpsc::Sender<crate::screen_capture::ScreenCaptureCommand>,
+    pub(super) screen_capture: tokio::sync::mpsc::Sender<devicehub_runtime::ScreenCaptureCommand>,
     pub(super) network_capture:
         tokio::sync::mpsc::Sender<crate::network_capture::NetworkCaptureCommand>,
     pub(super) bluetooth_capture:
@@ -48,7 +46,7 @@ pub(super) struct DeviceManagementServices {
     pub(super) developer_image:
         tokio::sync::mpsc::Sender<crate::developer_image::DeveloperImageMountCommand>,
     pub(super) device_conditions:
-        tokio::sync::mpsc::Sender<crate::device_conditions::DeviceConditionCommand>,
+        tokio::sync::mpsc::Sender<devicehub_runtime::DeviceConditionCommand>,
     pub(super) provisioning: tokio::sync::mpsc::Sender<crate::provisioning::ProvisioningCommand>,
 }
 
@@ -78,12 +76,12 @@ impl SessionServices {
         views.device_events.reset();
 
         let mut supervisor = ServiceSupervisor::new(views.services.clone());
-        supervisor.spawn(crate::heartbeat::supervise(
+        supervisor.spawn(devicehub_runtime::supervise_heartbeat(
             provider.clone(),
             supervisor.reporter("device.heartbeat"),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::device_logs::supervise(
+        supervisor.spawn(devicehub_runtime::supervise_device_logs(
             adapter.clone(),
             handshake.clone(),
             views.device_logs.clone(),
@@ -91,14 +89,14 @@ impl SessionServices {
             views.device_log_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::device_events::supervise(
+        supervisor.spawn(devicehub_runtime::supervise_device_events(
             adapter.clone(),
             handshake.clone(),
             views.device_events.clone(),
             supervisor.reporter("device.notifications"),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::performance::supervise_system(
+        supervisor.spawn(devicehub_runtime::supervise_performance_system(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -106,7 +104,7 @@ impl SessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::performance::supervise_graphics(
+        supervisor.spawn(devicehub_runtime::supervise_performance_graphics(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -114,7 +112,7 @@ impl SessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::performance::supervise_network(
+        supervisor.spawn(devicehub_runtime::supervise_performance_network(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -122,7 +120,7 @@ impl SessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::performance::supervise_energy(
+        supervisor.spawn(devicehub_runtime::supervise_performance_energy(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -130,7 +128,7 @@ impl SessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::performance::supervise_app_activity(
+        supervisor.spawn(devicehub_runtime::supervise_performance_app_activity(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -141,7 +139,7 @@ impl SessionServices {
 
         views.location.set(LocationStatus::default());
         let (location_sender, location_receiver) = tokio::sync::mpsc::channel(8);
-        supervisor.spawn(location::supervise(
+        supervisor.spawn(devicehub_runtime::supervise_location(
             adapter.clone(),
             handshake.clone(),
             provider.clone(),
@@ -156,14 +154,14 @@ impl SessionServices {
         };
 
         let (icons, icon_commands) = tokio::sync::mpsc::channel(16);
-        supervisor.spawn(crate::app_icons::serve(
+        supervisor.spawn(devicehub_runtime::serve_app_icons(
             adapter.clone(),
             handshake.clone(),
             icon_commands,
             supervisor.shutdown_receiver(),
         ));
         let (companions, companion_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(crate::companion_devices::serve(
+        supervisor.spawn(devicehub_runtime::serve_companion_devices(
             adapter.clone(),
             handshake.clone(),
             companion_commands,
@@ -171,7 +169,7 @@ impl SessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (home_screen, home_screen_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(crate::home_screen::serve(
+        supervisor.spawn(devicehub_runtime::serve_home_screen(
             adapter.clone(),
             handshake.clone(),
             home_screen_commands,
@@ -179,7 +177,7 @@ impl SessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (running_processes, running_process_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(crate::running_processes::serve(
+        supervisor.spawn(devicehub_runtime::serve_running_processes(
             adapter.clone(),
             handshake.clone(),
             running_process_commands,
@@ -187,7 +185,7 @@ impl SessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (app_lifecycle, app_lifecycle_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(crate::app_lifecycle::serve(
+        supervisor.spawn(devicehub_runtime::serve_app_lifecycle(
             adapter.clone(),
             handshake.clone(),
             app_lifecycle_commands,
@@ -195,21 +193,21 @@ impl SessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (wda, wda_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::wda_automation::serve(
+        supervisor.spawn(devicehub_runtime::serve_wda_automation(
             provider.clone(),
             wda_commands,
             supervisor.reporter("device.wda"),
             supervisor.shutdown_receiver(),
         ));
         let (wda_runner, wda_runner_commands) = tokio::sync::mpsc::channel(2);
-        supervisor.spawn(crate::wda_runner::serve(
+        supervisor.spawn(devicehub_runtime::serve_wda_runner(
             provider.clone(),
             wda_runner_commands,
             supervisor.reporter("device.wda_runner"),
             supervisor.shutdown_receiver(),
         ));
         let (app_console, app_console_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::app_console::serve(
+        supervisor.spawn(devicehub_runtime::serve_app_console(
             adapter.clone(),
             handshake.clone(),
             app_console_commands,
@@ -226,6 +224,7 @@ impl SessionServices {
             ),
             document_commands,
             views.app_document_activity.clone(),
+            crate::host_files::TokioHostFileIo,
             supervisor.shutdown_receiver(),
         ));
         let (device_files, device_file_commands) = tokio::sync::mpsc::channel(8);
@@ -238,12 +237,13 @@ impl SessionServices {
             ),
             device_file_commands,
             views.device_file_activity.clone(),
+            crate::host_files::TokioHostFileIo,
             supervisor.reporter("device.files"),
             supervisor.shutdown_receiver(),
         ));
         let (screen_capture, screen_capture_commands) = tokio::sync::mpsc::channel(1);
-        supervisor.spawn(crate::screen_capture::serve(
-            crate::screen_capture::ScreenCaptureTransport::new(
+        supervisor.spawn(devicehub_runtime::serve_screen_capture(
+            devicehub_runtime::ScreenCaptureTransport::new(
                 provider.clone(),
                 connection,
                 adapter.clone(),
@@ -267,8 +267,7 @@ impl SessionServices {
         ));
         let (bluetooth_capture, bluetooth_capture_commands) = tokio::sync::mpsc::channel(4);
         supervisor.spawn(crate::bluetooth_capture::serve(
-            adapter.clone(),
-            handshake.clone(),
+            devicehub_runtime::BluetoothCaptureTransport::new(adapter.clone(), handshake.clone()),
             bluetooth_capture_commands,
             views.bluetooth_capture.clone(),
             supervisor.reporter("bluetooth.capture"),
@@ -311,11 +310,12 @@ impl SessionServices {
             provider.clone(),
             developer_image_commands,
             views.developer_image.clone(),
+            crate::developer_image::TokioDeveloperImageAssets,
             supervisor.reporter("device.developer_image"),
             supervisor.shutdown_receiver(),
         ));
         let (device_conditions, device_condition_commands) = tokio::sync::mpsc::channel(4);
-        supervisor.spawn(crate::device_conditions::supervise(
+        supervisor.spawn(devicehub_runtime::supervise_device_conditions(
             adapter.clone(),
             handshake.clone(),
             device_condition_commands,

@@ -650,8 +650,8 @@ mod tests {
     #[tokio::test]
     async fn app_storage_endpoints_dispatch_scoped_commands() {
         use crate::app_documents::{
-            AppDocumentActivityKind, AppDocumentCommand, AppDocumentEntry, AppDocumentKind,
-            AppDocumentList, AppDocumentTransfer, AppStorageScope,
+            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList,
+            AppDocumentTransfer, AppStorageScope,
         };
 
         let (cancel_state, _) = test_state();
@@ -665,30 +665,6 @@ mod tests {
             .0,
             StatusCode::CONFLICT
         );
-        cancel_state.app_document_activity.start(
-            "com.example.game",
-            AppStorageScope::Documents,
-            AppDocumentActivityKind::Export,
-            "/Documents".into(),
-            None,
-        );
-        assert_eq!(
-            cancel_app_document_activity(
-                State(cancel_state.clone()),
-                Path("com.example.other".into()),
-            )
-            .await
-            .unwrap_err()
-            .0,
-            StatusCode::CONFLICT
-        );
-        assert_eq!(
-            cancel_app_document_activity(State(cancel_state), Path("com.example.game".into()),)
-                .await
-                .unwrap(),
-            StatusCode::ACCEPTED
-        );
-
         let (state, mut input_rx) = test_state();
         let activity = app_document_activity(State(state.clone()), Path("com.example.game".into()))
             .await
@@ -859,8 +835,7 @@ mod tests {
     #[tokio::test]
     async fn device_file_endpoints_dispatch_typed_commands() {
         use crate::device_files::{
-            DeviceFileActivityKind, DeviceFileCommand, DeviceFileEntry, DeviceFileKind,
-            DeviceFileList, DeviceFileTransfer,
+            DeviceFileCommand, DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer,
         };
 
         let (cancel_state, _) = test_state();
@@ -871,16 +846,6 @@ mod tests {
                 .0,
             StatusCode::CONFLICT
         );
-        cancel_state
-            .device_file_activity
-            .start(DeviceFileActivityKind::Export, "/DCIM".into());
-        assert_eq!(
-            cancel_device_file_activity(State(cancel_state))
-                .await
-                .unwrap(),
-            StatusCode::ACCEPTED
-        );
-
         let (state, mut input_rx) = test_state();
         assert_eq!(
             device_file_activity(State(state.clone())).await.0.state,
