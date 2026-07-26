@@ -77,7 +77,7 @@ mod tests {
         let (client, mut control_rx) =
             devicehub_runtime::RuntimeClientFixture::<PathBuf>::default().build();
 
-        client.control.send(ControlCmd::Refresh).unwrap();
+        client.manager.control.send(ControlCmd::Refresh).unwrap();
 
         assert!(matches!(
             control_rx.blocking_recv(),

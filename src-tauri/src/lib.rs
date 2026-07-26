@@ -160,7 +160,7 @@ fn spawn_backend(
 ) -> Result<BackendHandle, String> {
     let runtime = device_runtime::DeviceRuntime::start(runtime_config)?;
     let client = runtime.client();
-    let runtime_control = client.control.clone();
+    let runtime_control = client.manager.control.clone();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let token = uuid::Uuid::new_v4().simple().to_string();
@@ -179,40 +179,40 @@ fn spawn_backend(
                     web::AppState {
                         application: client.clone(),
                         performance_http: http_performance::PerformanceHttpState::new(
-                            client.performance,
-                            client.performance_demand,
-                            client.device_logs,
-                            client.device_log_demand,
-                            client.device_conditions,
-                            client.network_capture,
-                            client.bluetooth_capture,
-                            client.service_registry,
-                            client.commands.clone(),
+                            client.device.performance,
+                            client.device.performance_demand,
+                            client.device.device_logs,
+                            client.device.device_log_demand,
+                            client.device.device_conditions,
+                            client.device.network_capture,
+                            client.device.bluetooth_capture,
+                            client.device.service_registry,
+                            client.device.commands.clone(),
                         ),
                         profiles_http: http_profiles::ProfileHttpState::new(profile_dir),
                         storage_http: http_storage::StorageHttpState::new(
-                            client.commands.clone(),
-                            client.app_documents,
-                            client.device_files,
+                            client.device.commands.clone(),
+                            client.device.app_documents,
+                            client.device.device_files,
                         ),
                         diagnostics_http: http_diagnostics::DiagnosticsHttpState::new(
-                            client.commands.clone(),
-                            client.device_backup,
-                            client.sysdiagnose,
-                            client.log_archive,
+                            client.device.commands.clone(),
+                            client.device.device_backup,
+                            client.device.sysdiagnose,
+                            client.device.log_archive,
                         ),
                         apps_http: http_apps::AppHttpState::new(
-                            client.commands.clone(),
-                            client.app_operation,
+                            client.device.commands.clone(),
+                            client.device.app_operation,
                         ),
                         crash_reports_http: http_crash_reports::CrashReportHttpState::new(
-                            client.commands.clone(),
+                            client.device.commands.clone(),
                         ),
-                        browser_frames: client.browser_frames,
-                        clipboard: client.clipboard,
-                        developer_image: client.developer_image,
-                        video_counters: client.video_counters,
-                        input: client.commands,
+                        browser_frames: client.device.browser_frames,
+                        clipboard: client.device.clipboard,
+                        developer_image: client.device.developer_image,
+                        video_counters: client.device.video_counters,
+                        input: client.device.commands,
                     },
                     server_token,
                 );

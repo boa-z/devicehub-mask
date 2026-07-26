@@ -27,12 +27,13 @@ pub(crate) struct StatusView {
 
 pub(crate) fn snapshot(application: &RuntimeClient<std::path::PathBuf>) -> StatusView {
     StatusView {
-        status: application.status.get(),
-        active_udid: application.active.get(),
-        active_device_id: application.active.selection_id(),
-        error: application.error.get(),
-        orientation: orientation_name(application.orientation.get()),
+        status: application.device.status.get(),
+        active_udid: application.manager.active.get(),
+        active_device_id: application.manager.active.selection_id(),
+        error: application.device.error.get(),
+        orientation: orientation_name(application.device.orientation.get()),
         devices: application
+            .manager
             .devices
             .get()
             .into_iter()
@@ -44,7 +45,7 @@ pub(crate) fn snapshot(application: &RuntimeClient<std::path::PathBuf>) -> Statu
                 pairing: device.pairing,
             })
             .collect(),
-        location: application.location.get(),
+        location: application.device.location.get(),
     }
 }
 

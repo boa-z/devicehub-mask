@@ -38,7 +38,10 @@ pub use capture::{
 };
 #[cfg(feature = "test-support")]
 pub use client::RuntimeClientFixture;
-pub use client::{DeviceControlError, DeviceControlService, RuntimeClient};
+pub use client::{
+    DeviceControlError, DeviceControlService, DeviceSessionClient, RuntimeClient,
+    RuntimeManagerClient,
+};
 pub use clipboard::{ClipboardImage, ClipboardSlot, HostClipboard, HostClipboardProvider};
 pub use demand::{Demand, DemandLease};
 pub use device::{

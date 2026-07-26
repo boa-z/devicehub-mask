@@ -161,17 +161,25 @@ async fn status(State(state): State<AppState>) -> Json<crate::web_status::Status
 }
 
 async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
-    let _ = state.application.control.send(ControlCmd::Refresh);
+    let _ = state.application.manager.control.send(ControlCmd::Refresh);
     StatusCode::ACCEPTED
 }
 
 async fn connect_device(State(state): State<AppState>, Path(udid): Path<String>) -> StatusCode {
-    let _ = state.application.control.send(ControlCmd::Connect(udid));
+    let _ = state
+        .application
+        .manager
+        .control
+        .send(ControlCmd::Connect(udid));
     StatusCode::ACCEPTED
 }
 
 async fn reconnect_device(State(state): State<AppState>, Path(udid): Path<String>) -> StatusCode {
-    let _ = state.application.control.send(ControlCmd::Reconnect(udid));
+    let _ = state
+        .application
+        .manager
+        .control
+        .send(ControlCmd::Reconnect(udid));
     StatusCode::ACCEPTED
 }
 
@@ -182,6 +190,7 @@ async fn pair_device(
     let (reply, response) = oneshot::channel();
     state
         .application
+        .manager
         .control
         .send(ControlCmd::Pair {
             selection_id,
@@ -217,6 +226,7 @@ async fn forget_device(
     let (reply, response) = oneshot::channel();
     state
         .application
+        .manager
         .control
         .send(ControlCmd::Forget {
             selection_id,
@@ -283,7 +293,7 @@ async fn paste_device_text(
 }
 
 async fn device_location(State(state): State<AppState>) -> Json<LocationStatus> {
-    Json(state.application.location.get())
+    Json(state.application.device.location.get())
 }
 
 async fn set_device_location(
@@ -546,6 +556,7 @@ async fn device_screenshot(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let png = state
         .application
+        .device
         .device_control
         .capture_screenshot(SCREENSHOT_REQUEST_TIMEOUT)
         .await
@@ -1004,7 +1015,7 @@ mod tests {
     ) -> ClientVideoFeedback {
         handle_client_message(
             &state.input,
-            state.application.orientation.get(),
+            state.application.device.orientation.get(),
             &state.browser_frames,
             text,
             pressed_keyboard,
@@ -1025,44 +1036,44 @@ mod tests {
             devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default()
                 .with_commands(input.clone())
                 .build();
-        let browser_frames = application.browser_frames.clone();
+        let browser_frames = application.device.browser_frames.clone();
         (
             AppState {
                 application: application.clone(),
                 performance_http: crate::http_performance::PerformanceHttpState::new(
-                    application.performance.clone(),
-                    application.performance_demand.clone(),
-                    application.device_logs.clone(),
-                    application.device_log_demand.clone(),
-                    application.device_conditions.clone(),
-                    application.network_capture.clone(),
-                    application.bluetooth_capture.clone(),
-                    application.service_registry.clone(),
+                    application.device.performance.clone(),
+                    application.device.performance_demand.clone(),
+                    application.device.device_logs.clone(),
+                    application.device.device_log_demand.clone(),
+                    application.device.device_conditions.clone(),
+                    application.device.network_capture.clone(),
+                    application.device.bluetooth_capture.clone(),
+                    application.device.service_registry.clone(),
                     input.clone(),
                 ),
                 profiles_http: crate::http_profiles::ProfileHttpState::new(PathBuf::new()),
                 storage_http: crate::http_storage::StorageHttpState::new(
                     input.clone(),
-                    application.app_documents.clone(),
-                    application.device_files.clone(),
+                    application.device.app_documents.clone(),
+                    application.device.device_files.clone(),
                 ),
                 diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState::new(
                     input.clone(),
-                    application.device_backup.clone(),
-                    application.sysdiagnose.clone(),
-                    application.log_archive.clone(),
+                    application.device.device_backup.clone(),
+                    application.device.sysdiagnose.clone(),
+                    application.device.log_archive.clone(),
                 ),
                 apps_http: crate::http_apps::AppHttpState::new(
                     input.clone(),
-                    application.app_operation.clone(),
+                    application.device.app_operation.clone(),
                 ),
                 crash_reports_http: crate::http_crash_reports::CrashReportHttpState::new(
                     input.clone(),
                 ),
                 browser_frames,
-                clipboard: application.clipboard,
-                developer_image: application.developer_image,
-                video_counters: application.video_counters,
+                clipboard: application.device.clipboard,
+                developer_image: application.device.developer_image,
+                video_counters: application.device.video_counters,
                 input,
             },
             input_rx,
@@ -1391,7 +1402,7 @@ mod tests {
         assert_eq!(
             handle_client_message(
                 &state.input,
-                state.application.orientation.get(),
+                state.application.device.orientation.get(),
                 &state.browser_frames,
                 r#"{"type":"video_demand","active":false}"#,
                 &mut pressed,
@@ -1404,7 +1415,7 @@ mod tests {
         assert_eq!(
             handle_client_message(
                 &state.input,
-                state.application.orientation.get(),
+                state.application.device.orientation.get(),
                 &state.browser_frames,
                 r#"{"type":"video_demand","active":true}"#,
                 &mut pressed,
@@ -1430,7 +1441,7 @@ mod tests {
         assert_eq!(
             handle_client_message(
                 &state.input,
-                state.application.orientation.get(),
+                state.application.device.orientation.get(),
                 &state.browser_frames,
                 r#"{"type":"browser_video_keyframe"}"#,
                 &mut HashSet::new(),

@@ -44,6 +44,8 @@ The runtime owns the dedicated 16 MiB device thread, Tokio runtime and `LocalSet
 
 Its host-facing facade exposes typed commands, observations, and capability ports only. Concrete input dispatchers, service reporters and supervisors, retry helpers, protocol clients, and transport handles remain private so a host cannot create a second execution or recovery path around the session manager.
 
+The host-facing `RuntimeClient` has two explicit ownership groups. `RuntimeManagerClient` exposes only discovery inventory, active selection, and manager lifecycle control. `DeviceSessionClient` exposes the media, input, observation, service, and device-operation surface associated with the currently selected session. The root client only combines these groups. The internal `CoreRuntimeState` mirrors the same split through private manager and device-session state groups, so manager views and host clients cannot accidentally project different ownership. The `runtime` facade keeps its owner-thread executor and state graph in separate private modules. This preserves the current single-session behavior while providing the boundary required for a later registry of isolated device runtimes.
+
 The host owns directory selection, environment and command-line parsing, setting persistence, operating-system process resolution, Tauri capabilities, HTTP listeners, authentication, TLS and LAN policy, and the choice of local or remote audio consumers. Host-resolved paths, FFmpeg configuration, sidecar adapters, and diagnostic overrides enter through configuration or capability ports. Boundary checks prevent production runtime code from reintroducing environment reads, process launching, or FFmpeg path resolution.
 
 ## Target APIs

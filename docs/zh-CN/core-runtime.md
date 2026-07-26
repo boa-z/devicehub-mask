@@ -44,6 +44,8 @@ runtime 持有设备专用 16 MiB 线程、Tokio runtime 与 `LocalSet`、发现
 
 面向宿主的 facade 只公开类型化命令、观察状态和能力端口。具体输入 dispatcher、服务 reporter 与 supervisor、重试辅助函数、协议 client 和传输 handle 均保持私有，确保宿主不能绕过 session manager 建立第二条执行或恢复路径。
 
+面向宿主的 `RuntimeClient` 具有两个明确的所有权分组。`RuntimeManagerClient` 只暴露发现清单、当前选择和 manager 生命周期控制；`DeviceSessionClient` 暴露与当前选中会话关联的媒体、输入、观察、服务及设备操作接口；根 client 只负责组合二者。内部 `CoreRuntimeState` 通过私有的 manager 与 device-session 状态组镜像相同拆分，避免 manager view 与宿主 client 投影出不同所有权。`runtime` facade 还把 owner 线程执行器与状态图放在独立的私有模块中。这在保持当前单会话行为的同时，为后续由 registry 持有多个隔离设备 runtime 建立边界。
+
 宿主持有目录选择、环境变量与命令行解析、设置持久化、操作系统进程解析、Tauri 能力、HTTP 监听、鉴权、TLS 与局域网策略，以及本机或远程音频消费者的选择。宿主解析后的路径、FFmpeg 配置、sidecar 适配器和诊断覆盖通过配置或能力端口传入。边界检查会阻止生产 runtime 重新引入环境变量读取、进程启动或 FFmpeg 路径解析。
 
 ## 目标 API

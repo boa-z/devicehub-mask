@@ -764,11 +764,12 @@ impl DeviceHub {
     }
 
     fn to_device(&self, x: f32, y: f32, size: Option<(u32, u32)>) -> Option<(u16, u16)> {
-        let turns = self.application.orientation.get().quarter_turns_cw();
+        let turns = self.application.device.orientation.get().quarter_turns_cw();
         let (width, height) = size
             .or_else(|| *self.last_image.lock().unwrap())
             .or_else(|| {
                 self.application
+                    .device
                     .device_control
                     .browser_dimensions()
                     .map(|(width, height)| {
@@ -787,18 +788,20 @@ impl DeviceHub {
 
     fn send(&self, command: InputCmd) -> Result<(), McpError> {
         self.application
+            .device
             .device_control
             .send(command)
             .map_err(|error| McpError::internal_error(error.to_string(), None))
     }
 
     fn frame_version(&self) -> u64 {
-        self.application.device_control.frame_version()
+        self.application.device.device_control.frame_version()
     }
 
     async fn native_screenshot(&self) -> Result<(u32, u32, Vec<u8>), McpError> {
         let png = self
             .application
+            .device
             .device_control
             .capture_screenshot(SCREENSHOT_WAIT)
             .await
@@ -1067,6 +1070,7 @@ impl DeviceHub {
         let timeout = Duration::from_millis(params.timeout_ms.unwrap_or(2000).clamp(1, 10_000));
         let changed = self
             .application
+            .device
             .device_control
             .wait_for_frame(after, timeout)
             .await;
@@ -2156,13 +2160,15 @@ impl DeviceHub {
     ) -> Result<CallToolResult, McpError> {
         let baseline = params.after_sequence.unwrap_or_else(|| {
             self.application
+                .device
                 .device_events
                 .latest()
                 .map_or(0, |event| event.sequence)
         });
-        let mut receiver = self.application.device_events.subscribe();
+        let mut receiver = self.application.device.device_events.subscribe();
         if let Some(event) = self
             .application
+            .device
             .device_events
             .latest()
             .filter(|event| event.sequence > baseline)
@@ -2185,6 +2191,7 @@ impl DeviceHub {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if let Some(event) = self
                             .application
+                            .device
                             .device_events
                             .latest()
                             .filter(|event| event.sequence > baseline)
@@ -2213,6 +2220,7 @@ impl DeviceHub {
                     "changed": false,
                     "after_sequence": baseline,
                     "latest_sequence": self.application
+                        .device
                         .device_events
                         .latest()
                         .map(|event| event.sequence),
@@ -2226,8 +2234,8 @@ impl DeviceHub {
         description = "List attached iOS device transports with stable selection ID, UDID, name, connection type, pairing state, and active state. Use the selection ID to distinguish USB from Wi-Fi."
     )]
     async fn list_devices(&self) -> Result<CallToolResult, McpError> {
-        let active = self.application.active.selection_id();
-        let listed = self.application.devices.get();
+        let active = self.application.manager.active.selection_id();
+        let listed = self.application.manager.devices.get();
         let devices: Vec<_> = listed
             .into_iter()
             .map(|device| {
@@ -2250,7 +2258,7 @@ impl DeviceHub {
         udid: String,
         reconnect: bool,
     ) -> Result<CallToolResult, McpError> {
-        let devices = self.application.devices.get();
+        let devices = self.application.manager.devices.get();
         let selected = devices
             .iter()
             .find(|device| device.id == udid)
@@ -2263,9 +2271,10 @@ impl DeviceHub {
             );
         }
         if !reconnect
-            && self.application.active.get().as_deref() == Some(udid.as_str())
+            && self.application.manager.active.get().as_deref() == Some(udid.as_str())
             && self
                 .application
+                .device
                 .device_control
                 .browser_dimensions()
                 .is_some()
@@ -2273,7 +2282,7 @@ impl DeviceHub {
             return ok_text(format!("Already connected to {udid}; screen is streaming."));
         }
         let previous_version = self.frame_version();
-        let previous_error = self.application.error.get();
+        let previous_error = self.application.device.error.get();
         let mut error_was_cleared = previous_error.is_none();
         let command = if reconnect {
             ControlCmd::Reconnect(udid.clone())
@@ -2281,17 +2290,18 @@ impl DeviceHub {
             ControlCmd::Connect(udid.clone())
         };
         self.application
+            .manager
             .control
             .send(command)
             .map_err(|_| McpError::internal_error("device session manager is not running", None))?;
         let started = Instant::now();
         while started.elapsed() < DEVICE_WAIT {
-            if self.application.active.get().as_deref() == Some(udid.as_str())
+            if self.application.manager.active.get().as_deref() == Some(udid.as_str())
                 && self.frame_version() > previous_version
             {
                 return ok_text(format!("Connected to {udid}; screen is streaming."));
             }
-            match self.application.error.get() {
+            match self.application.device.error.get() {
                 None => error_was_cleared = true,
                 Some(error)
                     if error_was_cleared || previous_error.as_deref() != Some(error.as_str()) =>
@@ -2375,7 +2385,7 @@ impl DeviceHub {
     )]
     async fn list_device_conditions(&self) -> Result<CallToolResult, McpError> {
         ok_text(
-            serde_json::to_string(&self.application.device_conditions.get())
+            serde_json::to_string(&self.application.device.device_conditions.get())
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         )
     }
@@ -2403,7 +2413,7 @@ impl DeviceHub {
         ))?;
         await_device_condition(response, "apply device condition").await?;
         ok_text(
-            serde_json::to_string(&self.application.device_conditions.get())
+            serde_json::to_string(&self.application.device.device_conditions.get())
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         )
     }
@@ -2421,7 +2431,7 @@ impl DeviceHub {
         ))?;
         await_device_condition(response, "clear device condition").await?;
         ok_text(
-            serde_json::to_string(&self.application.device_conditions.get())
+            serde_json::to_string(&self.application.device.device_conditions.get())
                 .map_err(|error| McpError::internal_error(error.to_string(), None))?,
         )
     }
@@ -2433,18 +2443,18 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<PerformanceSnapshotParams>,
     ) -> Result<CallToolResult, McpError> {
-        let sampling_continues = self.application.performance_demand.enabled();
-        let baseline = self.application.performance.get().captured_at_ms;
+        let sampling_continues = self.application.device.performance_demand.enabled();
+        let baseline = self.application.device.performance.get().captured_at_ms;
         let wait = Duration::from_millis(
             params
                 .wait_ms
                 .unwrap_or(PERFORMANCE_WAIT_DEFAULT.as_millis() as u64),
         )
         .min(OBSERVABILITY_WAIT_MAX);
-        let _lease = self.application.performance_demand.acquire();
+        let _lease = self.application.device.performance_demand.acquire();
         let deadline = Instant::now() + wait;
         let sample = loop {
-            let sample = self.application.performance.get();
+            let sample = self.application.device.performance.get();
             if wait.is_zero()
                 || (sample.captured_at_ms != 0 && sample.captured_at_ms > baseline)
                 || Instant::now() >= deadline
@@ -2488,11 +2498,11 @@ impl DeviceHub {
                 .unwrap_or(DEVICE_LOG_WAIT_DEFAULT.as_millis() as u64),
         )
         .min(OBSERVABILITY_WAIT_MAX);
-        let streaming_continues = self.application.device_log_demand.enabled();
-        let _lease = self.application.device_log_demand.acquire();
+        let streaming_continues = self.application.device.device_log_demand.enabled();
+        let _lease = self.application.device.device_log_demand.acquire();
         let deadline = Instant::now() + wait;
         let (batch, mut entries) = loop {
-            let batch = self.application.device_logs.snapshot(
+            let batch = self.application.device.device_logs.snapshot(
                 params.after,
                 MAX_DEVICE_LOG_BATCH_ENTRIES,
                 true,
@@ -2539,8 +2549,9 @@ impl DeviceHub {
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
         let screen_size = {
-            let turns = self.application.orientation.get().quarter_turns_cw();
+            let turns = self.application.device.orientation.get().quarter_turns_cw();
             self.application
+                .device
                 .device_control
                 .browser_dimensions()
                 .map(|(width, height)| {
@@ -2553,7 +2564,7 @@ impl DeviceHub {
                 })
         }
         .unwrap_or(json!(null));
-        let orientation = match self.application.orientation.get() {
+        let orientation = match self.application.device.orientation.get() {
             Orientation::Portrait => "portrait",
             Orientation::PortraitUpsideDown => "portrait-upside-down",
             Orientation::LandscapeLeft => "landscape-left",
@@ -2561,13 +2572,13 @@ impl DeviceHub {
         };
         ok_text(
             json!({
-                "active_udid": self.application.active.get(),
-                "status": self.application.status.get(),
-                "error": self.application.error.get(),
-                "streaming": self.application.device_control.browser_dimensions().is_some(),
+                "active_udid": self.application.manager.active.get(),
+                "status": self.application.device.status.get(),
+                "error": self.application.device.error.get(),
+                "streaming": self.application.device.device_control.browser_dimensions().is_some(),
                 "screen_size": screen_size,
                 "orientation": orientation,
-                "location": self.application.location.get(),
+                "location": self.application.device.location.get(),
             })
             .to_string(),
         )

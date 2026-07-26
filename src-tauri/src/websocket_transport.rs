@@ -93,7 +93,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         let mut last_status = String::new();
         let mut browser_frame_rx = send_state.browser_frames.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
-        let mut device_event_rx = send_state.application.device_events.subscribe();
+        let mut device_event_rx = send_state.application.device.device_events.subscribe();
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
@@ -291,7 +291,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
             Message::Text(text) => {
                 match handle_client_message(
                     &state.input,
-                    state.application.orientation.get(),
+                    state.application.device.orientation.get(),
                     &state.browser_frames,
                     &text,
                     &mut pressed_keyboard,

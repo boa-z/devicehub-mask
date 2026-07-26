@@ -66,7 +66,7 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
-`start_runtime` 现在把共享服务状态、控制通道、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；`SessionManager`、底层 `CoreRuntimeState`、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 提供 HTTP、WebSocket、MCP 和未来无头适配器所需的完整状态与命令面，因此宿主不再投影内部 slot，也不会意外启动另一套会话循环。桌面宿主在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
+`start_runtime` 现在把共享服务状态、控制通道、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；`SessionManager`、底层 `CoreRuntimeState`、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 明确分离管理视图（设备清单、当前选择和生命周期控制）与设备会话视图（媒体、输入、服务及设备操作）。当前 runtime 仍只持有一个选中会话，但宿主适配器不再消费暗示管理状态属于该设备的扁平 API。HTTP、WebSocket、MCP 和未来无头适配器取得完整的分组接口，因此不再投影内部 slot，也不会意外启动另一套会话循环。桌面宿主在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
 
 会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。独立的 RTCP 传输模块拥有 peer 探测、接收统计、liveness report、RCTL 实验和带防抖的 PLI/FIR 请求；RTP 接收只能记录 packet、重置已替换媒体源或提交复用 RTCP，不能直接修改 RTCP 计数或构造反馈 packet。两个模块都不持有设备客户端、解码进程或应用命令，因此传输与会话编排可以独立于缓冲及反馈策略演进。
 

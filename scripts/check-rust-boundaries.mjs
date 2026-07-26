@@ -140,7 +140,7 @@ for (const [service, sourcePath] of [
   ["session input loop", "crates/devicehub-runtime/src/session/input.rs"],
   ["connected session runner", "crates/devicehub-runtime/src/session/runner.rs"],
   ["outer session manager", "crates/devicehub-runtime/src/session/manager.rs"],
-  ["CoreRuntime lifecycle", "crates/devicehub-runtime/src/runtime.rs"],
+  ["CoreRuntime lifecycle", "crates/devicehub-runtime/src/runtime/owner.rs"],
   ["runtime client", "crates/devicehub-runtime/src/client.rs"],
   ["device control client", "crates/devicehub-runtime/src/client/control.rs"],
   ["device trust", "crates/devicehub-runtime/src/session/trust.rs"],
@@ -312,15 +312,21 @@ if (
 }
 console.log("devicehub-runtime outer session manager ownership boundary OK.");
 
-const runtimeOwner = readFileSync(
-  "crates/devicehub-runtime/src/runtime.rs",
-  "utf8",
-);
+const runtimeModule = readFileSync("crates/devicehub-runtime/src/runtime.rs", "utf8");
+const runtimeOwner = [
+  runtimeModule,
+  readFileSync("crates/devicehub-runtime/src/runtime/owner.rs", "utf8"),
+  readFileSync("crates/devicehub-runtime/src/runtime/state.rs", "utf8"),
+].join("\n");
 const tauriRuntimeOwner = readFileSync(
   "src-tauri/src/device_runtime.rs",
   "utf8",
 );
 const requiredRuntimeOwner = [
+  "mod owner;",
+  "mod state;",
+  "pub use owner::{CoreRuntime, OWNER_THREAD_STACK_BYTES};",
+  "pub(crate) use state::CoreRuntimeState;",
   "pub struct CoreRuntime",
   "pub(crate) fn start<State, Build, Task>",
   "std::thread::Builder::new()",
@@ -344,6 +350,8 @@ const retainedTauriRuntimeOwner = forbiddenTauriRuntimeOwner.filter(
 );
 if (
   missingRuntimeOwner.length > 0 ||
+  runtimeModule.includes("pub struct CoreRuntime") ||
+  runtimeModule.includes("struct CoreRuntimeState") ||
   retainedTauriRuntimeOwner.length > 0 ||
   readFileSync("crates/devicehub-runtime/src/lib.rs", "utf8").includes(
     "CoreRuntimeFuture",
@@ -869,7 +877,11 @@ const exposedSessionInternals = forbiddenSessionExports.filter((name) =>
   runtimeSessionFacade.includes(name),
 );
 const requiredRuntimeState = [
+  "pub(crate) struct RuntimeManagerState",
+  "pub(crate) struct DeviceSessionState<HostPath>",
   "pub(crate) struct CoreRuntimeState<HostPath>",
+  "pub(crate) manager: RuntimeManagerState",
+  "pub(crate) device: DeviceSessionState<HostPath>",
   "pub(crate) fn client(",
   "pub(crate) fn manager_views(&self)",
   "RuntimeServiceViews {",
@@ -879,6 +891,15 @@ const requiredRuntimeState = [
 const missingRuntimeState = requiredRuntimeState.filter(
   (signature) => !runtimeOwner.includes(signature),
 );
+const runtimeStateFacade = runtimeOwner.match(
+  /pub\(crate\) struct CoreRuntimeState<HostPath> \{([\s\S]*?)\n\}/u,
+)?.[1] ?? "";
+const forbiddenFlatRuntimeState = [
+  "pub(crate) devices:",
+  "pub(crate) active:",
+  "pub(crate) status:",
+  "pub(crate) commands:",
+].filter((signature) => runtimeStateFacade.includes(signature));
 const forbiddenTauriStateConstruction = [
   "StatusSlot::default()",
   "BrowserVideoSlot::default()",
@@ -896,6 +917,7 @@ const duplicatedTauriState = forbiddenTauriStateConstruction.filter(
 );
 if (
   missingRuntimeState.length > 0 ||
+  forbiddenFlatRuntimeState.length > 0 ||
   duplicatedTauriState.length > 0 ||
   exposedSessionInternals.length > 0 ||
   existsSync("src-tauri/src/application.rs") ||
@@ -927,7 +949,7 @@ if (
   tauriSessionComposition.includes("state.manager_views()")
 ) {
   console.error(
-    `Rust boundary check failed: shared runtime state or session API ownership drifted (runtime missing: ${missingRuntimeState.join(", ")}; Tauri duplicated: ${duplicatedTauriState.join(", ")}; exposed session internals: ${exposedSessionInternals.join(", ")})`,
+    `Rust boundary check failed: shared runtime state or session API ownership drifted (runtime missing: ${missingRuntimeState.join(", ")}; flat runtime state: ${forbiddenFlatRuntimeState.join(", ")}; Tauri duplicated: ${duplicatedTauriState.join(", ")}; exposed session internals: ${exposedSessionInternals.join(", ")})`,
   );
   process.exit(1);
 }
@@ -937,7 +959,14 @@ const runtimeClient = readFileSync(
   "crates/devicehub-runtime/src/client.rs",
   "utf8",
 );
+const runtimeClientFacade = runtimeClient.match(
+  /pub struct RuntimeClient<HostPath> \{([\s\S]*?)\n\}/u,
+)?.[1] ?? "";
 const requiredRuntimeClientState = [
+  "pub struct RuntimeManagerClient",
+  "pub struct DeviceSessionClient<HostPath>",
+  "pub manager: RuntimeManagerClient",
+  "pub device: DeviceSessionClient<HostPath>",
   "pub browser_frames: BrowserVideoSlot",
   "pub video_counters: VideoCounters",
   "pub clipboard: ClipboardSlot",
@@ -956,13 +985,23 @@ const requiredRuntimeClientState = [
 const missingRuntimeClientState = requiredRuntimeClientState.filter(
   (signature) => !runtimeClient.includes(signature),
 );
-if (missingRuntimeClientState.length > 0) {
+const forbiddenFlatRuntimeClientState = [
+  "pub devices:",
+  "pub active:",
+  "pub control:",
+  "pub status:",
+  "pub commands:",
+].filter((signature) => runtimeClientFacade.includes(signature));
+if (
+  missingRuntimeClientState.length > 0 ||
+  forbiddenFlatRuntimeClientState.length > 0
+) {
   console.error(
-    `Rust boundary check failed: RuntimeClient does not expose the complete host state surface: ${missingRuntimeClientState.join(", ")}`,
+    `Rust boundary check failed: RuntimeClient manager/session ownership drifted (missing: ${missingRuntimeClientState.join(", ")}; flat: ${forbiddenFlatRuntimeClientState.join(", ")})`,
   );
   process.exit(1);
 }
-console.log("devicehub-runtime RuntimeClient owns the complete host state surface.");
+console.log("devicehub-runtime RuntimeClient separates manager and device-session ownership.");
 
 const publicMediaFacade = runtimeFacade.match(
   /pub use media::\{([\s\S]*?)\n\};/,
