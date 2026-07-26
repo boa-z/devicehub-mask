@@ -161,6 +161,10 @@ console.log(
 );
 
 const serverMcp = readFileSync("crates/devicehub-server/src/mcp.rs", "utf8");
+const serverPrivateApi = readFileSync(
+  "crates/devicehub-server/src/private_api.rs",
+  "utf8",
+);
 const tauriMcp = readFileSync("src-tauri/src/mcp.rs", "utf8");
 if (
   !serverMcp.includes("pub fn router(") ||
@@ -197,6 +201,26 @@ const serverDiagnosticsHttp = readFileSync(
   "crates/devicehub-server/src/http/diagnostics.rs",
   "utf8",
 );
+const serverDevicesHttp = readFileSync(
+  "crates/devicehub-server/src/http/devices.rs",
+  "utf8",
+);
+const serverDeviceHttp = readFileSync(
+  "crates/devicehub-server/src/http/device.rs",
+  "utf8",
+);
+const serverWdaHttp = readFileSync(
+  "crates/devicehub-server/src/http/wda.rs",
+  "utf8",
+);
+const serverDeveloperImageHttp = readFileSync(
+  "crates/devicehub-server/src/http/developer_image.rs",
+  "utf8",
+);
+const serverProvisioningHttp = readFileSync(
+  "crates/devicehub-server/src/http/provisioning.rs",
+  "utf8",
+);
 const serverStorageHttp = readFileSync(
   "crates/devicehub-server/src/http/storage.rs",
   "utf8",
@@ -209,7 +233,31 @@ const tauriProfileFiles = readFileSync(
   "src-tauri/src/profile_files.rs",
   "utf8",
 );
+const tauriDeveloperImageAssets = readFileSync(
+  "src-tauri/src/developer_image.rs",
+  "utf8",
+);
+const tauriProvisioningProfiles = readFileSync(
+  "src-tauri/src/provisioning.rs",
+  "utf8",
+);
+const tauriWebProduction = productionSource(
+  readFileSync("src-tauri/src/web.rs", "utf8"),
+);
 if (
+  !serverPrivateApi.includes("pub struct PrivateApiState") ||
+  !serverPrivateApi.includes("pub fn router(state: PrivateApiState, token: String)") ||
+  !serverPrivateApi.includes("authorize_private_api") ||
+  !serverPrivateApi.includes('route("/api/status"') ||
+  !serverPrivateApi.includes('route("/api/ws"') ||
+  !serverPrivateApi.includes("http::devices_router") ||
+  !serverPrivateApi.includes("http::provisioning_router") ||
+  !tauriWebProduction.includes(
+    "devicehub_server::private_api::router(state, token)",
+  ) ||
+  tauriWebProduction.includes("AUTHORIZATION") ||
+  tauriWebProduction.includes("SEC_WEBSOCKET_PROTOCOL") ||
+  tauriWebProduction.includes(".route(") ||
   !serverHttp.includes("pub use apps::{AppHttpState, router as apps_router}") ||
   !serverHttp.includes(
     "pub use crash_reports::{CrashReportHttpState, router as crash_reports_router}",
@@ -218,6 +266,17 @@ if (
     "pub use storage::{StorageHttpState, router as storage_router}",
   ) ||
   !serverHttp.includes("DiagnosticDestinationPreparer") ||
+  !serverHttp.includes(
+    "pub use devices::{DeviceManagerHttpState, router as devices_router}",
+  ) ||
+  !serverHttp.includes("pub use device::{DeviceHttpState, router as device_router}") ||
+  !serverHttp.includes("pub use wda::{WdaHttpState, router as wda_router}") ||
+  !serverHttp.includes(
+    "pub use developer_image::{DeveloperImageHttpState, router as developer_image_router}",
+  ) ||
+  !serverHttp.includes(
+    "pub use provisioning::{ProvisioningHttpState, router as provisioning_router}",
+  ) ||
   !serverAppsHttp.includes("pub fn router<S>(state: AppHttpState)") ||
   !serverCrashReportsHttp.includes(
     "pub fn router<S>(state: CrashReportHttpState)",
@@ -230,6 +289,56 @@ if (
     "pub fn router<S>(state: DiagnosticsHttpState)",
   ) ||
   !serverDiagnosticsHttp.includes("pub struct DiagnosticDestinationPreparer") ||
+  !serverDevicesHttp.includes("pub struct DeviceManagerHttpState") ||
+  !serverDevicesHttp.includes("manager: RuntimeManagerClient") ||
+  !serverDevicesHttp.includes(
+    "pub fn router<S>(state: DeviceManagerHttpState)",
+  ) ||
+  tauriWebProduction.includes(".manager.control") ||
+  tauriWebProduction.includes("SessionControlCommand::") ||
+  !serverDeviceHttp.includes("pub struct DeviceHttpState") ||
+  !serverDeviceHttp.includes("input: InputSink") ||
+  !serverDeviceHttp.includes("location: LocationStatusSlot") ||
+  !serverDeviceHttp.includes("device_control: DeviceControlService<PathBuf>") ||
+  productionSource(serverDeviceHttp).includes("RuntimeClient") ||
+  !serverWdaHttp.includes("pub struct WdaHttpState") ||
+  !serverWdaHttp.includes("input: InputSink") ||
+  !serverWdaHttp.includes("validate_wda_runner_bundle_id") ||
+  tauriWebProduction.includes('route("/api/device/wda-runner"') ||
+  !serverDeveloperImageHttp.includes("pub struct DeveloperImageHttpState") ||
+  !serverDeveloperImageHttp.includes("input: InputSink") ||
+  !serverDeveloperImageHttp.includes("status: DeveloperImageMountSlot") ||
+  !serverDeveloperImageHttp.includes(
+    "pub fn router<S>(state: DeveloperImageHttpState)",
+  ) ||
+  ["tokio::fs", "std::fs", "std::env", "TcpListener::bind", "start_runtime("].some(
+    (token) => productionSource(serverDeveloperImageHttp).includes(token),
+  ) ||
+  tauriWebProduction.includes('route("/api/device/developer-image"') ||
+  !tauriDeveloperImageAssets.includes(
+    "impl devicehub_runtime::DeveloperImageAssetLoader for TokioDeveloperImageAssets",
+  ) ||
+  !serverProvisioningHttp.includes("pub struct ProvisioningHttpState") ||
+  !serverProvisioningHttp.includes("input: InputSink") ||
+  !serverProvisioningHttp.includes(
+    "pub fn router<S>(state: ProvisioningHttpState)",
+  ) ||
+  ["tokio::fs", "std::fs", "std::env", "TcpListener::bind", "start_runtime("].some(
+    (token) => productionSource(serverProvisioningHttp).includes(token),
+  ) ||
+  tauriWebProduction.includes('route("/api/device/provisioning-profiles"') ||
+  tauriWebProduction.includes("ProvisioningCommand::") ||
+  tauriWebProduction.includes("pub input:") ||
+  !tauriProvisioningProfiles.includes(
+    "impl devicehub_runtime::ProvisioningProfileLoader for TokioProvisioningProfiles",
+  ) ||
+  [
+    'route("/api/device/details"',
+    'route("/api/device/companions"',
+    'route("/api/device/home-screen"',
+    'route("/api/device/screenshot"',
+    'route("/api/device/location"',
+  ].some((route) => tauriWebProduction.includes(route)) ||
   !serverStorageHttp.includes("pub fn router<S>(state: StorageHttpState)") ||
   !serverStorageHttp.includes("validate_app_bundle_id") ||
   !serverProfilesHttp.includes("pub trait ProfileRepository") ||
@@ -257,7 +366,7 @@ if (
   process.exit(1);
 }
 console.log(
-  "devicehub-server owns application, crash-report, performance, profile, storage, and diagnostics HTTP adapters while Tauri only composes injected state and filesystem policy.",
+  "devicehub-server owns the authenticated private API graph and all device HTTP adapters while Tauri only injects state, CORS, listener, and filesystem policy.",
 );
 
 const hostApiForbidden = ["std::path", "std::fs", "tokio::fs", "std::env"];
@@ -691,7 +800,8 @@ if (
   runtimeFacade.includes("developer_image_type_for_version") ||
   tauriDeveloperImage.includes("devicehub_runtime::DeveloperImageMountState") ||
   tauriDeveloperImage.includes("devicehub_runtime::{DeveloperImageMountSlot") ||
-  !tauriDeveloperImage.includes("devicehub_core::{DeveloperImageMountSlot")
+  !serverDeveloperImageHttp.includes("use devicehub_core::{") ||
+  serverDeveloperImageHttp.includes("devicehub_runtime::DeveloperImageMountSlot")
 ) {
   console.error(
     `Rust boundary check failed: Developer Image domain state is not owned directly by core: ${missingCoreDeveloperImage.join(", ")}`,

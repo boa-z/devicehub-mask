@@ -4,14 +4,7 @@ use std::path::PathBuf;
 
 use tokio::io::AsyncReadExt;
 
-#[cfg(test)]
-pub(crate) use devicehub_core::DeveloperImageMountState;
-pub(crate) use devicehub_core::{DeveloperImageMountSlot, DeveloperImageMountStatus};
-
 const MAX_PATH_BYTES: usize = 4_096;
-
-pub(crate) type DeveloperImageMountRequest = devicehub_runtime::DeveloperImageMountRequest<PathBuf>;
-pub(crate) type DeveloperImageMountCommand = devicehub_runtime::DeveloperImageMountCommand<PathBuf>;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TokioDeveloperImageAssets;

@@ -166,6 +166,24 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         application: client.clone(),
+                        device_manager_http: devicehub_server::http::DeviceManagerHttpState::new(
+                            client.manager.clone(),
+                        ),
+                        device_http: devicehub_server::http::DeviceHttpState::new(
+                            client.device.commands.clone(),
+                            client.device.location.clone(),
+                            client.device.device_control.clone(),
+                        ),
+                        wda_http: devicehub_server::http::WdaHttpState::new(
+                            client.device.commands.clone(),
+                        ),
+                        developer_image_http: devicehub_server::http::DeveloperImageHttpState::new(
+                            client.device.commands.clone(),
+                            client.device.developer_image.clone(),
+                        ),
+                        provisioning_http: devicehub_server::http::ProvisioningHttpState::new(
+                            client.device.commands.clone(),
+                        ),
                         performance_http: devicehub_server::http::PerformanceHttpState::new(
                             client.device.performance,
                             client.device.performance_demand,
@@ -204,8 +222,6 @@ fn spawn_backend(
                         crash_reports_http: devicehub_server::http::CrashReportHttpState::new(
                             client.device.commands.clone(),
                         ),
-                        developer_image: client.device.developer_image,
-                        input: client.device.commands,
                         websocket_config,
                     },
                     server_token,

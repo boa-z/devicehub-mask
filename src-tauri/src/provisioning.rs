@@ -3,8 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub use devicehub_runtime::ProvisioningFailure;
-pub type ProvisioningCommand = devicehub_runtime::ProvisioningCommand<PathBuf>;
+use devicehub_runtime::ProvisioningFailure;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TokioProvisioningProfiles;

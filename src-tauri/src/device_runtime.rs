@@ -8,9 +8,6 @@ use std::path::PathBuf;
 
 pub(crate) use devicehub_runtime::{AudioPublisher, PcmAudioConsumer, RuntimePreferences};
 
-/// Desktop host-path bindings for runtime-owned commands and command slots.
-pub(crate) type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
-pub(crate) type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
 pub(crate) type ControlCmd = devicehub_runtime::SessionControlCommand;
 
 /// Host-resolved diagnostics applied to each device session.

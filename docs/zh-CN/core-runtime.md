@@ -51,7 +51,7 @@ runtime 持有设备专用 16 MiB 线程、Tokio runtime 与 `LocalSet`、发现
 
 宿主持有目录选择、环境变量与命令行解析、设置持久化、操作系统进程解析、Tauri 能力、HTTP 监听、鉴权、TLS 与局域网策略，以及本机或远程音频消费者的选择。宿主解析后的路径、FFmpeg 配置、sidecar 适配器和诊断覆盖通过配置或能力端口传入。边界检查会阻止生产 runtime 重新引入环境变量读取、进程启动或 FFmpeg 路径解析。
 
-`devicehub-server` 持有可复用的线路协议适配器，但不持有监听器或 runtime 生命周期。其 WebSocket 适配器统一负责状态发布、输入校验、WebCodecs 数据包发送、流控、遥测和断连清理；MCP 适配器持有完整工具目录、校验、handler 实现与 Streamable HTTP router，同时保持现有 `devicehub_mask` 服务标识。独立 HTTP 适配器持有 App 发现与生命周期、有界崩溃报告、性能工作台、公共 AFC/App 容器存储以及长时间诊断导出路由，每个适配器只接收窄化的 runtime 命令与观察句柄。存储路由通过类型化 runtime 命令传递不透明的宿主路径，runtime 传输仍使用宿主注入的文件系统端口完成校验、流式 I/O 和原子发布；抓包检查与诊断目标规范化通过各自用途明确的异步宿主能力进入适配器。桌面及未来无头 composition root 注入既有 `RuntimeClient` 和有界适配器配置；适配器不能读取进程环境、监听生产端口或启动设备会话。
+`devicehub-server` 持有可复用的线路协议适配器，但不持有监听器或 runtime 生命周期。其 WebSocket 适配器统一负责状态发布、输入校验、WebCodecs 数据包发送、流控、遥测和断连清理；MCP 适配器持有完整工具目录、校验、handler 实现与 Streamable HTTP router，同时保持现有 `devicehub_mask` 服务标识。设备管理 HTTP 适配器只接收 `RuntimeManagerClient`，持有发现刷新、设备选择、重连、配对和撤销信任的请求语义，不能访问活动设备会话。独立的活动设备适配器只接收 session 命令入口、位置观察和截图服务，持有详情、重命名、Developer Mode、定位、粘贴、截图、电源、伴随设备、主屏布局和壁纸路由，不能访问 manager 状态或宿主文件。WDA Runner 适配器在相同的窄命令入口上独立持有 runner bundle 校验、生命周期期限和 HTTP 错误映射。其他独立 HTTP 适配器持有 App 发现与生命周期、有界崩溃报告、性能工作台、公共 AFC/App 容器存储、长时间诊断导出、Developer Image 生命周期和 provisioning profile 管理，每个适配器只接收窄化的 runtime 命令与观察句柄。Developer Image 与 provisioning 适配器都以不透明值传递宿主路径，并把校验和文件读取留给宿主资源加载器实现。存储路由同样通过类型化 runtime 命令遵循该规则，runtime 传输仍使用宿主注入的文件系统端口完成校验、流式 I/O 和原子发布；抓包检查与诊断目标规范化通过各自用途明确的异步宿主能力进入适配器。桌面及未来无头 composition root 注入既有 `RuntimeClient` 和有界适配器配置；适配器不能读取进程环境、监听生产端口或启动设备会话。鉴权私有 API 根路由、状态与 WebSocket 路由以及所有子路由组合现在归 `devicehub-server` 所有；Tauri 只叠加桌面 CORS 并持有监听器生命周期。
 
 ## 目标 API
 
