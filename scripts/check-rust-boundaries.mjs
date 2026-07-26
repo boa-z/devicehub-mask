@@ -97,6 +97,15 @@ for (const [service, sourcePath] of [
   ["session commands", "crates/devicehub-runtime/src/session/commands.rs"],
   ["session command router", "crates/devicehub-runtime/src/session/router.rs"],
   ["session input loop", "crates/devicehub-runtime/src/session/input.rs"],
+  ["connected session runner", "crates/devicehub-runtime/src/session/runner.rs"],
+  ["outer session manager", "crates/devicehub-runtime/src/session/manager.rs"],
+  ["CoreRuntime lifecycle", "crates/devicehub-runtime/src/runtime.rs"],
+  ["device trust", "crates/devicehub-runtime/src/session/trust.rs"],
+  [
+    "Wi-Fi discovery",
+    "crates/devicehub-runtime/src/transport/wifi_discovery.rs",
+  ],
+  ["device discovery", "crates/devicehub-runtime/src/transport/discovery.rs"],
   [
     "session diagnostic sinks",
     "crates/devicehub-runtime/src/session/diagnostics.rs",
@@ -137,17 +146,155 @@ if (exposedSupervisorApis.length > 0) {
 }
 console.log("devicehub-runtime session supervisor ownership boundary OK.");
 
-const tauriSessionServices = readFileSync(
-  "src-tauri/src/session/services.rs",
+const runtimeSessionRunner = readFileSync(
+  "crates/devicehub-runtime/src/session/runner.rs",
   "utf8",
 );
-if (
-  tauriSessionServices.includes("struct SessionServices") ||
-  !tauriSessionServices.includes("RuntimeConnectedSessionServices")
-) {
+const requiredRuntimeOwnership = [
+  "RuntimeSessionServices::start",
+  "MediaSessionRuntime::new",
+  "session_services.shutdown().await",
+  "display.stop_media_stream().await",
+];
+const missingRuntimeOwnership = requiredRuntimeOwnership.filter(
+  (signature) => !runtimeSessionRunner.includes(signature),
+);
+if (missingRuntimeOwnership.length > 0) {
   console.error(
-    "Rust boundary check failed: Tauri must return the runtime-owned connected service lifecycle",
+    `Rust boundary check failed: connected session runner lost lifecycle ownership: ${missingRuntimeOwnership.join(", ")}`,
   );
   process.exit(1);
 }
-console.log("Tauri connected service owner boundary OK.");
+console.log("devicehub-runtime connected session lifecycle ownership boundary OK.");
+
+const tauriSession = readFileSync("src-tauri/src/session.rs", "utf8");
+const tauriSessionManager = readFileSync(
+  "src-tauri/src/session/manager.rs",
+  "utf8",
+);
+const forbiddenTauriSessionOwnership = [
+  "RuntimeSessionServices::start",
+  "MediaSessionRuntime::new",
+  "start_screen_media_stream(",
+  "connect_device_input(",
+];
+const retainedTauriOwnership = forbiddenTauriSessionOwnership.filter(
+  (signature) =>
+    tauriSession.includes(signature) || tauriSessionManager.includes(signature),
+);
+if (
+  retainedTauriOwnership.length > 0 ||
+  !tauriSessionManager.includes("run_session_manager(")
+) {
+  console.error(
+    `Rust boundary check failed: Tauri retained connected session orchestration: ${retainedTauriOwnership.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log("Tauri connected session host-adapter boundary OK.");
+
+const tauriSessionRoot = readFileSync("src-tauri/src/session.rs", "utf8");
+if (
+  tauriSessionRoot.includes("mod trust;") ||
+  tauriSessionManager.includes("LockdownClient") ||
+  tauriSessionManager.includes("save_pair_record") ||
+  tauriSessionManager.includes("delete_pair_record")
+) {
+  console.error(
+    "Rust boundary check failed: Tauri retained device trust protocol ownership",
+  );
+  process.exit(1);
+}
+console.log("devicehub-runtime device trust ownership boundary OK.");
+
+if (
+  tauriSessionRoot.includes("mod discovery;") ||
+  tauriSessionManager.includes("struct DeviceDiscovery") ||
+  tauriSessionManager.includes("get_devices().await")
+) {
+  console.error(
+    "Rust boundary check failed: Tauri retained device discovery protocol ownership",
+  );
+  process.exit(1);
+}
+console.log("devicehub-runtime device discovery ownership boundary OK.");
+
+const runtimeSessionManager = readFileSync(
+  "crates/devicehub-runtime/src/session/manager.rs",
+  "utf8",
+);
+const requiredManagerOwnership = [
+  "DeviceDiscovery<",
+  "SessionRetryPolicy::default()",
+  "run_connected_session(",
+  "pair_device(",
+  "forget_device(",
+  "ACTIVE_RESCAN",
+  "SWITCH_GRACE",
+];
+const missingManagerOwnership = requiredManagerOwnership.filter(
+  (signature) => !runtimeSessionManager.includes(signature),
+);
+const forbiddenTauriManagerOwnership = [
+  "enum Next",
+  "SessionRetryPolicy",
+  "run_connected_session(",
+  "pair_device(",
+  "forget_device(",
+  "active_rescan",
+  "tokio::select!",
+];
+const retainedTauriManagerOwnership = forbiddenTauriManagerOwnership.filter(
+  (signature) => tauriSessionManager.includes(signature),
+);
+if (
+  missingManagerOwnership.length > 0 ||
+  retainedTauriManagerOwnership.length > 0
+) {
+  console.error(
+    `Rust boundary check failed: outer session manager ownership drifted (runtime missing: ${missingManagerOwnership.join(", ")}; Tauri retained: ${retainedTauriManagerOwnership.join(", ")})`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-runtime outer session manager ownership boundary OK.");
+
+const runtimeOwner = readFileSync(
+  "crates/devicehub-runtime/src/runtime.rs",
+  "utf8",
+);
+const tauriRuntimeOwner = readFileSync(
+  "src-tauri/src/device_runtime.rs",
+  "utf8",
+);
+const requiredRuntimeOwner = [
+  "pub struct CoreRuntime",
+  "std::thread::Builder::new()",
+  ".stack_size(OWNER_THREAD_STACK_BYTES)",
+  "tokio::task::LocalSet::new()",
+  "SessionControlCommand::Quit",
+  "thread.join()",
+];
+const missingRuntimeOwner = requiredRuntimeOwner.filter(
+  (signature) => !runtimeOwner.includes(signature),
+);
+const forbiddenTauriRuntimeOwner = [
+  "std::thread::Builder",
+  "JoinHandle",
+  "stack_size(",
+  "tokio::task::LocalSet",
+  "tokio::runtime::Builder",
+];
+const retainedTauriRuntimeOwner = forbiddenTauriRuntimeOwner.filter(
+  (signature) => tauriRuntimeOwner.includes(signature),
+);
+if (
+  missingRuntimeOwner.length > 0 ||
+  retainedTauriRuntimeOwner.length > 0 ||
+  !tauriRuntimeOwner.includes("devicehub_runtime::CoreRuntime::start(")
+) {
+  console.error(
+    `Rust boundary check failed: CoreRuntime lifecycle ownership drifted (runtime missing: ${missingRuntimeOwner.join(", ")}; Tauri retained: ${retainedTauriRuntimeOwner.join(", ")})`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-runtime CoreRuntime lifecycle ownership boundary OK.");

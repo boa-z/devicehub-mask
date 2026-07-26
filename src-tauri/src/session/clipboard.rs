@@ -4,6 +4,15 @@ use std::borrow::Cow;
 
 use devicehub_runtime::{ClipboardImage, HostClipboard};
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ArboardClipboardProvider;
+
+impl devicehub_runtime::HostClipboardProvider for ArboardClipboardProvider {
+    fn connect(&self) -> Result<Box<dyn HostClipboard>, String> {
+        connect_host()
+    }
+}
+
 pub(super) fn connect_host() -> Result<Box<dyn HostClipboard>, String> {
     arboard::Clipboard::new()
         .map(|clipboard| Box::new(ArboardClipboard(clipboard)) as Box<dyn HostClipboard>)

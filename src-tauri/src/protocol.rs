@@ -10,14 +10,14 @@ pub(crate) use crate::device_runtime::state::{
     LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
 };
 pub(crate) use crate::domain::{
-    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AppOperationView, ConnKind, DeviceApp,
-    DeviceCrashReportList, DeviceCrashReportSummary, DeviceDetails, DeviceInfo, DevicePairingState,
-    ForgetDeviceOutcome, ForgetDeviceResult, HARDWARE_BUTTON_NAMES, LocationStatus, Orientation,
-    PairDeviceOutcome, PairDeviceResult, ProvisioningProfile, RotateDir, device_selector, norm,
-    unrotate_norm, validate_device_name, validate_paste_text,
+    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AppOperationView, DeviceApp, DeviceCrashReportList,
+    DeviceCrashReportSummary, DeviceDetails, DevicePairingState, ForgetDeviceResult,
+    HARDWARE_BUTTON_NAMES, LocationStatus, Orientation, PairDeviceResult, ProvisioningProfile,
+    RotateDir, norm, unrotate_norm, validate_device_name, validate_paste_text,
 };
 #[cfg(test)]
 pub(crate) use crate::domain::{
-    CrashReportFormat, CrashReportKind, DeviceActivationState, DeviceBattery, DeviceCrashReport,
-    DeviceCrashReportContent, DeviceRegionalSettings,
+    ConnKind, CrashReportFormat, CrashReportKind, DeviceActivationState, DeviceBattery,
+    DeviceCrashReport, DeviceCrashReportContent, DeviceInfo, DeviceRegionalSettings,
+    ForgetDeviceOutcome, PairDeviceOutcome,
 };

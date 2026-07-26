@@ -281,8 +281,6 @@ pub fn record_frontend_event(event: FrontendLogEvent) -> Result<(), String> {
     Ok(())
 }
 
-pub use devicehub_core::device_id_fingerprint;
-
 fn bounded_field(name: &str, value: String, max_chars: usize) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -296,7 +294,8 @@ fn bounded_field(name: &str, value: String, max_chars: usize) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_field, device_id_fingerprint, suppress_xpc_partial_frame_noise};
+    use super::{bounded_field, suppress_xpc_partial_frame_noise};
+    use devicehub_core::device_id_fingerprint;
 
     #[test]
     fn suppresses_partial_xpc_frame_noise_without_overriding_explicit_filters() {

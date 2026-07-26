@@ -43,6 +43,11 @@ pub trait HostClipboard {
 pub type HostClipboardFactory =
     Box<dyn FnOnce() -> Result<Box<dyn HostClipboard>, String> + 'static>;
 
+/// Reusable host capability that opens a fresh clipboard for each session.
+pub trait HostClipboardProvider: Clone + Send + Sync + 'static {
+    fn connect(&self) -> Result<Box<dyn HostClipboard>, String>;
+}
+
 enum ClipboardCommand {
     SetText {
         text: String,

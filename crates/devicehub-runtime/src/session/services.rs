@@ -99,6 +99,7 @@ pub(crate) struct RuntimeDeviceServicePorts {
 }
 
 /// Host-visible state shared with filesystem-backed runtime services.
+#[derive(Clone)]
 pub struct RuntimeHostServiceViews {
     pub app_documents: crate::AppDocumentActivitySlot,
     pub device_files: crate::DeviceFileActivitySlot,
@@ -111,6 +112,7 @@ pub struct RuntimeHostServiceViews {
 }
 
 /// Host capabilities injected once while the runtime owns service lifecycle.
+#[derive(Clone)]
 pub struct RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImages, Profiles> {
     pub files: Files,
     pub capture_files: CaptureFiles,
@@ -121,20 +123,20 @@ pub struct RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImag
 
 /// Owns the complete service tree and its sole command-port bundle for one
 /// connected device session.
-pub struct RuntimeConnectedSessionServices<HostPath> {
+pub(crate) struct RuntimeConnectedSessionServices<HostPath> {
     runtime: RuntimeSessionServices,
     management: Option<DeviceServicePorts<HostPath>>,
 }
 
 impl<HostPath> RuntimeConnectedSessionServices<HostPath> {
-    pub fn take_management(&mut self) -> DeviceServicePorts<HostPath> {
+    pub(crate) fn take_management(&mut self) -> DeviceServicePorts<HostPath> {
         self.management
             .take()
             .expect("device management services already taken")
     }
 
     /// Close command senders before cancelling any active service operation.
-    pub async fn shutdown(self) {
+    pub(crate) async fn shutdown(self) {
         let Self {
             runtime,
             management,
@@ -146,13 +148,13 @@ impl<HostPath> RuntimeConnectedSessionServices<HostPath> {
 
 /// Owns every service for exactly one connected device session. Hosts inject
 /// capabilities through typed adapters without gaining supervisor access.
-pub struct RuntimeSessionServices {
+pub(crate) struct RuntimeSessionServices {
     supervisor: ServiceSupervisor,
     device_ports: Option<RuntimeDeviceServicePorts>,
 }
 
 impl RuntimeSessionServices {
-    pub fn start(
+    pub(crate) fn start(
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,
         adapter: AdapterHandle,
@@ -350,7 +352,7 @@ impl RuntimeSessionServices {
     /// Attach all host-backed services and return the session's sole complete
     /// command-port bundle.
     #[allow(clippy::too_many_arguments)]
-    pub fn attach_host_services<Files, CaptureFiles, Backup, DeveloperImages, Profiles>(
+    pub(crate) fn attach_host_services<Files, CaptureFiles, Backup, DeveloperImages, Profiles>(
         mut self,
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,

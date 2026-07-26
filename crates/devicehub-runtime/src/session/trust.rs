@@ -1,4 +1,4 @@
-//! Explicit USB trust management for device-session discovery.
+//! Explicit USB trust management for runtime-owned device discovery.
 //!
 //! Pairing and revocation are user-triggered operations, separate from opening a
 //! transport. This service owns their deadlines and stable public outcomes. It
@@ -10,11 +10,12 @@ use std::time::Duration;
 
 use idevice::{IdeviceError, IdeviceService, lockdown::LockdownClient, usbmuxd::Connection};
 
-use super::discovery::DeviceDiscovery;
-use crate::protocol::{
+use devicehub_core::{
     ForgetDeviceOutcome, ForgetDeviceResult, PairDeviceOutcome, PairDeviceResult, StatusSlot,
+    device_id_fingerprint,
 };
-use devicehub_runtime::{SessionEndpoint, UsbmuxdEndpoint};
+
+use crate::{SessionEndpoint, UsbmuxdEndpoint};
 
 /// Pairing includes an on-device confirmation and therefore gets a user-facing
 /// deadline rather than inheriting a short transport timeout.
@@ -22,13 +23,17 @@ const PAIRING_TIMEOUT: Duration = Duration::from_secs(90);
 /// Revocation performs bounded device and local I/O without a confirmation UI.
 const FORGET_DEVICE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(super) async fn pair(
-    selection_id: String,
-    reply: tokio::sync::oneshot::Sender<PairDeviceResult>,
+/// Host credential cleanup required after device and usbmuxd revocation.
+pub trait PairingCredentialStore {
+    fn remove_cached_pairing(&mut self, udid: &str) -> Result<(), String>;
+}
+
+pub async fn pair_device(
+    selection_id: &str,
     endpoints: &HashMap<String, SessionEndpoint>,
     status: &StatusSlot,
-) -> bool {
-    let result = match endpoints.get(&selection_id) {
+) -> PairDeviceResult {
+    match endpoints.get(selection_id) {
         Some(SessionEndpoint::Usbmuxd(endpoint)) => {
             status.set("waiting for device trust confirmation...");
             pair_usb_endpoint(endpoint).await
@@ -41,23 +46,22 @@ pub(super) async fn pair(
             outcome: PairDeviceOutcome::Failed,
             error: Some("the selected USB device is no longer available".into()),
         },
-    };
-    let paired = result.outcome == PairDeviceOutcome::Paired;
-    let _ = reply.send(result);
-    paired
+    }
 }
 
-pub(super) async fn forget(
-    selection_id: String,
-    reply: tokio::sync::oneshot::Sender<ForgetDeviceResult>,
+pub async fn forget_device<Store>(
+    selection_id: &str,
     endpoints: &HashMap<String, SessionEndpoint>,
     status: &StatusSlot,
-    discovery: &mut DeviceDiscovery,
-) {
-    let result = match endpoints.get(&selection_id) {
+    credentials: &mut Store,
+) -> ForgetDeviceResult
+where
+    Store: PairingCredentialStore,
+{
+    match endpoints.get(selection_id) {
         Some(SessionEndpoint::Usbmuxd(endpoint)) => {
             status.set("removing device trust...");
-            forget_usb_endpoint(endpoint, discovery).await
+            forget_usb_endpoint(endpoint, credentials).await
         }
         Some(SessionEndpoint::Wifi(_)) => ForgetDeviceResult {
             outcome: ForgetDeviceOutcome::Failed,
@@ -67,8 +71,7 @@ pub(super) async fn forget(
             outcome: ForgetDeviceOutcome::Failed,
             error: Some("the selected USB device is no longer available".into()),
         },
-    };
-    let _ = reply.send(result);
+    }
 }
 
 async fn pair_usb_endpoint(endpoint: &UsbmuxdEndpoint) -> PairDeviceResult {
@@ -79,7 +82,7 @@ async fn pair_usb_endpoint(endpoint: &UsbmuxdEndpoint) -> PairDeviceResult {
         };
     }
 
-    let device_id = crate::diagnostics::device_id_fingerprint(&endpoint.device.udid);
+    let device_id = device_id_fingerprint(&endpoint.device.udid);
     tracing::info!(%device_id, "USB pairing requested by user");
     let operation = async {
         let mut usbmuxd = endpoint.address.connect(0).await?;
@@ -138,10 +141,13 @@ fn pairing_failure(error: IdeviceError) -> PairDeviceResult {
     }
 }
 
-async fn forget_usb_endpoint(
+async fn forget_usb_endpoint<Store>(
     endpoint: &UsbmuxdEndpoint,
-    discovery: &mut DeviceDiscovery,
-) -> ForgetDeviceResult {
+    credentials: &mut Store,
+) -> ForgetDeviceResult
+where
+    Store: PairingCredentialStore,
+{
     if !matches!(endpoint.device.connection_type, Connection::Usb) {
         return ForgetDeviceResult {
             outcome: ForgetDeviceOutcome::Failed,
@@ -149,7 +155,7 @@ async fn forget_usb_endpoint(
         };
     }
 
-    let device_id = crate::diagnostics::device_id_fingerprint(&endpoint.device.udid);
+    let device_id = device_id_fingerprint(&endpoint.device.udid);
     tracing::info!(%device_id, "USB trust removal requested by user");
     let pairing_record = tokio::time::timeout(FORGET_DEVICE_TIMEOUT, async {
         let mut usbmuxd = endpoint.address.connect(0).await?;
@@ -183,7 +189,9 @@ async fn forget_usb_endpoint(
         .await
         .err()
         .map(|error| error.to_string());
-    let cache_error = discovery.remove_cached_pairing(&endpoint.device.udid).err();
+    let cache_error = credentials
+        .remove_cached_pairing(&endpoint.device.udid)
+        .err();
     let host_error = match (pair_record_error, cache_error) {
         (Some(pair_record), Some(cache)) => Some(format!(
             "usbmuxd record removal failed: {pair_record}; cached record removal failed: {cache}"
@@ -248,7 +256,7 @@ mod tests {
     use idevice::IdeviceError;
 
     use super::{forget_device_result, pairing_failure};
-    use crate::protocol::{ForgetDeviceOutcome, PairDeviceOutcome};
+    use devicehub_core::{ForgetDeviceOutcome, PairDeviceOutcome};
 
     #[test]
     fn pairing_errors_are_normalized_for_the_frontend() {

@@ -4,7 +4,9 @@ use devicehub_core::{
     CompanionDevice, DeviceCrashReportContent, DeviceCrashReportList, DeviceDetails,
     ForgetDeviceResult, HomeScreenLayout, PairDeviceResult, WallpaperKind,
 };
-use tokio::sync::oneshot;
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 use crate::{
     AppCommand, AppConsoleCommand, AppDocumentCommand, AppLifecycleCommand,
@@ -99,4 +101,34 @@ pub enum SessionControlCommand {
         reply: oneshot::Sender<ForgetDeviceResult>,
     },
     Quit,
+}
+
+/// Active connected-session command endpoint swapped atomically on reconnect.
+#[derive(Clone)]
+pub struct SessionCommandSlot<HostPath>(
+    Arc<Mutex<Option<UnboundedSender<DeviceSessionCommand<HostPath>>>>>,
+);
+
+impl<HostPath> Default for SessionCommandSlot<HostPath> {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+}
+
+impl<HostPath> SessionCommandSlot<HostPath> {
+    pub fn set(&self, sender: Option<UnboundedSender<DeviceSessionCommand<HostPath>>>) {
+        *self.0.lock().unwrap() = sender;
+    }
+
+    pub fn send(&self, command: DeviceSessionCommand<HostPath>) {
+        let _ = self.try_send(command);
+    }
+
+    pub fn try_send(&self, command: DeviceSessionCommand<HostPath>) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|sender| sender.send(command).is_ok())
+    }
 }

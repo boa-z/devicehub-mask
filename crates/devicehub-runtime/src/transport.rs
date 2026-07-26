@@ -5,6 +5,9 @@
 //! session manager decide when fallback or reconnect is allowed. Device trust
 //! management and session task supervision remain separate concerns.
 
+mod discovery;
+mod wifi_discovery;
+
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -35,9 +38,56 @@ pub const WIFI_REAUTHORIZE_REQUIRED: &str = "Wi-Fi control authorization is no l
 
 type WifiPairingClient = RemotePairingClient<RpPairingSocket<tokio::net::TcpStream>>;
 
+pub use discovery::{DeviceDiscovery, MuxSidecar, MuxSidecarFuture};
+pub use wifi_discovery::{StoredWifiPairingRecord, WifiDiscovery, WifiPairingStore};
+
 #[derive(Clone, Debug)]
 pub struct SystemUsbmuxdConfig {
     address: Result<UsbmuxdAddr, String>,
+}
+
+/// Host-resolved inputs required to establish one CoreDevice tunnel.
+///
+/// The runtime owns transport policy and credential use, while hosts decide
+/// where the application-confined pairing directory lives and whether a
+/// non-default system usbmuxd endpoint was configured.
+#[derive(Clone, Debug)]
+pub struct CoreTunnelConfig {
+    pairing_dir: PathBuf,
+    system_usbmuxd: SystemUsbmuxdConfig,
+}
+
+impl CoreTunnelConfig {
+    pub fn from_host(pairing_dir: PathBuf, system_usbmuxd: SystemUsbmuxdConfig) -> Self {
+        Self {
+            pairing_dir,
+            system_usbmuxd,
+        }
+    }
+
+    pub(crate) async fn connect(
+        &self,
+        endpoint: &SessionEndpoint,
+        provider: &dyn IdeviceProvider,
+        status: &StatusSlot,
+    ) -> Result<(AdapterHandle, RsdHandshake), String> {
+        connect_core_tunnel(
+            endpoint,
+            provider,
+            &self.pairing_dir,
+            status,
+            &self.system_usbmuxd,
+        )
+        .await
+    }
+
+    pub(crate) fn system_usbmuxd_address(&self) -> Result<UsbmuxdAddr, String> {
+        self.system_usbmuxd.address()
+    }
+
+    pub(crate) fn remove_remote_pairing_credentials(&self, udid: &str) -> Result<(), String> {
+        remove_remote_pairing_credentials(&self.pairing_dir, udid)
+    }
 }
 
 impl SystemUsbmuxdConfig {

@@ -5,7 +5,7 @@ mod session;
 
 pub use session::{
     ClipboardBridge, ClipboardImage, DeviceClipboardSession, HostClipboard, HostClipboardFactory,
-    connect_device_clipboard,
+    HostClipboardProvider, connect_device_clipboard,
 };
 
 /// Bounded clipboard event fan-out. Slow hosts lose stale metadata rather than

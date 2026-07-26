@@ -8,10 +8,8 @@ pub(crate) mod commands;
 pub(crate) mod state;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::thread::JoinHandle;
 
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use self::commands::ControlCmd;
 use self::state::{
@@ -26,11 +24,6 @@ pub(crate) use devicehub_runtime::{AudioPublisher, PcmAudioConsumer, RuntimePref
 /// device thread only receives immutable values, which keeps session lifecycle
 /// code independent from the host process environment.
 pub(crate) use devicehub_runtime::SessionDiagnostics as RuntimeSessionDiagnostics;
-
-// RSD handshakes decode nested XPC dictionaries recursively. The owner also
-// hosts a LocalSet for non-Send DVT channels, so platform thread defaults are
-// insufficient for larger iOS service catalogs.
-const DEVICE_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) struct RuntimeConfig {
     pub(crate) initial_udid: Option<String>,
@@ -80,62 +73,78 @@ struct RuntimeParts {
     error: ErrorSlot,
     location: LocationStatusSlot,
     device_events: devicehub_runtime::DeviceEventSlot,
-    control: UnboundedSender<ControlCmd>,
     control_rx: UnboundedReceiver<ControlCmd>,
 }
 
 pub(crate) struct DeviceRuntime {
     services: RuntimeServices,
-    control: UnboundedSender<ControlCmd>,
-    thread: Mutex<Option<JoinHandle<()>>>,
+    owner: devicehub_runtime::CoreRuntime,
 }
 
 impl DeviceRuntime {
     pub(crate) fn start(config: RuntimeConfig) -> Result<Self, String> {
-        let parts = RuntimeParts::new();
-        let services = parts.services.clone();
-        let control = parts.control.clone();
-        let thread = spawn_device_thread(config, parts)?;
-        Ok(Self::from_parts(services, control, thread))
+        let (owner, services) =
+            devicehub_runtime::CoreRuntime::start(move |control, control_rx| {
+                let parts = RuntimeParts::new(control, control_rx);
+                let services = parts.services.clone();
+                let task = move || -> devicehub_runtime::CoreRuntimeFuture {
+                    let session_services = parts.services;
+                    Box::pin(crate::session::manage(
+                        config.initial_udid,
+                        config.pairing_dir,
+                        config.transport,
+                        config.preferences,
+                        session_services.video_counters,
+                        session_services.browser_frames,
+                        config.audio,
+                        config.audio_decoder,
+                        config.session_diagnostics,
+                        parts.status,
+                        session_services.clipboard,
+                        parts.device_events,
+                        session_services.network_capture,
+                        session_services.bluetooth_capture,
+                        session_services.device_backup,
+                        session_services.sysdiagnose,
+                        session_services.log_archive,
+                        session_services.developer_image,
+                        session_services.device_conditions,
+                        parts.orientation,
+                        parts.devices,
+                        parts.active,
+                        parts.error,
+                        session_services.app_operation,
+                        session_services.app_document_activity,
+                        session_services.device_file_activity,
+                        parts.location,
+                        session_services.performance,
+                        session_services.performance_demand,
+                        session_services.device_logs,
+                        session_services.device_log_demand,
+                        session_services.service_registry,
+                        session_services.input,
+                        parts.control_rx,
+                    ))
+                };
+                (services, task)
+            })?;
+        Ok(Self { services, owner })
     }
 
     pub(crate) fn services(&self) -> RuntimeServices {
         self.services.clone()
     }
 
-    pub(crate) fn request_shutdown(&self) {
-        let _ = self.control.send(ControlCmd::Quit);
-    }
-
     pub(crate) fn stop(&self) {
-        self.request_shutdown();
-        if let Some(thread) = self.thread.lock().unwrap().take() {
-            let _ = thread.join();
-        }
-    }
-
-    fn from_parts(
-        services: RuntimeServices,
-        control: UnboundedSender<ControlCmd>,
-        thread: JoinHandle<()>,
-    ) -> Self {
-        Self {
-            services,
-            control,
-            thread: Mutex::new(Some(thread)),
-        }
-    }
-}
-
-impl Drop for DeviceRuntime {
-    fn drop(&mut self) {
-        self.stop();
+        self.owner.stop();
     }
 }
 
 impl RuntimeParts {
-    fn new() -> Self {
-        let (control, control_rx) = mpsc::unbounded_channel();
+    fn new(
+        control: UnboundedSender<ControlCmd>,
+        control_rx: UnboundedReceiver<ControlCmd>,
+    ) -> Self {
         let browser_frames = crate::browser_video::BrowserVideoSlot::default();
         let video_counters = VideoCounters::default();
         let status = StatusSlot::default();
@@ -215,80 +224,19 @@ impl RuntimeParts {
             error,
             location,
             device_events,
-            control,
             control_rx,
         }
     }
 }
 
-fn spawn_device_thread(
-    config: RuntimeConfig,
-    parts: RuntimeParts,
-) -> Result<JoinHandle<()>, String> {
-    std::thread::Builder::new()
-        .name("devicehub-coredevice".into())
-        .stack_size(DEVICE_THREAD_STACK_BYTES)
-        .spawn(move || {
-            tracing::info!(
-                stack_bytes = DEVICE_THREAD_STACK_BYTES,
-                "CoreDevice owner thread started"
-            );
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("build CoreDevice runtime");
-            let local = tokio::task::LocalSet::new();
-            let services = parts.services;
-            runtime.block_on(local.run_until(crate::session::manage(
-                config.initial_udid,
-                config.pairing_dir,
-                config.transport,
-                config.preferences,
-                services.video_counters,
-                services.browser_frames,
-                config.audio,
-                config.audio_decoder,
-                config.session_diagnostics,
-                parts.status,
-                services.clipboard,
-                parts.device_events,
-                services.network_capture,
-                services.bluetooth_capture,
-                services.device_backup,
-                services.sysdiagnose,
-                services.log_archive,
-                services.developer_image,
-                services.device_conditions,
-                parts.orientation,
-                parts.devices,
-                parts.active,
-                parts.error,
-                services.app_operation,
-                services.app_document_activity,
-                services.device_file_activity,
-                parts.location,
-                services.performance,
-                services.performance_demand,
-                services.device_logs,
-                services.device_log_demand,
-                services.service_registry,
-                services.input,
-                parts.control_rx,
-            )));
-            tracing::info!("CoreDevice owner thread stopped");
-        })
-        .map_err(|error| format!("cannot start CoreDevice thread: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn runtime_services_share_the_owner_control_plane() {
-        let mut parts = RuntimeParts::new();
+        let (control, control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut parts = RuntimeParts::new(control, control_rx);
 
         parts
             .services
@@ -301,30 +249,5 @@ mod tests {
             parts.control_rx.blocking_recv(),
             Some(ControlCmd::Refresh)
         ));
-    }
-
-    #[test]
-    fn runtime_shutdown_is_idempotent_and_joins_its_owner() {
-        let parts = RuntimeParts::new();
-        let services = parts.services.clone();
-        let control = parts.control.clone();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let owner_stopped = stopped.clone();
-        let mut receiver = parts.control_rx;
-        let thread = std::thread::spawn(move || {
-            while let Some(command) = receiver.blocking_recv() {
-                if matches!(command, ControlCmd::Quit) {
-                    break;
-                }
-            }
-            owner_stopped.store(true, Ordering::Release);
-        });
-        let runtime = DeviceRuntime::from_parts(services, control, thread);
-
-        runtime.stop();
-        runtime.stop();
-
-        assert!(stopped.load(Ordering::Acquire));
-        assert!(runtime.thread.lock().unwrap().is_none());
     }
 }

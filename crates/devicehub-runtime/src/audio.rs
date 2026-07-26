@@ -11,6 +11,13 @@ pub trait DeviceAudioPipeline: Clone + Send + Sync + 'static {
     fn run(&self, udp: UdpSocketHandle) -> DeviceAudioFuture;
 }
 
+/// Creates one audio pipeline from the latest runtime preference snapshot.
+pub trait DeviceAudioPipelineFactory: Clone + Send + Sync + 'static {
+    type Pipeline: DeviceAudioPipeline;
+
+    fn create(&self, enabled: bool) -> Self::Pipeline;
+}
+
 /// Host-provided sink for decoded interleaved PCM bytes.
 pub trait PcmAudioConsumer: Send + Sync + 'static {
     fn publish(&self, pcm: bytes::Bytes);

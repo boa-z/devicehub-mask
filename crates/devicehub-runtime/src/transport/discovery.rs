@@ -1,11 +1,12 @@
-//! Stateful USB and Wi-Fi device discovery for the session manager.
+//! Stateful USB and Wi-Fi device discovery for the runtime session manager.
 //!
 //! A single owner keeps device names, pairing refresh state and netmuxd fallback
 //! coherent across scans. The session manager consumes snapshots and endpoints;
 //! it does not decide which mux daemon to probe or mutate pairing caches.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use idevice::{
@@ -16,48 +17,61 @@ use idevice::{
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
 };
 
-use crate::protocol::{ConnKind, DeviceInfo, DevicePairingState, device_selector};
-use crate::wifi_devices::WifiDiscovery;
-use devicehub_runtime::{
-    SessionEndpoint, SystemUsbmuxdConfig, UsbmuxdEndpoint, connection_kind,
-    connection_kind_priority, connection_priority, remove_remote_pairing_credentials,
-    uses_usbmuxd_core_proxy, wifi_provider,
+use devicehub_core::{
+    ConnKind, DeviceInfo, DevicePairingState, device_id_fingerprint, device_selector,
 };
+
+use super::{
+    CoreTunnelConfig, SessionEndpoint, UsbmuxdEndpoint, WifiDiscovery, WifiPairingStore,
+    connection_kind, connection_kind_priority, connection_priority, uses_usbmuxd_core_proxy,
+    wifi_provider,
+};
+use crate::PairingCredentialStore;
 
 const NAME_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(super) struct DeviceDiscovery {
+pub type MuxSidecarFuture<'a> = Pin<Box<dyn Future<Output = Option<UsbmuxdAddr>> + Send + 'a>>;
+
+/// Optional host process that exposes an additional usbmuxd-compatible endpoint.
+pub trait MuxSidecar: Send + 'static {
+    fn is_forced(&self) -> bool;
+    fn ensure_ready(&mut self) -> MuxSidecarFuture<'_>;
+}
+
+pub struct DeviceDiscovery<Sidecar, Store> {
     /// Names are stable enough to cache for the manager lifetime. Explicit
     /// refresh and trust changes invalidate them through [`Self::invalidate`].
     names: HashMap<String, String>,
-    netmuxd: crate::netmuxd::NetmuxdSupervisor,
-    wifi: Option<WifiDiscovery>,
-    pairing_dir: PathBuf,
+    sidecar: Sidecar,
+    wifi_store: Option<Store>,
+    wifi: Option<WifiDiscovery<Store>>,
     prefer_netmuxd: bool,
-    system_usbmuxd: SystemUsbmuxdConfig,
+    tunnel: CoreTunnelConfig,
 }
 
-impl DeviceDiscovery {
-    pub(super) fn new(pairing_dir: PathBuf, config: super::DeviceTransportConfig) -> Self {
-        let netmuxd_config = config.netmuxd;
-        let netmuxd = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), netmuxd_config);
-        let prefer_netmuxd = netmuxd.is_forced();
-        let wifi = start_wifi_discovery(&pairing_dir);
+impl<Sidecar, Store> DeviceDiscovery<Sidecar, Store>
+where
+    Sidecar: MuxSidecar,
+    Store: WifiPairingStore,
+{
+    pub fn new(sidecar: Sidecar, wifi_store: Option<Store>, tunnel: CoreTunnelConfig) -> Self {
+        let prefer_netmuxd = sidecar.is_forced();
+        let wifi = wifi_store.clone().and_then(start_wifi_discovery);
         Self {
             names: HashMap::new(),
-            netmuxd,
+            sidecar,
+            wifi_store,
             wifi,
-            pairing_dir,
             prefer_netmuxd,
-            system_usbmuxd: config.system_usbmuxd,
+            tunnel,
         }
     }
 
-    pub(super) fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) {
         self.names.clear();
     }
 
-    pub(super) fn requires_pairing(&self) -> bool {
+    pub fn requires_pairing(&self) -> bool {
         self.wifi
             .as_ref()
             .is_some_and(WifiDiscovery::requires_pairing)
@@ -65,12 +79,15 @@ impl DeviceDiscovery {
 
     /// Remove credentials from the active discovery backend when available, or
     /// from the same confined on-disk cache when Wi-Fi discovery is unavailable.
-    pub(super) fn remove_cached_pairing(&mut self, udid: &str) -> Result<(), String> {
+    fn remove_credentials(&mut self, udid: &str) -> Result<(), String> {
         let discovery_result = match self.wifi.as_mut() {
             Some(discovery) => discovery.remove_pairing(udid),
-            None => crate::wifi_devices::remove_cached_pairing(&self.pairing_dir, udid),
+            None => match self.wifi_store.as_ref() {
+                Some(store) => store.remove(udid),
+                None => Ok(()),
+            },
         };
-        let remote_result = remove_remote_pairing_credentials(&self.pairing_dir, udid);
+        let remote_result = self.tunnel.remove_remote_pairing_credentials(udid);
         match (discovery_result, remote_result) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(discovery), Ok(())) => Err(discovery),
@@ -82,16 +99,16 @@ impl DeviceDiscovery {
     /// Produce one consistent picker snapshot and its exact connection targets.
     /// Failures are best-effort and yield fewer devices rather than terminating
     /// the manager, allowing later idle scans to recover automatically.
-    pub(super) async fn refresh(&mut self) -> (Vec<DeviceInfo>, HashMap<String, SessionEndpoint>) {
+    pub async fn refresh(&mut self) -> (Vec<DeviceInfo>, HashMap<String, SessionEndpoint>) {
         let netmuxd_addr = if self.prefer_netmuxd || self.wifi.is_none() {
-            self.netmuxd.ensure_ready().await
+            self.sidecar.ensure_ready().await
         } else {
             None
         };
         if self.wifi.is_none() {
-            self.wifi = start_wifi_discovery(&self.pairing_dir);
+            self.wifi = self.wifi_store.clone().and_then(start_wifi_discovery);
         }
-        let system_addr = self.system_usbmuxd.address().map_err(|error| {
+        let system_addr = self.tunnel.system_usbmuxd_address().map_err(|error| {
             tracing::warn!(%error, "invalid usbmuxd address; USB discovery disabled");
         });
         let mut candidates = Vec::new();
@@ -144,7 +161,7 @@ impl DeviceDiscovery {
                     Err(error) => {
                         pairing_states.insert(device.udid.clone(), DevicePairingState::Unpaired);
                         tracing::debug!(
-                            device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
+                            device_id = %device_id_fingerprint(&device.udid),
                             ?error,
                             "USB pairing record unavailable"
                         );
@@ -161,7 +178,7 @@ impl DeviceDiscovery {
                 selected.push(device);
             } else if let Connection::Unknown(connection_type) = &device.connection_type {
                 tracing::warn!(
-                    device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
+                    device_id = %device_id_fingerprint(&device.udid),
                     %connection_type,
                     "ignoring usbmuxd device with an ambiguous transport"
                 );
@@ -275,7 +292,7 @@ impl DeviceDiscovery {
         }
         if let Err(error) = discovery.cache_pairing(&device.udid, pairing_file) {
             tracing::warn!(
-                device_id = %crate::diagnostics::device_id_fingerprint(&device.udid),
+                device_id = %device_id_fingerprint(&device.udid),
                 %error,
                 "unable to cache pairing record for Wi-Fi discovery"
             );
@@ -285,8 +302,21 @@ impl DeviceDiscovery {
     }
 }
 
-fn start_wifi_discovery(pairing_dir: &Path) -> Option<WifiDiscovery> {
-    match WifiDiscovery::start(pairing_dir.to_owned()) {
+impl<Sidecar, Store> PairingCredentialStore for DeviceDiscovery<Sidecar, Store>
+where
+    Sidecar: MuxSidecar,
+    Store: WifiPairingStore,
+{
+    fn remove_cached_pairing(&mut self, udid: &str) -> Result<(), String> {
+        self.remove_credentials(udid)
+    }
+}
+
+fn start_wifi_discovery<Store>(store: Store) -> Option<WifiDiscovery<Store>>
+where
+    Store: WifiPairingStore,
+{
+    match WifiDiscovery::start(store) {
         Ok(discovery) => Some(discovery),
         Err(error) => {
             tracing::warn!(%error, "Wi-Fi discovery unavailable; continuing with usbmuxd");

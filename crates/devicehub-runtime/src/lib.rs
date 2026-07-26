@@ -14,6 +14,7 @@ mod input;
 mod media;
 mod performance;
 mod preferences;
+mod runtime;
 mod session;
 mod storage;
 mod supervisor;
@@ -34,7 +35,10 @@ pub use applications::{
     validate_runner_bundle_id, validate_scroll_direction, validate_selector, validate_text,
     validate_wait_timeout,
 };
-pub use audio::{AudioPublisher, DeviceAudioFuture, DeviceAudioPipeline, PcmAudioConsumer};
+pub use audio::{
+    AudioPublisher, DeviceAudioFuture, DeviceAudioPipeline, DeviceAudioPipelineFactory,
+    PcmAudioConsumer,
+};
 pub use capture::{
     BluetoothCaptureCommand, BluetoothCaptureSlot, BluetoothCaptureState, BluetoothCaptureStatus,
     BluetoothCaptureStopReason, CaptureFileFuture, CaptureFileIo, CaptureFileKind,
@@ -46,7 +50,7 @@ pub use capture::{
 };
 pub use clipboard::{
     ClipboardBridge, ClipboardImage, ClipboardSlot, DeviceClipboardSession, HostClipboard,
-    HostClipboardFactory, connect_device_clipboard,
+    HostClipboardFactory, HostClipboardProvider, connect_device_clipboard,
 };
 pub use demand::{Demand, DemandLease};
 pub use device::{
@@ -92,14 +96,17 @@ pub use performance::{
     supervise_performance_system,
 };
 pub use preferences::RuntimePreferences;
+pub use runtime::{CoreRuntime, CoreRuntimeFuture, OWNER_THREAD_STACK_BYTES};
 pub use session::{
-    ClipboardWriteFuture, DeviceClipboard, DeviceManagementBootstrap, DeviceManagementSession,
-    DeviceServicePorts, DeviceSessionCommand, DeviceSessionRouter, DiagnosticDumpSinkFactory,
-    DiagnosticDumpSinkFuture, LocationServicePort, OrientationWatcher,
-    RuntimeConnectedSessionServices, RuntimeHostServiceViews, RuntimeServiceViews,
-    RuntimeSessionHostAdapters, RuntimeSessionServices, SessionControlCommand, SessionDiagnostics,
-    SessionFailureAction, SessionRetry, SessionRetryPolicy, connect_device_input,
-    run_device_command_loop, run_management_command_loop, supervise_heartbeat,
+    ClipboardWriteFuture, ConnectedSessionHost, ConnectedSessionMedia, ConnectedSessionViews,
+    DeviceClipboard, DeviceManagementBootstrap, DeviceManagementSession, DeviceServicePorts,
+    DeviceSessionCommand, DeviceSessionRouter, DiagnosticDumpSinkFactory, DiagnosticDumpSinkFuture,
+    LocationServicePort, OrientationWatcher, PairingCredentialStore, RuntimeHostServiceViews,
+    RuntimeServiceViews, RuntimeSessionHostAdapters, SessionCommandSlot, SessionControlCommand,
+    SessionDiagnostics, SessionFailureAction, SessionManagerHost, SessionManagerViews,
+    SessionRetry, SessionRetryPolicy, connect_device_input, forget_device, pair_device,
+    run_connected_session, run_device_command_loop, run_management_command_loop,
+    run_session_manager, supervise_heartbeat,
 };
 pub use storage::{
     APP_DOCUMENT_TRANSFER_CANCELLED, AppDocumentActivityKind, AppDocumentActivitySlot,
@@ -115,8 +122,10 @@ pub use supervisor::{
     reconnect_backoff, wait_for_retry,
 };
 pub use transport::{
-    SessionEndpoint, SystemUsbmuxdConfig, UsbmuxdEndpoint, WIFI_REAUTHORIZE_REQUIRED, WifiEndpoint,
-    connect_core_tunnel, connect_provider, connection_kind, connection_kind_priority,
-    connection_priority, remove_remote_pairing_credentials, resolve_device_selection,
-    select_preferred_usbmuxd_device, uses_usbmuxd_core_proxy, wifi_provider,
+    CoreTunnelConfig, DeviceDiscovery, MuxSidecar, MuxSidecarFuture, SessionEndpoint,
+    StoredWifiPairingRecord, SystemUsbmuxdConfig, UsbmuxdEndpoint, WIFI_REAUTHORIZE_REQUIRED,
+    WifiDiscovery, WifiEndpoint, WifiPairingStore, connect_core_tunnel, connect_provider,
+    connection_kind, connection_kind_priority, connection_priority,
+    remove_remote_pairing_credentials, resolve_device_selection, select_preferred_usbmuxd_device,
+    uses_usbmuxd_core_proxy, wifi_provider,
 };

@@ -208,6 +208,16 @@ impl NetmuxdSupervisor {
     }
 }
 
+impl devicehub_runtime::MuxSidecar for NetmuxdSupervisor {
+    fn is_forced(&self) -> bool {
+        NetmuxdSupervisor::is_forced(self)
+    }
+
+    fn ensure_ready(&mut self) -> devicehub_runtime::MuxSidecarFuture<'_> {
+        Box::pin(NetmuxdSupervisor::ensure_ready(self))
+    }
+}
+
 #[cfg(windows)]
 fn hide_windows_console(command: &mut Command) {
     use std::os::windows::process::CommandExt;

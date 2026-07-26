@@ -35,6 +35,28 @@ pub(crate) struct FfmpegAudioPipeline {
     enabled: bool,
 }
 
+/// Reuses host-resolved FFmpeg inputs while creating one pipeline per device
+/// session from the latest audio preference.
+#[derive(Clone)]
+pub(crate) struct FfmpegAudioPipelineFactory {
+    output: AudioPublisher,
+    decoder: AudioDecoderConfig,
+}
+
+impl FfmpegAudioPipelineFactory {
+    pub(crate) fn new(output: AudioPublisher, decoder: AudioDecoderConfig) -> Self {
+        Self { output, decoder }
+    }
+}
+
+impl devicehub_runtime::DeviceAudioPipelineFactory for FfmpegAudioPipelineFactory {
+    type Pipeline = FfmpegAudioPipeline;
+
+    fn create(&self, enabled: bool) -> Self::Pipeline {
+        FfmpegAudioPipeline::new(self.output.clone(), self.decoder.clone(), enabled)
+    }
+}
+
 impl FfmpegAudioPipeline {
     pub(crate) fn new(output: AudioPublisher, decoder: AudioDecoderConfig, enabled: bool) -> Self {
         Self {
