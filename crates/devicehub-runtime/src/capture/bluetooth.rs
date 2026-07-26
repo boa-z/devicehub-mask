@@ -67,18 +67,18 @@ struct ActiveCapture<Writer> {
     packet_count: u64,
 }
 
-pub struct BluetoothCaptureTransport {
+pub(crate) struct BluetoothCaptureTransport {
     adapter: AdapterHandle,
     handshake: RsdHandshake,
 }
 
 impl BluetoothCaptureTransport {
-    pub fn new(adapter: AdapterHandle, handshake: RsdHandshake) -> Self {
+    pub(crate) fn new(adapter: AdapterHandle, handshake: RsdHandshake) -> Self {
         Self { adapter, handshake }
     }
 }
 
-pub async fn serve<Files>(
+pub(crate) async fn serve<Files>(
     mut transport: BluetoothCaptureTransport,
     mut commands: mpsc::Receiver<BluetoothCaptureCommand<Files::Destination>>,
     status: BluetoothCaptureSlot,

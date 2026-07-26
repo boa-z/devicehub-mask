@@ -6,10 +6,11 @@ use idevice::{IdeviceError, IdeviceService, provider::IdeviceProvider};
 
 mod mount;
 
+pub(crate) use mount::serve as serve_developer_image_mount;
 pub use mount::{
     DeveloperImageAssetFuture, DeveloperImageAssetLoader, DeveloperImageMountCommand,
     DeveloperImageMountRequest, DeveloperImageMountSlot, DeveloperImageMountState,
-    DeveloperImageMountStatus, serve as serve_developer_image_mount,
+    DeveloperImageMountStatus,
 };
 
 /// Resolves the image type expected by an iOS version.

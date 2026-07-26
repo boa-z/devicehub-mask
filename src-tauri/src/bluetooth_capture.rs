@@ -13,21 +13,3 @@ pub(crate) async fn validate_request(path: &Path, duration_seconds: u64) -> Resu
         .validate(&path.to_path_buf(), CaptureFileKind::Bluetooth)
         .await
 }
-
-pub(crate) async fn serve(
-    transport: devicehub_runtime::BluetoothCaptureTransport,
-    commands: tokio::sync::mpsc::Receiver<BluetoothCaptureCommand>,
-    status: BluetoothCaptureSlot,
-    reporter: crate::supervisor::ServiceReporter,
-    shutdown: tokio::sync::watch::Receiver<bool>,
-) {
-    devicehub_runtime::serve_bluetooth_capture(
-        transport,
-        commands,
-        status,
-        crate::capture_files::TokioCaptureFileIo,
-        reporter,
-        shutdown,
-    )
-    .await;
-}

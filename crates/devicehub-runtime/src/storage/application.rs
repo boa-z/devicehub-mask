@@ -362,7 +362,7 @@ pub enum AppDocumentCommand<Path> {
     },
 }
 
-pub struct AppStorageTransport {
+pub(crate) struct AppStorageTransport {
     provider: Arc<dyn IdeviceProvider>,
     connection: ConnKind,
     adapter: AdapterHandle,
@@ -370,7 +370,7 @@ pub struct AppStorageTransport {
 }
 
 impl AppStorageTransport {
-    pub fn new(
+    pub(crate) fn new(
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,
         adapter: AdapterHandle,
@@ -471,7 +471,7 @@ fn storage_unavailable(scope: AppStorageScope, failures: &[String]) -> String {
     format!("{name} is unavailable: {}", failures.join("; "))
 }
 
-pub async fn serve<FileIo>(
+pub(crate) async fn serve<FileIo>(
     mut transport: AppStorageTransport,
     mut commands: mpsc::Receiver<AppDocumentCommand<FileIo::Path>>,
     activity: AppDocumentActivitySlot,

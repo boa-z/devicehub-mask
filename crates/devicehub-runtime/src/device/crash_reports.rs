@@ -8,7 +8,10 @@ use idevice::IdeviceService;
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::crashreportcopymobile::{CrashReportCopyMobileClient, flush_reports};
 use idevice::provider::IdeviceProvider;
-use tokio::sync::oneshot;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{mpsc, oneshot, watch};
+
+use crate::storage::HostFileIo;
 
 pub use devicehub_core::validate_crash_report_path;
 
@@ -37,6 +40,68 @@ impl<HostPath> CrashReportExportCommand<HostPath> {
             }
         }
     }
+}
+
+/// Serves bounded device downloads while delegating destination validation and
+/// persistence to the host filesystem port.
+pub(crate) async fn serve_crash_report_exports<Files>(
+    provider: Arc<dyn IdeviceProvider>,
+    mut commands: mpsc::Receiver<CrashReportExportCommand<Files::Path>>,
+    files: Files,
+    mut shutdown: watch::Receiver<bool>,
+) where
+    Files: HostFileIo,
+{
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            command = commands.recv() => {
+                let Some(CrashReportExportCommand::Export {
+                    device_path,
+                    destination,
+                    reply,
+                }) = command else {
+                    return;
+                };
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        let _ = reply.send(Err("crash report export was cancelled".into()));
+                        return;
+                    }
+                    result = export_crash_report(
+                        provider.clone(),
+                        device_path,
+                        destination,
+                        &files,
+                    ) => {
+                        let _ = reply.send(result);
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn export_crash_report<Files>(
+    provider: Arc<dyn IdeviceProvider>,
+    device_path: String,
+    destination: Files::Path,
+    files: &Files,
+) -> Result<u64, String>
+where
+    Files: HostFileIo,
+{
+    validate_crash_report_path(&device_path)?;
+    files.validate_export_file(&destination).await?;
+    let data = download_crash_report(provider, device_path).await?;
+    let mut writer = files.create_writer(&destination).await?;
+    writer
+        .write_all(&data)
+        .await
+        .map_err(|error| format!("unable to write crash report export: {error}"))?;
+    writer.sync().await?;
+    Ok(data.len() as u64)
 }
 
 pub async fn list_crash_reports(

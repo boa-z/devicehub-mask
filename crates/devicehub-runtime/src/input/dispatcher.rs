@@ -45,7 +45,7 @@ pub struct DeviceInputDispatcher {
 }
 
 impl DeviceInputDispatcher {
-    pub fn new(
+    pub(crate) fn new(
         touch: UniversalHidClient<Box<dyn ReadWrite>>,
         keyboard: IndigoHidClient<Box<dyn ReadWrite>>,
         orientation: Option<OrientationServiceClient<Box<dyn ReadWrite>>>,

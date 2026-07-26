@@ -20,6 +20,13 @@ use self::state::{
 };
 pub(crate) use devicehub_runtime::{AudioPublisher, PcmAudioConsumer, RuntimePreferences};
 
+/// Host-resolved diagnostics applied to each device session.
+///
+/// Environment variables are parsed once by the desktop composition root. The
+/// device thread only receives immutable values, which keeps session lifecycle
+/// code independent from the host process environment.
+pub(crate) use devicehub_runtime::SessionDiagnostics as RuntimeSessionDiagnostics;
+
 // RSD handshakes decode nested XPC dictionaries recursively. The owner also
 // hosts a LocalSet for non-Send DVT channels, so platform thread defaults are
 // insufficient for larger iOS service catalogs.
@@ -32,6 +39,7 @@ pub(crate) struct RuntimeConfig {
     pub(crate) preferences: RuntimePreferences,
     pub(crate) audio: AudioPublisher,
     pub(crate) audio_decoder: crate::decode::AudioDecoderConfig,
+    pub(crate) session_diagnostics: RuntimeSessionDiagnostics<PathBuf>,
 }
 
 /// Compatibility surface consumed by the current HTTP and MCP adapters.
@@ -240,6 +248,7 @@ fn spawn_device_thread(
                 services.browser_frames,
                 config.audio,
                 config.audio_decoder,
+                config.session_diagnostics,
                 parts.status,
                 services.clipboard,
                 parts.device_events,

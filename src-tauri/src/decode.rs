@@ -28,6 +28,34 @@ pub(crate) struct AudioDecoderConfig {
     candidates: Arc<[PathBuf]>,
 }
 
+#[derive(Clone)]
+pub(crate) struct FfmpegAudioPipeline {
+    output: AudioPublisher,
+    decoder: AudioDecoderConfig,
+    enabled: bool,
+}
+
+impl FfmpegAudioPipeline {
+    pub(crate) fn new(output: AudioPublisher, decoder: AudioDecoderConfig, enabled: bool) -> Self {
+        Self {
+            output,
+            decoder,
+            enabled,
+        }
+    }
+}
+
+impl devicehub_runtime::DeviceAudioPipeline for FfmpegAudioPipeline {
+    fn run(&self, udp: UdpSocketHandle) -> devicehub_runtime::DeviceAudioFuture {
+        Box::pin(run_audio_pipeline(
+            udp,
+            self.output.clone(),
+            self.decoder.clone(),
+            self.enabled,
+        ))
+    }
+}
+
 impl AudioDecoderConfig {
     /// Build a lazy FFmpeg search plan from host-resolved process inputs.
     /// Candidate existence is checked only when device audio is enabled.

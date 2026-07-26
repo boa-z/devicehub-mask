@@ -78,10 +78,9 @@ pub(super) struct SessionViews {
 pub(super) struct SessionVideo {
     pub(super) counters: VideoCounters,
     pub(super) browser_frames: crate::browser_video::BrowserVideoSlot,
-    pub(super) audio_enabled: bool,
     pub(super) clipboard_sync_enabled: bool,
-    pub(super) audio: AudioPublisher,
-    pub(super) audio_decoder: crate::decode::AudioDecoderConfig,
+    pub(super) audio: crate::decode::FfmpegAudioPipeline,
+    pub(super) diagnostics: crate::device_runtime::RuntimeSessionDiagnostics<PathBuf>,
 }
 
 /// Supervise discovery and ensure exactly one device session owns the media and
@@ -96,6 +95,7 @@ pub(crate) async fn manage(
     browser_frames: crate::browser_video::BrowserVideoSlot,
     audio: AudioPublisher,
     audio_decoder: crate::decode::AudioDecoderConfig,
+    session_diagnostics: crate::device_runtime::RuntimeSessionDiagnostics<PathBuf>,
     status: StatusSlot,
     clipboard: ClipboardSlot,
     device_events: devicehub_runtime::DeviceEventSlot,
@@ -243,10 +243,13 @@ pub(crate) async fn manage(
             SessionVideo {
                 counters: video_counters.clone(),
                 browser_frames: browser_frames.clone(),
-                audio_enabled: preferences.audio_enabled(),
                 clipboard_sync_enabled: preferences.clipboard_sync_enabled(),
-                audio: audio.clone(),
-                audio_decoder: audio_decoder.clone(),
+                audio: crate::decode::FfmpegAudioPipeline::new(
+                    audio.clone(),
+                    audio_decoder.clone(),
+                    preferences.audio_enabled(),
+                ),
+                diagnostics: session_diagnostics.clone(),
             },
             clipboard.clone(),
             SessionViews {

@@ -11,16 +11,17 @@ mod public;
 pub use application::{
     AppDocumentActivityKind, AppDocumentActivitySlot, AppDocumentActivityState,
     AppDocumentActivityView, AppDocumentCommand, AppDocumentEntry, AppDocumentKind,
-    AppDocumentList, AppDocumentTransfer, AppStorageScope, AppStorageTransport,
+    AppDocumentList, AppDocumentTransfer, AppStorageScope,
     TRANSFER_CANCELLED as APP_DOCUMENT_TRANSFER_CANCELLED,
-    is_transfer_cancelled as is_app_document_transfer_cancelled, serve as serve_app_documents,
+    is_transfer_cancelled as is_app_document_transfer_cancelled,
 };
+pub(crate) use application::{AppStorageTransport, serve as serve_app_documents};
 pub use public::{
     DeviceFileActivityKind, DeviceFileActivitySlot, DeviceFileActivityState,
     DeviceFileActivityView, DeviceFileCommand, DeviceFileEntry, DeviceFileKind, DeviceFileList,
-    DeviceFileTransfer, DeviceFileTransport, TRANSFER_CANCELLED, is_transfer_cancelled,
-    serve as serve_device_files,
+    DeviceFileTransfer, TRANSFER_CANCELLED, is_transfer_cancelled,
 };
+pub(crate) use public::{DeviceFileTransport, serve as serve_device_files};
 
 pub type HostFileFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 pub type HostFileReader = Box<dyn AsyncRead + Unpin + Send>;

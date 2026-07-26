@@ -1,14 +1,26 @@
 //! Command ports exposed by services owned by one connected device session.
 
-use std::future::Future;
 use std::sync::Arc;
 
 use devicehub_core::{ConnKind, LocationStatus, LocationStatusSlot};
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
+use crate::capture::{
+    BluetoothCaptureTransport, CaptureFileIo, NetworkCaptureTransport, serve_bluetooth_capture,
+    serve_network_capture,
+};
+use crate::device::{
+    serve_crash_report_exports, serve_developer_image_mount, supervise_provisioning,
+};
+use crate::diagnostics::{
+    DeviceBackupTransport, serve_device_backup, serve_log_archive, serve_sysdiagnose,
+};
+use crate::storage::{
+    AppStorageTransport, DeviceFileTransport, HostFileIo, serve_app_documents, serve_device_files,
+};
 use crate::{
     AppConsoleCommand, AppDocumentCommand, AppIconCommand, AppLifecycleCommand,
     BluetoothCaptureCommand, CompanionDeviceCommand, CrashReportExportCommand,
@@ -20,7 +32,7 @@ use crate::{
 
 use crate::{
     DeviceConditionSlot, DeviceEventSlot, DeviceLogDemand, DeviceLogSlot, PerformanceDemand,
-    PerformanceSlot, ServiceRegistry, ServiceReporter, ServiceSupervisor,
+    PerformanceSlot, ServiceRegistry, ServiceSupervisor,
 };
 
 /// Location endpoint retained by session input dispatch and status reporting.
@@ -72,7 +84,7 @@ pub struct RuntimeServiceViews {
 }
 
 /// Command ports for services that require no host filesystem implementation.
-pub struct RuntimeDeviceServicePorts {
+pub(crate) struct RuntimeDeviceServicePorts {
     pub location: LocationServicePort,
     pub icons: mpsc::Sender<AppIconCommand>,
     pub companions: mpsc::Sender<CompanionDeviceCommand>,
@@ -86,9 +98,54 @@ pub struct RuntimeDeviceServicePorts {
     pub device_conditions: mpsc::Sender<DeviceConditionCommand>,
 }
 
-/// Owns runtime-native services for exactly one connected device session.
-/// Host adapters may register filesystem-backed workers into the same shutdown
-/// tree without gaining direct ownership of the supervisor.
+/// Host-visible state shared with filesystem-backed runtime services.
+pub struct RuntimeHostServiceViews {
+    pub app_documents: crate::AppDocumentActivitySlot,
+    pub device_files: crate::DeviceFileActivitySlot,
+    pub network_capture: crate::NetworkCaptureSlot,
+    pub bluetooth_capture: crate::BluetoothCaptureSlot,
+    pub device_backup: crate::DeviceBackupSlot,
+    pub sysdiagnose: crate::SysdiagnoseSlot,
+    pub log_archive: crate::LogArchiveSlot,
+    pub developer_image: crate::DeveloperImageMountSlot,
+}
+
+/// Host capabilities injected once while the runtime owns service lifecycle.
+pub struct RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImages, Profiles> {
+    pub files: Files,
+    pub capture_files: CaptureFiles,
+    pub backup: Backup,
+    pub developer_images: DeveloperImages,
+    pub provisioning_profiles: Profiles,
+}
+
+/// Owns the complete service tree and its sole command-port bundle for one
+/// connected device session.
+pub struct RuntimeConnectedSessionServices<HostPath> {
+    runtime: RuntimeSessionServices,
+    management: Option<DeviceServicePorts<HostPath>>,
+}
+
+impl<HostPath> RuntimeConnectedSessionServices<HostPath> {
+    pub fn take_management(&mut self) -> DeviceServicePorts<HostPath> {
+        self.management
+            .take()
+            .expect("device management services already taken")
+    }
+
+    /// Close command senders before cancelling any active service operation.
+    pub async fn shutdown(self) {
+        let Self {
+            runtime,
+            management,
+        } = self;
+        drop(management);
+        runtime.shutdown().await;
+    }
+}
+
+/// Owns every service for exactly one connected device session. Hosts inject
+/// capabilities through typed adapters without gaining supervisor access.
 pub struct RuntimeSessionServices {
     supervisor: ServiceSupervisor,
     device_ports: Option<RuntimeDeviceServicePorts>,
@@ -284,25 +341,371 @@ impl RuntimeSessionServices {
         }
     }
 
-    pub fn take_device_ports(&mut self) -> RuntimeDeviceServicePorts {
+    fn take_device_ports(&mut self) -> RuntimeDeviceServicePorts {
         self.device_ports
             .take()
             .expect("runtime device service ports already taken")
     }
 
-    pub fn reporter(&self, name: &'static str) -> ServiceReporter {
-        self.supervisor.reporter(name)
+    /// Attach all host-backed services and return the session's sole complete
+    /// command-port bundle.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_host_services<Files, CaptureFiles, Backup, DeveloperImages, Profiles>(
+        mut self,
+        provider: Arc<dyn IdeviceProvider>,
+        connection: ConnKind,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        source_identifier: String,
+        views: RuntimeHostServiceViews,
+        adapters: RuntimeSessionHostAdapters<
+            Files,
+            CaptureFiles,
+            Backup,
+            DeveloperImages,
+            Profiles,
+        >,
+    ) -> RuntimeConnectedSessionServices<Files::Path>
+    where
+        Files: HostFileIo,
+        CaptureFiles: CaptureFileIo<Destination = Files::Path>,
+        Backup: crate::DeviceBackupExecutor<Destination = Files::Path>,
+        DeveloperImages: crate::DeveloperImageAssetLoader<Source = Files::Path>,
+        Profiles: crate::ProvisioningProfileLoader<Source = Files::Path>,
+    {
+        let runtime = self.take_device_ports();
+        let documents = self.start_app_documents(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+            views.app_documents,
+            adapters.files.clone(),
+        );
+        let device_files = self.start_device_files(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+            views.device_files,
+            adapters.files.clone(),
+        );
+        let network_capture = self.start_network_capture(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+            views.network_capture,
+            adapters.capture_files.clone(),
+        );
+        let bluetooth_capture = self.start_bluetooth_capture(
+            adapter.clone(),
+            handshake.clone(),
+            views.bluetooth_capture,
+            adapters.capture_files,
+        );
+        let device_backup = self.start_device_backup(
+            provider.clone(),
+            connection,
+            adapter.clone(),
+            handshake.clone(),
+            source_identifier,
+            views.device_backup,
+            adapters.backup,
+        );
+        let sysdiagnose = self.start_sysdiagnose(
+            adapter.clone(),
+            handshake.clone(),
+            views.sysdiagnose,
+            adapters.files.clone(),
+        );
+        let log_archive = self.start_log_archive(
+            adapter.clone(),
+            handshake.clone(),
+            views.log_archive,
+            adapters.files.clone(),
+        );
+        let developer_image = self.start_developer_image(
+            provider.clone(),
+            views.developer_image,
+            adapters.developer_images,
+        );
+        let provisioning = self.start_provisioning(
+            adapter,
+            handshake,
+            provider.clone(),
+            adapters.provisioning_profiles,
+        );
+        let crash_report_exports = self.start_crash_report_exports(provider, adapters.files);
+
+        let management = DeviceServicePorts {
+            location: runtime.location,
+            icons: runtime.icons,
+            companions: runtime.companions,
+            home_screen: runtime.home_screen,
+            running_processes: runtime.running_processes,
+            app_lifecycle: runtime.app_lifecycle,
+            wda: runtime.wda,
+            wda_runner: runtime.wda_runner,
+            app_console: runtime.app_console,
+            documents,
+            device_files,
+            screen_capture: runtime.screen_capture,
+            network_capture,
+            bluetooth_capture,
+            device_backup,
+            sysdiagnose,
+            log_archive,
+            developer_image,
+            device_conditions: runtime.device_conditions,
+            provisioning,
+            crash_report_exports,
+        };
+        RuntimeConnectedSessionServices {
+            runtime: self,
+            management: Some(management),
+        }
     }
 
-    pub fn shutdown_receiver(&self) -> watch::Receiver<bool> {
-        self.supervisor.shutdown_receiver()
+    /// Start sandboxed application storage with host-owned file persistence.
+    fn start_app_documents<Files>(
+        &mut self,
+        provider: Arc<dyn IdeviceProvider>,
+        connection: ConnKind,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        activity: crate::AppDocumentActivitySlot,
+        files: Files,
+    ) -> mpsc::Sender<AppDocumentCommand<Files::Path>>
+    where
+        Files: HostFileIo,
+    {
+        let (sender, commands) = mpsc::channel(8);
+        self.supervisor.spawn(serve_app_documents(
+            AppStorageTransport::new(provider, connection, adapter, handshake),
+            commands,
+            activity,
+            files,
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
     }
 
-    pub fn spawn_host_task(&mut self, task: impl Future<Output = ()> + 'static) {
-        self.supervisor.spawn(task);
+    /// Start public AFC storage with host-owned file persistence.
+    fn start_device_files<Files>(
+        &mut self,
+        provider: Arc<dyn IdeviceProvider>,
+        connection: ConnKind,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        activity: crate::DeviceFileActivitySlot,
+        files: Files,
+    ) -> mpsc::Sender<DeviceFileCommand<Files::Path>>
+    where
+        Files: HostFileIo,
+    {
+        let (sender, commands) = mpsc::channel(8);
+        self.supervisor.spawn(serve_device_files(
+            DeviceFileTransport::new(provider, connection, adapter, handshake),
+            commands,
+            activity,
+            files,
+            self.supervisor.reporter("device.files"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
     }
 
-    pub async fn shutdown(mut self) {
+    /// Start network packet capture with host-owned atomic file publication.
+    fn start_network_capture<Files>(
+        &mut self,
+        provider: Arc<dyn IdeviceProvider>,
+        connection: ConnKind,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        status: crate::NetworkCaptureSlot,
+        files: Files,
+    ) -> mpsc::Sender<NetworkCaptureCommand<Files::Destination>>
+    where
+        Files: CaptureFileIo,
+    {
+        let (sender, commands) = mpsc::channel(4);
+        self.supervisor.spawn(serve_network_capture(
+            NetworkCaptureTransport::new(provider, connection, adapter, handshake),
+            commands,
+            status,
+            files,
+            self.supervisor.reporter("network.capture"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    /// Start Bluetooth PacketLogger capture with host-owned atomic file publication.
+    fn start_bluetooth_capture<Files>(
+        &mut self,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        status: crate::BluetoothCaptureSlot,
+        files: Files,
+    ) -> mpsc::Sender<BluetoothCaptureCommand<Files::Destination>>
+    where
+        Files: CaptureFileIo,
+    {
+        let (sender, commands) = mpsc::channel(4);
+        self.supervisor.spawn(serve_bluetooth_capture(
+            BluetoothCaptureTransport::new(adapter, handshake),
+            commands,
+            status,
+            files,
+            self.supervisor.reporter("bluetooth.capture"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    /// Start MobileBackup2 orchestration with a host-confined backup executor.
+    #[allow(clippy::too_many_arguments)]
+    fn start_device_backup<Executor>(
+        &mut self,
+        provider: Arc<dyn IdeviceProvider>,
+        connection: ConnKind,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        source_identifier: String,
+        status: crate::DeviceBackupSlot,
+        executor: Executor,
+    ) -> mpsc::Sender<DeviceBackupCommand<Executor::Destination>>
+    where
+        Executor: crate::DeviceBackupExecutor,
+    {
+        let (sender, commands) = mpsc::channel(4);
+        self.supervisor.spawn(serve_device_backup(
+            DeviceBackupTransport::new(provider, connection, adapter, handshake, source_identifier),
+            commands,
+            status,
+            executor,
+            self.supervisor.reporter("device.backup"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    /// Start cancellable sysdiagnose export with host-owned persistence.
+    fn start_sysdiagnose<Files>(
+        &mut self,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        status: crate::SysdiagnoseSlot,
+        files: Files,
+    ) -> mpsc::Sender<SysdiagnoseCommand<Files::Path>>
+    where
+        Files: HostFileIo,
+    {
+        let (sender, commands) = mpsc::channel(4);
+        self.supervisor.spawn(serve_sysdiagnose(
+            adapter,
+            handshake,
+            commands,
+            status,
+            files,
+            self.supervisor.reporter("device.sysdiagnose"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    /// Start cancellable unified-log export with host-owned persistence.
+    fn start_log_archive<Files>(
+        &mut self,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        status: crate::LogArchiveSlot,
+        files: Files,
+    ) -> mpsc::Sender<LogArchiveCommand<Files::Path>>
+    where
+        Files: HostFileIo,
+    {
+        let (sender, commands) = mpsc::channel(4);
+        self.supervisor.spawn(serve_log_archive(
+            adapter,
+            handshake,
+            commands,
+            status,
+            files,
+            self.supervisor.reporter("device.log_archive"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    /// Start Developer Disk Image operations with host-owned asset loading.
+    fn start_developer_image<Assets>(
+        &mut self,
+        provider: Arc<dyn IdeviceProvider>,
+        status: crate::DeveloperImageMountSlot,
+        assets: Assets,
+    ) -> mpsc::Sender<DeveloperImageMountCommand<Assets::Source>>
+    where
+        Assets: crate::DeveloperImageAssetLoader,
+    {
+        let (sender, commands) = mpsc::channel(4);
+        self.supervisor.spawn(serve_developer_image_mount(
+            provider,
+            commands,
+            status,
+            assets,
+            self.supervisor.reporter("device.developer_image"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    /// Start provisioning profile management with a host-owned source loader.
+    fn start_provisioning<Loader>(
+        &mut self,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+        provider: Arc<dyn IdeviceProvider>,
+        loader: Loader,
+    ) -> mpsc::Sender<ProvisioningCommand<Loader::Source>>
+    where
+        Loader: crate::ProvisioningProfileLoader,
+    {
+        let (sender, commands) = mpsc::channel(4);
+        self.supervisor.spawn(supervise_provisioning(
+            adapter,
+            handshake,
+            provider,
+            commands,
+            loader,
+            self.supervisor.reporter("device.provisioning"),
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    /// Add the host-persisted crash report exporter to this session's owned
+    /// service tree and return its sole bounded command sender.
+    fn start_crash_report_exports<Files>(
+        &mut self,
+        provider: Arc<dyn IdeviceProvider>,
+        files: Files,
+    ) -> mpsc::Sender<CrashReportExportCommand<Files::Path>>
+    where
+        Files: HostFileIo,
+    {
+        let (sender, commands) = mpsc::channel(2);
+        self.supervisor.spawn(serve_crash_report_exports(
+            provider,
+            commands,
+            files,
+            self.supervisor.shutdown_receiver(),
+        ));
+        sender
+    }
+
+    async fn shutdown(mut self) {
         drop(self.device_ports.take());
         self.supervisor.shutdown().await;
     }

@@ -3,11 +3,54 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use devicehub_core::{KeyMods, ascii_key_usage};
-use tokio::sync::mpsc::UnboundedReceiver;
+use devicehub_core::{KeyMods, OrientationSlot, ascii_key_usage};
+use idevice::{
+    RsdService,
+    core_device::{OrientationServiceClient, hid::IndigoHidClient},
+    rsd::RsdHandshake,
+    tcp::handle::AdapterHandle,
+};
+use tokio::sync::mpsc::{Sender, UnboundedReceiver};
 
 use super::{DeviceSessionCommand, DeviceSessionRouter};
+use crate::input::UniversalHidClient;
 use crate::{DeviceInputCommand, DeviceInputDispatcher};
+
+/// Establish every authenticated HID capability for one active screen session.
+/// DisplayService must already be running because it opens the authorization
+/// gate used by Universal HID and Indigo keyboard services.
+pub async fn connect_device_input(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    orientation_view: OrientationSlot,
+    hid_diagnostic_sink: Option<Sender<Vec<u8>>>,
+) -> Result<DeviceInputDispatcher, String> {
+    // Give backboardd time to re-match the HID surfaces after media starts.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let mut touch = UniversalHidClient::connect_rsd(adapter, handshake)
+        .await
+        .map_err(|error| format!("no universalhidservice: {error:?}"))?;
+    crate::input::capture_connected_services(&mut touch, hid_diagnostic_sink).await;
+    let keyboard = IndigoHidClient::connect_rsd(adapter, handshake)
+        .await
+        .map_err(|error| format!("no hid.indigo: {error:?}"))?;
+    // Rotation is best-effort: touch and keyboard remain useful without it.
+    let orientation = match OrientationServiceClient::connect_rsd(adapter, handshake).await {
+        Ok(client) => Some(client),
+        Err(error) => {
+            tracing::warn!(?error, "no orientation service; rotate disabled");
+            None
+        }
+    };
+
+    Ok(DeviceInputDispatcher::new(
+        touch,
+        keyboard,
+        orientation,
+        orientation_view,
+    ))
+}
 
 pub type ClipboardWriteFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 

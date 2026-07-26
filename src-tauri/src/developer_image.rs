@@ -6,9 +6,7 @@ use tokio::io::AsyncReadExt;
 
 #[cfg(test)]
 pub(crate) use devicehub_runtime::DeveloperImageMountState;
-pub(crate) use devicehub_runtime::{
-    DeveloperImageMountSlot, DeveloperImageMountStatus, serve_developer_image_mount as serve,
-};
+pub(crate) use devicehub_runtime::{DeveloperImageMountSlot, DeveloperImageMountStatus};
 
 const MAX_PATH_BYTES: usize = 4_096;
 

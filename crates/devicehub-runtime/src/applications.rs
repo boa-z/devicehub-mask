@@ -16,10 +16,8 @@ pub use console::{
 };
 pub use icons::{AppIconCommand, serve_app_icons};
 pub use lifecycle::{AppLifecycleCommand, serve_app_lifecycle};
-pub use manager::{
-    APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT, AppClientSet, AppManagement,
-    AppServiceTransport,
-};
+pub use manager::{APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT};
+pub(crate) use manager::{AppClientSet, AppManagement, AppServiceTransport};
 pub use processes::{RunningProcessCommand, serve_running_processes};
 pub use wda_automation::{
     DEFAULT_SOURCE_CHARS, MAX_ATTRIBUTE_BYTES, MAX_ATTRIBUTE_CHARACTERS,

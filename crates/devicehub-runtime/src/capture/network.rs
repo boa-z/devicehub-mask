@@ -71,7 +71,7 @@ struct ActiveCapture<Writer> {
     filtered_packet_count: u64,
 }
 
-pub struct NetworkCaptureTransport {
+pub(crate) struct NetworkCaptureTransport {
     provider: Arc<dyn IdeviceProvider>,
     connection: ConnKind,
     adapter: AdapterHandle,
@@ -79,7 +79,7 @@ pub struct NetworkCaptureTransport {
 }
 
 impl NetworkCaptureTransport {
-    pub fn new(
+    pub(crate) fn new(
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,
         adapter: AdapterHandle,
@@ -94,7 +94,7 @@ impl NetworkCaptureTransport {
     }
 }
 
-pub async fn serve<Files>(
+pub(crate) async fn serve<Files>(
     mut transport: NetworkCaptureTransport,
     mut commands: mpsc::Receiver<NetworkCaptureCommand<Files::Destination>>,
     status: NetworkCaptureSlot,

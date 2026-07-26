@@ -20,32 +20,34 @@ mod supervisor;
 mod transport;
 
 pub use applications::{
-    APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT, AppClientSet, AppCommand,
-    AppConsoleCommand, AppConsoleLine, AppConsolePhase, AppConsoleSnapshot, AppIconCommand,
-    AppLifecycleCommand, AppManagement, AppServiceTransport, DEFAULT_SOURCE_CHARS,
-    MAX_ATTRIBUTE_BYTES, MAX_ATTRIBUTE_CHARACTERS, MAX_BACKGROUND_DURATION_MS, MAX_ELEMENTS,
-    MAX_HOLD_DURATION_MS, MAX_SELECTOR_BYTES, MAX_SOURCE_CHARS, MAX_TEXT_BYTES,
-    MAX_TEXT_CHARACTERS, MAX_WAIT_TIMEOUT_MS, MIN_BACKGROUND_DURATION_MS, MIN_HOLD_DURATION_MS,
-    RunningProcessCommand, WdaAutomationCommand, WdaBoundedText, WdaDeviceState, WdaElement,
-    WdaElementDetails, WdaElementWaitResult, WdaElementWaitState, WdaOrientation, WdaRect,
-    WdaRunnerCommand, WdaRunnerPhase, WdaRunnerStatus, WdaSize, WdaStatus, WdaUiTree,
-    WdaUnlockResult, parse_wait_state, serve_app_console, serve_app_icons, serve_app_lifecycle,
-    serve_running_processes, serve_wda_automation, serve_wda_runner, validate_background_duration,
-    validate_hold_duration, validate_runner_bundle_id, validate_scroll_direction,
-    validate_selector, validate_text, validate_wait_timeout,
+    APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT, AppCommand, AppConsoleCommand,
+    AppConsoleLine, AppConsolePhase, AppConsoleSnapshot, AppIconCommand, AppLifecycleCommand,
+    DEFAULT_SOURCE_CHARS, MAX_ATTRIBUTE_BYTES, MAX_ATTRIBUTE_CHARACTERS,
+    MAX_BACKGROUND_DURATION_MS, MAX_ELEMENTS, MAX_HOLD_DURATION_MS, MAX_SELECTOR_BYTES,
+    MAX_SOURCE_CHARS, MAX_TEXT_BYTES, MAX_TEXT_CHARACTERS, MAX_WAIT_TIMEOUT_MS,
+    MIN_BACKGROUND_DURATION_MS, MIN_HOLD_DURATION_MS, RunningProcessCommand, WdaAutomationCommand,
+    WdaBoundedText, WdaDeviceState, WdaElement, WdaElementDetails, WdaElementWaitResult,
+    WdaElementWaitState, WdaOrientation, WdaRect, WdaRunnerCommand, WdaRunnerPhase,
+    WdaRunnerStatus, WdaSize, WdaStatus, WdaUiTree, WdaUnlockResult, parse_wait_state,
+    serve_app_console, serve_app_icons, serve_app_lifecycle, serve_running_processes,
+    serve_wda_automation, serve_wda_runner, validate_background_duration, validate_hold_duration,
+    validate_runner_bundle_id, validate_scroll_direction, validate_selector, validate_text,
+    validate_wait_timeout,
 };
-pub use audio::{AudioPublisher, PcmAudioConsumer};
+pub use audio::{AudioPublisher, DeviceAudioFuture, DeviceAudioPipeline, PcmAudioConsumer};
 pub use capture::{
     BluetoothCaptureCommand, BluetoothCaptureSlot, BluetoothCaptureState, BluetoothCaptureStatus,
-    BluetoothCaptureStopReason, BluetoothCaptureTransport, CaptureFileFuture, CaptureFileIo,
-    CaptureFileKind, CaptureFileWriter, MAX_BLUETOOTH_CAPTURE_DURATION_SECONDS,
+    BluetoothCaptureStopReason, CaptureFileFuture, CaptureFileIo, CaptureFileKind,
+    CaptureFileWriter, MAX_BLUETOOTH_CAPTURE_DURATION_SECONDS,
     MAX_NETWORK_CAPTURE_DURATION_SECONDS, MIN_BLUETOOTH_CAPTURE_DURATION_SECONDS,
     MIN_NETWORK_CAPTURE_DURATION_SECONDS, NetworkCaptureCommand, NetworkCaptureSlot,
-    NetworkCaptureState, NetworkCaptureStatus, NetworkCaptureStopReason, NetworkCaptureTransport,
-    serve_bluetooth_capture, serve_network_capture, validate_bluetooth_capture_duration,
-    validate_network_capture_duration,
+    NetworkCaptureState, NetworkCaptureStatus, NetworkCaptureStopReason,
+    validate_bluetooth_capture_duration, validate_network_capture_duration,
 };
-pub use clipboard::ClipboardSlot;
+pub use clipboard::{
+    ClipboardBridge, ClipboardImage, ClipboardSlot, DeviceClipboardSession, HostClipboard,
+    HostClipboardFactory, connect_device_clipboard,
+};
 pub use demand::{Demand, DemandLease};
 pub use device::{
     CompanionDeviceCommand, CrashReportExportCommand, DeveloperImageAssetFuture,
@@ -56,26 +58,25 @@ pub use device::{
     DeviceLogSlot, DeviceLogSource, DevicePowerAction, DevicePowerController, HomeScreenCommand,
     LocationCommand, MAX_BATCH_ENTRIES, MAX_CRASH_REPORT_READ_BYTES,
     MAX_PROVISIONING_PROFILE_BYTES, ProvisioningCommand, ProvisioningFailure, ProvisioningInstall,
-    ScreenCaptureCommand, ScreenCaptureTransport, delete_crash_report,
-    developer_image_type_for_version, download_crash_report, execute_developer_mode,
-    is_developer_image_mounted, is_developer_image_mounted_for_device, list_crash_reports,
-    parse_provisioning_profile, prepare_provisioning_install, profiles_from_raw,
-    read_activation_state, read_crash_report, read_developer_mode_status, read_device_battery,
-    read_device_details, read_device_developer_mode_status, read_device_product_version,
-    rename_device, serve_companion_devices, serve_developer_image_mount, serve_home_screen,
-    serve_screen_capture, supervise_device_conditions, supervise_device_events,
-    supervise_device_logs, supervise_location, supervise_provisioning, unreadable_profile,
+    ProvisioningProfileFuture, ProvisioningProfileLoader, ScreenCaptureCommand,
+    ScreenCaptureTransport, delete_crash_report, developer_image_type_for_version,
+    download_crash_report, execute_developer_mode, is_developer_image_mounted,
+    is_developer_image_mounted_for_device, list_crash_reports, parse_provisioning_profile,
+    prepare_provisioning_install, profiles_from_raw, read_activation_state, read_crash_report,
+    read_developer_mode_status, read_device_battery, read_device_details,
+    read_device_developer_mode_status, read_device_product_version, rename_device,
+    serve_companion_devices, serve_home_screen, serve_screen_capture, supervise_device_conditions,
+    supervise_device_events, supervise_device_logs, supervise_location, unreadable_profile,
     validate_crash_report_path, validate_device_condition_identifiers,
 };
 pub use diagnostics::{
     ALLOWED_LOG_ARCHIVE_AGE_LIMIT_HOURS, DeviceBackupCommand, DeviceBackupExecutor,
     DeviceBackupFuture, DeviceBackupPrepareFuture, DeviceBackupSlot, DeviceBackupState,
-    DeviceBackupStatus, DeviceBackupTransport, LogArchiveCommand, LogArchiveSlot, LogArchiveState,
-    LogArchiveStatus, SysdiagnoseCommand, SysdiagnoseSlot, SysdiagnoseState, SysdiagnoseStatus,
-    serve_device_backup, serve_log_archive, serve_sysdiagnose,
+    DeviceBackupStatus, LogArchiveCommand, LogArchiveSlot, LogArchiveState, LogArchiveStatus,
+    SysdiagnoseCommand, SysdiagnoseSlot, SysdiagnoseState, SysdiagnoseStatus,
     validate_log_archive_age_limit_hours,
 };
-pub use input::{DeviceInputCommand, DeviceInputDispatcher, TouchContact, UniversalHidClient};
+pub use input::{DeviceInputCommand, DeviceInputDispatcher, TouchContact};
 pub use media::{
     AccessUnitAssembler, BrowserFrameDecision, BrowserVideoFrame, BrowserVideoSlot, FrameCredit,
     FramePacer, FramePacerMetrics, HEVC_QUEUE_MAX_BYTES, HevcAccessUnit, HevcQueue, HevcQueuePush,
@@ -92,22 +93,22 @@ pub use performance::{
 };
 pub use preferences::RuntimePreferences;
 pub use session::{
-    ClipboardWriteFuture, DeviceClipboard, DeviceServicePorts, DeviceSessionCommand,
-    DeviceSessionRouter, LocationServicePort, OrientationWatcher, RuntimeDeviceServicePorts,
-    RuntimeServiceViews, RuntimeSessionServices, SessionControlCommand, SessionFailureAction,
-    SessionRetry, SessionRetryPolicy, run_device_command_loop, run_management_command_loop,
-    supervise_heartbeat,
+    ClipboardWriteFuture, DeviceClipboard, DeviceManagementBootstrap, DeviceManagementSession,
+    DeviceServicePorts, DeviceSessionCommand, DeviceSessionRouter, DiagnosticDumpSinkFactory,
+    DiagnosticDumpSinkFuture, LocationServicePort, OrientationWatcher,
+    RuntimeConnectedSessionServices, RuntimeHostServiceViews, RuntimeServiceViews,
+    RuntimeSessionHostAdapters, RuntimeSessionServices, SessionControlCommand, SessionDiagnostics,
+    SessionFailureAction, SessionRetry, SessionRetryPolicy, connect_device_input,
+    run_device_command_loop, run_management_command_loop, supervise_heartbeat,
 };
 pub use storage::{
     APP_DOCUMENT_TRANSFER_CANCELLED, AppDocumentActivityKind, AppDocumentActivitySlot,
     AppDocumentActivityState, AppDocumentActivityView, AppDocumentCommand, AppDocumentEntry,
-    AppDocumentKind, AppDocumentList, AppDocumentTransfer, AppStorageScope, AppStorageTransport,
-    DeviceFileActivityKind, DeviceFileActivitySlot, DeviceFileActivityState,
-    DeviceFileActivityView, DeviceFileCommand, DeviceFileEntry, DeviceFileKind, DeviceFileList,
-    DeviceFileTransfer, DeviceFileTransport, HostDirectoryEntry, HostFileFuture, HostFileIo,
-    HostFileKind, HostFileMetadata, HostFileReader, HostFileWrite, HostFileWriter,
-    TRANSFER_CANCELLED, is_app_document_transfer_cancelled, is_transfer_cancelled,
-    serve_app_documents, serve_device_files,
+    AppDocumentKind, AppDocumentList, AppDocumentTransfer, AppStorageScope, DeviceFileActivityKind,
+    DeviceFileActivitySlot, DeviceFileActivityState, DeviceFileActivityView, DeviceFileCommand,
+    DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer, HostDirectoryEntry,
+    HostFileFuture, HostFileIo, HostFileKind, HostFileMetadata, HostFileReader, HostFileWrite,
+    HostFileWriter, TRANSFER_CANCELLED, is_app_document_transfer_cancelled, is_transfer_cancelled,
 };
 pub use supervisor::{
     ServiceHealth, ServicePhase, ServiceRegistry, ServiceReporter, ServiceSupervisor,

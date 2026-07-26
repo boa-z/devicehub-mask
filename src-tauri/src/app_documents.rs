@@ -9,8 +9,7 @@ pub(crate) use devicehub_runtime::{
 };
 pub(crate) use devicehub_runtime::{
     AppDocumentActivitySlot, AppDocumentActivityView, AppDocumentEntry, AppDocumentList,
-    AppStorageScope, AppStorageTransport,
-    is_app_document_transfer_cancelled as is_transfer_cancelled, serve_app_documents as serve,
+    AppStorageScope, is_app_document_transfer_cancelled as is_transfer_cancelled,
 };
 
 pub(crate) type AppDocumentCommand = devicehub_runtime::AppDocumentCommand<PathBuf>;

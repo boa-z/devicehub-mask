@@ -1,38 +1,24 @@
 //! Host file adapter for the host-independent provisioning runtime.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::SystemTime;
-
-use idevice::provider::IdeviceProvider;
-use idevice::rsd::RsdHandshake;
-use idevice::tcp::handle::AdapterHandle;
-use tokio::sync::{mpsc, watch};
-
-use crate::supervisor::ServiceReporter;
 
 pub use devicehub_runtime::ProvisioningFailure;
 pub type ProvisioningCommand = devicehub_runtime::ProvisioningCommand<PathBuf>;
 
-/// Injects host file loading while the runtime owns protocol and retry behavior.
-pub async fn supervise(
-    adapter: AdapterHandle,
-    handshake: RsdHandshake,
-    provider: Arc<dyn IdeviceProvider>,
-    commands: mpsc::Receiver<ProvisioningCommand>,
-    reporter: ServiceReporter,
-    shutdown: watch::Receiver<bool>,
-) {
-    devicehub_runtime::supervise_provisioning(
-        adapter,
-        handshake,
-        provider,
-        commands,
-        load_install_profile,
-        reporter,
-        shutdown,
-    )
-    .await;
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TokioProvisioningProfiles;
+
+impl devicehub_runtime::ProvisioningProfileLoader for TokioProvisioningProfiles {
+    type Source = PathBuf;
+
+    fn load<'a>(
+        &'a self,
+        source: PathBuf,
+        expires_at: tokio::time::Instant,
+    ) -> devicehub_runtime::ProvisioningProfileFuture<'a> {
+        Box::pin(load_install_profile(source, expires_at))
+    }
 }
 
 async fn load_install_profile(

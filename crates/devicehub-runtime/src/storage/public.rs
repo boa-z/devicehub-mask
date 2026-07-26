@@ -318,7 +318,7 @@ pub enum DeviceFileCommand<Path> {
     },
 }
 
-pub struct DeviceFileTransport {
+pub(crate) struct DeviceFileTransport {
     provider: Arc<dyn IdeviceProvider>,
     connection: ConnKind,
     adapter: AdapterHandle,
@@ -326,7 +326,7 @@ pub struct DeviceFileTransport {
 }
 
 impl DeviceFileTransport {
-    pub fn new(
+    pub(crate) fn new(
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,
         adapter: AdapterHandle,
@@ -382,7 +382,7 @@ impl DeviceFileTransport {
     }
 }
 
-pub async fn serve<FileIo>(
+pub(crate) async fn serve<FileIo>(
     mut transport: DeviceFileTransport,
     mut commands: mpsc::Receiver<DeviceFileCommand<FileIo::Path>>,
     activity: DeviceFileActivitySlot,

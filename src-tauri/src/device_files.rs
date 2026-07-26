@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 pub(crate) use devicehub_runtime::{
     DeviceFileActivitySlot, DeviceFileActivityView, DeviceFileEntry, DeviceFileList,
-    DeviceFileTransport, is_transfer_cancelled, serve_device_files as serve,
+    is_transfer_cancelled,
 };
 #[cfg(test)]
 pub(crate) use devicehub_runtime::{DeviceFileActivityState, DeviceFileKind, DeviceFileTransfer};

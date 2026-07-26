@@ -70,7 +70,7 @@ pub fn validate_age_limit_hours(value: u16) -> Result<u16, String> {
         .ok_or_else(|| "log archive age limit must be 1, 6, or 24 hours".into())
 }
 
-pub async fn serve<FileIo>(
+pub(crate) async fn serve<FileIo>(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<LogArchiveCommand<FileIo::Path>>,

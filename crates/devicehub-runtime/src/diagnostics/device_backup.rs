@@ -55,7 +55,7 @@ pub enum DeviceBackupCommand<Destination> {
     },
 }
 
-pub struct DeviceBackupTransport {
+pub(crate) struct DeviceBackupTransport {
     provider: Arc<dyn IdeviceProvider>,
     connection: ConnKind,
     adapter: AdapterHandle,
@@ -64,7 +64,7 @@ pub struct DeviceBackupTransport {
 }
 
 impl DeviceBackupTransport {
-    pub fn new(
+    pub(crate) fn new(
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,
         adapter: AdapterHandle,
@@ -111,7 +111,7 @@ pub trait DeviceBackupExecutor: Clone + Send + Sync + 'static {
     ) -> DeviceBackupFuture<'a>;
 }
 
-pub async fn serve<Executor>(
+pub(crate) async fn serve<Executor>(
     mut transport: DeviceBackupTransport,
     mut commands: mpsc::Receiver<DeviceBackupCommand<Executor::Destination>>,
     status: DeviceBackupSlot,

@@ -5,7 +5,6 @@ mod bluetooth_capture;
 mod browser_video;
 mod build_info;
 mod capture_files;
-mod crash_reports;
 mod decode;
 mod developer_image;
 mod device_backup;
@@ -14,7 +13,6 @@ mod device_runtime;
 mod diagnostic_files;
 mod diagnostics;
 mod domain;
-mod hid;
 mod host_files;
 mod http_apps;
 mod http_crash_reports;
@@ -160,22 +158,10 @@ impl BackendHandle {
 }
 
 fn spawn_backend(
-    initial_udid: Option<String>,
     profile_dir: PathBuf,
-    pairing_dir: PathBuf,
-    transport: session::DeviceTransportConfig,
-    preferences: device_runtime::RuntimePreferences,
-    audio: device_runtime::AudioPublisher,
-    audio_decoder: decode::AudioDecoderConfig,
+    runtime_config: device_runtime::RuntimeConfig,
 ) -> Result<BackendHandle, String> {
-    let runtime = device_runtime::DeviceRuntime::start(device_runtime::RuntimeConfig {
-        initial_udid,
-        pairing_dir,
-        transport,
-        preferences,
-        audio,
-        audio_decoder,
-    })?;
+    let runtime = device_runtime::DeviceRuntime::start(runtime_config)?;
     let services = runtime.services();
     let runtime_control = services.application.control.clone();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -347,6 +333,14 @@ pub fn run() {
                 resource_dir.as_deref(),
                 current_exe.as_deref(),
             );
+            let session_diagnostics = device_runtime::RuntimeSessionDiagnostics {
+                send_frame_ack: std::env::var("DEVICEHUB_FRAME_ACK").is_ok(),
+                rtcp: devicehub_runtime::RtcpOptions {
+                    send_rctl: std::env::var("DEVICEHUB_RCTL").is_ok(),
+                },
+                hevc_dump: std::env::var("DEVICEHUB_DUMP_HEVC").ok().map(PathBuf::from),
+                hid_dump: std::env::var("DEVICEHUB_HID_DUMP").ok().map(PathBuf::from),
+            };
             let system_usbmuxd = std::env::var("USBMUXD_SOCKET_ADDRESS").ok();
             let netmuxd = netmuxd::NetmuxdConfig::from_host(
                 std::env::var_os("DEVICEHUB_NETMUXD"),
@@ -362,13 +356,16 @@ pub fn run() {
                 .unwrap_or_else(|| app_data_dir.join("profiles"));
             app.manage(ProfileDirectory(profile_dir.clone()));
             let backend = spawn_backend(
-                initial_udid,
                 profile_dir,
-                app_data_dir.join("pairings"),
-                transport,
-                runtime_preferences,
-                device_runtime::AudioPublisher::new(audio_output),
-                audio_decoder,
+                device_runtime::RuntimeConfig {
+                    initial_udid,
+                    pairing_dir: app_data_dir.join("pairings"),
+                    transport,
+                    preferences: runtime_preferences,
+                    audio: device_runtime::AudioPublisher::new(audio_output),
+                    audio_decoder,
+                    session_diagnostics,
+                },
             )
             .map_err(std::io::Error::other)?;
             app.manage(backend);

@@ -12,7 +12,7 @@ use idevice::mobilebackup2::{BackupDelegate, DirEntryInfo, FsBackupDelegate, Mob
 
 #[cfg(test)]
 pub(crate) use devicehub_runtime::DeviceBackupState;
-pub(crate) use devicehub_runtime::{DeviceBackupSlot, DeviceBackupStatus, DeviceBackupTransport};
+pub(crate) use devicehub_runtime::{DeviceBackupSlot, DeviceBackupStatus};
 pub(crate) type DeviceBackupCommand = devicehub_runtime::DeviceBackupCommand<PathBuf>;
 
 const MAX_PATH_BYTES: usize = 4_096;
@@ -90,24 +90,6 @@ impl devicehub_runtime::DeviceBackupExecutor for TokioDeviceBackupExecutor {
             result
         })
     }
-}
-
-pub(crate) async fn serve(
-    transport: DeviceBackupTransport,
-    commands: tokio::sync::mpsc::Receiver<DeviceBackupCommand>,
-    status: DeviceBackupSlot,
-    reporter: crate::supervisor::ServiceReporter,
-    shutdown: tokio::sync::watch::Receiver<bool>,
-) {
-    devicehub_runtime::serve_device_backup(
-        transport,
-        commands,
-        status,
-        TokioDeviceBackupExecutor,
-        reporter,
-        shutdown,
-    )
-    .await;
 }
 
 async fn reject_symlink(path: &Path) -> Result<(), String> {

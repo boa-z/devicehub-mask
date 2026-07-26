@@ -87,6 +87,7 @@ for (const [service, sourcePath] of [
   ["device backup", "crates/devicehub-runtime/src/diagnostics/device_backup.rs"],
   ["device details", "crates/devicehub-runtime/src/device/details.rs"],
   ["crash report exports", "crates/devicehub-runtime/src/device/crash_reports.rs"],
+  ["provisioning profiles", "crates/devicehub-runtime/src/device/provisioning.rs"],
   ["screen media negotiation", "crates/devicehub-runtime/src/media/negotiation.rs"],
   ["audio RTP", "crates/devicehub-runtime/src/media/audio_rtp.rs"],
   ["video RTP", "crates/devicehub-runtime/src/media/video_rtp.rs"],
@@ -96,6 +97,12 @@ for (const [service, sourcePath] of [
   ["session commands", "crates/devicehub-runtime/src/session/commands.rs"],
   ["session command router", "crates/devicehub-runtime/src/session/router.rs"],
   ["session input loop", "crates/devicehub-runtime/src/session/input.rs"],
+  [
+    "session diagnostic sinks",
+    "crates/devicehub-runtime/src/session/diagnostics.rs",
+  ],
+  ["HID protocol", "crates/devicehub-runtime/src/input/hid.rs"],
+  ["clipboard session", "crates/devicehub-runtime/src/clipboard/session.rs"],
 ]) {
   const source = readFileSync(sourcePath, "utf8");
   const violations = hostApiForbidden.filter((dependency) =>
@@ -109,3 +116,38 @@ for (const [service, sourcePath] of [
   }
   console.log(`devicehub-runtime ${service} host API boundary OK.`);
 }
+
+const sessionServices = readFileSync(
+  "crates/devicehub-runtime/src/session/services.rs",
+  "utf8",
+);
+const supervisorEscapes = [
+  "pub fn reporter(",
+  "pub fn shutdown_receiver(",
+  "pub fn spawn_host_task(",
+];
+const exposedSupervisorApis = supervisorEscapes.filter((signature) =>
+  sessionServices.includes(signature),
+);
+if (exposedSupervisorApis.length > 0) {
+  console.error(
+    `Rust boundary check failed: runtime session exposes supervisor escape hatches: ${exposedSupervisorApis.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-runtime session supervisor ownership boundary OK.");
+
+const tauriSessionServices = readFileSync(
+  "src-tauri/src/session/services.rs",
+  "utf8",
+);
+if (
+  tauriSessionServices.includes("struct SessionServices") ||
+  !tauriSessionServices.includes("RuntimeConnectedSessionServices")
+) {
+  console.error(
+    "Rust boundary check failed: Tauri must return the runtime-owned connected service lifecycle",
+  );
+  process.exit(1);
+}
+console.log("Tauri connected service owner boundary OK.");

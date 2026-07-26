@@ -1,4 +1,15 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+
+use idevice::tcp::handle::UdpSocketHandle;
+
+pub type DeviceAudioFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// Host-selected audio pipeline for a negotiated device RTP stream.
+pub trait DeviceAudioPipeline: Clone + Send + Sync + 'static {
+    fn run(&self, udp: UdpSocketHandle) -> DeviceAudioFuture;
+}
 
 /// Host-provided sink for decoded interleaved PCM bytes.
 pub trait PcmAudioConsumer: Send + Sync + 'static {

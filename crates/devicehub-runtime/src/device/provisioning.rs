@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::io::Cursor;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -110,18 +111,30 @@ pub struct ProvisioningInstall {
     profile: ProvisioningProfile,
 }
 
-pub async fn supervise_provisioning<Source, LoadProfile, LoadFuture>(
+pub type ProvisioningProfileFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ProvisioningInstall, ProvisioningFailure>> + Send + 'a>>;
+
+/// Loads a host-owned provisioning profile source before device mutation.
+pub trait ProvisioningProfileLoader: Clone + Send + Sync + 'static {
+    type Source: Send + 'static;
+
+    fn load<'a>(
+        &'a self,
+        source: Self::Source,
+        expires_at: tokio::time::Instant,
+    ) -> ProvisioningProfileFuture<'a>;
+}
+
+pub(crate) async fn supervise_provisioning<Loader>(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     provider: Arc<dyn IdeviceProvider>,
-    mut commands: mpsc::Receiver<ProvisioningCommand<Source>>,
-    load_profile: LoadProfile,
+    mut commands: mpsc::Receiver<ProvisioningCommand<Loader::Source>>,
+    loader: Loader,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
 ) where
-    Source: Send + 'static,
-    LoadProfile: Fn(Source, tokio::time::Instant) -> LoadFuture + Send + Sync + 'static,
-    LoadFuture: Future<Output = Result<ProvisioningInstall, ProvisioningFailure>> + Send + 'static,
+    Loader: ProvisioningProfileLoader,
 {
     let mut attempt = 0;
     loop {
@@ -168,7 +181,7 @@ pub async fn supervise_provisioning<Source, LoadProfile, LoadFuture>(
                         &mut client,
                         provider.as_ref(),
                         command,
-                        &load_profile,
+                        &loader,
                     ).await {
                         break Some(error);
                     }
@@ -184,15 +197,14 @@ pub async fn supervise_provisioning<Source, LoadProfile, LoadFuture>(
     reporter.stopped(attempt);
 }
 
-async fn handle_command<Source, LoadProfile, LoadFuture>(
+async fn handle_command<Loader>(
     client: &mut MisagentClient,
     provider: &dyn IdeviceProvider,
-    command: ProvisioningCommand<Source>,
-    load_profile: &LoadProfile,
+    command: ProvisioningCommand<Loader::Source>,
+    loader: &Loader,
 ) -> Result<(), String>
 where
-    LoadProfile: Fn(Source, tokio::time::Instant) -> LoadFuture,
-    LoadFuture: Future<Output = Result<ProvisioningInstall, ProvisioningFailure>>,
+    Loader: ProvisioningProfileLoader,
 {
     match command {
         ProvisioningCommand::List { expires_at, reply } => {
@@ -220,7 +232,7 @@ where
             let Some(reply) = active_reply(expires_at, reply) else {
                 return Ok(());
             };
-            let install = match load_profile(source, expires_at).await {
+            let install = match loader.load(source, expires_at).await {
                 Ok(install) => install,
                 Err(error) => {
                     let _ = reply.send(Err(error));

@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use idevice::core_device::{DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, build_touchscreen_report};
 use idevice::xpc::{Dictionary, XPCObject};
 use idevice::{IdeviceError, ReadWrite, RemoteXpcClient, RsdService};
+use tokio::sync::mpsc;
 
 const SERVICE_NAME: &str = "com.apple.coredevice.hid.universalhidservice";
 const FEATURE_ID: &str = "com.apple.coredevice.feature.remote.universalhidservice";
@@ -69,7 +70,7 @@ pub fn build_multitouch_report(
 }
 
 #[derive(Debug)]
-pub struct UniversalHidClient<R: ReadWrite> {
+pub(crate) struct UniversalHidClient<R: ReadWrite> {
     inner: RemoteXpcClient<R>,
 }
 
@@ -99,7 +100,7 @@ impl<R: ReadWrite> UniversalHidClient<R> {
 
     /// Return the complete response from `connectedServices`, including fields
     /// the typed upstream `HidSurface` representation does not retain.
-    pub async fn connected_services_raw(&mut self) -> Result<plist::Value, IdeviceError> {
+    async fn connected_services_raw(&mut self) -> Result<plist::Value, IdeviceError> {
         let mut query = Dictionary::new();
         query.insert(
             "connectedServices".into(),
@@ -145,6 +146,67 @@ impl<R: ReadWrite> UniversalHidClient<R> {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         self.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, y, None)
             .await
+    }
+}
+
+/// Capture the optional raw surface diagnostic without exposing plist or HID
+/// client types to the host. Failure is diagnostic-only and never prevents
+/// input setup from completing.
+pub(crate) async fn capture_connected_services(
+    client: &mut UniversalHidClient<Box<dyn ReadWrite>>,
+    sink: Option<mpsc::Sender<Vec<u8>>>,
+) {
+    let Some(sink) = sink else {
+        return;
+    };
+    let value = match client.connected_services_raw().await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(?error, "failed to query raw HID surfaces");
+            return;
+        }
+    };
+    log_data_fields(&value, "root");
+    let bytes = match encode_connected_services(&value) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%error, "failed to encode raw HID surfaces");
+            return;
+        }
+    };
+    if let Err(error) = sink.try_send(bytes) {
+        tracing::warn!(%error, "failed to publish raw HID surfaces");
+    }
+}
+
+fn encode_connected_services(value: &plist::Value) -> Result<Vec<u8>, plist::Error> {
+    let mut bytes = Vec::new();
+    plist::to_writer_xml(&mut bytes, value)?;
+    Ok(bytes)
+}
+
+fn log_data_fields(value: &plist::Value, path: &str) {
+    match value {
+        plist::Value::Dictionary(dictionary) => {
+            for (key, value) in dictionary {
+                log_data_fields(value, &format!("{path}.{key}"));
+            }
+        }
+        plist::Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                log_data_fields(value, &format!("{path}[{index}]"));
+            }
+        }
+        plist::Value::Data(data) => {
+            let prefix = data
+                .iter()
+                .take(32)
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            tracing::info!(bytes = data.len(), %path, %prefix, "HID data field");
+        }
+        _ => {}
     }
 }
 
@@ -209,5 +271,17 @@ mod tests {
             build_multitouch_report(&[contact, contact], None),
             Err("contact identities must be unique")
         );
+    }
+
+    #[test]
+    fn connected_service_diagnostics_are_encoded_as_xml() {
+        let value = plist::Value::Dictionary(plist::Dictionary::from_iter([(
+            String::from("surface"),
+            plist::Value::Data(vec![1, 2, 3]),
+        )]));
+        let bytes = encode_connected_services(&value).expect("encode HID diagnostics");
+        let xml = String::from_utf8(bytes).expect("XML is UTF-8");
+        assert!(xml.contains("<key>surface</key>"));
+        assert!(xml.contains("AQID"));
     }
 }

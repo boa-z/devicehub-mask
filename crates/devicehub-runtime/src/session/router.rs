@@ -5,17 +5,20 @@ use std::time::Duration;
 
 use devicehub_core::{AppOperationSlot, DeviceDetails};
 use idevice::provider::IdeviceProvider;
+use idevice::rsd::RsdHandshake;
+use idevice::tcp::handle::AdapterHandle;
 use tokio::sync::mpsc;
 
 use super::commands::DeviceSessionCommand;
 use super::services::DeviceServicePorts;
+use crate::applications::{AppClientSet, AppManagement, AppServiceTransport};
 use crate::{
-    AppClientSet, AppIconCommand, AppManagement, AppServiceTransport, BluetoothCaptureCommand,
-    CompanionDeviceCommand, CrashReportExportCommand, DeveloperImageMountCommand,
-    DeviceBackupCommand, DeviceConditionCommand, DeviceFileCommand, DevicePowerAction,
-    DevicePowerController, HomeScreenCommand, LocationCommand, LogArchiveCommand,
-    NetworkCaptureCommand, ScreenCaptureCommand, SysdiagnoseCommand, read_activation_state,
-    read_device_battery, read_device_details, read_device_developer_mode_status, rename_device,
+    AppIconCommand, BluetoothCaptureCommand, CompanionDeviceCommand, CrashReportExportCommand,
+    DeveloperImageMountCommand, DeviceBackupCommand, DeviceConditionCommand, DeviceFileCommand,
+    DevicePowerAction, DevicePowerController, HomeScreenCommand, LocationCommand,
+    LogArchiveCommand, NetworkCaptureCommand, ScreenCaptureCommand, SysdiagnoseCommand,
+    read_activation_state, read_device_battery, read_device_details,
+    read_device_developer_mode_status, rename_device,
 };
 
 /// Routes management commands while returning HID and clipboard commands that
@@ -29,8 +32,95 @@ pub struct DeviceSessionRouter<HostPath> {
     services: DeviceServicePorts<HostPath>,
 }
 
+/// First phase of device management startup. Lockdown identity and the legacy
+/// Installation Proxy fallback are available before the CoreDevice tunnel is
+/// established, preserving connection order while keeping client types private.
+pub struct DeviceManagementBootstrap {
+    provider: Arc<dyn IdeviceProvider>,
+    app_operation: AppOperationSlot,
+    details: Option<DeviceDetails>,
+    app_clients: AppClientSet,
+}
+
+impl DeviceManagementBootstrap {
+    pub async fn prepare(
+        provider: Arc<dyn IdeviceProvider>,
+        requested_udid: String,
+        app_operation: AppOperationSlot,
+    ) -> Self {
+        let details = read_device_details(provider.as_ref(), requested_udid).await;
+        if let Some(details) = &details {
+            tracing::info!(
+                product_type = %details.product_type,
+                product_version = %details.product_version,
+                "connected device identity"
+            );
+        }
+        let app_clients = AppClientSet::connect_installation_proxy(provider.as_ref()).await;
+        Self {
+            provider,
+            app_operation,
+            details,
+            app_clients,
+        }
+    }
+
+    pub fn bind_transport(
+        self,
+        adapter: AdapterHandle,
+        handshake: RsdHandshake,
+    ) -> DeviceManagementSession {
+        DeviceManagementSession {
+            provider: self.provider,
+            app_operation: self.app_operation,
+            details: self.details,
+            app_clients: self.app_clients,
+            app_transport: AppServiceTransport::new(adapter, handshake),
+        }
+    }
+}
+
+/// Opaque App management capability bound to one CoreDevice session.
+pub struct DeviceManagementSession {
+    provider: Arc<dyn IdeviceProvider>,
+    app_operation: AppOperationSlot,
+    details: Option<DeviceDetails>,
+    app_clients: AppClientSet,
+    app_transport: AppServiceTransport,
+}
+
+impl DeviceManagementSession {
+    pub fn details(&self) -> Option<&DeviceDetails> {
+        self.details.as_ref()
+    }
+
+    pub async fn connect_app_service(
+        &mut self,
+        adapter: &mut AdapterHandle,
+        handshake: &mut RsdHandshake,
+    ) {
+        self.app_clients
+            .connect_app_service(adapter, handshake)
+            .await;
+    }
+
+    pub fn into_router<HostPath>(
+        self,
+        services: DeviceServicePorts<HostPath>,
+    ) -> DeviceSessionRouter<HostPath> {
+        DeviceSessionRouter::new(
+            self.provider,
+            self.app_operation,
+            self.details,
+            self.app_clients,
+            self.app_transport,
+            services,
+        )
+    }
+}
+
 impl<HostPath> DeviceSessionRouter<HostPath> {
-    pub fn new(
+    fn new(
         provider: Arc<dyn IdeviceProvider>,
         app_operation: AppOperationSlot,
         details: Option<DeviceDetails>,

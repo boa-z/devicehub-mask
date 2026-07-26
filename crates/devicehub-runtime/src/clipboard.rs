@@ -1,6 +1,13 @@
 use devicehub_core::ClipboardEvent;
 use tokio::sync::broadcast;
 
+mod session;
+
+pub use session::{
+    ClipboardBridge, ClipboardImage, DeviceClipboardSession, HostClipboard, HostClipboardFactory,
+    connect_device_clipboard,
+};
+
 /// Bounded clipboard event fan-out. Slow hosts lose stale metadata rather than
 /// delaying the device pasteboard session; clipboard payloads are never retained.
 #[derive(Clone)]

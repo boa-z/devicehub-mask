@@ -57,7 +57,7 @@ pub enum SysdiagnoseCommand<Destination> {
     },
 }
 
-pub async fn serve<FileIo>(
+pub(crate) async fn serve<FileIo>(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<SysdiagnoseCommand<FileIo::Path>>,

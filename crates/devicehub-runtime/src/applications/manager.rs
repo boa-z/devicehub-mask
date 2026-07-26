@@ -46,24 +46,24 @@ impl Drop for AppControlLease {
     }
 }
 
-pub struct AppServiceTransport {
+pub(crate) struct AppServiceTransport {
     adapter: AdapterHandle,
     handshake: RsdHandshake,
 }
 
 impl AppServiceTransport {
-    pub fn new(adapter: AdapterHandle, handshake: RsdHandshake) -> Self {
+    pub(crate) fn new(adapter: AdapterHandle, handshake: RsdHandshake) -> Self {
         Self { adapter, handshake }
     }
 }
 
-pub struct AppClientSet {
+pub(crate) struct AppClientSet {
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
 }
 
 impl AppClientSet {
-    pub async fn connect_installation_proxy(provider: &dyn IdeviceProvider) -> Self {
+    pub(crate) async fn connect_installation_proxy(provider: &dyn IdeviceProvider) -> Self {
         let installation_proxy = match InstallationProxyClient::connect(provider).await {
             Ok(client) => Some(client),
             Err(error) => {
@@ -79,7 +79,7 @@ impl AppClientSet {
         }
     }
 
-    pub async fn connect_app_service(
+    pub(crate) async fn connect_app_service(
         &mut self,
         adapter: &mut AdapterHandle,
         handshake: &mut RsdHandshake,
@@ -109,7 +109,7 @@ fn cancel_active_operation(operation: &AppOperationSlot, task: &mut Option<Activ
 }
 
 /// Owns every long-lived app client and all app-operation task state for one device session.
-pub struct AppManagement {
+pub(crate) struct AppManagement {
     provider: Arc<dyn IdeviceProvider>,
     control: AppControlSlot,
     operation: AppOperationSlot,
@@ -126,7 +126,7 @@ impl Drop for AppManagement {
 }
 
 impl AppManagement {
-    pub fn new(
+    pub(crate) fn new(
         provider: Arc<dyn IdeviceProvider>,
         operation: AppOperationSlot,
         clients: AppClientSet,
@@ -147,7 +147,7 @@ impl AppManagement {
         }
     }
 
-    pub async fn handle(&mut self, command: AppCommand) {
+    pub(crate) async fn handle(&mut self, command: AppCommand) {
         match command {
             AppCommand::List {
                 include_system,

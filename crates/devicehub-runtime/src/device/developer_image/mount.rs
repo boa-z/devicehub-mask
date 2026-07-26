@@ -115,7 +115,7 @@ pub enum DeveloperImageMountCommand<Source> {
     },
 }
 
-pub async fn serve<Assets>(
+pub(crate) async fn serve<Assets>(
     provider: Arc<dyn IdeviceProvider>,
     mut commands: mpsc::Receiver<DeveloperImageMountCommand<Assets::Source>>,
     status: DeveloperImageMountSlot,
