@@ -83,6 +83,8 @@ npm run verify:full
 
 多点触控生产路径已在 iPhone 13 Pro Max 上使用双触点 report 验证。跨平台 CI 可以验证 编译，但不能替代真机测试。
 
+修改 runtime 或传输层后，按[真机回归验证](device-regression.md)运行显式 UDID 的只读检查，并完成 USB/Wi-Fi 人工清单。
+
 ## 本地化
 
 翻译资源位于 `src/locales/en-US.ts` 和 `src/locales/zh-CN.ts`。新增界面文案时必须同时 添加到两个文件，并在组件中使用 `useTranslation()`。`src/i18n.test.ts` 会检查两个 资源树的 key 是否一致。

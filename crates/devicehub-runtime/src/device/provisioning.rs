@@ -660,21 +660,14 @@ mod tests {
     use idevice::IdeviceService;
     use idevice::core_device_proxy::CoreDeviceProxy;
     use idevice::rsd::RsdHandshake;
-    use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
+    use idevice::usbmuxd::UsbmuxdAddr;
     use std::time::Duration;
 
     #[tokio::test]
     #[ignore = "requires a connected physical device"]
     async fn lists_profiles_over_rsd_from_hardware() {
         let address = UsbmuxdAddr::default();
-        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
-        let device = usbmuxd
-            .get_devices()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|device| matches!(device.connection_type, idevice::usbmuxd::Connection::Usb))
-            .expect("no USB device connected");
+        let device = crate::test_support::usb_test_device().await;
         let provider = device.to_provider(address, "devicehub-mask-provisioning-test");
         let proxy = CoreDeviceProxy::connect(&provider).await.unwrap();
         let rsd_port = proxy.tunnel_info().server_rsd_port;

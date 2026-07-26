@@ -83,6 +83,8 @@ The full gate additionally builds the standalone debug application without launc
 
 The multitouch production path has been tested with a two-contact report on an iPhone 13 Pro Max. Cross-platform CI verifies compilation but cannot replace physical device testing.
 
+After runtime or transport changes, run the explicit-UDID read-only checks and complete the manual USB/Wi-Fi checklist in [Physical Device Regression](device-regression.md).
+
 ## Localization
 
 Translation resources are in `src/locales/en-US.ts` and `src/locales/zh-CN.ts`. Add each UI key to both files and use `useTranslation()` in components. `src/i18n.test.ts` enforces matching resource trees.

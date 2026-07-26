@@ -321,7 +321,7 @@ mod tests {
     use super::*;
     use idevice::IdeviceService;
     use idevice::core_device_proxy::CoreDeviceProxy;
-    use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
+    use idevice::usbmuxd::UsbmuxdAddr;
 
     fn png_header(width: u32, height: u32) -> Vec<u8> {
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
@@ -366,14 +366,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a connected physical device"]
     async fn captures_native_screenshot_from_hardware() {
-        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
-        let device = usbmuxd
-            .get_devices()
-            .await
-            .unwrap()
-            .into_iter()
-            .next()
-            .expect("no connected device");
+        let device = crate::test_support::usb_test_device().await;
         let provider =
             Arc::new(device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-screenshot-test"));
         let proxy = CoreDeviceProxy::connect(provider.as_ref()).await.unwrap();

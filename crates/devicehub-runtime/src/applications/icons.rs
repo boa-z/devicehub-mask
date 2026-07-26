@@ -319,7 +319,7 @@ mod tests {
     use idevice::IdeviceService;
     use idevice::core_device_proxy::CoreDeviceProxy;
     use idevice::installation_proxy::InstallationProxyClient;
-    use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
+    use idevice::usbmuxd::UsbmuxdAddr;
 
     fn png_header(width: u32, height: u32) -> Vec<u8> {
         let mut icon = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
@@ -400,14 +400,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a connected physical device with an installed user app"]
     async fn reads_app_icon_sources_from_hardware() {
-        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
-        let device = usbmuxd
-            .get_devices()
-            .await
-            .unwrap()
-            .into_iter()
-            .next()
-            .expect("no connected device");
+        let device = crate::test_support::usb_test_device().await;
         let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-icon-test");
         let bundle_id = InstallationProxyClient::connect(&provider)
             .await
@@ -424,29 +417,25 @@ mod tests {
         let mut adapter = adapter.to_async_handle();
         let stream = adapter.connect(rsd_port).await.unwrap();
         let mut handshake = RsdHandshake::new(stream).await.unwrap();
-        let mut app_service = AppServiceClient::connect_rsd(&mut adapter, &mut handshake)
-            .await
-            .unwrap();
-        let core_device_icon = app_service
-            .fetch_app_icon(
-                bundle_id.clone(),
-                APP_SERVICE_ICON_SIZE,
-                APP_SERVICE_ICON_SIZE,
-                1.0,
-                false,
-            )
-            .await
-            .unwrap();
-        let core_device_png = app_service_icon_to_png(core_device_icon).unwrap();
+        let mut app_service = CoreDeviceIconSource::default();
+        let mut springboard = None;
+        let icon = fetch_icon(
+            &mut app_service,
+            &mut springboard,
+            &mut adapter,
+            &mut handshake,
+            &bundle_id,
+        )
+        .await
+        .unwrap();
         println!(
-            "read {bundle_id} CoreDevice icon: {} bytes",
-            core_device_png.len()
+            "read {bundle_id} icon via {}: {} bytes",
+            if springboard.is_some() {
+                "SpringBoard fallback"
+            } else {
+                "CoreDevice"
+            },
+            icon.len()
         );
-        let mut client = SpringBoardServicesClient::connect_rsd(&mut adapter, &mut handshake)
-            .await
-            .unwrap();
-        let icon =
-            validate_png_icon(client.get_icon_pngdata(bundle_id.clone()).await.unwrap()).unwrap();
-        println!("read {bundle_id} icon: {} bytes", icon.len());
     }
 }

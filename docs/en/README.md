@@ -14,6 +14,7 @@ Use this documentation by task rather than reading it in order.
 - [Architecture](architecture.md): process boundaries, private transport, CoreDevice sessions, video pipeline, HID validation, and data ownership
 - [Core and Runtime Extraction](core-runtime.md): host-independent libraries, ownership, dependency rules, migration sequence, and acceptance criteria
 - [Development](development.md): repository layout, environment variables, validation, local production builds, and platform packaging
+- [Physical Device Regression](device-regression.md): read-only USB checks and manual USB/Wi-Fi media, input, App, AFC, and reconnect validation
 - [Distribution](distribution.md): GitHub Actions, nightly artifacts, updater signing, Apple signing, and release versioning
 - [Troubleshooting](troubleshooting.md): blank windows, device audio, Windows device preparation, CoreDevice errors, touch coordinates, and updater failures
 

@@ -340,16 +340,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a connected physical device"]
     async fn reads_developer_mode_status_from_hardware() {
-        use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection};
+        use idevice::usbmuxd::UsbmuxdAddr;
 
-        let mut usbmuxd = UsbmuxdConnection::default().await.expect("connect usbmuxd");
-        let device = usbmuxd
-            .get_devices()
-            .await
-            .expect("list devices")
-            .into_iter()
-            .find(|device| matches!(device.connection_type, Connection::Usb))
-            .expect("connected USB device");
+        let device = crate::test_support::usb_test_device().await;
         let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-details-test");
         let enabled = read_device_developer_mode_status(&provider)
             .await

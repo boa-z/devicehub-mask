@@ -19,6 +19,8 @@ mod runtime;
 mod session;
 mod storage;
 mod supervisor;
+#[cfg(test)]
+mod test_support;
 mod transport;
 
 pub use applications::{

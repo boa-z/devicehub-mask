@@ -443,14 +443,7 @@ fn network_rates_use_connection_deltas_and_expire_stale_entries() {
 #[tokio::test]
 #[ignore = "requires a connected physical device"]
 async fn inspects_sysmontap_process_schema_from_hardware() {
-    let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
-    let device = usbmuxd
-        .get_devices()
-        .await
-        .unwrap()
-        .into_iter()
-        .next()
-        .expect("no connected device");
+    let device = crate::test_support::usb_test_device().await;
     let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-performance-test");
     let proxy = CoreDeviceProxy::connect(&provider).await.unwrap();
     let rsd_port = proxy.tunnel_info().server_rsd_port;

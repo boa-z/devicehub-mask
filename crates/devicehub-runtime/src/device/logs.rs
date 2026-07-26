@@ -224,19 +224,12 @@ async fn wait_until_enabled(
 mod tests {
     use super::*;
     use idevice::IdeviceService;
-    use idevice::usbmuxd::{UsbmuxdAddr, UsbmuxdConnection};
+    use idevice::usbmuxd::UsbmuxdAddr;
 
     #[tokio::test]
     #[ignore = "requires a connected physical device"]
     async fn reads_syslog_from_hardware() {
-        let mut usbmuxd = UsbmuxdConnection::default().await.unwrap();
-        let device = usbmuxd
-            .get_devices()
-            .await
-            .unwrap()
-            .into_iter()
-            .next()
-            .expect("no connected device");
+        let device = crate::test_support::usb_test_device().await;
         let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-device-log-test");
         let mut client = SyslogRelayClient::connect(&provider).await.unwrap();
         let line = tokio::time::timeout(Duration::from_secs(10), client.next())
