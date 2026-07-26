@@ -12,14 +12,14 @@ use devicehub_runtime::RuntimeSessionHostAdapters;
 pub(super) fn adapters() -> RuntimeSessionHostAdapters<
     crate::host_files::TokioHostFileIo,
     crate::capture_files::TokioCaptureFileIo,
-    crate::device_backup::TokioDeviceBackupExecutor,
+    crate::device_backup::TokioDeviceBackupDestination,
     crate::developer_image::TokioDeveloperImageAssets,
     crate::provisioning::TokioProvisioningProfiles,
 > {
     RuntimeSessionHostAdapters {
         files: crate::host_files::TokioHostFileIo,
         capture_files: crate::capture_files::TokioCaptureFileIo,
-        backup: crate::device_backup::TokioDeviceBackupExecutor,
+        backup: crate::device_backup::TokioDeviceBackupDestination,
         developer_images: crate::developer_image::TokioDeveloperImageAssets,
         provisioning_profiles: crate::provisioning::TokioProvisioningProfiles,
     }

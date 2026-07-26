@@ -2,6 +2,20 @@
 
 use serde::Serialize;
 
+mod wda;
+
+pub use wda::{
+    WDA_DEFAULT_SOURCE_CHARS, WDA_MAX_ATTRIBUTE_BYTES, WDA_MAX_ATTRIBUTE_CHARACTERS,
+    WDA_MAX_BACKGROUND_DURATION_MS, WDA_MAX_ELEMENTS, WDA_MAX_HOLD_DURATION_MS,
+    WDA_MAX_SELECTOR_BYTES, WDA_MAX_SOURCE_CHARS, WDA_MAX_TEXT_BYTES, WDA_MAX_TEXT_CHARACTERS,
+    WDA_MAX_WAIT_TIMEOUT_MS, WDA_MIN_BACKGROUND_DURATION_MS, WDA_MIN_HOLD_DURATION_MS,
+    WdaBoundedText, WdaDeviceState, WdaElement, WdaElementDetails, WdaElementWaitResult,
+    WdaElementWaitState, WdaOrientation, WdaRect, WdaRunnerPhase, WdaRunnerStatus, WdaSize,
+    WdaStatus, WdaUiTree, WdaUnlockResult, parse_wda_wait_state, validate_wda_background_duration,
+    validate_wda_hold_duration, validate_wda_runner_bundle_id, validate_wda_scroll_direction,
+    validate_wda_selector, validate_wda_text, validate_wda_wait_timeout,
+};
+
 /// Returns true only when the executable is a direct child of the selected
 /// application bundle.
 pub fn process_executable_belongs_to_app(app_path: &str, executable_path: &str) -> bool {

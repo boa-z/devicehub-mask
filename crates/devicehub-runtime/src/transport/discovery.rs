@@ -23,7 +23,7 @@ use devicehub_core::{
 };
 
 use super::{
-    CoreTunnelConfig, SessionEndpoint, UsbmuxdEndpoint, WifiDiscovery, WifiPairingStore,
+    CoreTunnelConfig, PairingStore, SessionEndpoint, UsbmuxdEndpoint, WifiDiscovery,
     connection_kind, connection_kind_priority, connection_priority, uses_usbmuxd_core_proxy,
     wifi_provider,
 };
@@ -53,7 +53,7 @@ pub(crate) struct DeviceDiscovery<Sidecar, Store> {
 impl<Sidecar, Store> DeviceDiscovery<Sidecar, Store>
 where
     Sidecar: MuxSidecar,
-    Store: WifiPairingStore,
+    Store: PairingStore,
 {
     pub(crate) fn new(
         sidecar: Sidecar,
@@ -88,7 +88,7 @@ where
         let discovery_result = match self.wifi.as_mut() {
             Some(discovery) => discovery.remove_pairing(udid),
             None => match self.wifi_store.as_ref() {
-                Some(store) => store.remove(udid),
+                Some(store) => store.remove_lockdown_pairing(udid),
                 None => Ok(()),
             },
         };
@@ -310,7 +310,7 @@ where
 impl<Sidecar, Store> PairingCredentialStore for DeviceDiscovery<Sidecar, Store>
 where
     Sidecar: MuxSidecar,
-    Store: WifiPairingStore,
+    Store: PairingStore,
 {
     fn remove_cached_pairing(&mut self, udid: &str) -> Result<(), String> {
         self.remove_credentials(udid)
@@ -319,7 +319,7 @@ where
 
 fn start_wifi_discovery<Store>(store: Store) -> Option<WifiDiscovery<Store>>
 where
-    Store: WifiPairingStore,
+    Store: PairingStore,
 {
     match WifiDiscovery::start(store) {
         Ok(discovery) => Some(discovery),

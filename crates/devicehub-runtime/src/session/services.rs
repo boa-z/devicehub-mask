@@ -377,7 +377,7 @@ impl RuntimeSessionServices {
     where
         Files: HostFileIo,
         CaptureFiles: CaptureFileIo<Destination = Files::Path>,
-        Backup: crate::DeviceBackupExecutor<Destination = Files::Path>,
+        Backup: crate::DeviceBackupDestination<Destination = Files::Path>,
         DeveloperImages: crate::DeveloperImageAssetLoader<Source = Files::Path>,
         Profiles: crate::ProvisioningProfileLoader<Source = Files::Path>,
     {
@@ -585,7 +585,7 @@ impl RuntimeSessionServices {
         executor: Executor,
     ) -> mpsc::Sender<DeviceBackupCommand<Executor::Destination>>
     where
-        Executor: crate::DeviceBackupExecutor,
+        Executor: crate::DeviceBackupDestination,
     {
         let (sender, commands) = mpsc::channel(4);
         self.supervisor.spawn(serve_device_backup(

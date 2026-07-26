@@ -9,8 +9,11 @@ use idevice::os_trace_relay::{LogLevel, OsTraceRelayClient, OsTraceRelayReceiver
 use idevice::rsd::RsdHandshake;
 use idevice::syslog_relay::SyslogRelayClient;
 use idevice::tcp::handle::AdapterHandle;
-use serde::Serialize;
 use tokio::sync::watch;
+
+use devicehub_core::{
+    DeviceLogBatch, DeviceLogEntry, DeviceLogLevel, DeviceLogSource, MAX_DEVICE_LOG_BATCH_ENTRIES,
+};
 
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
@@ -18,37 +21,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_ENTRIES: usize = 2_000;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 const MAX_METADATA_BYTES: usize = 512;
-pub const MAX_BATCH_ENTRIES: usize = 500;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceLogSource {
-    Unified,
-    Syslog,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceLogLevel {
-    Notice,
-    Info,
-    Debug,
-    Error,
-    Fault,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DeviceLogEntry {
-    pub sequence: u64,
-    pub received_at_ms: u64,
-    pub message: String,
-    pub level: Option<DeviceLogLevel>,
-    pub process: Option<String>,
-    pub pid: Option<u32>,
-    pub subsystem: Option<String>,
-    pub category: Option<String>,
-    pub filename: Option<String>,
-}
 
 #[derive(Default)]
 struct DeviceLogMetadata {
@@ -58,17 +30,6 @@ struct DeviceLogMetadata {
     subsystem: Option<String>,
     category: Option<String>,
     filename: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DeviceLogBatch {
-    pub entries: Vec<DeviceLogEntry>,
-    pub oldest_sequence: Option<u64>,
-    pub latest_sequence: Option<u64>,
-    pub cursor_lagged: bool,
-    pub has_more: bool,
-    pub streaming: bool,
-    pub source: Option<DeviceLogSource>,
 }
 
 #[derive(Default)]
@@ -112,7 +73,7 @@ impl DeviceLogSlot {
 
     pub fn snapshot(&self, after: Option<u64>, limit: usize, streaming: bool) -> DeviceLogBatch {
         let buffer = self.0.lock().unwrap();
-        let limit = limit.clamp(1, MAX_BATCH_ENTRIES);
+        let limit = limit.clamp(1, MAX_DEVICE_LOG_BATCH_ENTRIES);
         let oldest_sequence = buffer.entries.front().map(|entry| entry.sequence);
         let latest_sequence = buffer.entries.back().map(|entry| entry.sequence);
         let start = match after {
@@ -423,8 +384,8 @@ mod tests {
         for index in 0..=MAX_ENTRIES {
             slot.publish(format!("line {index}"));
         }
-        let batch = slot.snapshot(Some(0), MAX_BATCH_ENTRIES, true);
-        assert_eq!(batch.entries.len(), MAX_BATCH_ENTRIES);
+        let batch = slot.snapshot(Some(0), MAX_DEVICE_LOG_BATCH_ENTRIES, true);
+        assert_eq!(batch.entries.len(), MAX_DEVICE_LOG_BATCH_ENTRIES);
         assert_eq!(batch.oldest_sequence, Some(2));
         assert_eq!(batch.latest_sequence, Some((MAX_ENTRIES + 1) as u64));
         assert!(batch.cursor_lagged);

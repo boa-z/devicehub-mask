@@ -40,15 +40,95 @@ type WifiPairingClient = RemotePairingClient<RpPairingSocket<tokio::net::TcpStre
 pub(crate) use discovery::DeviceDiscovery;
 pub use discovery::{MuxSidecar, MuxSidecarFuture};
 pub(crate) use wifi_discovery::WifiDiscovery;
-pub use wifi_discovery::{StoredWifiPairingRecord, WifiPairingStore};
 
-/// Host persistence for the RemotePairing identity used by CoreDevice Wi-Fi
-/// tunnels. The runtime owns serialization and authorization policy; the host
-/// only stores opaque credential bytes in its platform-appropriate location.
-pub trait RemotePairingStore: Send + Sync + 'static {
+/// Serialized Lockdown pairing record loaded from host-confined storage.
+pub struct StoredLockdownPairingRecord {
+    pub udid: String,
+    pub bytes: Vec<u8>,
+}
+
+/// One host persistence boundary for every credential associated with a device.
+///
+/// Lockdown records authenticate Bonjour discovery, while RemotePairing records
+/// authenticate CoreDevice Wi-Fi tunnels. Keeping both in one port ensures that
+/// trust removal and runtime construction cannot accidentally use different
+/// credential roots. The runtime owns all serialization and authorization
+/// policy; the host stores only opaque bytes.
+pub trait PairingStore: Clone + Send + Sync + 'static {
+    fn load_lockdown_pairings(&self) -> Result<Vec<StoredLockdownPairingRecord>, String>;
+    fn save_lockdown_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String>;
+    fn remove_lockdown_pairing(&self, udid: &str) -> Result<(), String>;
     fn load_remote_pairing(&self, udid: &str) -> Result<Option<Vec<u8>>, String>;
     fn save_remote_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String>;
     fn remove_remote_pairing(&self, udid: &str) -> Result<(), String>;
+}
+
+impl<Store> PairingStore for Arc<Store>
+where
+    Store: PairingStore,
+{
+    fn load_lockdown_pairings(&self) -> Result<Vec<StoredLockdownPairingRecord>, String> {
+        self.as_ref().load_lockdown_pairings()
+    }
+
+    fn save_lockdown_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
+        self.as_ref().save_lockdown_pairing(udid, bytes)
+    }
+
+    fn remove_lockdown_pairing(&self, udid: &str) -> Result<(), String> {
+        self.as_ref().remove_lockdown_pairing(udid)
+    }
+
+    fn load_remote_pairing(&self, udid: &str) -> Result<Option<Vec<u8>>, String> {
+        self.as_ref().load_remote_pairing(udid)
+    }
+
+    fn save_remote_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
+        self.as_ref().save_remote_pairing(udid, bytes)
+    }
+
+    fn remove_remote_pairing(&self, udid: &str) -> Result<(), String> {
+        self.as_ref().remove_remote_pairing(udid)
+    }
+}
+
+trait RemotePairingCredentials: Send + Sync + 'static {
+    fn load(&self, udid: &str) -> Result<Option<Vec<u8>>, String>;
+    fn save(&self, udid: &str, bytes: &[u8]) -> Result<(), String>;
+    fn remove(&self, udid: &str) -> Result<(), String>;
+}
+
+impl<Store> RemotePairingCredentials for Store
+where
+    Store: PairingStore,
+{
+    fn load(&self, udid: &str) -> Result<Option<Vec<u8>>, String> {
+        self.load_remote_pairing(udid)
+    }
+
+    fn save(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
+        self.save_remote_pairing(udid, bytes)
+    }
+
+    fn remove(&self, udid: &str) -> Result<(), String> {
+        self.remove_remote_pairing(udid)
+    }
+}
+
+struct UnavailablePairingCredentials;
+
+impl RemotePairingCredentials for UnavailablePairingCredentials {
+    fn load(&self, _udid: &str) -> Result<Option<Vec<u8>>, String> {
+        Err("pairing credential storage is unavailable".into())
+    }
+
+    fn save(&self, _udid: &str, _bytes: &[u8]) -> Result<(), String> {
+        Err("pairing credential storage is unavailable".into())
+    }
+
+    fn remove(&self, _udid: &str) -> Result<(), String> {
+        Err("pairing credential storage is unavailable".into())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -62,8 +142,8 @@ pub struct SystemUsbmuxdConfig {
 /// how credentials are persisted and whether a non-default system usbmuxd
 /// endpoint was configured.
 #[derive(Clone)]
-pub struct CoreTunnelConfig {
-    remote_pairings: Arc<dyn RemotePairingStore>,
+pub(crate) struct CoreTunnelConfig {
+    remote_pairings: Arc<dyn RemotePairingCredentials>,
     system_usbmuxd: SystemUsbmuxdConfig,
 }
 
@@ -78,12 +158,19 @@ impl std::fmt::Debug for CoreTunnelConfig {
 }
 
 impl CoreTunnelConfig {
-    pub fn from_host<Store>(remote_pairings: Store, system_usbmuxd: SystemUsbmuxdConfig) -> Self
+    pub(crate) fn new<Store>(
+        pairings: Option<Arc<Store>>,
+        system_usbmuxd: SystemUsbmuxdConfig,
+    ) -> Self
     where
-        Store: RemotePairingStore,
+        Store: PairingStore,
     {
+        let remote_pairings: Arc<dyn RemotePairingCredentials> = match pairings {
+            Some(pairings) => pairings,
+            None => Arc::new(UnavailablePairingCredentials),
+        };
         Self {
-            remote_pairings: Arc::new(remote_pairings),
+            remote_pairings,
             system_usbmuxd,
         }
     }
@@ -109,7 +196,7 @@ impl CoreTunnelConfig {
     }
 
     pub(crate) fn remove_remote_pairing_credentials(&self, udid: &str) -> Result<(), String> {
-        self.remote_pairings.remove_remote_pairing(udid)
+        self.remote_pairings.remove(udid)
     }
 }
 
@@ -300,10 +387,10 @@ pub(crate) fn wifi_provider(endpoint: &WifiEndpoint) -> TcpProvider {
 /// Build the RSD tunnel matching the already-selected endpoint. The returned
 /// adapter and handshake are cloneable capabilities consumed by device services;
 /// their lifetime is still supervised by the parent session.
-pub(crate) async fn connect_core_tunnel(
+async fn connect_core_tunnel(
     endpoint: &SessionEndpoint,
     provider: &dyn IdeviceProvider,
-    remote_pairings: &dyn RemotePairingStore,
+    remote_pairings: &dyn RemotePairingCredentials,
     status: &StatusSlot,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<(AdapterHandle, RsdHandshake), String> {
@@ -338,7 +425,7 @@ async fn connect_usb_core_tunnel(
 
 async fn connect_wifi_core_tunnel(
     endpoint: &WifiEndpoint,
-    remote_pairings: &dyn RemotePairingStore,
+    remote_pairings: &dyn RemotePairingCredentials,
     status: &StatusSlot,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<(AdapterHandle, RsdHandshake), String> {
@@ -346,7 +433,7 @@ async fn connect_wifi_core_tunnel(
     // subsequent network sessions. Missing credentials are the only condition
     // that starts interactive authorization; transport errors must not erase or
     // silently replace an existing identity.
-    let mut pairing_file = match remote_pairings.load_remote_pairing(&endpoint.udid)? {
+    let mut pairing_file = match remote_pairings.load(&endpoint.udid)? {
         Some(bytes) => match RpPairingFile::from_bytes(&bytes) {
             Ok(pairing_file) => pairing_file,
             Err(error) => {
@@ -454,7 +541,7 @@ async fn connect_wifi_core_tunnel(
 
 async fn authorize_remote_pairing(
     endpoint: &WifiEndpoint,
-    remote_pairings: &dyn RemotePairingStore,
+    remote_pairings: &dyn RemotePairingCredentials,
     status: &StatusSlot,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<RpPairingFile, String> {
@@ -499,7 +586,7 @@ async fn verify_remote_pairing_once(
 
 async fn pair_remote_via_usb(
     udid: &str,
-    remote_pairings: &dyn RemotePairingStore,
+    remote_pairings: &dyn RemotePairingCredentials,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<RpPairingFile, String> {
     // This is authorization for future Wi-Fi control, not normal USB session
@@ -554,7 +641,7 @@ async fn pair_remote_via_usb(
         .connect(&mut pairing_file, async || "000000".to_string())
         .await
         .map_err(|error| format!("USB remote pairing failed: {error:?}"))?;
-    remote_pairings.save_remote_pairing(udid, &pairing_file.to_bytes())?;
+    remote_pairings.save(udid, &pairing_file.to_bytes())?;
     tracing::info!(
         device_id = %device_id_fingerprint(udid),
         "created remote pairing credentials over USB"
@@ -580,14 +667,73 @@ fn scoped_socket_addr(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use idevice::usbmuxd::Connection;
 
     use super::{
+        CoreTunnelConfig, PairingStore, StoredLockdownPairingRecord, SystemUsbmuxdConfig,
         WIFI_REAUTHORIZE_REQUIRED, WifiPairingVerificationError, parse_system_usbmuxd_address,
         resolve_device_selection, uses_usbmuxd_core_proxy,
     };
     use devicehub_core::{ConnKind, DeviceInfo, DevicePairingState, device_selector};
     use idevice::IdeviceError;
+
+    #[derive(Clone, Default)]
+    struct RecordingPairingStore(Arc<Mutex<Vec<String>>>);
+
+    impl PairingStore for RecordingPairingStore {
+        fn load_lockdown_pairings(&self) -> Result<Vec<StoredLockdownPairingRecord>, String> {
+            Ok(Vec::new())
+        }
+
+        fn save_lockdown_pairing(&self, _udid: &str, _bytes: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn remove_lockdown_pairing(&self, _udid: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn load_remote_pairing(&self, _udid: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+
+        fn save_remote_pairing(&self, _udid: &str, _bytes: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn remove_remote_pairing(&self, udid: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(udid.to_owned());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn tunnel_cleanup_uses_the_runtime_pairing_store() {
+        let store = Arc::new(RecordingPairingStore::default());
+        let tunnel =
+            CoreTunnelConfig::new(Some(store.clone()), SystemUsbmuxdConfig::from_host(None));
+
+        tunnel.remove_remote_pairing_credentials("device").unwrap();
+
+        assert_eq!(&*store.0.lock().unwrap(), &["device"]);
+    }
+
+    #[test]
+    fn unavailable_pairing_storage_preserves_an_actionable_error() {
+        let tunnel = CoreTunnelConfig::new(
+            None::<Arc<RecordingPairingStore>>,
+            SystemUsbmuxdConfig::from_host(None),
+        );
+
+        assert_eq!(
+            tunnel
+                .remove_remote_pairing_credentials("device")
+                .unwrap_err(),
+            "pairing credential storage is unavailable"
+        );
+    }
 
     #[test]
     fn host_tcp_usbmuxd_address_is_parsed_without_environment_reads() {

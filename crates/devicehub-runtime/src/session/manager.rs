@@ -5,6 +5,7 @@
 //! or implement a divergent USB/Wi-Fi retry loop.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use devicehub_core::{
@@ -18,13 +19,14 @@ use super::{
     SessionRetry, SessionRetryPolicy, forget_device, pair_device, run_connected_session,
 };
 use crate::clipboard::HostClipboardFactory;
-use crate::transport::DeviceDiscovery;
+use crate::runtime::{CoreRuntimeFuture, CoreRuntimeState};
+use crate::transport::{CoreTunnelConfig, DeviceDiscovery};
 use crate::{
-    CaptureFileIo, CoreRuntimeState, CoreTunnelConfig, DeveloperImageAssetLoader,
-    DeviceAudioPipelineFactory, DeviceBackupExecutor, DeviceSessionCommand,
-    DiagnosticDumpSinkFactory, HostClipboardProvider, HostFileIo, MuxSidecar,
-    ProvisioningProfileLoader, RuntimePreferences, RuntimeSessionHostAdapters, SessionCommandSlot,
-    SessionControlCommand, SessionDiagnostics, SessionEndpoint, WifiPairingStore,
+    CaptureFileIo, CoreRuntime, DeveloperImageAssetLoader, DeviceAudioPipelineFactory,
+    DeviceBackupDestination, DeviceSessionCommand, DiagnosticDumpSinkFactory,
+    HostClipboardProvider, HostFileIo, MuxSidecar, PairingStore, ProvisioningProfileLoader,
+    RuntimeClient, RuntimePreferences, RuntimeSessionHostAdapters, SessionCommandSlot,
+    SessionControlCommand, SessionDiagnostics, SessionEndpoint, SystemUsbmuxdConfig,
     resolve_device_selection,
 };
 
@@ -32,12 +34,11 @@ const IDLE_RESCAN: Duration = Duration::from_secs(2);
 const ACTIVE_RESCAN: Duration = Duration::from_secs(8);
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
 
-/// Runtime-owned outer session manager assembled from host capability ports.
+/// Platform capabilities injected once when starting the device runtime.
 ///
-/// Device discovery, trust transitions, reconnect policy, and connected-session
-/// ownership remain private implementation details. Hosts supply capabilities
-/// once and can only run this single coherent lifecycle.
-pub struct SessionManager<
+/// The host resolves operating-system resources, while the runtime retains
+/// discovery, trust, reconnect, and connected-session lifecycle policy.
+pub struct RuntimeHostAdapters<
     Sidecar,
     Store,
     AudioFactory,
@@ -49,12 +50,50 @@ pub struct SessionManager<
     DeveloperImages,
     Profiles,
 > {
-    discovery: DeviceDiscovery<Sidecar, Store>,
+    pub sidecar: Sidecar,
+    pub pairing_store: Option<Store>,
+    pub system_usbmuxd: SystemUsbmuxdConfig,
+    pub audio: AudioFactory,
+    pub diagnostic_sinks: DiagnosticSinks,
+    pub clipboard: Clipboard,
+    pub services:
+        RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImages, Profiles>,
+}
+
+/// Runtime-owned outer session manager assembled from host capability ports.
+///
+/// Device discovery, trust transitions, reconnect policy, and connected-session
+/// ownership remain private implementation details.
+struct SessionManager<
+    Sidecar,
+    Store,
+    AudioFactory,
+    DiagnosticSinks,
+    Clipboard,
+    Files,
+    CaptureFiles,
+    Backup,
+    DeveloperImages,
+    Profiles,
+> {
+    discovery: DeviceDiscovery<Sidecar, Arc<Store>>,
     tunnel: CoreTunnelConfig,
     audio: AudioFactory,
     diagnostic_sinks: DiagnosticSinks,
     clipboard: Clipboard,
     services: RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImages, Profiles>,
+}
+
+/// Running runtime owner and its cloneable host-facing client.
+pub struct StartedRuntime<HostPath> {
+    runtime: CoreRuntime,
+    client: RuntimeClient<HostPath>,
+}
+
+impl<HostPath> StartedRuntime<HostPath> {
+    pub fn into_parts(self) -> (CoreRuntime, RuntimeClient<HostPath>) {
+        (self.runtime, self.client)
+    }
 }
 
 impl<
@@ -83,26 +122,23 @@ impl<
     >
 where
     Sidecar: MuxSidecar,
-    Store: WifiPairingStore,
+    Store: PairingStore,
     AudioFactory: DeviceAudioPipelineFactory,
     DiagnosticSinks: DiagnosticDumpSinkFactory,
     Clipboard: HostClipboardProvider,
     Files: HostFileIo,
     CaptureFiles: CaptureFileIo<Destination = Files::Path>,
-    Backup: DeviceBackupExecutor<Destination = Files::Path>,
+    Backup: DeviceBackupDestination<Destination = Files::Path>,
     DeveloperImages: DeveloperImageAssetLoader<Source = Files::Path>,
     Profiles: ProvisioningProfileLoader<Source = Files::Path>,
 {
-    /// Bind host capabilities without exposing discovery or session internals.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        sidecar: Sidecar,
-        wifi_store: Option<Store>,
-        tunnel: CoreTunnelConfig,
-        audio: AudioFactory,
-        diagnostic_sinks: DiagnosticSinks,
-        clipboard: Clipboard,
-        services: RuntimeSessionHostAdapters<
+    fn new(
+        adapters: RuntimeHostAdapters<
+            Sidecar,
+            Store,
+            AudioFactory,
+            DiagnosticSinks,
+            Clipboard,
             Files,
             CaptureFiles,
             Backup,
@@ -110,8 +146,19 @@ where
             Profiles,
         >,
     ) -> Self {
+        let RuntimeHostAdapters {
+            sidecar,
+            pairing_store,
+            system_usbmuxd,
+            audio,
+            diagnostic_sinks,
+            clipboard,
+            services,
+        } = adapters;
+        let pairing_store = pairing_store.map(Arc::new);
+        let tunnel = CoreTunnelConfig::new(pairing_store.clone(), system_usbmuxd);
         Self {
-            discovery: DeviceDiscovery::new(sidecar, wifi_store, tunnel.clone()),
+            discovery: DeviceDiscovery::new(sidecar, pairing_store, tunnel.clone()),
             tunnel,
             audio,
             diagnostic_sinks,
@@ -121,7 +168,7 @@ where
     }
 
     /// Run discovery and exactly one selected device session until shutdown.
-    pub async fn run(
+    pub(crate) async fn run(
         self,
         initial_selection: Option<String>,
         preferences: RuntimePreferences,
@@ -139,6 +186,71 @@ where
         )
         .await;
     }
+}
+
+/// Start the sole device runtime from lazily constructed host capabilities.
+///
+/// Capability construction happens on the dedicated owner thread. Hosts cannot
+/// construct the session manager, its state graph, or a competing reconnect
+/// loop; they receive only the runtime owner and its cloneable client.
+pub fn start_runtime<
+    Build,
+    Sidecar,
+    Store,
+    AudioFactory,
+    DiagnosticSinks,
+    Clipboard,
+    Files,
+    CaptureFiles,
+    Backup,
+    DeveloperImages,
+    Profiles,
+>(
+    build: Build,
+    initial_selection: Option<String>,
+    preferences: RuntimePreferences,
+    diagnostics: SessionDiagnostics<DiagnosticSinks::Source>,
+) -> Result<StartedRuntime<Files::Path>, String>
+where
+    Build: FnOnce() -> RuntimeHostAdapters<
+            Sidecar,
+            Store,
+            AudioFactory,
+            DiagnosticSinks,
+            Clipboard,
+            Files,
+            CaptureFiles,
+            Backup,
+            DeveloperImages,
+            Profiles,
+        > + Send
+        + 'static,
+    Sidecar: MuxSidecar,
+    Store: PairingStore,
+    AudioFactory: DeviceAudioPipelineFactory,
+    DiagnosticSinks: DiagnosticDumpSinkFactory,
+    Clipboard: HostClipboardProvider,
+    Files: HostFileIo,
+    CaptureFiles: CaptureFileIo<Destination = Files::Path>,
+    Backup: DeviceBackupDestination<Destination = Files::Path>,
+    DeveloperImages: DeveloperImageAssetLoader<Source = Files::Path>,
+    Profiles: ProvisioningProfileLoader<Source = Files::Path>,
+{
+    let (runtime, client) = CoreRuntime::start(move |control, control_rx| {
+        let state = CoreRuntimeState::<Files::Path>::default();
+        let client = state.client(control);
+        let task = move || -> CoreRuntimeFuture {
+            Box::pin(SessionManager::new(build()).run(
+                initial_selection,
+                preferences,
+                diagnostics,
+                state,
+                control_rx,
+            ))
+        };
+        (client, task)
+    })?;
+    Ok(StartedRuntime { runtime, client })
 }
 
 /// State surfaces shared with host adapters without exposing session ownership.
@@ -195,7 +307,7 @@ async fn forget_request<Sidecar, Store>(
     discovery: &mut DeviceDiscovery<Sidecar, Store>,
 ) where
     Sidecar: MuxSidecar,
-    Store: WifiPairingStore,
+    Store: PairingStore,
 {
     let result = forget_device(&selection_id, endpoints, &views.status, discovery).await;
     let _ = reply.send(result);
@@ -245,13 +357,13 @@ async fn run_session_manager<
     mut control_rx: UnboundedReceiver<SessionControlCommand>,
 ) where
     Sidecar: MuxSidecar,
-    Store: WifiPairingStore,
+    Store: PairingStore,
     AudioFactory: DeviceAudioPipelineFactory,
     DiagnosticSinks: DiagnosticDumpSinkFactory,
     Clipboard: HostClipboardProvider,
     Files: HostFileIo,
     CaptureFiles: CaptureFileIo<Destination = Files::Path>,
-    Backup: DeviceBackupExecutor<Destination = Files::Path>,
+    Backup: DeviceBackupDestination<Destination = Files::Path>,
     DeveloperImages: DeveloperImageAssetLoader<Source = Files::Path>,
     Profiles: ProvisioningProfileLoader<Source = Files::Path>,
 {

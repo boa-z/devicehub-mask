@@ -638,7 +638,7 @@ struct StartWdaRunnerRequest {
 
 async fn wda_runner_status(
     State(state): State<AppState>,
-) -> Result<Json<devicehub_runtime::WdaRunnerStatus>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::WdaRunnerStatus>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::WdaRunner(
         devicehub_runtime::WdaRunnerCommand::Status { reply },
@@ -668,8 +668,8 @@ async fn wda_runner_status(
 async fn start_wda_runner(
     State(state): State<AppState>,
     Json(request): Json<StartWdaRunnerRequest>,
-) -> Result<Json<devicehub_runtime::WdaRunnerStatus>, (StatusCode, String)> {
-    devicehub_runtime::validate_runner_bundle_id(&request.bundle_id)
+) -> Result<Json<devicehub_core::WdaRunnerStatus>, (StatusCode, String)> {
+    devicehub_core::validate_wda_runner_bundle_id(&request.bundle_id)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.into()))?;
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::WdaRunner(
@@ -710,7 +710,7 @@ async fn start_wda_runner(
 
 async fn stop_wda_runner(
     State(state): State<AppState>,
-) -> Result<Json<devicehub_runtime::WdaRunnerStatus>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::WdaRunnerStatus>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::WdaRunner(
         devicehub_runtime::WdaRunnerCommand::Stop { reply },
@@ -988,8 +988,8 @@ mod tests {
         CrashReportSummaryQuery, DeleteCrashReportRequest, ExportCrashReportRequest,
         crash_report_summary, delete_crash_report, export_crash_report,
     };
+    use devicehub_core::DeviceInputCommand;
     use devicehub_core::{Orientation, norm};
-    use devicehub_runtime::DeviceInputCommand;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     fn test_state() -> (AppState, UnboundedReceiver<InputCmd>) {
@@ -1021,54 +1021,48 @@ mod tests {
         let input = InputSink::default();
         let (input_tx, input_rx) = unbounded_channel();
         input.set(Some(input_tx));
-        let (control, control_rx) = unbounded_channel();
-        let runtime_state = devicehub_runtime::CoreRuntimeState::<std::path::PathBuf> {
-            commands: input.clone(),
-            ..Default::default()
-        };
-        let browser_frames = runtime_state.browser_frames.clone();
-        let network_capture = crate::network_capture::NetworkCaptureSlot::default();
-        let bluetooth_capture = crate::bluetooth_capture::BluetoothCaptureSlot::default();
-        let services = crate::supervisor::ServiceRegistry::default();
-        let app_document_activity = crate::app_documents::AppDocumentActivitySlot::default();
-        let device_file_activity = crate::device_files::DeviceFileActivitySlot::default();
+        let (application, control_rx) =
+            devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default()
+                .with_commands(input.clone())
+                .build();
+        let browser_frames = application.browser_frames.clone();
         (
             AppState {
-                application: runtime_state.client(control),
+                application: application.clone(),
                 performance_http: crate::http_performance::PerformanceHttpState::new(
-                    runtime_state.performance.clone(),
-                    runtime_state.performance_demand.clone(),
-                    runtime_state.device_logs.clone(),
-                    runtime_state.device_log_demand.clone(),
-                    runtime_state.device_conditions.clone(),
-                    network_capture,
-                    bluetooth_capture,
-                    services,
+                    application.performance.clone(),
+                    application.performance_demand.clone(),
+                    application.device_logs.clone(),
+                    application.device_log_demand.clone(),
+                    application.device_conditions.clone(),
+                    application.network_capture.clone(),
+                    application.bluetooth_capture.clone(),
+                    application.service_registry.clone(),
                     input.clone(),
                 ),
                 profiles_http: crate::http_profiles::ProfileHttpState::new(PathBuf::new()),
                 storage_http: crate::http_storage::StorageHttpState::new(
                     input.clone(),
-                    app_document_activity,
-                    device_file_activity,
+                    application.app_documents.clone(),
+                    application.device_files.clone(),
                 ),
                 diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState::new(
                     input.clone(),
-                    crate::device_backup::DeviceBackupSlot::default(),
-                    crate::sysdiagnose::SysdiagnoseSlot::default(),
-                    crate::log_archive::LogArchiveSlot::default(),
+                    application.device_backup.clone(),
+                    application.sysdiagnose.clone(),
+                    application.log_archive.clone(),
                 ),
                 apps_http: crate::http_apps::AppHttpState::new(
                     input.clone(),
-                    devicehub_core::AppOperationSlot::default(),
+                    application.app_operation.clone(),
                 ),
                 crash_reports_http: crate::http_crash_reports::CrashReportHttpState::new(
                     input.clone(),
                 ),
                 browser_frames,
-                clipboard: ClipboardSlot::default(),
-                developer_image: crate::developer_image::DeveloperImageMountSlot::default(),
-                video_counters: VideoCounters::default(),
+                clipboard: application.clipboard,
+                developer_image: application.developer_image,
+                video_counters: application.video_counters,
                 input,
             },
             input_rx,
@@ -1715,8 +1709,8 @@ mod tests {
     #[tokio::test]
     async fn wda_runner_endpoints_validate_and_dispatch_lifecycle_commands() {
         let (state, mut input_rx) = test_state();
-        let running = devicehub_runtime::WdaRunnerStatus {
-            phase: devicehub_runtime::WdaRunnerPhase::Running,
+        let running = devicehub_core::WdaRunnerStatus {
+            phase: devicehub_core::WdaRunnerPhase::Running,
             managed: true,
             runner_bundle_id: Some("com.example.WDARunner.xctrunner".into()),
             last_error: None,
@@ -1753,11 +1747,11 @@ mod tests {
             panic!("expected WDA runner stop command");
         };
         reply
-            .send(Ok(devicehub_runtime::WdaRunnerStatus::default()))
+            .send(Ok(devicehub_core::WdaRunnerStatus::default()))
             .unwrap();
         assert_eq!(
             stop_request.await.unwrap().unwrap().0,
-            devicehub_runtime::WdaRunnerStatus::default()
+            devicehub_core::WdaRunnerStatus::default()
         );
 
         assert!(matches!(

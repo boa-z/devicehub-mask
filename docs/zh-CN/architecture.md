@@ -52,11 +52,13 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 ## 会话所有权
 
+宿主只注入一个可选 `PairingStore`，同时保存鉴权 Bonjour 发现使用的 Lockdown 缓存记录和 CoreDevice Wi-Fi 隧道使用的 RemotePairing 身份。runtime 使用同一个 store 构造私有 tunnel 配置，因此发现刷新、Wi-Fi 授权、重连和显式撤销信任不会读取不同的凭据根。桌面实现负责目录、权限、文件大小限制和有界宿主 I/O；路径与凭据字节均不会进入 `devicehub-core`。存储初始化失败时，USB 发现仍可使用，Wi-Fi 授权和凭据清理则返回已有的有界不可用错误。
+
 设备信息会复用刷新后的 Lockdown 快照生成规范化身份与区域上下文。设备类别、CPU 架构、型号编号和设备/机身颜色只允许较短的单行 ASCII token；它们是非唯一描述字段，与 UDID、序列号和 ECID 的标识符策略保持分离。语言、地区格式、时区和 12/24 小时制字符串会经过 trim、长度和字符校验，再组合为一个可空对象；没有任何有效字段时会整体丢弃。原始 Lockdown 字典不会越过私有 API 或 MCP 边界。
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
-内部 `DeviceRuntime` 现已统一创建共享服务状态，并独占 CoreDevice 线程与 session manager。只有 `CoreRuntimeState` 可以构造供 HTTP、WebSocket、MCP 和未来无头适配器复用的 `RuntimeClient`，因此宿主无法拼装第二套设备状态图或会话控制面。桌面宿主在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
+`start_runtime` 现在把共享服务状态、控制通道、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；`SessionManager`、底层 `CoreRuntimeState`、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 提供 HTTP、WebSocket、MCP 和未来无头适配器所需的完整状态与命令面，因此宿主不再投影内部 slot，也不会意外启动另一套会话循环。桌面宿主在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
 
 会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。独立的 RTCP 传输模块拥有 peer 探测、接收统计、liveness report、RCTL 实验和带防抖的 PLI/FIR 请求；RTP 接收只能记录 packet、重置已替换媒体源或提交复用 RTCP，不能直接修改 RTCP 计数或构造反馈 packet。两个模块都不持有设备客户端、解码进程或应用命令，因此传输与会话编排可以独立于缓冲及反馈策略演进。
 
@@ -96,7 +98,7 @@ WebDriverAgent 自动化是复用活动 `IdeviceProvider` 的按需可选服务�
 
 手动挂载开发者磁盘镜像由另一项显式、受监督任务执行。它只接受绝对路径的本地普通文件， 拒绝符号链接，将 DMG 限制为 1.5 GB，并分别限制每个辅助文件。原生文件选择器返回的路径 只通过带 bearer 认证的私有 API，文件内容不会进入 WebView。iOS 16 及以前需要 DMG 与 signature，iOS 17 及以后需要 DMG、trust cache 和包含 非空 `BuildIdentities` 的 `BuildManifest.plist`。个性化挂载使用 idevice 的 TSS 流程，因此 仅在用户确认后向 Apple 服务发送设备相关签名标识符。任务会报告受限的阶段与进度状态， 可由用户取消，设备会话结束时也会中止；应用不会自动查找或下载镜像。 显式卸载在 iOS 17 之前使用 `/Developer`，较新系统使用 `/System/Developer`；挂载、卸载与 取消共用同一单操作队列，不会彼此竞态。
 
-本地设备备份由活动会话持有的显式 MobileBackup2 worker 执行。USB 优先使用 lockdown 服务，并可回退到克隆 RSD tunnel；Wi-Fi 使用 remote RSD shim。worker 只会写入原生目录 选择器指定的主机目录及经过校验的设备标识符子目录。每次 delegate 文件系统操作都会验证 词法边界并拒绝符号链接祖先，包括复用已有备份执行增量备份时。进度回调只发布有界计数， 不会暴露文件路径。取消会立即丢弃 DeviceLink 会话，并保留已传输数据供后续增量备份使用。 恢复、擦除、备份密码变更以及自动或后台备份均不属于此边界。
+本地设备备份由活动会话持有的显式 MobileBackup2 worker 执行。USB 优先使用 lockdown 服务，并可回退到克隆 RSD tunnel；Wi-Fi 使用 remote RSD shim。宿主适配器只把原生目录选择结果解析并验证为规范本地路径，永远不会接收 MobileBackup2 client、delegate 或设备错误；协议执行、断连处理、进度发布和受限文件系统 delegate 均由 runtime 持有。worker 只会写入所选主机目录及经过校验的设备标识符子目录。每次 delegate 文件系统操作都会验证词法边界并拒绝符号链接祖先，包括复用已有备份执行增量备份时。进度回调只发布有界计数，不会暴露文件路径。取消会立即丢弃 DeviceLink 会话，并保留已传输数据供后续增量备份使用。恢复、擦除、备份密码变更以及自动或后台备份均不属于此边界。
 
 sysdiagnose 导出是另一项显式任务，通过克隆 RSD tunnel 使用 CoreDevice DiagnosticsService。 同目录临时文件预留成功后请求即返回，设备采集与流式传输继续由会话监督器持有。worker 最长 运行 45 分钟、最多接收 8 GiB，拒绝超大数据块或与设备声明长度不一致的数据流，且只发布 有界计数和所选文件名。 取消或会话结束会丢弃服务流并删除部分文件；完成时会先刷新、同步归档，再原子替换所选目标。 诊断内容不会越过私有 API 或 MCP 边界。
 

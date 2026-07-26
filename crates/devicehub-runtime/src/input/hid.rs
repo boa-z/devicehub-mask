@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use devicehub_core::TouchContact;
 use idevice::core_device::{DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, build_touchscreen_report};
 use idevice::xpc::{Dictionary, XPCObject};
 use idevice::{IdeviceError, ReadWrite, RemoteXpcClient, RsdService};
@@ -12,14 +13,6 @@ const FEATURE_ID: &str = "com.apple.coredevice.feature.remote.universalhidservic
 const TOUCHSCREEN_CONTACT_COUNT_MAXIMUM: u8 = 5;
 const TOUCHSCREEN_CONTACTS_OFFSET: usize = 3;
 const TOUCHSCREEN_CONTACT_SIZE: usize = 5;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TouchContact {
-    pub identity: u8,
-    pub touching: bool,
-    pub x: u16,
-    pub y: u16,
-}
 
 /// Build the five-slot report described by Apple's UniversalHID
 /// `DigitizerReport.descriptor`.

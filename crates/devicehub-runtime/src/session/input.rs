@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use devicehub_core::{KeyMods, OrientationSlot, ascii_key_usage};
+use devicehub_core::{DeviceInputCommand, KeyMods, OrientationSlot, ascii_key_usage};
 use idevice::{
     RsdService,
     core_device::{OrientationServiceClient, hid::IndigoHidClient},
@@ -13,8 +13,7 @@ use idevice::{
 use tokio::sync::mpsc::{Sender, UnboundedReceiver};
 
 use super::{DeviceSessionCommand, DeviceSessionRouter};
-use crate::input::UniversalHidClient;
-use crate::{DeviceInputCommand, DeviceInputDispatcher};
+use crate::input::{DeviceInputDispatcher, UniversalHidClient};
 
 /// Establish every authenticated HID capability for one active screen session.
 /// DisplayService must already be running because it opens the authorization

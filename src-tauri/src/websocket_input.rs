@@ -12,8 +12,10 @@ use serde::Deserialize;
 use crate::browser_video::BrowserVideoSlot;
 use crate::device_runtime::{InputCmd, InputSink};
 use devicehub_core::hardware_button;
-use devicehub_core::{HARDWARE_BUTTON_NAMES, Orientation, RotateDir, norm, unrotate_norm};
-use devicehub_runtime::{DeviceInputCommand, TouchContact};
+use devicehub_core::{
+    DeviceInputCommand, HARDWARE_BUTTON_NAMES, Orientation, RotateDir, TouchContact, norm,
+    unrotate_norm,
+};
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

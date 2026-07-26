@@ -159,8 +159,8 @@ fn spawn_backend(
     runtime_config: device_runtime::RuntimeConfig,
 ) -> Result<BackendHandle, String> {
     let runtime = device_runtime::DeviceRuntime::start(runtime_config)?;
-    let services = runtime.services();
-    let runtime_control = services.application.control.clone();
+    let client = runtime.client();
+    let runtime_control = client.control.clone();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let token = uuid::Uuid::new_v4().simple().to_string();
@@ -174,45 +174,45 @@ fn spawn_backend(
                 .build()
                 .expect("build private server runtime");
             runtime.block_on(async move {
-                tokio::spawn(mcp::serve(services.application.clone()));
+                tokio::spawn(mcp::serve(client.clone()));
                 let app = web::router(
                     web::AppState {
-                        application: services.application,
+                        application: client.clone(),
                         performance_http: http_performance::PerformanceHttpState::new(
-                            services.performance,
-                            services.performance_demand,
-                            services.device_logs,
-                            services.device_log_demand,
-                            services.device_conditions,
-                            services.network_capture,
-                            services.bluetooth_capture,
-                            services.service_registry,
-                            services.input.clone(),
+                            client.performance,
+                            client.performance_demand,
+                            client.device_logs,
+                            client.device_log_demand,
+                            client.device_conditions,
+                            client.network_capture,
+                            client.bluetooth_capture,
+                            client.service_registry,
+                            client.commands.clone(),
                         ),
                         profiles_http: http_profiles::ProfileHttpState::new(profile_dir),
                         storage_http: http_storage::StorageHttpState::new(
-                            services.input.clone(),
-                            services.app_document_activity,
-                            services.device_file_activity,
+                            client.commands.clone(),
+                            client.app_documents,
+                            client.device_files,
                         ),
                         diagnostics_http: http_diagnostics::DiagnosticsHttpState::new(
-                            services.input.clone(),
-                            services.device_backup,
-                            services.sysdiagnose,
-                            services.log_archive,
+                            client.commands.clone(),
+                            client.device_backup,
+                            client.sysdiagnose,
+                            client.log_archive,
                         ),
                         apps_http: http_apps::AppHttpState::new(
-                            services.input.clone(),
-                            services.app_operation,
+                            client.commands.clone(),
+                            client.app_operation,
                         ),
                         crash_reports_http: http_crash_reports::CrashReportHttpState::new(
-                            services.input.clone(),
+                            client.commands.clone(),
                         ),
-                        browser_frames: services.browser_frames,
-                        clipboard: services.clipboard,
-                        developer_image: services.developer_image,
-                        video_counters: services.video_counters,
-                        input: services.input,
+                        browser_frames: client.browser_frames,
+                        clipboard: client.clipboard,
+                        developer_image: client.developer_image,
+                        video_counters: client.video_counters,
+                        input: client.commands,
                     },
                     server_token,
                 );

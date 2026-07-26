@@ -19,7 +19,6 @@ der = "0.8.1"
 devicehub-core = { path = "../crates/devicehub-core" }
 devicehub-runtime = { path = "../crates/devicehub-runtime" }
 futures-util = "0.3"
-idevice = { git = "https://github.com/boa-z/idevice.git", rev = "87a3e12", features = ["full"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 plist = "1"
 rmcp = { version = "1.7", features = ["transport-streamable-http-server"] }
@@ -40,4 +39,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+devicehub-runtime = { path = "../crates/devicehub-runtime", features = ["test-support"] }
 rmcp = { version = "1.7", features = ["client", "reqwest", "transport-streamable-http-client-reqwest"] }

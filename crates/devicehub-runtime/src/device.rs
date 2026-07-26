@@ -21,9 +21,7 @@ pub use conditions::{
     DeviceConditionCommand, DeviceConditionSlot,
     validate_identifiers as validate_device_condition_identifiers,
 };
-pub use crash_reports::{
-    CrashReportExportCommand, MAX_CRASH_REPORT_READ_BYTES, validate_crash_report_path,
-};
+pub use crash_reports::{CrashReportExportCommand, MAX_CRASH_REPORT_READ_BYTES};
 pub(crate) use crash_reports::{
     delete_crash_report, list_crash_reports, read_crash_report, serve_crash_report_exports,
 };
@@ -49,10 +47,7 @@ pub(crate) use home_screen::serve_home_screen;
 pub use location::LocationCommand;
 pub(crate) use location::supervise_location;
 pub(crate) use logs::supervise_device_logs;
-pub use logs::{
-    DeviceLogBatch, DeviceLogDemand, DeviceLogEntry, DeviceLogLevel, DeviceLogSlot,
-    DeviceLogSource, MAX_BATCH_ENTRIES,
-};
+pub use logs::{DeviceLogDemand, DeviceLogSlot};
 pub(crate) use power::{DevicePowerAction, DevicePowerController};
 pub(crate) use provisioning::supervise_provisioning;
 pub use provisioning::{

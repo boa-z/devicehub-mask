@@ -12,24 +12,11 @@ use devicehub_core::device_id_fingerprint;
 use idevice::pairing_file::PairingFile;
 use mdns_sd::{Receiver, ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent};
 
-use super::WifiEndpoint;
+use super::{PairingStore, WifiEndpoint};
 
 const SERVICE_TYPE: &str = "_apple-mobdev2._tcp.local.";
 const REMOTE_PAIRING_SERVICE_TYPE: &str = "_remotepairing._tcp.local.";
 const SERVICE_REMOVAL_GRACE: Duration = Duration::from_secs(10);
-
-/// Serialized pairing record loaded from host-confined storage.
-pub struct StoredWifiPairingRecord {
-    pub udid: String,
-    pub bytes: Vec<u8>,
-}
-
-/// Host persistence for pairing records used to authenticate Bonjour devices.
-pub trait WifiPairingStore: Clone + Send + Sync + 'static {
-    fn load(&self) -> Result<Vec<StoredWifiPairingRecord>, String>;
-    fn save(&self, udid: &str, bytes: &[u8]) -> Result<(), String>;
-    fn remove(&self, udid: &str) -> Result<(), String>;
-}
 
 pub(crate) struct WifiDiscovery<Store> {
     store: Store,
@@ -47,7 +34,7 @@ pub(crate) struct WifiDiscovery<Store> {
 
 impl<Store> WifiDiscovery<Store>
 where
-    Store: WifiPairingStore,
+    Store: PairingStore,
 {
     pub(crate) fn start(store: Store) -> Result<Self, String> {
         let pairing_files = load_pairing_files(&store);
@@ -88,7 +75,7 @@ where
             .clone()
             .serialize()
             .map_err(|error| format!("cannot serialize pairing record: {error:?}"))?;
-        self.store.save(udid, &bytes)?;
+        self.store.save_lockdown_pairing(udid, &bytes)?;
         let inserted = self
             .pairing_files
             .insert(udid.to_owned(), pairing_file)
@@ -113,7 +100,7 @@ where
     pub(crate) fn remove_pairing(&mut self, udid: &str) -> Result<(), String> {
         self.pairing_files.remove(udid);
         self.refreshed_pairings.remove(udid);
-        self.store.remove(udid)?;
+        self.store.remove_lockdown_pairing(udid)?;
         tracing::info!(
             device_id = %device_id_fingerprint(udid),
             "removed cached pairing record for Wi-Fi discovery"
@@ -321,10 +308,10 @@ fn preferred_address(service: &ResolvedService) -> Option<(IpAddr, Option<u32>, 
 
 fn load_pairing_files<Store>(store: &Store) -> HashMap<String, PairingFile>
 where
-    Store: WifiPairingStore,
+    Store: PairingStore,
 {
     let mut files = HashMap::new();
-    let records = match store.load() {
+    let records = match store.load_lockdown_pairings() {
         Ok(records) => records,
         Err(error) => {
             tracing::warn!(%error, "unable to load cached Wi-Fi pairing records");
@@ -351,25 +338,26 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::StoredLockdownPairingRecord;
 
     #[derive(Clone, Default)]
     struct MemoryStore(Arc<Mutex<HashMap<String, Vec<u8>>>>);
 
-    impl WifiPairingStore for MemoryStore {
-        fn load(&self) -> Result<Vec<StoredWifiPairingRecord>, String> {
+    impl PairingStore for MemoryStore {
+        fn load_lockdown_pairings(&self) -> Result<Vec<StoredLockdownPairingRecord>, String> {
             Ok(self
                 .0
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|(udid, bytes)| StoredWifiPairingRecord {
+                .map(|(udid, bytes)| StoredLockdownPairingRecord {
                     udid: udid.clone(),
                     bytes: bytes.clone(),
                 })
                 .collect())
         }
 
-        fn save(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
+        fn save_lockdown_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
             self.0
                 .lock()
                 .unwrap()
@@ -377,8 +365,20 @@ mod tests {
             Ok(())
         }
 
-        fn remove(&self, udid: &str) -> Result<(), String> {
+        fn remove_lockdown_pairing(&self, udid: &str) -> Result<(), String> {
             self.0.lock().unwrap().remove(udid);
+            Ok(())
+        }
+
+        fn load_remote_pairing(&self, _udid: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+
+        fn save_remote_pairing(&self, _udid: &str, _bytes: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn remove_remote_pairing(&self, _udid: &str) -> Result<(), String> {
             Ok(())
         }
     }
@@ -386,9 +386,11 @@ mod tests {
     #[test]
     fn invalid_host_records_are_ignored_without_exposing_storage() {
         let store = MemoryStore::default();
-        store.save("device", b"not a plist").unwrap();
+        store
+            .save_lockdown_pairing("device", b"not a plist")
+            .unwrap();
         assert!(load_pairing_files(&store).is_empty());
-        store.remove("device").unwrap();
-        assert!(store.load().unwrap().is_empty());
+        store.remove_lockdown_pairing("device").unwrap();
+        assert!(store.load_lockdown_pairings().unwrap().is_empty());
     }
 }

@@ -24,19 +24,21 @@ devicehub-mcp -----------------------------------> devicehub-core
 
 `devicehub-core` must not depend on `idevice`, Tauri, Axum, tower-http, rmcp, FFmpeg, rodio, React assets, native dialogs, or updater and window APIs. It owns normalized DTOs, bounded validation, business rules, control leases, stable errors, events, and service contracts. It must contain real policy rather than becoming an empty collection of traits.
 
-`devicehub-runtime` may depend on core, `idevice`, Tokio, serialization, media helpers, and platform-neutral filesystem, networking, and process APIs. It must not depend on Tauri, Axum, rmcp, frontend assets, HTTP authentication, or window state. Raw XPC, plist, CoreDevice client, and device transport types never cross its public API.
+`devicehub-runtime` may depend on core, `idevice`, Tokio, serialization, media helpers, and platform-neutral filesystem and networking APIs. It must not depend on Tauri, Axum, rmcp, frontend assets, HTTP authentication, or window state. It does not read the host environment or resolve and launch operating-system processes. Raw XPC, plist, CoreDevice client, and device transport types never cross its public API.
 
-Adapters depend on core services and cannot directly open CoreDevice, DVT, Lockdown, AFC, House Arrest, Installation Proxy, or diagnostics clients. During migration, existing bounded command sinks and slots may be re-exported as compatibility APIs, but new adapter behavior must use typed services.
+Adapters depend on core services and cannot directly open CoreDevice, DVT, Lockdown, AFC, House Arrest, Installation Proxy, or diagnostics clients. During migration, existing bounded command sinks and slots may be re-exported as compatibility APIs, but new adapter behavior must use typed services. Input commands plus capture and diagnostic status values are imported from core directly; runtime no longer republishes those domain types.
 
 ## Ownership
 
-The runtime owns the dedicated 16 MiB device thread, Tokio runtime and `LocalSet`, discovery, transport state, the single active session, reconnect policy, every non-`Send` device client, service supervision, command queues, held-input cleanup, media workers, and sidecar lifecycle.
+The runtime owns the dedicated 16 MiB device thread, Tokio runtime and `LocalSet`, discovery, transport state, the single active session, reconnect policy, every non-`Send` device client, service supervision, command queues, held-input cleanup, media workers, and sidecar lifecycle policy. A host adapter performs concrete sidecar process resolution and execution behind the runtime port.
 
-The host owns directory selection, environment and command-line parsing, setting persistence, Tauri capabilities, HTTP listeners, authentication, TLS and LAN policy, and the choice of local or remote audio consumers. Host-resolved paths and diagnostic overrides enter through configuration. Deep `DEVICEHUB_*` reads and the global FFmpeg resource directory are migration debt and must be removed before the crate boundary is final.
+Its host-facing facade exposes typed commands, observations, and capability ports only. Concrete input dispatchers, service reporters and supervisors, retry helpers, protocol clients, and transport handles remain private so a host cannot create a second execution or recovery path around the session manager.
+
+The host owns directory selection, environment and command-line parsing, setting persistence, operating-system process resolution, Tauri capabilities, HTTP listeners, authentication, TLS and LAN policy, and the choice of local or remote audio consumers. Host-resolved paths, FFmpeg configuration, sidecar adapters, and diagnostic overrides enter through configuration or capability ports. Boundary checks prevent production runtime code from reintroducing environment reads, process launching, or FFmpeg path resolution.
 
 ## Target APIs
 
-Core exposes cloneable, typed capabilities without runtime implementation types:
+Core exposes cloneable, typed capabilities without runtime implementation types. Input commands and normalized touch contacts are core domain values; runtime translates them into Apple HID reports:
 
 ```rust
 pub struct DeviceHubServices {

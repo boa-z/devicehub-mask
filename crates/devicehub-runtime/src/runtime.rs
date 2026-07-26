@@ -31,41 +31,40 @@ const OWNER_THREAD_NAME: &str = "devicehub-coredevice";
 pub const OWNER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 /// Non-`Send` session-manager future created after entering the owner thread.
-pub type CoreRuntimeFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
+pub(crate) type CoreRuntimeFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
-/// Cloneable state shared by one runtime owner and any number of host adapters.
+/// Internal state graph owned by one runtime and observed through clients.
 ///
 /// The host path remains opaque to the runtime. All slots are created together
 /// so desktop, HTTP, MCP, and future headless adapters cannot accidentally
 /// observe a second, divergent device state graph.
-#[derive(Clone)]
-pub struct CoreRuntimeState<HostPath> {
-    pub status: StatusSlot,
-    pub orientation: OrientationSlot,
-    pub devices: DeviceListSlot,
-    pub active: ActiveSlot,
-    pub error: ErrorSlot,
-    pub location: LocationStatusSlot,
-    pub browser_frames: BrowserVideoSlot,
-    pub video_counters: VideoCounters,
-    pub clipboard: ClipboardSlot,
-    pub device_events: DeviceEventSlot,
-    pub network_capture: NetworkCaptureSlot,
-    pub bluetooth_capture: BluetoothCaptureSlot,
-    pub device_backup: DeviceBackupSlot,
-    pub sysdiagnose: SysdiagnoseSlot,
-    pub log_archive: LogArchiveSlot,
-    pub developer_image: DeveloperImageMountSlot,
-    pub device_conditions: DeviceConditionSlot,
-    pub app_operation: AppOperationSlot,
-    pub app_documents: AppDocumentActivitySlot,
-    pub device_files: DeviceFileActivitySlot,
-    pub performance: PerformanceSlot,
-    pub performance_demand: PerformanceDemand,
-    pub device_logs: DeviceLogSlot,
-    pub device_log_demand: DeviceLogDemand,
-    pub services: ServiceRegistry,
-    pub commands: SessionCommandSlot<HostPath>,
+pub(crate) struct CoreRuntimeState<HostPath> {
+    pub(crate) status: StatusSlot,
+    pub(crate) orientation: OrientationSlot,
+    pub(crate) devices: DeviceListSlot,
+    pub(crate) active: ActiveSlot,
+    pub(crate) error: ErrorSlot,
+    pub(crate) location: LocationStatusSlot,
+    pub(crate) browser_frames: BrowserVideoSlot,
+    pub(crate) video_counters: VideoCounters,
+    pub(crate) clipboard: ClipboardSlot,
+    pub(crate) device_events: DeviceEventSlot,
+    pub(crate) network_capture: NetworkCaptureSlot,
+    pub(crate) bluetooth_capture: BluetoothCaptureSlot,
+    pub(crate) device_backup: DeviceBackupSlot,
+    pub(crate) sysdiagnose: SysdiagnoseSlot,
+    pub(crate) log_archive: LogArchiveSlot,
+    pub(crate) developer_image: DeveloperImageMountSlot,
+    pub(crate) device_conditions: DeviceConditionSlot,
+    pub(crate) app_operation: AppOperationSlot,
+    pub(crate) app_documents: AppDocumentActivitySlot,
+    pub(crate) device_files: DeviceFileActivitySlot,
+    pub(crate) performance: PerformanceSlot,
+    pub(crate) performance_demand: PerformanceDemand,
+    pub(crate) device_logs: DeviceLogSlot,
+    pub(crate) device_log_demand: DeviceLogDemand,
+    pub(crate) services: ServiceRegistry,
+    pub(crate) commands: SessionCommandSlot<HostPath>,
 }
 
 impl<HostPath> Default for CoreRuntimeState<HostPath> {
@@ -103,7 +102,7 @@ impl<HostPath> Default for CoreRuntimeState<HostPath> {
 
 impl<HostPath> CoreRuntimeState<HostPath> {
     /// Create the cloneable host client for this sole runtime state graph.
-    pub fn client(
+    pub(crate) fn client(
         &self,
         control: UnboundedSender<SessionControlCommand>,
     ) -> RuntimeClient<HostPath> {
@@ -159,7 +158,7 @@ impl CoreRuntime {
     /// Create host-facing state and an owner-thread task around one shared
     /// control channel. `task` is invoked on the new thread so its future may
     /// retain non-`Send` CoreDevice clients safely inside the `LocalSet`.
-    pub fn start<State, Build, Task>(build: Build) -> Result<(Self, State), String>
+    pub(crate) fn start<State, Build, Task>(build: Build) -> Result<(Self, State), String>
     where
         Build: FnOnce(
             UnboundedSender<SessionControlCommand>,

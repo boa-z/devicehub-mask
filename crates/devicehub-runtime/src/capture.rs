@@ -14,10 +14,6 @@ pub use bluetooth::{
     validate_duration as validate_bluetooth_capture_duration,
 };
 pub(crate) use bluetooth::{BluetoothCaptureTransport, serve as serve_bluetooth_capture};
-pub use devicehub_core::{
-    BluetoothCaptureState, BluetoothCaptureStatus, BluetoothCaptureStopReason, NetworkCaptureState,
-    NetworkCaptureStatus, NetworkCaptureStopReason,
-};
 pub use network::{
     MAX_NETWORK_CAPTURE_DURATION_SECONDS, MIN_NETWORK_CAPTURE_DURATION_SECONDS,
     NetworkCaptureCommand, NetworkCaptureSlot,

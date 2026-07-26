@@ -24,19 +24,21 @@ devicehub-mcp -----------------------------------> devicehub-core
 
 `devicehub-core` 不得依赖 `idevice`、Tauri、Axum、tower-http、rmcp、FFmpeg、rodio、React 产物、原生对话框、更新器或窗口 API。它持有归一化 DTO、有界校验、业务规则、控制租约、稳定错误、事件和服务契约，并应包含真实策略，而不是空洞的 trait 集合。
 
-`devicehub-runtime` 可以依赖 core、`idevice`、Tokio、序列化、媒体辅助模块，以及跨平台文件系统、网络和进程 API。它不得依赖 Tauri、Axum、rmcp、前端资源、HTTP 鉴权或窗口状态。原始 XPC、plist、CoreDevice client 和设备传输类型不得越过其公共 API。
+`devicehub-runtime` 可以依赖 core、`idevice`、Tokio、序列化、媒体辅助模块，以及跨平台文件系统和网络 API。它不得依赖 Tauri、Axum、rmcp、前端资源、HTTP 鉴权或窗口状态，也不得自行读取宿主环境或解析、启动操作系统进程。原始 XPC、plist、CoreDevice client 和设备传输类型不得越过其公共 API。
 
-适配器依赖 core 服务，不能直接打开 CoreDevice、DVT、Lockdown、AFC、House Arrest、Installation Proxy 或诊断 client。迁移期间可以把现有有界命令入口和状态槽作为兼容 API 重新导出，但新增适配器行为必须使用类型化服务。
+适配器依赖 core 服务，不能直接打开 CoreDevice、DVT、Lockdown、AFC、House Arrest、Installation Proxy 或诊断 client。迁移期间可以把现有有界命令入口和状态槽作为兼容 API 重新导出，但新增适配器行为必须使用类型化服务。输入命令以及抓包与诊断状态值由适配器直接从 core 导入，runtime 不再转发这些领域类型。
 
 ## 所有权
 
-runtime 持有设备专用 16 MiB 线程、Tokio runtime 与 `LocalSet`、发现、传输状态、唯一活动会话、重连策略、全部非 `Send` 设备 client、服务监督、命令队列、按住输入清理、媒体 worker 和 sidecar 生命周期。
+runtime 持有设备专用 16 MiB 线程、Tokio runtime 与 `LocalSet`、发现、传输状态、唯一活动会话、重连策略、全部非 `Send` 设备 client、服务监督、命令队列、按住输入清理、媒体 worker 和 sidecar 生命周期策略。具体 sidecar 进程的解析和启动由宿主适配器在 runtime 端口背后完成。
 
-宿主持有目录选择、环境变量与命令行解析、设置持久化、Tauri 能力、HTTP 监听、鉴权、TLS 与局域网策略，以及本机或远程音频消费者的选择。宿主解析后的路径和诊断覆盖通过配置传入。深层 `DEVICEHUB_*` 读取与全局 FFmpeg 资源目录属于迁移债务，必须在最终 crate 边界建立前移除。
+面向宿主的 facade 只公开类型化命令、观察状态和能力端口。具体输入 dispatcher、服务 reporter 与 supervisor、重试辅助函数、协议 client 和传输 handle 均保持私有，确保宿主不能绕过 session manager 建立第二条执行或恢复路径。
+
+宿主持有目录选择、环境变量与命令行解析、设置持久化、操作系统进程解析、Tauri 能力、HTTP 监听、鉴权、TLS 与局域网策略，以及本机或远程音频消费者的选择。宿主解析后的路径、FFmpeg 配置、sidecar 适配器和诊断覆盖通过配置或能力端口传入。边界检查会阻止生产 runtime 重新引入环境变量读取、进程启动或 FFmpeg 路径解析。
 
 ## 目标 API
 
-core 提供可克隆的类型化能力，不暴露 runtime 实现类型：
+core 提供可克隆的类型化能力，不暴露 runtime 实现类型。输入命令和规范化触点属于 core 领域值，runtime 负责将其转换为 Apple HID report：
 
 ```rust
 pub struct DeviceHubServices {

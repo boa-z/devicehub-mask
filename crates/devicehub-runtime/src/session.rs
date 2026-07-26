@@ -20,8 +20,8 @@ pub(crate) use input::{
     run_management_command_loop,
 };
 pub(crate) use lifecycle::{SessionFailureAction, SessionRetry, SessionRetryPolicy};
-pub use manager::SessionManager;
 pub(crate) use manager::SessionManagerViews;
+pub use manager::{RuntimeHostAdapters, StartedRuntime, start_runtime};
 pub(crate) use orientation::OrientationWatcher;
 pub(crate) use router::{DeviceManagementBootstrap, DeviceSessionRouter};
 pub(crate) use runner::run_connected_session;

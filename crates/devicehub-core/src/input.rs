@@ -122,6 +122,34 @@ pub struct KeyMods {
     pub alt: bool,
 }
 
+/// One normalized contact in a simultaneous touch frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchContact {
+    pub identity: u8,
+    pub touching: bool,
+    pub x: u16,
+    pub y: u16,
+}
+
+/// A validated, transport-independent input command sent by a host adapter.
+#[derive(Debug)]
+pub enum DeviceInputCommand {
+    Tap { x: u16, y: u16 },
+    TouchDown { x: u16, y: u16 },
+    TouchMove { x: u16, y: u16 },
+    TouchUp { x: u16, y: u16 },
+    MultiTouchFrame(Vec<TouchContact>),
+    Text(String),
+    KeyUsage(u64),
+    KeyCombo { usage: u64, mods: KeyMods },
+    KeyboardDown(u64),
+    KeyboardUp(u64),
+    Button(HardwareButton),
+    ButtonDown(HardwareButton),
+    ButtonUp(HardwareButton),
+    Rotate(RotateDir),
+}
+
 /// Modifier usages in press order; callers release them in reverse order.
 pub fn modifier_key_usages(modifiers: KeyMods) -> [(u64, bool); 4] {
     [

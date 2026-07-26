@@ -13,10 +13,11 @@ use crate::clipboard::{HostClipboardFactory, connect_device_clipboard};
 use crate::media::{
     MediaSessionConfig, MediaSessionRuntime, VideoRtpOptions, start_screen_media_stream,
 };
+use crate::transport::CoreTunnelConfig;
 use crate::{
-    BrowserVideoSlot, CaptureFileIo, ClipboardSlot, CoreTunnelConfig, DeveloperImageAssetLoader,
-    DeviceAudioPipeline, DeviceBackupExecutor, DeviceSessionCommand, HostFileIo,
-    ProvisioningProfileLoader, SessionEndpoint, connect_provider,
+    BrowserVideoSlot, CaptureFileIo, ClipboardSlot, DeveloperImageAssetLoader, DeviceAudioPipeline,
+    DeviceBackupDestination, DeviceSessionCommand, HostFileIo, ProvisioningProfileLoader,
+    SessionEndpoint, connect_provider,
 };
 
 /// Session state published to host-facing adapters without giving the host
@@ -90,7 +91,7 @@ where
     DiagnosticSinks: DiagnosticDumpSinkFactory,
     Files: HostFileIo,
     CaptureFiles: CaptureFileIo<Destination = Files::Path>,
-    Backup: DeviceBackupExecutor<Destination = Files::Path>,
+    Backup: DeviceBackupDestination<Destination = Files::Path>,
     DeveloperImages: DeveloperImageAssetLoader<Source = Files::Path>,
     Profiles: ProvisioningProfileLoader<Source = Files::Path>,
 {

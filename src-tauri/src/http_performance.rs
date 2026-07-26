@@ -404,7 +404,9 @@ async fn device_logs(
     Json(DeviceLogsView {
         batch: state.device_logs.snapshot(
             query.after,
-            query.limit.unwrap_or(devicehub_runtime::MAX_BATCH_ENTRIES),
+            query
+                .limit
+                .unwrap_or(devicehub_core::MAX_DEVICE_LOG_BATCH_ENTRIES),
             state.device_log_demand.enabled(),
         ),
         service,
@@ -414,7 +416,7 @@ async fn device_logs(
 #[derive(Serialize)]
 struct DeviceLogsView {
     #[serde(flatten)]
-    batch: devicehub_runtime::DeviceLogBatch,
+    batch: devicehub_core::DeviceLogBatch,
     service: Option<crate::supervisor::ServiceHealth>,
 }
 

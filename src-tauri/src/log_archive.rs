@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-pub(crate) use devicehub_runtime::LogArchiveState;
-pub(crate) use devicehub_runtime::{LogArchiveSlot, LogArchiveStatus};
+pub(crate) use devicehub_core::LogArchiveState;
+pub(crate) use devicehub_core::LogArchiveStatus;
+pub(crate) use devicehub_runtime::LogArchiveSlot;
 pub(crate) type LogArchiveCommand = devicehub_runtime::LogArchiveCommand<PathBuf>;
 
 pub(crate) fn validate_age_limit_hours(value: u16) -> Result<u16, String> {

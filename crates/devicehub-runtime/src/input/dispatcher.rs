@@ -1,8 +1,8 @@
 //! Execution of validated input commands against CoreDevice HID services.
 
 use devicehub_core::{
-    HardwareButton, KeyMods, Orientation, OrientationSlot, RotateDir, ascii_key_usage,
-    modifier_key_usages,
+    DeviceInputCommand, HardwareButton, KeyMods, Orientation, OrientationSlot, RotateDir,
+    ascii_key_usage, modifier_key_usages,
 };
 use idevice::{
     IdeviceError, ReadWrite,
@@ -15,29 +15,10 @@ use idevice::{
     },
 };
 
-use super::hid::{TouchContact, UniversalHidClient, build_multitouch_report};
-
-/// A device-facing input operation after adapter validation and coordinate mapping.
-#[derive(Debug)]
-pub enum DeviceInputCommand {
-    Tap { x: u16, y: u16 },
-    TouchDown { x: u16, y: u16 },
-    TouchMove { x: u16, y: u16 },
-    TouchUp { x: u16, y: u16 },
-    MultiTouchFrame(Vec<TouchContact>),
-    Text(String),
-    KeyUsage(u64),
-    KeyCombo { usage: u64, mods: KeyMods },
-    KeyboardDown(u64),
-    KeyboardUp(u64),
-    Button(HardwareButton),
-    ButtonDown(HardwareButton),
-    ButtonUp(HardwareButton),
-    Rotate(RotateDir),
-}
+use super::hid::{UniversalHidClient, build_multitouch_report};
 
 /// Owns the HID services used to execute input for one connected device session.
-pub struct DeviceInputDispatcher {
+pub(crate) struct DeviceInputDispatcher {
     touch: UniversalHidClient<Box<dyn ReadWrite>>,
     keyboard: IndigoHidClient<Box<dyn ReadWrite>>,
     orientation: Option<OrientationServiceClient<Box<dyn ReadWrite>>>,
@@ -59,7 +40,10 @@ impl DeviceInputDispatcher {
         }
     }
 
-    pub async fn dispatch(&mut self, command: DeviceInputCommand) -> Result<(), IdeviceError> {
+    pub(crate) async fn dispatch(
+        &mut self,
+        command: DeviceInputCommand,
+    ) -> Result<(), IdeviceError> {
         match command {
             DeviceInputCommand::Tap { x, y } => self.touch.tap(x, y).await,
             DeviceInputCommand::TouchDown { x, y } | DeviceInputCommand::TouchMove { x, y } => {

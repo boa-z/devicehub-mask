@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use devicehub_runtime::{CaptureFileIo, CaptureFileKind};
 
-pub(crate) use devicehub_runtime::{BluetoothCaptureSlot, BluetoothCaptureStatus};
+pub(crate) use devicehub_core::BluetoothCaptureStatus;
+pub(crate) use devicehub_runtime::BluetoothCaptureSlot;
 pub(crate) type BluetoothCaptureCommand = devicehub_runtime::BluetoothCaptureCommand<PathBuf>;
 
 pub(crate) async fn validate_request(path: &Path, duration_seconds: u64) -> Result<(), String> {

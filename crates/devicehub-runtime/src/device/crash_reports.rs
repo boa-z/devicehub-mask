@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::storage::HostFileIo;
 
-pub use devicehub_core::validate_crash_report_path;
+use devicehub_core::validate_crash_report_path;
 
 const MAX_REPORTS: usize = 2_000;
 const MAX_ENTRIES: usize = 5_000;

@@ -6,139 +6,22 @@ use std::time::Duration;
 
 use idevice::provider::IdeviceProvider;
 use idevice::services::wda::WdaClient;
-use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch};
+
+use devicehub_core::{
+    WDA_MAX_ATTRIBUTE_BYTES, WDA_MAX_ATTRIBUTE_CHARACTERS, WDA_MAX_ELEMENTS, WDA_MAX_SOURCE_CHARS,
+    WdaBoundedText, WdaDeviceState, WdaElement, WdaElementDetails, WdaElementWaitResult,
+    WdaElementWaitState, WdaOrientation, WdaRect, WdaSize, WdaStatus, WdaUiTree, WdaUnlockResult,
+    validate_wda_background_duration, validate_wda_hold_duration, validate_wda_scroll_direction,
+    validate_wda_selector, validate_wda_text, validate_wda_wait_timeout,
+};
 
 use crate::supervisor::ServiceReporter;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(250);
-pub const DEFAULT_SOURCE_CHARS: usize = 128 * 1024;
-pub const MAX_SOURCE_CHARS: usize = 1024 * 1024;
-pub const MAX_SELECTOR_BYTES: usize = 1024;
-pub const MAX_ELEMENTS: usize = 20;
-pub const MAX_TEXT_CHARACTERS: usize = 1024;
-pub const MAX_TEXT_BYTES: usize = 4096;
-pub const MAX_ATTRIBUTE_CHARACTERS: usize = 1024;
-pub const MAX_ATTRIBUTE_BYTES: usize = 4096;
-pub const MIN_HOLD_DURATION_MS: u64 = 100;
-pub const MAX_HOLD_DURATION_MS: u64 = 10_000;
-pub const MAX_WAIT_TIMEOUT_MS: u64 = 10_000;
-pub const MIN_BACKGROUND_DURATION_MS: u64 = 100;
-pub const MAX_BACKGROUND_DURATION_MS: u64 = 5_000;
 const MAX_LOGICAL_DIMENSION: f64 = 100_000.0;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WdaStatus {
-    pub reachable: bool,
-    pub ready: Option<bool>,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WdaUiTree {
-    pub xml: String,
-    pub total_characters: usize,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct WdaElement {
-    pub index: usize,
-    pub rect: Option<WdaRect>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct WdaRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct WdaSize {
-    pub width: f64,
-    pub height: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WdaOrientation {
-    Portrait,
-    PortraitUpsideDown,
-    Landscape,
-    LandscapeLeft,
-    LandscapeRight,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct WdaDeviceState {
-    pub locked: bool,
-    pub orientation: WdaOrientation,
-    pub window: WdaSize,
-    pub viewport: Option<WdaRect>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WdaUnlockResult {
-    pub was_locked: bool,
-    pub unlocked: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WdaBoundedText {
-    pub text: String,
-    pub total_characters: usize,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct WdaElementDetails {
-    pub element: WdaElement,
-    pub element_type: Option<WdaBoundedText>,
-    pub name: Option<WdaBoundedText>,
-    pub label: Option<WdaBoundedText>,
-    pub value: Option<WdaBoundedText>,
-    pub displayed: bool,
-    pub enabled: bool,
-    pub selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct WdaElementWaitResult {
-    pub condition_met: bool,
-    pub expected_state: WdaElementWaitState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_present: Option<bool>,
-    pub index: usize,
-    pub returned_matches: usize,
-    pub element: Option<WdaElement>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WdaElementWaitState {
-    Present,
-    Absent,
-    Displayed,
-    Hidden,
-    Enabled,
-    Disabled,
-    Selected,
-    Unselected,
-}
-
-impl WdaElementWaitState {
-    fn expected_present(self) -> Option<bool> {
-        match self {
-            Self::Present => Some(true),
-            Self::Absent => Some(false),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum WdaAutomationCommand {
@@ -283,87 +166,6 @@ impl WdaAutomationCommand {
                 let _ = reply.send(Err(reason));
             }
         }
-    }
-}
-
-pub fn validate_selector(using: &str, value: &str) -> Result<(), &'static str> {
-    if !matches!(
-        using,
-        "accessibility id"
-            | "name"
-            | "class name"
-            | "xpath"
-            | "-ios predicate string"
-            | "-ios class chain"
-    ) {
-        return Err("unsupported WDA selector strategy");
-    }
-    if value.is_empty() || value.len() > MAX_SELECTOR_BYTES {
-        return Err("WDA selector value must contain 1..1024 UTF-8 bytes");
-    }
-    if value.chars().any(char::is_control) {
-        return Err("WDA selector value cannot contain control characters");
-    }
-    Ok(())
-}
-
-pub fn validate_text(text: &str) -> Result<usize, &'static str> {
-    let characters = text.chars().count();
-    if characters == 0 || characters > MAX_TEXT_CHARACTERS || text.len() > MAX_TEXT_BYTES {
-        return Err("WDA text must contain 1..1024 characters and at most 4096 UTF-8 bytes");
-    }
-    if text.contains('\0') {
-        return Err("WDA text cannot contain NUL characters");
-    }
-    Ok(characters)
-}
-
-pub fn validate_hold_duration(duration_ms: u64) -> Result<(), &'static str> {
-    if !(MIN_HOLD_DURATION_MS..=MAX_HOLD_DURATION_MS).contains(&duration_ms) {
-        return Err("WDA hold duration must be between 100 and 10000 milliseconds");
-    }
-    Ok(())
-}
-
-pub fn validate_scroll_direction(direction: &str) -> Result<(), &'static str> {
-    if matches!(direction, "up" | "down" | "left" | "right") {
-        Ok(())
-    } else {
-        Err("WDA scroll direction must be up, down, left, or right")
-    }
-}
-
-pub fn validate_wait_timeout(timeout_ms: u64) -> Result<(), &'static str> {
-    if timeout_ms <= MAX_WAIT_TIMEOUT_MS {
-        Ok(())
-    } else {
-        Err("WDA element wait timeout must be between 0 and 10000 milliseconds")
-    }
-}
-
-pub fn validate_background_duration(duration_ms: Option<u64>) -> Result<(), &'static str> {
-    if duration_ms.is_none_or(|duration_ms| {
-        (MIN_BACKGROUND_DURATION_MS..=MAX_BACKGROUND_DURATION_MS).contains(&duration_ms)
-    }) {
-        Ok(())
-    } else {
-        Err("WDA background duration must be between 100 and 5000 milliseconds")
-    }
-}
-
-pub fn parse_wait_state(state: &str) -> Result<WdaElementWaitState, &'static str> {
-    match state {
-        "present" => Ok(WdaElementWaitState::Present),
-        "absent" => Ok(WdaElementWaitState::Absent),
-        "displayed" => Ok(WdaElementWaitState::Displayed),
-        "hidden" => Ok(WdaElementWaitState::Hidden),
-        "enabled" => Ok(WdaElementWaitState::Enabled),
-        "disabled" => Ok(WdaElementWaitState::Disabled),
-        "selected" => Ok(WdaElementWaitState::Selected),
-        "unselected" => Ok(WdaElementWaitState::Unselected),
-        _ => Err(
-            "WDA element wait state must be present, absent, displayed, hidden, enabled, disabled, selected, or unselected",
-        ),
     }
 }
 
@@ -520,7 +322,7 @@ async fn handle_command(
             reply,
         } => {
             let result = async {
-                let characters = validate_text(&text).map_err(str::to_string)?;
+                let characters = validate_wda_text(&text).map_err(str::to_string)?;
                 ensure_session(client, expires_at).await?;
                 within(expires_at, client.send_keys(&text, None), "WDA text input").await?;
                 tracing::info!(
@@ -571,7 +373,7 @@ async fn handle_command(
             reply,
         } => {
             let result = async {
-                validate_hold_duration(duration_ms).map_err(str::to_string)?;
+                validate_wda_hold_duration(duration_ms).map_err(str::to_string)?;
                 let (element_id, element) =
                     resolve_element(client, &using, &value, index, expires_at).await?;
                 within(
@@ -605,7 +407,7 @@ async fn handle_command(
             reply,
         } => {
             let result = async {
-                validate_scroll_direction(&direction).map_err(str::to_string)?;
+                validate_wda_scroll_direction(&direction).map_err(str::to_string)?;
                 ensure_session(client, expires_at).await?;
                 within(
                     expires_at,
@@ -630,7 +432,7 @@ async fn handle_command(
             reply,
         } => {
             let result = async {
-                validate_background_duration(restore_after_ms).map_err(str::to_string)?;
+                validate_wda_background_duration(restore_after_ms).map_err(str::to_string)?;
                 ensure_session(client, expires_at).await?;
                 let seconds = restore_after_ms
                     .map(|duration_ms| duration_ms as f64 / 1_000.0)
@@ -771,7 +573,7 @@ async fn find_element_ids(
     value: &str,
     expires_at: tokio::time::Instant,
 ) -> Result<Vec<String>, String> {
-    validate_selector(using, value).map_err(str::to_string)?;
+    validate_wda_selector(using, value).map_err(str::to_string)?;
     ensure_session(client, expires_at).await?;
     let mut elements = within(
         expires_at,
@@ -779,7 +581,7 @@ async fn find_element_ids(
         "WDA element search",
     )
     .await?;
-    elements.truncate(MAX_ELEMENTS);
+    elements.truncate(WDA_MAX_ELEMENTS);
     Ok(elements)
 }
 
@@ -887,11 +689,11 @@ async fn wait_for_element(
     timeout_ms: u64,
     expires_at: tokio::time::Instant,
 ) -> Result<WdaElementWaitResult, String> {
-    validate_selector(using, value).map_err(str::to_string)?;
-    validate_wait_timeout(timeout_ms).map_err(str::to_string)?;
-    if index >= MAX_ELEMENTS {
+    validate_wda_selector(using, value).map_err(str::to_string)?;
+    validate_wda_wait_timeout(timeout_ms).map_err(str::to_string)?;
+    if index >= WDA_MAX_ELEMENTS {
         return Err(format!(
-            "WDA element index must be less than {MAX_ELEMENTS}"
+            "WDA element index must be less than {WDA_MAX_ELEMENTS}"
         ));
     }
     let wait_deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
@@ -1046,7 +848,7 @@ fn normalize_status(value: &Value) -> WdaStatus {
 }
 
 fn bound_source(xml: String, max_characters: usize) -> WdaUiTree {
-    let max_characters = max_characters.clamp(1, MAX_SOURCE_CHARS);
+    let max_characters = max_characters.clamp(1, WDA_MAX_SOURCE_CHARS);
     let total_characters = xml.chars().count();
     let truncated = total_characters > max_characters;
     let xml = if truncated {
@@ -1113,9 +915,9 @@ fn bounded_attribute(value: Value) -> Option<WdaBoundedText> {
         Value::Null | Value::Array(_) | Value::Object(_) => return None,
     };
     let total_characters = value.chars().count();
-    let mut text = String::with_capacity(value.len().min(MAX_ATTRIBUTE_BYTES));
-    for character in value.chars().take(MAX_ATTRIBUTE_CHARACTERS) {
-        if text.len() + character.len_utf8() > MAX_ATTRIBUTE_BYTES {
+    let mut text = String::with_capacity(value.len().min(WDA_MAX_ATTRIBUTE_BYTES));
+    for character in value.chars().take(WDA_MAX_ATTRIBUTE_CHARACTERS) {
+        if text.len() + character.len_utf8() > WDA_MAX_ATTRIBUTE_BYTES {
             break;
         }
         text.push(character);
@@ -1132,57 +934,6 @@ fn bounded_attribute(value: Value) -> Option<WdaBoundedText> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn selectors_are_allowlisted_and_bounded() {
-        assert!(validate_selector("accessibility id", "Continue").is_ok());
-        assert!(validate_selector("-ios predicate string", "label == 'Play'").is_ok());
-        assert!(validate_selector("css selector", "button").is_err());
-        assert!(validate_selector("name", "").is_err());
-        assert!(validate_selector("xpath", "bad\nvalue").is_err());
-        assert!(validate_selector("xpath", &"x".repeat(MAX_SELECTOR_BYTES + 1)).is_err());
-    }
-
-    #[test]
-    fn semantic_action_parameters_are_bounded() {
-        assert_eq!(validate_text("你好").unwrap(), 2);
-        assert!(validate_text("").is_err());
-        assert!(validate_text("bad\0text").is_err());
-        assert!(validate_text(&"x".repeat(MAX_TEXT_CHARACTERS + 1)).is_err());
-        assert!(validate_text(&"你".repeat(MAX_TEXT_BYTES / 3 + 1)).is_err());
-
-        assert!(validate_hold_duration(MIN_HOLD_DURATION_MS).is_ok());
-        assert!(validate_hold_duration(MAX_HOLD_DURATION_MS).is_ok());
-        assert!(validate_hold_duration(MIN_HOLD_DURATION_MS - 1).is_err());
-        assert!(validate_hold_duration(MAX_HOLD_DURATION_MS + 1).is_err());
-
-        for direction in ["up", "down", "left", "right"] {
-            assert!(validate_scroll_direction(direction).is_ok());
-        }
-        assert!(validate_scroll_direction("forward").is_err());
-        assert!(validate_scroll_direction("UP").is_err());
-        assert!(validate_wait_timeout(0).is_ok());
-        assert!(validate_wait_timeout(MAX_WAIT_TIMEOUT_MS).is_ok());
-        assert!(validate_wait_timeout(MAX_WAIT_TIMEOUT_MS + 1).is_err());
-        assert!(validate_background_duration(None).is_ok());
-        assert!(validate_background_duration(Some(MIN_BACKGROUND_DURATION_MS)).is_ok());
-        assert!(validate_background_duration(Some(MAX_BACKGROUND_DURATION_MS)).is_ok());
-        assert!(validate_background_duration(Some(MIN_BACKGROUND_DURATION_MS - 1)).is_err());
-        assert!(validate_background_duration(Some(MAX_BACKGROUND_DURATION_MS + 1)).is_err());
-        for state in [
-            "present",
-            "absent",
-            "displayed",
-            "hidden",
-            "enabled",
-            "disabled",
-            "selected",
-            "unselected",
-        ] {
-            assert!(parse_wait_state(state).is_ok());
-        }
-        assert!(parse_wait_state("visible").is_err());
-    }
 
     #[test]
     fn source_is_truncated_on_character_boundaries() {
@@ -1247,9 +998,10 @@ mod tests {
         assert!(bounded_attribute(json!(null)).is_none());
         assert!(bounded_attribute(json!({ "private": "payload" })).is_none());
 
-        let bounded = bounded_attribute(json!("你".repeat(MAX_ATTRIBUTE_CHARACTERS + 1))).unwrap();
-        assert_eq!(bounded.text.chars().count(), MAX_ATTRIBUTE_CHARACTERS);
-        assert_eq!(bounded.total_characters, MAX_ATTRIBUTE_CHARACTERS + 1);
+        let bounded =
+            bounded_attribute(json!("你".repeat(WDA_MAX_ATTRIBUTE_CHARACTERS + 1))).unwrap();
+        assert_eq!(bounded.text.chars().count(), WDA_MAX_ATTRIBUTE_CHARACTERS);
+        assert_eq!(bounded.total_characters, WDA_MAX_ATTRIBUTE_CHARACTERS + 1);
         assert!(bounded.truncated);
     }
 

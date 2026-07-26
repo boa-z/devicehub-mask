@@ -9,9 +9,10 @@ use idevice::provider::IdeviceProvider;
 use idevice::services::dvt::xctest::{TestConfig, XCUITestService, listener::XCUITestListener};
 use idevice::services::installation_proxy::InstallationProxyClient;
 use idevice::services::wda::WdaClient;
-use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
+
+use devicehub_core::{WdaRunnerPhase, WdaRunnerStatus, validate_wda_runner_bundle_id};
 
 use crate::supervisor::ServiceReporter;
 
@@ -19,34 +20,6 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_ERROR_CHARS: usize = 512;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WdaRunnerPhase {
-    Stopped,
-    Starting,
-    Running,
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct WdaRunnerStatus {
-    pub phase: WdaRunnerPhase,
-    pub managed: bool,
-    pub runner_bundle_id: Option<String>,
-    pub last_error: Option<String>,
-}
-
-impl Default for WdaRunnerStatus {
-    fn default() -> Self {
-        Self {
-            phase: WdaRunnerPhase::Stopped,
-            managed: false,
-            runner_bundle_id: None,
-            last_error: None,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum WdaRunnerCommand {
@@ -120,22 +93,6 @@ struct NoopListener;
 
 impl XCUITestListener for NoopListener {}
 
-pub fn validate_runner_bundle_id(bundle_id: &str) -> Result<(), &'static str> {
-    if bundle_id.is_empty() || bundle_id.len() > 255 || !bundle_id.ends_with(".xctrunner") {
-        return Err("WDA runner bundle ID must end with .xctrunner");
-    }
-    if bundle_id.starts_with('.')
-        || bundle_id.contains("..")
-        || bundle_id.split('.').any(|segment| segment.len() > 63)
-        || bundle_id
-            .bytes()
-            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')))
-    {
-        return Err("invalid WDA runner bundle ID");
-    }
-    Ok(())
-}
-
 pub(crate) async fn serve_wda_runner(
     provider: Arc<dyn IdeviceProvider>,
     mut commands: mpsc::Receiver<WdaRunnerCommand>,
@@ -160,7 +117,7 @@ pub(crate) async fn serve_wda_runner(
                         let _ = reply.send(status.clone());
                     }
                     WdaRunnerCommand::Start { bundle_id, reply } => {
-                        if let Err(error) = validate_runner_bundle_id(&bundle_id) {
+                        if let Err(error) = validate_wda_runner_bundle_id(&bundle_id) {
                             let _ = reply.send(Err(error.into()));
                             continue;
                         }
@@ -415,16 +372,6 @@ fn bound_error(error: impl Into<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn runner_bundle_ids_are_suffix_and_character_bounded() {
-        assert!(validate_runner_bundle_id("com.example.WebDriverAgentRunner.xctrunner").is_ok());
-        assert!(validate_runner_bundle_id("com.example.Runner").is_err());
-        assert!(validate_runner_bundle_id("../bad.xctrunner").is_err());
-        assert!(validate_runner_bundle_id("com.example.bad_name.xctrunner").is_err());
-        assert!(validate_runner_bundle_id(&format!("com.{}.xctrunner", "a".repeat(64))).is_err());
-        assert!(validate_runner_bundle_id(&format!("{}.xctrunner", "a".repeat(256))).is_err());
-    }
 
     #[test]
     fn errors_are_bounded_on_character_boundaries() {

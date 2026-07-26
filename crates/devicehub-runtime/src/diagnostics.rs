@@ -5,14 +5,9 @@ mod log_archive;
 mod sysdiagnose;
 
 pub use device_backup::{
-    DeviceBackupCommand, DeviceBackupExecutor, DeviceBackupFuture, DeviceBackupPrepareFuture,
-    DeviceBackupSlot,
+    DeviceBackupCommand, DeviceBackupDestination, DeviceBackupPrepareFuture, DeviceBackupSlot,
 };
 pub(crate) use device_backup::{DeviceBackupTransport, serve as serve_device_backup};
-pub use devicehub_core::{
-    DeviceBackupState, DeviceBackupStatus, LogArchiveState, LogArchiveStatus, SysdiagnoseState,
-    SysdiagnoseStatus,
-};
 pub(crate) use log_archive::serve as serve_log_archive;
 pub use log_archive::{
     ALLOWED_LOG_ARCHIVE_AGE_LIMIT_HOURS, LogArchiveCommand, LogArchiveSlot,

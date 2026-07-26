@@ -1,12 +1,14 @@
 //! Supervised MobileBackup2 orchestration with host-injected persistence.
 
 use std::future::Future;
+use std::io::{Read, Write};
+use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devicehub_core::{ConnKind, DeviceBackupState, DeviceBackupStatus};
-use idevice::mobilebackup2::MobileBackup2Client;
+use idevice::mobilebackup2::{BackupDelegate, DirEntryInfo, FsBackupDelegate, MobileBackup2Client};
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
@@ -81,34 +83,20 @@ impl DeviceBackupTransport {
     }
 }
 
-pub type DeviceBackupPrepareFuture<'a, Prepared> =
-    Pin<Box<dyn Future<Output = Result<Prepared, String>> + Send + 'a>>;
-pub type DeviceBackupFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Option<plist::Dictionary>, IdeviceError>> + Send + 'a>>;
+pub type DeviceBackupPrepareFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<PathBuf, String>> + Send + 'a>>;
 
-/// Host boundary required because idevice's MobileBackup2 API currently uses
-/// a concrete filesystem path even when file operations are delegate-backed.
-pub trait DeviceBackupExecutor: Clone + Send + Sync + 'static {
+/// Resolves an opaque host destination to a validated local directory.
+///
+/// Hosts retain path interpretation and destination policy. The runtime owns
+/// MobileBackup2, its filesystem delegate, progress, cancellation, and client
+/// lifecycle; no device protocol type crosses this boundary.
+pub trait DeviceBackupDestination: Clone + Send + Sync + 'static {
     type Destination: Send + 'static;
-    type Prepared: Send + 'static;
 
     fn destination_name(&self, destination: &Self::Destination) -> Option<String>;
 
-    fn prepare<'a>(
-        &'a self,
-        destination: Self::Destination,
-        source_identifier: &'a str,
-    ) -> DeviceBackupPrepareFuture<'a, Self::Prepared>;
-
-    fn execute<'a>(
-        &'a self,
-        client: MobileBackup2Client,
-        prepared: Self::Prepared,
-        source_identifier: String,
-        full: bool,
-        status: DeviceBackupSlot,
-        started: Instant,
-    ) -> DeviceBackupFuture<'a>;
+    fn prepare<'a>(&'a self, destination: Self::Destination) -> DeviceBackupPrepareFuture<'a>;
 }
 
 pub(crate) async fn serve<Executor>(
@@ -119,7 +107,7 @@ pub(crate) async fn serve<Executor>(
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
 ) where
-    Executor: DeviceBackupExecutor,
+    Executor: DeviceBackupDestination,
 {
     let mut attempt = 0;
     status.reset();
@@ -180,7 +168,7 @@ enum BackupRunResult {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_backup<Executor: DeviceBackupExecutor>(
+async fn run_backup<Executor: DeviceBackupDestination>(
     transport: &mut DeviceBackupTransport,
     destination: Executor::Destination,
     full: bool,
@@ -196,16 +184,17 @@ async fn run_backup<Executor: DeviceBackupExecutor>(
         fail_start(status, reporter, attempt, error, reply);
         return BackupRunResult::Continue;
     }
-    let prepared = match executor
-        .prepare(destination, &transport.source_identifier)
-        .await
-    {
+    let prepared = match executor.prepare(destination).await {
         Ok(prepared) => prepared,
         Err(error) => {
             fail_start(status, reporter, attempt, error, reply);
             return BackupRunResult::Continue;
         }
     };
+    if let Err(error) = reject_symlink(&prepared.join(&transport.source_identifier)).await {
+        fail_start(status, reporter, attempt, error, reply);
+        return BackupRunResult::Continue;
+    }
     let client = match connect_client(transport).await {
         Ok(client) => client,
         Err(error) => {
@@ -214,14 +203,14 @@ async fn run_backup<Executor: DeviceBackupExecutor>(
         }
     };
     let started = Instant::now();
-    let mut backup = executor.execute(
+    let mut backup = Box::pin(execute_backup(
         client,
         prepared,
         transport.source_identifier.clone(),
         full,
         status.clone(),
         started,
-    );
+    ));
 
     status.update(|current| {
         current.state = DeviceBackupState::BackingUp;
@@ -310,6 +299,225 @@ fn cancel_status(status: &DeviceBackupSlot, started: Instant, reason: &str) {
         current.elapsed_ms = elapsed_ms(started);
         current.error = Some(reason.into());
     });
+}
+
+async fn reject_symlink(path: &Path) -> Result<(), String> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("the device backup directory cannot be a symbolic link".into())
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            Err("the existing device backup path is not a directory".into())
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "unable to inspect the device backup directory: {error}"
+        )),
+    }
+}
+
+async fn execute_backup(
+    mut client: MobileBackup2Client,
+    destination: PathBuf,
+    source_identifier: String,
+    full: bool,
+    status: DeviceBackupSlot,
+    started: Instant,
+) -> Result<Option<plist::Dictionary>, IdeviceError> {
+    let delegate = ConfinedBackupDelegate::new(destination.clone(), status, started);
+    let mut options = plist::Dictionary::new();
+    if full {
+        options.insert("ForceFullBackup".into(), plist::Value::Boolean(true));
+    }
+    let options = (!options.is_empty()).then_some(options);
+    let result = client
+        .backup_from_path(&destination, Some(&source_identifier), options, &delegate)
+        .await;
+    if result.is_ok() {
+        let _ = client.disconnect().await;
+    }
+    result
+}
+
+#[derive(Default)]
+struct DelegateProgress {
+    completed_batches: u64,
+    last_batch_count: u32,
+}
+
+/// Constrains every delegate operation to the canonical destination selected
+/// by the host. Existing path components are checked before each operation so
+/// an incremental backup cannot escape through a replaced symbolic link.
+struct ConfinedBackupDelegate {
+    fs: FsBackupDelegate,
+    root: PathBuf,
+    status: DeviceBackupSlot,
+    started: Instant,
+    progress: Mutex<DelegateProgress>,
+}
+
+impl ConfinedBackupDelegate {
+    fn new(root: PathBuf, status: DeviceBackupSlot, started: Instant) -> Self {
+        Self {
+            fs: FsBackupDelegate,
+            root,
+            status,
+            started,
+            progress: Mutex::new(DelegateProgress::default()),
+        }
+    }
+
+    async fn validate_path(&self, path: &Path) -> Result<(), IdeviceError> {
+        let relative = path.strip_prefix(&self.root).map_err(|_| {
+            IdeviceError::InternalError("backup path escaped the selected directory".into())
+        })?;
+        let mut current = self.root.clone();
+        for component in relative.components() {
+            let Component::Normal(component) = component else {
+                return Err(IdeviceError::InternalError(
+                    "backup path contains an unsafe component".into(),
+                ));
+            };
+            current.push(component);
+            match tokio::fs::symlink_metadata(&current).await {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(IdeviceError::InternalError(
+                        "backup path traverses a symbolic link".into(),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(IdeviceError::InternalError(error.to_string())),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BackupDelegate for ConfinedBackupDelegate {
+    fn get_free_disk_space(&self, _path: &Path) -> u64 {
+        self.fs.get_free_disk_space(&self.root)
+    }
+
+    fn open_file_read<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Read + Send>, IdeviceError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.validate_path(path).await?;
+            self.fs.open_file_read(path).await
+        })
+    }
+
+    fn create_file_write<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Write + Send>, IdeviceError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            self.validate_path(path).await?;
+            self.fs.create_file_write(path).await
+        })
+    }
+
+    fn create_dir_all<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), IdeviceError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.validate_path(path).await?;
+            self.fs.create_dir_all(path).await
+        })
+    }
+
+    fn remove<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), IdeviceError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.validate_path(path).await?;
+            self.fs.remove(path).await
+        })
+    }
+
+    fn rename<'a>(
+        &'a self,
+        from: &'a Path,
+        to: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), IdeviceError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.validate_path(from).await?;
+            self.validate_path(to).await?;
+            self.fs.rename(from, to).await
+        })
+    }
+
+    fn copy<'a>(
+        &'a self,
+        source: &'a Path,
+        destination: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), IdeviceError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.validate_path(source).await?;
+            self.validate_path(destination).await?;
+            self.fs.copy(source, destination).await
+        })
+    }
+
+    fn exists<'a>(&'a self, path: &'a Path) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(
+            async move { self.validate_path(path).await.is_ok() && self.fs.exists(path).await },
+        )
+    }
+
+    fn is_dir<'a>(&'a self, path: &'a Path) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(
+            async move { self.validate_path(path).await.is_ok() && self.fs.is_dir(path).await },
+        )
+    }
+
+    fn list_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<DirEntryInfo>, IdeviceError>> + Send + 'a>> {
+        Box::pin(async move {
+            self.validate_path(path).await?;
+            self.fs.list_dir(path).await
+        })
+    }
+
+    fn on_file_received(&self, _path: &str, file_count: u32) {
+        let total = {
+            let mut progress = self
+                .progress
+                .lock()
+                .expect("device backup progress lock poisoned");
+            if file_count <= progress.last_batch_count && progress.last_batch_count > 0 {
+                progress.completed_batches = progress
+                    .completed_batches
+                    .saturating_add(progress.last_batch_count as u64);
+            }
+            progress.last_batch_count = file_count;
+            progress.completed_batches.saturating_add(file_count as u64)
+        };
+        self.status.update(|current| current.files_received = total);
+    }
+
+    fn on_progress(&self, bytes_done: u64, bytes_total: u64, overall_progress: f64) {
+        self.status.update(|current| {
+            current.bytes_done = bytes_done;
+            current.bytes_total = bytes_total;
+            current.progress_percent = if overall_progress.is_finite() && overall_progress >= 0.0 {
+                Some(overall_progress.clamp(0.0, 100.0))
+            } else if bytes_total > 0 {
+                Some((bytes_done as f64 * 100.0 / bytes_total as f64).clamp(0.0, 100.0))
+            } else {
+                None
+            };
+            current.elapsed_ms = elapsed_ms(self.started);
+        });
+    }
 }
 
 async fn connect_client(
@@ -449,5 +657,37 @@ mod tests {
         );
         assert!(validate_final_response(Some(response)).is_err());
         assert!(validate_final_response(None).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn confined_delegate_rejects_symbolic_link_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "devicehub-runtime-backup-root-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "devicehub-runtime-backup-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        tokio::fs::create_dir_all(&outside).await.unwrap();
+        symlink(&outside, root.join("device")).unwrap();
+        let root = tokio::fs::canonicalize(&root).await.unwrap();
+        let delegate =
+            ConfinedBackupDelegate::new(root.clone(), DeviceBackupSlot::default(), Instant::now());
+
+        assert!(
+            delegate
+                .create_file_write(&root.join("device/Manifest.db"))
+                .await
+                .is_err()
+        );
+        assert!(reject_symlink(&root.join("device")).await.is_err());
+
+        tokio::fs::remove_dir_all(&root).await.unwrap();
+        tokio::fs::remove_dir_all(&outside).await.unwrap();
     }
 }

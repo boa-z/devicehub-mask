@@ -63,7 +63,7 @@ pub(crate) async fn crash_report_summary(
     State(state): State<CrashReportHttpState>,
     Query(query): Query<CrashReportSummaryQuery>,
 ) -> Result<Json<devicehub_core::DeviceCrashReportSummary>, (StatusCode, String)> {
-    devicehub_runtime::validate_crash_report_path(&query.device_path)
+    devicehub_core::validate_crash_report_path(&query.device_path)
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     require_active_session(state.input.try_send(InputCmd::ReadCrashReport {

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";
 const metadata = spawnSync(
@@ -69,6 +70,47 @@ function checkBoundary(packageName, forbidden) {
 checkBoundary("devicehub-core", coreForbidden);
 checkBoundary("devicehub-runtime", runtimeForbidden);
 
+function rustSources(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return rustSources(path);
+    return entry.isFile() && entry.name.endsWith(".rs") ? [path] : [];
+  });
+}
+
+function productionSource(source) {
+  // Runtime tests may use temporary directories. Production items precede the
+  // conventional trailing test module in every runtime source file.
+  const testModule = source.search(/#\[cfg\(test\)\]\s*mod tests\s*\{/u);
+  return testModule === -1 ? source : source.slice(0, testModule);
+}
+
+const runtimeHostResolutionForbidden = [
+  "std::env",
+  "std::process",
+  "tokio::process",
+  "Command::new",
+  "current_exe",
+  "ffmpeg",
+];
+const runtimeHostResolutionViolations = rustSources(
+  "crates/devicehub-runtime/src",
+).flatMap((sourcePath) => {
+  const source = productionSource(readFileSync(sourcePath, "utf8"));
+  return runtimeHostResolutionForbidden
+    .filter((token) => source.toLowerCase().includes(token.toLowerCase()))
+    .map((token) => `${sourcePath}: ${token}`);
+});
+if (runtimeHostResolutionViolations.length > 0) {
+  console.error(
+    `Rust boundary check failed: devicehub-runtime resolves host environment or processes: ${runtimeHostResolutionViolations.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log(
+  "devicehub-runtime production code receives host environment and process capabilities through ports.",
+);
+
 const hostApiForbidden = ["std::path", "std::fs", "tokio::fs", "std::env"];
 for (const [service, sourcePath] of [
   ["public AFC", "crates/devicehub-runtime/src/storage/public.rs"],
@@ -84,7 +126,6 @@ for (const [service, sourcePath] of [
   ],
   ["sysdiagnose", "crates/devicehub-runtime/src/diagnostics/sysdiagnose.rs"],
   ["log archive", "crates/devicehub-runtime/src/diagnostics/log_archive.rs"],
-  ["device backup", "crates/devicehub-runtime/src/diagnostics/device_backup.rs"],
   ["device details", "crates/devicehub-runtime/src/device/details.rs"],
   ["crash report exports", "crates/devicehub-runtime/src/device/crash_reports.rs"],
   ["provisioning profiles", "crates/devicehub-runtime/src/device/provisioning.rs"],
@@ -186,8 +227,10 @@ const retainedTauriOwnership = forbiddenTauriSessionOwnership.filter(
 );
 if (
   retainedTauriOwnership.length > 0 ||
-  !tauriSessionManager.includes("SessionManager::new(") ||
-  !tauriSessionManager.includes(".run(")
+  !tauriSessionManager.includes("devicehub_runtime::start_runtime(") ||
+  !tauriSessionManager.includes("RuntimeHostAdapters {") ||
+  tauriSessionManager.includes("SessionManager") ||
+  tauriSessionManager.includes(".run(")
 ) {
   console.error(
     `Rust boundary check failed: Tauri retained connected session orchestration: ${retainedTauriOwnership.join(", ")}`,
@@ -227,7 +270,10 @@ const runtimeSessionManager = readFileSync(
   "utf8",
 );
 const requiredManagerOwnership = [
-  "pub struct SessionManager",
+  "pub struct RuntimeHostAdapters",
+  "struct SessionManager",
+  "pub fn start_runtime<",
+  "pub(crate) async fn run(",
   "DeviceDiscovery<",
   "DeviceDiscovery::new(",
   "SessionRetryPolicy::default()",
@@ -244,6 +290,7 @@ const forbiddenTauriManagerOwnership = [
   "DeviceDiscovery",
   "enum Next",
   "SessionRetryPolicy",
+  "SessionManager",
   "run_connected_session(",
   "run_session_manager(",
   "pair_device(",
@@ -275,6 +322,7 @@ const tauriRuntimeOwner = readFileSync(
 );
 const requiredRuntimeOwner = [
   "pub struct CoreRuntime",
+  "pub(crate) fn start<State, Build, Task>",
   "std::thread::Builder::new()",
   ".stack_size(OWNER_THREAD_STACK_BYTES)",
   "tokio::task::LocalSet::new()",
@@ -297,7 +345,12 @@ const retainedTauriRuntimeOwner = forbiddenTauriRuntimeOwner.filter(
 if (
   missingRuntimeOwner.length > 0 ||
   retainedTauriRuntimeOwner.length > 0 ||
-  !tauriRuntimeOwner.includes("devicehub_runtime::CoreRuntime::start(")
+  readFileSync("crates/devicehub-runtime/src/lib.rs", "utf8").includes(
+    "CoreRuntimeFuture",
+  ) ||
+  tauriRuntimeOwner.includes("devicehub_runtime::CoreRuntime::start(") ||
+  tauriRuntimeOwner.includes("CoreRuntimeFuture") ||
+  !tauriRuntimeOwner.includes("crate::session::start_manager(")
 ) {
   console.error(
     `Rust boundary check failed: CoreRuntime lifecycle ownership drifted (runtime missing: ${missingRuntimeOwner.join(", ")}; Tauri retained: ${retainedTauriRuntimeOwner.join(", ")})`,
@@ -310,10 +363,219 @@ const runtimeFacade = readFileSync(
   "crates/devicehub-runtime/src/lib.rs",
   "utf8",
 );
+const runtimeInput = readFileSync(
+  "crates/devicehub-runtime/src/input/dispatcher.rs",
+  "utf8",
+);
+const coreInput = readFileSync("crates/devicehub-core/src/input.rs", "utf8");
+const runtimeHid = readFileSync(
+  "crates/devicehub-runtime/src/input/hid.rs",
+  "utf8",
+);
+const runtimeSupervisor = readFileSync(
+  "crates/devicehub-runtime/src/supervisor.rs",
+  "utf8",
+);
+const publicInputFacade = runtimeFacade.match(/pub use input::\{([^}]*)\};/)?.[1] ?? "";
+const publicSupervisorFacade =
+  runtimeFacade.match(/pub use supervisor::\{([^}]*)\};/)?.[1] ?? "";
+const forbiddenExecutionExports = [
+  "DeviceInputDispatcher",
+  "ServiceReporter",
+  "ServiceSupervisor",
+  "reconnect_backoff",
+  "wait_for_retry",
+];
+const exposedExecutionInternals = forbiddenExecutionExports.filter(
+  (name) =>
+    publicInputFacade.includes(name) || publicSupervisorFacade.includes(name),
+);
+if (
+  exposedExecutionInternals.length > 0 ||
+  runtimeInput.includes("pub struct DeviceInputDispatcher") ||
+  runtimeInput.includes("pub async fn dispatch(") ||
+  runtimeSupervisor.includes("pub struct ServiceReporter") ||
+  runtimeSupervisor.includes("pub struct ServiceSupervisor") ||
+  runtimeSupervisor.includes("pub fn reconnect_backoff(") ||
+  runtimeSupervisor.includes("pub async fn wait_for_retry(") ||
+  !coreInput.includes("pub enum DeviceInputCommand") ||
+  !coreInput.includes("pub struct TouchContact") ||
+  runtimeInput.includes("pub enum DeviceInputCommand") ||
+  runtimeHid.includes("pub struct TouchContact") ||
+  runtimeFacade.includes("pub use input::{DeviceInputCommand")
+) {
+  console.error(
+    `Rust boundary check failed: runtime execution internals escaped the public facade: ${exposedExecutionInternals.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log(
+  "devicehub-core owns input commands while runtime execution internals stay private.",
+);
+
+const runtimeCaptureFacade = readFileSync(
+  "crates/devicehub-runtime/src/capture.rs",
+  "utf8",
+);
+const runtimeDiagnosticsFacade = readFileSync(
+  "crates/devicehub-runtime/src/diagnostics.rs",
+  "utf8",
+);
+const runtimeCrashReports = readFileSync(
+  "crates/devicehub-runtime/src/device/crash_reports.rs",
+  "utf8",
+);
+const tauriCaptureBindings = [
+  readFileSync("src-tauri/src/network_capture.rs", "utf8"),
+  readFileSync("src-tauri/src/bluetooth_capture.rs", "utf8"),
+].join("\n");
+const tauriDiagnosticBindings = [
+  readFileSync("src-tauri/src/device_backup.rs", "utf8"),
+  readFileSync("src-tauri/src/sysdiagnose.rs", "utf8"),
+  readFileSync("src-tauri/src/log_archive.rs", "utf8"),
+].join("\n");
+if (
+  runtimeCaptureFacade.includes("pub use devicehub_core") ||
+  runtimeDiagnosticsFacade.includes("pub use devicehub_core") ||
+  runtimeCrashReports.includes("pub use devicehub_core::validate_crash_report_path") ||
+  runtimeFacade.includes("validate_crash_report_path,") ||
+  !tauriCaptureBindings.includes("pub(crate) use devicehub_core::") ||
+  !tauriDiagnosticBindings.includes("pub(crate) use devicehub_core::")
+) {
+  console.error(
+    "Rust boundary check failed: capture or diagnostic domain values are re-exported through runtime",
+  );
+  process.exit(1);
+}
+console.log("devicehub-core owns capture and diagnostic domain values directly.");
+
+const coreDeviceLogs = readFileSync(
+  "crates/devicehub-core/src/device_logs.rs",
+  "utf8",
+);
+const runtimeDeviceLogs = readFileSync(
+  "crates/devicehub-runtime/src/device/logs.rs",
+  "utf8",
+);
+const tauriDeviceLogAdapters = [
+  readFileSync("src-tauri/src/http_performance.rs", "utf8"),
+  readFileSync("src-tauri/src/mcp.rs", "utf8"),
+].join("\n");
+const deviceLogDomainDefinitions = [
+  "pub struct DeviceLogBatch",
+  "pub struct DeviceLogEntry",
+  "pub enum DeviceLogLevel",
+  "pub enum DeviceLogSource",
+  "pub const MAX_DEVICE_LOG_BATCH_ENTRIES",
+];
+const missingCoreDeviceLogs = deviceLogDomainDefinitions.filter(
+  (definition) => !coreDeviceLogs.includes(definition),
+);
+if (
+  missingCoreDeviceLogs.length > 0 ||
+  /pub (struct|enum) DeviceLog(Batch|Entry|Level|Source)/u.test(
+    runtimeDeviceLogs,
+  ) ||
+  runtimeFacade.includes("DeviceLogBatch") ||
+  runtimeFacade.includes("DeviceLogEntry") ||
+  runtimeFacade.includes("DeviceLogLevel") ||
+  runtimeFacade.includes("DeviceLogSource") ||
+  runtimeFacade.includes("MAX_DEVICE_LOG_BATCH_ENTRIES") ||
+  tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceLogBatch") ||
+  tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceLogEntry") ||
+  tauriDeviceLogAdapters.includes("devicehub_runtime::DeviceLogLevel") ||
+  !tauriDeviceLogAdapters.includes("devicehub_core::DeviceLogBatch") ||
+  !tauriDeviceLogAdapters.includes("use devicehub_core::{")
+) {
+  console.error(
+    `Rust boundary check failed: device log domain values are not owned directly by core: ${missingCoreDeviceLogs.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-core owns device log domain values directly.");
+
+const coreWda = readFileSync(
+  "crates/devicehub-core/src/applications/wda.rs",
+  "utf8",
+);
+const runtimeWdaAutomation = readFileSync(
+  "crates/devicehub-runtime/src/applications/wda_automation.rs",
+  "utf8",
+);
+const runtimeWdaRunner = readFileSync(
+  "crates/devicehub-runtime/src/applications/wda_runner.rs",
+  "utf8",
+);
+const tauriWdaAdapters = [
+  readFileSync("src-tauri/src/mcp.rs", "utf8"),
+  readFileSync("src-tauri/src/web.rs", "utf8"),
+].join("\n");
+const requiredCoreWda = [
+  "pub const WDA_MAX_ELEMENTS",
+  "pub struct WdaStatus",
+  "pub struct WdaDeviceState",
+  "pub struct WdaElementDetails",
+  "pub struct WdaElementWaitResult",
+  "pub struct WdaRunnerStatus",
+  "pub enum WdaElementWaitState",
+  "pub enum WdaRunnerPhase",
+  "pub fn validate_wda_selector",
+  "pub fn validate_wda_text",
+  "pub fn validate_wda_runner_bundle_id",
+];
+const missingCoreWda = requiredCoreWda.filter(
+  (definition) => !coreWda.includes(definition),
+);
+const forbiddenRuntimeWdaExports = [
+  "WdaBoundedText",
+  "WdaDeviceState",
+  "WdaElementDetails",
+  "WdaElementWaitResult",
+  "WdaElementWaitState",
+  "WdaOrientation",
+  "WdaRect",
+  "WdaRunnerPhase",
+  "WdaRunnerStatus",
+  "WdaSize",
+  "WdaStatus",
+  "WdaUiTree",
+  "WdaUnlockResult",
+  "validate_wda_selector",
+  "validate_wda_runner_bundle_id",
+];
+const exposedRuntimeWda = forbiddenRuntimeWdaExports.filter((name) =>
+  runtimeFacade.includes(name),
+);
+if (
+  missingCoreWda.length > 0 ||
+  exposedRuntimeWda.length > 0 ||
+  /pub (struct|enum) Wda(?!AutomationCommand|RunnerCommand)/u.test(
+    `${runtimeWdaAutomation}\n${runtimeWdaRunner}`,
+  ) ||
+  /devicehub_runtime::Wda(?!AutomationCommand|RunnerCommand)/u.test(
+    tauriWdaAdapters,
+  ) ||
+  tauriWdaAdapters.includes("devicehub_runtime::validate_runner_bundle_id") ||
+  tauriWdaAdapters.includes("devicehub_runtime::validate_selector") ||
+  !runtimeWdaAutomation.includes("use devicehub_core::{") ||
+  !runtimeWdaRunner.includes("use devicehub_core::{") ||
+  !tauriWdaAdapters.includes("devicehub_core::WdaRunnerStatus") ||
+  !tauriWdaAdapters.includes("devicehub_core::validate_wda_selector")
+) {
+  console.error(
+    `Rust boundary check failed: WDA domain values or policy escaped core ownership (missing: ${missingCoreWda.join(", ")}; runtime exports: ${exposedRuntimeWda.join(", ")})`,
+  );
+  process.exit(1);
+}
+console.log(
+  "devicehub-core owns WDA domain values and policy while runtime owns execution commands.",
+);
+
 const publicTransportFacade = runtimeFacade.match(
   /pub use transport::\{([\s\S]*?)\};/,
 )?.[1] ?? "";
 const forbiddenTransportExports = [
+  "CoreTunnelConfig",
   "DeviceDiscovery",
   "SessionEndpoint",
   "UsbmuxdEndpoint",
@@ -354,29 +616,70 @@ if (
 console.log("devicehub-runtime transport protocol types stay private.");
 
 const tauriPairingStore = readFileSync("src-tauri/src/wifi_devices.rs", "utf8");
-const requiredRemotePairingPort = [
-  "pub trait RemotePairingStore",
+const requiredPairingPort = [
+  "pub trait PairingStore",
+  "fn load_lockdown_pairings(&self)",
+  "fn save_lockdown_pairing(&self, udid: &str, bytes: &[u8])",
+  "fn remove_lockdown_pairing(&self, udid: &str)",
   "fn load_remote_pairing(&self, udid: &str)",
   "fn save_remote_pairing(&self, udid: &str, bytes: &[u8])",
   "fn remove_remote_pairing(&self, udid: &str)",
 ];
-const missingRemotePairingPort = requiredRemotePairingPort.filter(
+const missingPairingPort = requiredPairingPort.filter(
   (signature) => !runtimeTransport.includes(signature),
 );
 if (
-  missingRemotePairingPort.length > 0 ||
+  missingPairingPort.length > 0 ||
   runtimeTransport.includes("use std::path") ||
   runtimeTransport.includes("pairing_dir") ||
   runtimeTransport.includes("RpPairingFile::read_from_file") ||
   runtimeTransport.includes(".write_to_file(") ||
-  !tauriPairingStore.includes("impl RemotePairingStore for HostPairingStore")
+  !runtimeTransport.includes("pub(crate) struct CoreTunnelConfig") ||
+  !tauriPairingStore.includes("impl PairingStore for HostPairingStore") ||
+  tauriPairingStore.includes("impl RemotePairingStore") ||
+  tauriPairingStore.includes("impl WifiPairingStore")
 ) {
   console.error(
-    `Rust boundary check failed: CoreDevice remote pairing storage is not host-injected (missing port: ${missingRemotePairingPort.join(", ")})`,
+    `Rust boundary check failed: device pairing storage is not unified behind the host port (missing port: ${missingPairingPort.join(", ")})`,
   );
   process.exit(1);
 }
-console.log("devicehub-runtime remote pairing storage is host-injected.");
+console.log("devicehub-runtime pairing storage is unified and host-injected.");
+
+const tauriManifest = readFileSync("src-tauri/Cargo.toml", "utf8");
+const tauriBackup = readFileSync("src-tauri/src/device_backup.rs", "utf8");
+const runtimeBackup = readFileSync(
+  "crates/devicehub-runtime/src/diagnostics/device_backup.rs",
+  "utf8",
+);
+const publicBackupPort = runtimeBackup.match(
+  /pub trait DeviceBackupDestination[\s\S]*?\n\}/,
+)?.[0] ?? "";
+const forbiddenBackupPortTypes = [
+  "MobileBackup2Client",
+  "BackupDelegate",
+  "IdeviceError",
+];
+const leakedBackupTypes = forbiddenBackupPortTypes.filter((name) =>
+  publicBackupPort.includes(name),
+);
+const retainedTauriBackupProtocol = forbiddenBackupPortTypes.filter((name) =>
+  tauriBackup.includes(name),
+);
+if (
+  /(^|\n)idevice\s*=/.test(tauriManifest) ||
+  leakedBackupTypes.length > 0 ||
+  retainedTauriBackupProtocol.length > 0 ||
+  !runtimeBackup.includes("impl BackupDelegate for ConfinedBackupDelegate") ||
+  !runtimeBackup.includes(".backup_from_path(") ||
+  !tauriBackup.includes("impl devicehub_runtime::DeviceBackupDestination")
+) {
+  console.error(
+    `Rust boundary check failed: MobileBackup2 ownership escaped runtime (public port: ${leakedBackupTypes.join(", ")}; Tauri: ${retainedTauriBackupProtocol.join(", ")})`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-runtime owns MobileBackup2 behind a host destination port.");
 
 const tauriSessionComposition = readFileSync(
   "src-tauri/src/session/manager.rs",
@@ -414,8 +717,8 @@ const exposedSessionInternals = forbiddenSessionExports.filter((name) =>
   runtimeSessionFacade.includes(name),
 );
 const requiredRuntimeState = [
-  "pub struct CoreRuntimeState<HostPath>",
-  "pub fn client(",
+  "pub(crate) struct CoreRuntimeState<HostPath>",
+  "pub(crate) fn client(",
   "pub(crate) fn manager_views(&self)",
   "RuntimeServiceViews {",
   "RuntimeHostServiceViews {",
@@ -451,11 +754,24 @@ if (
   tauriFacadeRoot.includes("mod application;") ||
   tauriFacadeRoot.includes("mod domain;") ||
   tauriFacadeRoot.includes("mod protocol;") ||
-  !tauriRuntimeOwner.includes("CoreRuntimeState::<PathBuf>::default()") ||
-  !tauriRuntimeOwner.includes("state.client(control.clone())") ||
-  !tauriSessionComposition.includes("SessionManager::new(") ||
-  !tauriSessionComposition.includes(".run(") ||
-  !tauriSessionComposition.includes("        state,") ||
+  runtimeFacade.includes("CoreRuntimeState") ||
+  tauriRuntimeOwner.includes("CoreRuntimeState") ||
+  tauriRuntimeOwner.includes("RuntimeServices") ||
+  tauriRuntimeOwner.includes("from_state(") ||
+  !runtimeSessionManager.includes("CoreRuntimeState::<Files::Path>::default()") ||
+  !runtimeSessionManager.includes("let client = state.client(control);") ||
+  !runtimeSessionManager.includes("CoreRuntime::start(") ||
+  !tauriSessionComposition.includes("devicehub_runtime::start_runtime(") ||
+  !tauriSessionComposition.includes("RuntimeHostAdapters {") ||
+  !tauriSessionComposition.includes("pairing_store,") ||
+  !tauriSessionComposition.includes("system_usbmuxd: transport.system_usbmuxd") ||
+  !runtimeSessionManager.includes(
+    "CoreTunnelConfig::new(pairing_store.clone(), system_usbmuxd)",
+  ) ||
+  !runtimeSessionManager.includes("pairing_store.map(Arc::new)") ||
+  tauriSessionComposition.includes("CoreTunnelConfig") ||
+  tauriSessionComposition.includes("SessionManager") ||
+  tauriSessionComposition.includes(".run(") ||
   tauriSessionComposition.includes("state.manager_views()")
 ) {
   console.error(
@@ -464,6 +780,37 @@ if (
   process.exit(1);
 }
 console.log("devicehub-runtime owns the single shared runtime state graph.");
+
+const runtimeClient = readFileSync(
+  "crates/devicehub-runtime/src/client.rs",
+  "utf8",
+);
+const requiredRuntimeClientState = [
+  "pub browser_frames: BrowserVideoSlot",
+  "pub video_counters: VideoCounters",
+  "pub clipboard: ClipboardSlot",
+  "pub network_capture: NetworkCaptureSlot",
+  "pub bluetooth_capture: BluetoothCaptureSlot",
+  "pub device_backup: DeviceBackupSlot",
+  "pub sysdiagnose: SysdiagnoseSlot",
+  "pub log_archive: LogArchiveSlot",
+  "pub developer_image: DeveloperImageMountSlot",
+  "pub app_operation: AppOperationSlot",
+  "pub app_documents: AppDocumentActivitySlot",
+  "pub device_files: DeviceFileActivitySlot",
+  "pub service_registry: ServiceRegistry",
+  "pub commands: SessionCommandSlot<HostPath>",
+];
+const missingRuntimeClientState = requiredRuntimeClientState.filter(
+  (signature) => !runtimeClient.includes(signature),
+);
+if (missingRuntimeClientState.length > 0) {
+  console.error(
+    `Rust boundary check failed: RuntimeClient does not expose the complete host state surface: ${missingRuntimeClientState.join(", ")}`,
+  );
+  process.exit(1);
+}
+console.log("devicehub-runtime RuntimeClient owns the complete host state surface.");
 
 const publicMediaFacade = runtimeFacade.match(
   /pub use media::\{([\s\S]*?)\n\};/,

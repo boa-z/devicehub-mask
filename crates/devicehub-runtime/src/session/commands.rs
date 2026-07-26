@@ -2,7 +2,7 @@
 
 use devicehub_core::{
     CompanionDevice, DeviceCrashReportContent, DeviceCrashReportList, DeviceDetails,
-    ForgetDeviceResult, HomeScreenLayout, PairDeviceResult, WallpaperKind,
+    DeviceInputCommand, ForgetDeviceResult, HomeScreenLayout, PairDeviceResult, WallpaperKind,
 };
 use std::sync::{Arc, Mutex};
 
@@ -11,9 +11,9 @@ use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use crate::{
     AppCommand, AppConsoleCommand, AppDocumentCommand, AppLifecycleCommand,
     BluetoothCaptureCommand, DeveloperImageMountCommand, DeveloperModeCommand, DeviceBackupCommand,
-    DeviceConditionCommand, DeviceFileCommand, DeviceInputCommand, LogArchiveCommand,
-    NetworkCaptureCommand, ProvisioningCommand, RunningProcessCommand, SysdiagnoseCommand,
-    WdaAutomationCommand, WdaRunnerCommand,
+    DeviceConditionCommand, DeviceFileCommand, LogArchiveCommand, NetworkCaptureCommand,
+    ProvisioningCommand, RunningProcessCommand, SysdiagnoseCommand, WdaAutomationCommand,
+    WdaRunnerCommand,
 };
 
 /// A command from any host adapter to the active device session.

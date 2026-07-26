@@ -39,7 +39,7 @@ impl ServiceRegistry {
         self.0.lock().unwrap().values().cloned().collect()
     }
 
-    pub fn clear(&self) {
+    pub(crate) fn clear(&self) {
         self.0.lock().unwrap().clear();
     }
 
@@ -66,23 +66,23 @@ impl ServiceRegistry {
 }
 
 #[derive(Clone)]
-pub struct ServiceReporter {
+pub(crate) struct ServiceReporter {
     name: Arc<str>,
     registry: ServiceRegistry,
 }
 
 impl ServiceReporter {
-    pub fn connecting(&self, attempt: u32) {
+    pub(crate) fn connecting(&self, attempt: u32) {
         self.registry
             .update(&self.name, ServicePhase::Connecting, attempt, None);
     }
 
-    pub fn ready(&self, attempt: u32) {
+    pub(crate) fn ready(&self, attempt: u32) {
         self.registry
             .update(&self.name, ServicePhase::Ready, attempt, None);
     }
 
-    pub fn recovering(&self, attempt: u32, error: impl Into<String>) {
+    pub(crate) fn recovering(&self, attempt: u32, error: impl Into<String>) {
         let error = error.into();
         tracing::warn!(
             component = "service_supervisor",
@@ -95,7 +95,7 @@ impl ServiceReporter {
             .update(&self.name, ServicePhase::Recovering, attempt, Some(error));
     }
 
-    pub fn unavailable(&self, attempt: u32, error: impl Into<String>) {
+    pub(crate) fn unavailable(&self, attempt: u32, error: impl Into<String>) {
         self.registry.update(
             &self.name,
             ServicePhase::Unavailable,
@@ -104,7 +104,7 @@ impl ServiceReporter {
         );
     }
 
-    pub fn retrying(&self, attempt: u32, error: impl Into<String>) {
+    pub(crate) fn retrying(&self, attempt: u32, error: impl Into<String>) {
         let error = error.into();
         if attempt >= 3 {
             self.unavailable(attempt, error);
@@ -113,20 +113,20 @@ impl ServiceReporter {
         }
     }
 
-    pub fn stopped(&self, attempt: u32) {
+    pub(crate) fn stopped(&self, attempt: u32) {
         self.registry
             .update(&self.name, ServicePhase::Stopped, attempt, None);
     }
 }
 
-pub struct ServiceSupervisor {
+pub(crate) struct ServiceSupervisor {
     registry: ServiceRegistry,
     shutdown: watch::Sender<bool>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl ServiceSupervisor {
-    pub fn new(registry: ServiceRegistry) -> Self {
+    pub(crate) fn new(registry: ServiceRegistry) -> Self {
         registry.clear();
         let (shutdown, _) = watch::channel(false);
         Self {
@@ -136,22 +136,22 @@ impl ServiceSupervisor {
         }
     }
 
-    pub fn reporter(&self, name: &'static str) -> ServiceReporter {
+    pub(crate) fn reporter(&self, name: &'static str) -> ServiceReporter {
         ServiceReporter {
             name: Arc::from(name),
             registry: self.registry.clone(),
         }
     }
 
-    pub fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+    pub(crate) fn shutdown_receiver(&self) -> watch::Receiver<bool> {
         self.shutdown.subscribe()
     }
 
-    pub fn spawn(&mut self, task: impl Future<Output = ()> + 'static) {
+    pub(crate) fn spawn(&mut self, task: impl Future<Output = ()> + 'static) {
         self.tasks.push(tokio::task::spawn_local(task));
     }
 
-    pub async fn shutdown(&mut self) {
+    pub(crate) async fn shutdown(&mut self) {
         let _ = self.shutdown.send(true);
         for mut task in self.tasks.drain(..) {
             if tokio::time::timeout(SHUTDOWN_GRACE, &mut task)
@@ -173,11 +173,11 @@ impl Drop for ServiceSupervisor {
     }
 }
 
-pub fn reconnect_backoff(attempt: u32) -> Duration {
+pub(crate) fn reconnect_backoff(attempt: u32) -> Duration {
     Duration::from_millis(500_u64.saturating_mul(1_u64 << attempt.min(4))).min(MAX_BACKOFF)
 }
 
-pub async fn wait_for_retry(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
+pub(crate) async fn wait_for_retry(shutdown: &mut watch::Receiver<bool>, delay: Duration) -> bool {
     if *shutdown.borrow() {
         return false;
     }

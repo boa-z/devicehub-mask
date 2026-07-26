@@ -10,6 +10,7 @@ mod clipboard;
 mod device;
 mod device_conditions;
 mod device_events;
+mod device_logs;
 mod diagnostics;
 mod home_screen;
 mod input;
@@ -22,7 +23,16 @@ mod state;
 pub use applications::{
     AppLifecycleStatus, AppLifecycleWaitResult, AppOperationKind, AppOperationState,
     AppOperationView, AppSigningKind, DeviceApp, RunningProcess, RunningProcessList,
-    RunningProcessStatus, RunningProcessWaitResult, process_executable_belongs_to_app,
+    RunningProcessStatus, RunningProcessWaitResult, WDA_DEFAULT_SOURCE_CHARS,
+    WDA_MAX_ATTRIBUTE_BYTES, WDA_MAX_ATTRIBUTE_CHARACTERS, WDA_MAX_BACKGROUND_DURATION_MS,
+    WDA_MAX_ELEMENTS, WDA_MAX_HOLD_DURATION_MS, WDA_MAX_SELECTOR_BYTES, WDA_MAX_SOURCE_CHARS,
+    WDA_MAX_TEXT_BYTES, WDA_MAX_TEXT_CHARACTERS, WDA_MAX_WAIT_TIMEOUT_MS,
+    WDA_MIN_BACKGROUND_DURATION_MS, WDA_MIN_HOLD_DURATION_MS, WdaBoundedText, WdaDeviceState,
+    WdaElement, WdaElementDetails, WdaElementWaitResult, WdaElementWaitState, WdaOrientation,
+    WdaRect, WdaRunnerPhase, WdaRunnerStatus, WdaSize, WdaStatus, WdaUiTree, WdaUnlockResult,
+    parse_wda_wait_state, process_executable_belongs_to_app, validate_wda_background_duration,
+    validate_wda_hold_duration, validate_wda_runner_bundle_id, validate_wda_scroll_direction,
+    validate_wda_selector, validate_wda_text, validate_wda_wait_timeout,
 };
 pub use capture::{
     BluetoothCaptureState, BluetoothCaptureStatus, BluetoothCaptureStopReason, NetworkCaptureState,
@@ -38,6 +48,9 @@ pub use device_conditions::{
     ActiveDeviceCondition, DeviceConditionGroup, DeviceConditionProfile, DeviceConditionStatus,
 };
 pub use device_events::{DeviceEvent, DeviceEventKind};
+pub use device_logs::{
+    DeviceLogBatch, DeviceLogEntry, DeviceLogLevel, DeviceLogSource, MAX_DEVICE_LOG_BATCH_ENTRIES,
+};
 pub use diagnostics::{
     CrashReportFormat, CrashReportKind, DeviceBackupState, DeviceBackupStatus, DeviceCrashReport,
     DeviceCrashReportContent, DeviceCrashReportList, DeviceCrashReportSummary, LogArchiveState,
@@ -49,8 +62,8 @@ pub use home_screen::{
     HomeScreenLayout, WallpaperKind,
 };
 pub use input::{
-    HARDWARE_BUTTON_NAMES, HardwareButton, KeyMods, Orientation, RotateDir, ascii_key_usage,
-    hardware_button, modifier_key_usages, norm, unrotate_norm,
+    DeviceInputCommand, HARDWARE_BUTTON_NAMES, HardwareButton, KeyMods, Orientation, RotateDir,
+    TouchContact, ascii_key_usage, hardware_button, modifier_key_usages, norm, unrotate_norm,
 };
 pub use location::{LocationBackend, LocationStatus};
 pub use media::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};

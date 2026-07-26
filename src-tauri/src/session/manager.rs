@@ -2,17 +2,14 @@
 
 use std::path::PathBuf;
 
-use tokio::sync::mpsc::UnboundedReceiver;
-
 use super::{clipboard, diagnostics, services};
-use crate::device_runtime::{AudioPublisher, ControlCmd};
-use devicehub_runtime::{CoreRuntimeState, CoreTunnelConfig, SessionManager};
+use crate::device_runtime::AudioPublisher;
+use devicehub_runtime::RuntimeHostAdapters;
 
-/// Bind desktop filesystem, process, and clipboard capabilities to the shared
-/// runtime manager. Selection, trust, reconnect, and teardown policy stay in
-/// `devicehub-runtime`.
+/// Start the runtime-owned manager without exposing its concrete desktop
+/// adapter types to the rest of the Tauri host.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn manage(
+pub(crate) fn start(
     initial_udid: Option<String>,
     pairing_dir: PathBuf,
     transport: super::DeviceTransportConfig,
@@ -20,38 +17,30 @@ pub(crate) async fn manage(
     audio: AudioPublisher,
     audio_decoder: crate::decode::AudioDecoderConfig,
     session_diagnostics: crate::device_runtime::RuntimeSessionDiagnostics<PathBuf>,
-    state: CoreRuntimeState<PathBuf>,
-    control_rx: UnboundedReceiver<ControlCmd>,
-) {
-    let sidecar = crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), transport.netmuxd);
-    let pairing_store = match crate::wifi_devices::HostPairingStore::new(pairing_dir) {
-        Ok(store) => Some(store),
-        Err(error) => {
-            tracing::warn!(%error, "Wi-Fi pairing storage unavailable; continuing with usbmuxd");
-            None
-        }
-    };
-    let tunnel = CoreTunnelConfig::from_host(
-        pairing_store
-            .clone()
-            .unwrap_or(crate::wifi_devices::HostPairingStore::unavailable()),
-        transport.system_usbmuxd,
-    );
-    SessionManager::new(
-        sidecar,
-        pairing_store,
-        tunnel,
-        crate::decode::FfmpegAudioPipelineFactory::new(audio, audio_decoder),
-        diagnostics::TokioDiagnosticDumpSinks,
-        clipboard::ArboardClipboardProvider,
-        services::adapters(),
-    )
-    .run(
+) -> Result<devicehub_runtime::StartedRuntime<PathBuf>, String> {
+    devicehub_runtime::start_runtime(
+        move || {
+            let sidecar =
+                crate::netmuxd::NetmuxdSupervisor::new(pairing_dir.clone(), transport.netmuxd);
+            let pairing_store = match crate::wifi_devices::HostPairingStore::new(pairing_dir) {
+                Ok(store) => Some(store),
+                Err(error) => {
+                    tracing::warn!(%error, "Wi-Fi pairing storage unavailable; continuing with usbmuxd");
+                    None
+                }
+            };
+            RuntimeHostAdapters {
+                sidecar,
+                pairing_store,
+                system_usbmuxd: transport.system_usbmuxd,
+                audio: crate::decode::FfmpegAudioPipelineFactory::new(audio, audio_decoder),
+                diagnostic_sinks: diagnostics::TokioDiagnosticDumpSinks,
+                clipboard: clipboard::ArboardClipboardProvider,
+                services: services::adapters(),
+            }
+        },
         initial_udid,
         preferences,
         session_diagnostics,
-        state,
-        control_rx,
     )
-    .await;
 }

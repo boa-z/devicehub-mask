@@ -5,7 +5,7 @@ mod diagnostics;
 mod manager;
 mod services;
 
-pub(crate) use manager::manage;
+pub(crate) use manager::start as start_manager;
 
 use devicehub_runtime::SystemUsbmuxdConfig;
 

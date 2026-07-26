@@ -6,13 +6,13 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use devicehub_runtime::{RemotePairingStore, StoredWifiPairingRecord, WifiPairingStore};
+use devicehub_runtime::{PairingStore, StoredLockdownPairingRecord};
 
 const MAX_PAIRING_RECORD_BYTES: u64 = 1024 * 1024;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct HostPairingStore {
-    directories: Option<PairingDirectories>,
+    directories: PairingDirectories,
 }
 
 #[derive(Clone)]
@@ -29,27 +29,17 @@ impl HostPairingStore {
             .unwrap_or(&directory)
             .join("remote-pairings");
         Ok(Self {
-            directories: Some(PairingDirectories {
+            directories: PairingDirectories {
                 lockdown: directory,
                 remote,
-            }),
+            },
         })
-    }
-
-    pub(crate) fn unavailable() -> Self {
-        Self::default()
-    }
-
-    fn directories(&self) -> Result<&PairingDirectories, String> {
-        self.directories
-            .as_ref()
-            .ok_or_else(|| "pairing credential storage is unavailable".into())
     }
 }
 
-impl WifiPairingStore for HostPairingStore {
-    fn load(&self) -> Result<Vec<StoredWifiPairingRecord>, String> {
-        let directory = &self.directories()?.lockdown;
+impl PairingStore for HostPairingStore {
+    fn load_lockdown_pairings(&self) -> Result<Vec<StoredLockdownPairingRecord>, String> {
+        let directory = &self.directories.lockdown;
         let entries = std::fs::read_dir(directory)
             .map_err(|error| format!("cannot read pairing directory: {error}"))?;
         let mut records = Vec::new();
@@ -74,7 +64,7 @@ impl WifiPairingStore for HostPairingStore {
                 }
             }
             match std::fs::read(&path) {
-                Ok(bytes) => records.push(StoredWifiPairingRecord {
+                Ok(bytes) => records.push(StoredLockdownPairingRecord {
                     udid: udid.to_owned(),
                     bytes,
                 }),
@@ -88,26 +78,23 @@ impl WifiPairingStore for HostPairingStore {
         Ok(records)
     }
 
-    fn save(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
+    fn save_lockdown_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
         if bytes.len() as u64 > MAX_PAIRING_RECORD_BYTES {
             return Err("pairing record exceeds the storage limit".into());
         }
-        write_private_file(&pairing_path(&self.directories()?.lockdown, udid)?, bytes)
+        write_private_file(&pairing_path(&self.directories.lockdown, udid)?, bytes)
     }
 
-    fn remove(&self, udid: &str) -> Result<(), String> {
-        let path = pairing_path(&self.directories()?.lockdown, udid)?;
+    fn remove_lockdown_pairing(&self, udid: &str) -> Result<(), String> {
+        let path = pairing_path(&self.directories.lockdown, udid)?;
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!("cannot remove cached pairing record: {error}")),
         }
     }
-}
-
-impl RemotePairingStore for HostPairingStore {
     fn load_remote_pairing(&self, udid: &str) -> Result<Option<Vec<u8>>, String> {
-        let path = pairing_path(&self.directories()?.remote, udid)?;
+        let path = pairing_path(&self.directories.remote, udid)?;
         let metadata = match std::fs::metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -129,13 +116,13 @@ impl RemotePairingStore for HostPairingStore {
         if bytes.len() as u64 > MAX_PAIRING_RECORD_BYTES {
             return Err("remote pairing credentials exceed the storage limit".into());
         }
-        let directory = &self.directories()?.remote;
+        let directory = &self.directories.remote;
         secure_directory(directory)?;
         write_private_file(&pairing_path(directory, udid)?, bytes)
     }
 
     fn remove_remote_pairing(&self, udid: &str) -> Result<(), String> {
-        let path = pairing_path(&self.directories()?.remote, udid)?;
+        let path = pairing_path(&self.directories.remote, udid)?;
         match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -208,12 +195,12 @@ mod tests {
         ));
         let store = HostPairingStore::new(directory.clone()).unwrap();
         let udid = "00008110-0011223344556677";
-        store.save(udid, b"pairing").unwrap();
+        store.save_lockdown_pairing(udid, b"pairing").unwrap();
 
-        store.remove(udid).unwrap();
-        assert!(store.load().unwrap().is_empty());
-        store.remove(udid).unwrap();
-        assert!(store.remove("../outside").is_err());
+        store.remove_lockdown_pairing(udid).unwrap();
+        assert!(store.load_lockdown_pairings().unwrap().is_empty());
+        store.remove_lockdown_pairing(udid).unwrap();
+        assert!(store.remove_lockdown_pairing("../outside").is_err());
 
         std::fs::remove_dir_all(directory).unwrap();
     }

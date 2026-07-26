@@ -5,6 +5,9 @@ edition = "2024"
 description = "Host-independent Apple device runtime for DeviceHub"
 license = "MIT"
 
+[features]
+test-support = []
+
 [dependencies]
 bytes = "1"
 cms = "0.3.0-pre.2"

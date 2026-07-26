@@ -28,14 +28,15 @@ use devicehub_core::hardware_button;
 use devicehub_core::{
     ActiveSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot, StatusSlot,
 };
-use devicehub_core::{Orientation, RotateDir, norm, unrotate_norm, validate_paste_text};
+use devicehub_core::{
+    DeviceInputCommand, DeviceLogEntry, DeviceLogLevel, MAX_DEVICE_LOG_BATCH_ENTRIES, Orientation,
+    RotateDir, TouchContact, norm, unrotate_norm, validate_paste_text,
+};
 #[cfg(test)]
 use devicehub_runtime::DeviceEventSlot;
 use devicehub_runtime::RuntimeClient;
-use devicehub_runtime::{DeviceInputCommand, TouchContact};
 #[cfg(test)]
 use devicehub_runtime::{DeviceLogDemand, DeviceLogSlot};
-use devicehub_runtime::{DeviceLogEntry, DeviceLogLevel};
 #[cfg(test)]
 use devicehub_runtime::{PerformanceDemand, PerformanceSlot};
 
@@ -733,24 +734,23 @@ impl DeviceHub {
             device_logs,
             device_log_demand,
         } = observability;
-        let state = devicehub_runtime::CoreRuntimeState::<std::path::PathBuf> {
-            browser_frames,
-            commands: input,
-            orientation,
-            devices,
-            active,
-            error,
-            status,
-            location,
-            device_events,
-            device_conditions,
-            performance,
-            performance_demand,
-            device_logs,
-            device_log_demand,
-            ..Default::default()
-        };
-        Self::new_with_service(state.client(control))
+        let application = devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default()
+            .with_browser_frames(browser_frames)
+            .with_commands(input)
+            .with_orientation(orientation)
+            .with_devices(devices)
+            .with_active(active)
+            .with_error(error)
+            .with_status(status)
+            .with_location(location)
+            .with_device_events(device_events)
+            .with_device_conditions(device_conditions)
+            .with_performance(performance)
+            .with_performance_demand(performance_demand)
+            .with_device_logs(device_logs)
+            .with_device_log_demand(device_log_demand)
+            .build_with_control(control);
+        Self::new_with_service(application)
     }
 
     fn new_with_service(application: RuntimeClient<std::path::PathBuf>) -> Self {
@@ -1463,7 +1463,7 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaStartParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_runner_bundle_id(&params.runner_bundle_id)
+        devicehub_core::validate_wda_runner_bundle_id(&params.runner_bundle_id)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaRunner(
@@ -1585,12 +1585,12 @@ impl DeviceHub {
     ) -> Result<CallToolResult, McpError> {
         let max_characters = params
             .max_characters
-            .unwrap_or(devicehub_runtime::DEFAULT_SOURCE_CHARS);
-        if !(1..=devicehub_runtime::MAX_SOURCE_CHARS).contains(&max_characters) {
+            .unwrap_or(devicehub_core::WDA_DEFAULT_SOURCE_CHARS);
+        if !(1..=devicehub_core::WDA_MAX_SOURCE_CHARS).contains(&max_characters) {
             return Err(McpError::invalid_params(
                 format!(
                     "max_characters must be between 1 and {}",
-                    devicehub_runtime::MAX_SOURCE_CHARS
+                    devicehub_core::WDA_MAX_SOURCE_CHARS
                 ),
                 None,
             ));
@@ -1620,14 +1620,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaFindParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_selector(&params.using, &params.value)
+        devicehub_core::validate_wda_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let limit = params.limit.unwrap_or(10);
-        if !(1..=devicehub_runtime::MAX_ELEMENTS).contains(&limit) {
+        if !(1..=devicehub_core::WDA_MAX_ELEMENTS).contains(&limit) {
             return Err(McpError::invalid_params(
                 format!(
                     "limit must be between 1 and {}",
-                    devicehub_runtime::MAX_ELEMENTS
+                    devicehub_core::WDA_MAX_ELEMENTS
                 ),
                 None,
             ));
@@ -1664,14 +1664,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_selector(&params.using, &params.value)
+        devicehub_core::validate_wda_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= devicehub_runtime::MAX_ELEMENTS {
+        if index >= devicehub_core::WDA_MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    devicehub_runtime::MAX_ELEMENTS - 1
+                    devicehub_core::WDA_MAX_ELEMENTS - 1
                 ),
                 None,
             ));
@@ -1706,23 +1706,23 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaWaitForElementParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_selector(&params.using, &params.value)
+        devicehub_core::validate_wda_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= devicehub_runtime::MAX_ELEMENTS {
+        if index >= devicehub_core::WDA_MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    devicehub_runtime::MAX_ELEMENTS - 1
+                    devicehub_core::WDA_MAX_ELEMENTS - 1
                 ),
                 None,
             ));
         }
         let expected_state =
-            devicehub_runtime::parse_wait_state(params.state.as_deref().unwrap_or("present"))
+            devicehub_core::parse_wda_wait_state(params.state.as_deref().unwrap_or("present"))
                 .map_err(|error| McpError::invalid_params(error, None))?;
         let timeout_ms = params.timeout_ms.unwrap_or(5_000);
-        devicehub_runtime::validate_wait_timeout(timeout_ms)
+        devicehub_core::validate_wda_wait_timeout(timeout_ms)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         self.send(InputCmd::WdaAutomation(
@@ -1756,14 +1756,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_selector(&params.using, &params.value)
+        devicehub_core::validate_wda_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= devicehub_runtime::MAX_ELEMENTS {
+        if index >= devicehub_core::WDA_MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    devicehub_runtime::MAX_ELEMENTS - 1
+                    devicehub_core::WDA_MAX_ELEMENTS - 1
                 ),
                 None,
             ));
@@ -1794,7 +1794,7 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaTypeTextParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_text(&params.text)
+        devicehub_core::validate_wda_text(&params.text)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
@@ -1820,14 +1820,14 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaClickParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_selector(&params.using, &params.value)
+        devicehub_core::validate_wda_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= devicehub_runtime::MAX_ELEMENTS {
+        if index >= devicehub_core::WDA_MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    devicehub_runtime::MAX_ELEMENTS - 1
+                    devicehub_core::WDA_MAX_ELEMENTS - 1
                 ),
                 None,
             ));
@@ -1858,16 +1858,16 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaTouchAndHoldParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_selector(&params.using, &params.value)
+        devicehub_core::validate_wda_selector(&params.using, &params.value)
             .map_err(|error| McpError::invalid_params(error, None))?;
-        devicehub_runtime::validate_hold_duration(params.duration_ms)
+        devicehub_core::validate_wda_hold_duration(params.duration_ms)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let index = params.index.unwrap_or(0);
-        if index >= devicehub_runtime::MAX_ELEMENTS {
+        if index >= devicehub_core::WDA_MAX_ELEMENTS {
             return Err(McpError::invalid_params(
                 format!(
                     "index must be between 0 and {}",
-                    devicehub_runtime::MAX_ELEMENTS - 1
+                    devicehub_core::WDA_MAX_ELEMENTS - 1
                 ),
                 None,
             ));
@@ -1906,7 +1906,7 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaScrollParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_scroll_direction(&params.direction)
+        devicehub_core::validate_wda_scroll_direction(&params.direction)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
@@ -1932,7 +1932,7 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<WdaBackgroundAppParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_background_duration(params.restore_after_ms)
+        devicehub_core::validate_wda_background_duration(params.restore_after_ms)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let (reply, response) = oneshot::channel();
         let _gesture = self.gesture_lock.lock().await;
@@ -2072,7 +2072,7 @@ impl DeviceHub {
         &self,
         Parameters(params): Parameters<CrashReportReadParams>,
     ) -> Result<CallToolResult, McpError> {
-        devicehub_runtime::validate_crash_report_path(&params.device_path)
+        devicehub_core::validate_crash_report_path(&params.device_path)
             .map_err(|error| McpError::invalid_params(error, None))?;
         let max_bytes = params.max_bytes.unwrap_or(DEFAULT_CRASH_REPORT_BYTES);
         if !(1..=devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES).contains(&max_bytes) {
@@ -2480,7 +2480,7 @@ impl DeviceHub {
         let limit = params
             .limit
             .unwrap_or(100)
-            .clamp(1, devicehub_runtime::MAX_BATCH_ENTRIES);
+            .clamp(1, MAX_DEVICE_LOG_BATCH_ENTRIES);
         let wait = Duration::from_millis(
             params
                 .wait_ms
@@ -2493,7 +2493,7 @@ impl DeviceHub {
         let (batch, mut entries) = loop {
             let batch = self.application.device_logs.snapshot(
                 params.after,
-                devicehub_runtime::MAX_BATCH_ENTRIES,
+                MAX_DEVICE_LOG_BATCH_ENTRIES,
                 true,
             );
             let entries = batch
@@ -3280,7 +3280,7 @@ mod tests {
         };
         assert!(expires_at > tokio::time::Instant::now());
         reply
-            .send(Ok(devicehub_runtime::WdaStatus {
+            .send(Ok(devicehub_core::WdaStatus {
                 reachable: true,
                 ready: Some(true),
                 message: None,
@@ -3304,14 +3304,14 @@ mod tests {
             panic!("expected WDA device state command");
         };
         reply
-            .send(Ok(devicehub_runtime::WdaDeviceState {
+            .send(Ok(devicehub_core::WdaDeviceState {
                 locked: false,
-                orientation: devicehub_runtime::WdaOrientation::Portrait,
-                window: devicehub_runtime::WdaSize {
+                orientation: devicehub_core::WdaOrientation::Portrait,
+                window: devicehub_core::WdaSize {
                     width: 430.0,
                     height: 932.0,
                 },
-                viewport: Some(devicehub_runtime::WdaRect {
+                viewport: Some(devicehub_core::WdaRect {
                     x: 0.0,
                     y: 59.0,
                     width: 430.0,
@@ -3346,7 +3346,7 @@ mod tests {
         };
         assert!(expires_at > tokio::time::Instant::now());
         reply
-            .send(Ok(devicehub_runtime::WdaUnlockResult {
+            .send(Ok(devicehub_core::WdaUnlockResult {
                 was_locked: true,
                 unlocked: true,
             }))
@@ -3378,7 +3378,7 @@ mod tests {
         };
         assert_eq!(max_characters, 4096);
         reply
-            .send(Ok(devicehub_runtime::WdaUiTree {
+            .send(Ok(devicehub_core::WdaUiTree {
                 xml: "<App/>".into(),
                 total_characters: 6,
                 truncated: false,
@@ -3448,9 +3448,9 @@ mod tests {
             ("name", "Continue", 1)
         );
         reply
-            .send(Ok(devicehub_runtime::WdaElementDetails {
-                element: devicehub_runtime::WdaElement { index, rect: None },
-                element_type: Some(devicehub_runtime::WdaBoundedText {
+            .send(Ok(devicehub_core::WdaElementDetails {
+                element: devicehub_core::WdaElement { index, rect: None },
+                element_type: Some(devicehub_core::WdaBoundedText {
                     text: "Button".into(),
                     total_characters: 6,
                     truncated: false,
@@ -3508,12 +3508,12 @@ mod tests {
                 "accessibility id",
                 "Loading",
                 0,
-                devicehub_runtime::WdaElementWaitState::Absent,
+                devicehub_core::WdaElementWaitState::Absent,
                 2_500
             )
         );
         reply
-            .send(Ok(devicehub_runtime::WdaElementWaitResult {
+            .send(Ok(devicehub_core::WdaElementWaitResult {
                 condition_met: true,
                 expected_state,
                 expected_present: Some(false),
@@ -3556,7 +3556,7 @@ mod tests {
             ("name", "Continue", 1)
         );
         reply
-            .send(Ok(devicehub_runtime::WdaElement { index, rect: None }))
+            .send(Ok(devicehub_core::WdaElement { index, rect: None }))
             .unwrap();
         assert!(click_task.await.unwrap().content.iter().any(|content| {
             content
@@ -3615,7 +3615,7 @@ mod tests {
             ("accessibility id", "Zoom", 0)
         );
         reply
-            .send(Ok(devicehub_runtime::WdaElement { index, rect: None }))
+            .send(Ok(devicehub_core::WdaElement { index, rect: None }))
             .unwrap();
         assert!(
             double_tap_task
@@ -3658,7 +3658,7 @@ mod tests {
             ("name", "Context menu", 2, 750)
         );
         reply
-            .send(Ok(devicehub_runtime::WdaElement { index, rect: None }))
+            .send(Ok(devicehub_core::WdaElement { index, rect: None }))
             .unwrap();
         assert!(hold_task.await.unwrap().content.iter().any(|content| {
             content.as_text().is_some_and(|text| {
@@ -3776,14 +3776,14 @@ mod tests {
                 value: "Done".into(),
                 index: None,
                 state: None,
-                timeout_ms: Some(devicehub_runtime::MAX_WAIT_TIMEOUT_MS + 1),
+                timeout_ms: Some(devicehub_core::WDA_MAX_WAIT_TIMEOUT_MS + 1),
             }))
             .await
             .is_err()
         );
         assert!(
             hub.wda_background_app(Parameters(WdaBackgroundAppParams {
-                restore_after_ms: Some(devicehub_runtime::MAX_BACKGROUND_DURATION_MS + 1,),
+                restore_after_ms: Some(devicehub_core::WDA_MAX_BACKGROUND_DURATION_MS + 1,),
             }))
             .await
             .is_err()
@@ -3809,8 +3809,8 @@ mod tests {
             McpObservability::default(),
             control,
         );
-        let running = devicehub_runtime::WdaRunnerStatus {
-            phase: devicehub_runtime::WdaRunnerPhase::Running,
+        let running = devicehub_core::WdaRunnerStatus {
+            phase: devicehub_core::WdaRunnerPhase::Running,
             managed: true,
             runner_bundle_id: Some("com.example.WDARunner.xctrunner".into()),
             last_error: None,
@@ -3856,7 +3856,7 @@ mod tests {
             panic!("expected WDA runner stop command");
         };
         reply
-            .send(Ok(devicehub_runtime::WdaRunnerStatus::default()))
+            .send(Ok(devicehub_core::WdaRunnerStatus::default()))
             .unwrap();
         stop_task.await.unwrap();
     }
