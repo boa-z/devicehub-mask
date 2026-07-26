@@ -14,7 +14,16 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use crate::device_runtime::{InputCmd, InputSink};
+use devicehub_core::{
+    AppDocumentActivitySlot, AppDocumentActivityView, AppDocumentEntry, AppDocumentList,
+    AppStorageScope, DeviceFileActivitySlot, DeviceFileActivityView, DeviceFileEntry,
+    DeviceFileList, is_app_document_transfer_cancelled, is_device_file_transfer_cancelled,
+    validate_app_bundle_id,
+};
+type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
+type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+type AppDocumentCommand = devicehub_runtime::AppDocumentCommand<PathBuf>;
+type DeviceFileCommand = devicehub_runtime::DeviceFileCommand<PathBuf>;
 
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);
@@ -22,17 +31,17 @@ const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);
 /// Narrow capability set for storage HTTP routes. Activity cancellation bypasses
 /// the serialized session command queue through the session-owned slots.
 #[derive(Clone, Default)]
-pub(crate) struct StorageHttpState {
+pub struct StorageHttpState {
     input: InputSink,
-    app_document_activity: crate::app_documents::AppDocumentActivitySlot,
-    device_file_activity: crate::device_files::DeviceFileActivitySlot,
+    app_document_activity: AppDocumentActivitySlot,
+    device_file_activity: DeviceFileActivitySlot,
 }
 
 impl StorageHttpState {
-    pub(crate) fn new(
+    pub fn new(
         input: InputSink,
-        app_document_activity: crate::app_documents::AppDocumentActivitySlot,
-        device_file_activity: crate::device_files::DeviceFileActivitySlot,
+        app_document_activity: AppDocumentActivitySlot,
+        device_file_activity: DeviceFileActivitySlot,
     ) -> Self {
         Self {
             input,
@@ -43,7 +52,7 @@ impl StorageHttpState {
 }
 
 /// Injects storage-only state before the routes join the private API.
-pub(crate) fn router<S>(state: StorageHttpState) -> Router<S>
+pub fn router<S>(state: StorageHttpState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -115,7 +124,7 @@ struct AppDocumentQuery {
     #[serde(default = "storage_root")]
     path: String,
     #[serde(default)]
-    scope: crate::app_documents::AppStorageScope,
+    scope: AppStorageScope,
     #[serde(default)]
     recursive: bool,
 }
@@ -129,7 +138,7 @@ struct ExportAppDocumentRequest {
     path: String,
     destination: PathBuf,
     #[serde(default)]
-    scope: crate::app_documents::AppStorageScope,
+    scope: AppStorageScope,
 }
 
 #[derive(Deserialize)]
@@ -137,7 +146,7 @@ struct ImportAppDocumentRequest {
     directory: String,
     source: PathBuf,
     #[serde(default)]
-    scope: crate::app_documents::AppStorageScope,
+    scope: AppStorageScope,
 }
 
 #[derive(Deserialize)]
@@ -145,7 +154,7 @@ struct CreateAppDocumentDirectoryRequest {
     directory: String,
     name: String,
     #[serde(default)]
-    scope: crate::app_documents::AppStorageScope,
+    scope: AppStorageScope,
 }
 
 #[derive(Deserialize)]
@@ -153,19 +162,19 @@ struct RenameAppDocumentRequest {
     path: String,
     name: String,
     #[serde(default)]
-    scope: crate::app_documents::AppStorageScope,
+    scope: AppStorageScope,
 }
 
 async fn app_documents(
     State(state): State<StorageHttpState>,
     Path(bundle_id): Path<String>,
     Query(query): Query<AppDocumentQuery>,
-) -> Result<Json<crate::app_documents::AppDocumentList>, (StatusCode, String)> {
+) -> Result<Json<AppDocumentList>, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
         &state,
-        crate::app_documents::AppDocumentCommand::List {
+        AppDocumentCommand::List {
             bundle_id,
             scope: query.scope,
             path: query.path,
@@ -180,7 +189,7 @@ async fn app_documents(
 async fn app_document_activity(
     State(state): State<StorageHttpState>,
     Path(bundle_id): Path<String>,
-) -> Result<Json<crate::app_documents::AppDocumentActivityView>, (StatusCode, String)> {
+) -> Result<Json<AppDocumentActivityView>, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     Ok(Json(state.app_document_activity.get(&bundle_id)))
 }
@@ -209,7 +218,7 @@ async fn export_app_document(
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
         &state,
-        crate::app_documents::AppDocumentCommand::Export {
+        AppDocumentCommand::Export {
             bundle_id,
             scope: request.scope,
             path: request.path,
@@ -229,12 +238,12 @@ async fn import_app_document(
     State(state): State<StorageHttpState>,
     Path(bundle_id): Path<String>,
     Json(request): Json<ImportAppDocumentRequest>,
-) -> Result<Json<crate::app_documents::AppDocumentEntry>, (StatusCode, String)> {
+) -> Result<Json<AppDocumentEntry>, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
         &state,
-        crate::app_documents::AppDocumentCommand::Import {
+        AppDocumentCommand::Import {
             bundle_id,
             scope: request.scope,
             directory: request.directory,
@@ -256,7 +265,7 @@ async fn create_app_document_directory(
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
         &state,
-        crate::app_documents::AppDocumentCommand::CreateDirectory {
+        AppDocumentCommand::CreateDirectory {
             bundle_id,
             scope: request.scope,
             directory: request.directory,
@@ -277,7 +286,7 @@ async fn rename_app_document(
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
         &state,
-        crate::app_documents::AppDocumentCommand::Rename {
+        AppDocumentCommand::Rename {
             bundle_id,
             scope: request.scope,
             path: request.path,
@@ -298,7 +307,7 @@ async fn delete_app_document(
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
         &state,
-        crate::app_documents::AppDocumentCommand::Delete {
+        AppDocumentCommand::Delete {
             bundle_id,
             scope: query.scope,
             path: query.path,
@@ -311,29 +320,13 @@ async fn delete_app_document(
 }
 
 fn validate_app_document_bundle(bundle_id: &str) -> Result<(), (StatusCode, String)> {
-    if valid_bundle_identifier(bundle_id) {
-        Ok(())
-    } else {
-        Err((StatusCode::BAD_REQUEST, "invalid bundle identifier".into()))
-    }
-}
-
-fn valid_bundle_identifier(bundle_id: &str) -> bool {
-    !bundle_id.is_empty()
-        && bundle_id.len() <= 255
-        && bundle_id.contains('.')
-        && bundle_id.split('.').all(|part| {
-            !part.is_empty()
-                && part.len() <= 63
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
+    validate_app_bundle_id(bundle_id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid bundle identifier".into()))
 }
 
 fn dispatch_app_document_command(
     state: &StorageHttpState,
-    command: crate::app_documents::AppDocumentCommand,
+    command: AppDocumentCommand,
 ) -> Result<(), (StatusCode, String)> {
     if state.input.try_send(InputCmd::AppDocuments(command)) {
         Ok(())
@@ -364,7 +357,7 @@ async fn await_app_document_response<T>(
             )
         })?
         .map_err(|error| {
-            let status = if crate::app_documents::is_transfer_cancelled(&error)
+            let status = if is_app_document_transfer_cancelled(&error)
                 || error.contains("already exists")
                 || error.contains("changed during recursive deletion")
             {
@@ -425,11 +418,11 @@ struct RenameDeviceFileRequest {
 async fn device_files(
     State(state): State<StorageHttpState>,
     Query(query): Query<DeviceFileQuery>,
-) -> Result<Json<crate::device_files::DeviceFileList>, (StatusCode, String)> {
+) -> Result<Json<DeviceFileList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
         &state,
-        crate::device_files::DeviceFileCommand::List {
+        DeviceFileCommand::List {
             path: query.path,
             reply,
         },
@@ -441,7 +434,7 @@ async fn device_files(
 
 async fn device_file_activity(
     State(state): State<StorageHttpState>,
-) -> Json<crate::device_files::DeviceFileActivityView> {
+) -> Json<DeviceFileActivityView> {
     Json(state.device_file_activity.get())
 }
 
@@ -465,7 +458,7 @@ async fn export_device_file(
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
         &state,
-        crate::device_files::DeviceFileCommand::Export {
+        DeviceFileCommand::Export {
             path: request.path,
             destination: request.destination,
             reply,
@@ -482,11 +475,11 @@ async fn export_device_file(
 async fn import_device_file(
     State(state): State<StorageHttpState>,
     Json(request): Json<ImportDeviceFileRequest>,
-) -> Result<Json<crate::device_files::DeviceFileEntry>, (StatusCode, String)> {
+) -> Result<Json<DeviceFileEntry>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
         &state,
-        crate::device_files::DeviceFileCommand::Import {
+        DeviceFileCommand::Import {
             directory: request.directory,
             source: request.source,
             reply,
@@ -504,7 +497,7 @@ async fn create_device_file_directory(
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
         &state,
-        crate::device_files::DeviceFileCommand::CreateDirectory {
+        DeviceFileCommand::CreateDirectory {
             directory: request.directory,
             name: request.name,
             reply,
@@ -521,7 +514,7 @@ async fn rename_device_file(
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
         &state,
-        crate::device_files::DeviceFileCommand::Rename {
+        DeviceFileCommand::Rename {
             path: request.path,
             name: request.name,
             reply,
@@ -538,7 +531,7 @@ async fn delete_device_file(
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
         &state,
-        crate::device_files::DeviceFileCommand::Delete {
+        DeviceFileCommand::Delete {
             path: query.path,
             reply,
         },
@@ -549,7 +542,7 @@ async fn delete_device_file(
 
 fn dispatch_device_file_command(
     state: &StorageHttpState,
-    command: crate::device_files::DeviceFileCommand,
+    command: DeviceFileCommand,
 ) -> Result<(), (StatusCode, String)> {
     if state.input.try_send(InputCmd::DeviceFiles(command)) {
         Ok(())
@@ -580,23 +573,22 @@ async fn await_device_file_response<T>(
             )
         })?
         .map_err(|error| {
-            let status = if crate::device_files::is_transfer_cancelled(&error)
-                || error.contains("already exists")
-            {
-                StatusCode::CONFLICT
-            } else if error.starts_with("invalid ")
-                || error.contains("cannot be exported")
-                || error.contains("cannot be modified")
-                || error.contains("only regular device files")
-                || error.contains("destination")
-                || error.contains("import source")
-                || error.contains("symbolic link")
-                || error.contains("unsupported")
-            {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::BAD_GATEWAY
-            };
+            let status =
+                if is_device_file_transfer_cancelled(&error) || error.contains("already exists") {
+                    StatusCode::CONFLICT
+                } else if error.starts_with("invalid ")
+                    || error.contains("cannot be exported")
+                    || error.contains("cannot be modified")
+                    || error.contains("only regular device files")
+                    || error.contains("destination")
+                    || error.contains("import source")
+                    || error.contains("symbolic link")
+                    || error.contains("unsupported")
+                {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
             (status, error)
         })
 }
@@ -613,8 +605,8 @@ mod tests {
         (
             StorageHttpState::new(
                 input,
-                crate::app_documents::AppDocumentActivitySlot::default(),
-                crate::device_files::DeviceFileActivitySlot::default(),
+                AppDocumentActivitySlot::default(),
+                DeviceFileActivitySlot::default(),
             ),
             receiver,
         )
@@ -638,7 +630,7 @@ mod tests {
                 Path("com.example.game".into()),
                 Query(AppDocumentQuery {
                     path: "/".into(),
-                    scope: crate::app_documents::AppStorageScope::Documents,
+                    scope: AppStorageScope::Documents,
                     recursive: false,
                 }),
             )
@@ -649,9 +641,9 @@ mod tests {
 
     #[tokio::test]
     async fn app_storage_endpoints_dispatch_scoped_commands() {
-        use crate::app_documents::{
-            AppDocumentCommand, AppDocumentEntry, AppDocumentKind, AppDocumentList,
-            AppDocumentTransfer, AppStorageScope,
+        use devicehub_core::{
+            AppDocumentEntry, AppDocumentKind, AppDocumentList, AppDocumentTransfer,
+            AppStorageScope,
         };
 
         let (cancel_state, _) = test_state();
@@ -672,7 +664,7 @@ mod tests {
             .0;
         assert_eq!(
             activity.state,
-            crate::app_documents::AppDocumentActivityState::Idle
+            devicehub_core::AppDocumentActivityState::Idle
         );
         assert!(
             app_document_activity(State(state.clone()), Path("invalid".into()))
@@ -834,9 +826,7 @@ mod tests {
 
     #[tokio::test]
     async fn device_file_endpoints_dispatch_typed_commands() {
-        use crate::device_files::{
-            DeviceFileCommand, DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer,
-        };
+        use devicehub_core::{DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer};
 
         let (cancel_state, _) = test_state();
         assert_eq!(
@@ -849,7 +839,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         assert_eq!(
             device_file_activity(State(state.clone())).await.0.state,
-            crate::device_files::DeviceFileActivityState::Idle
+            devicehub_core::DeviceFileActivityState::Idle
         );
         let list = tokio::spawn(device_files(
             State(state.clone()),
@@ -991,7 +981,7 @@ mod tests {
             "an application document with this name already exists",
             "directory export destination already exists",
             "application entry changed during recursive deletion",
-            crate::app_documents::TRANSFER_CANCELLED,
+            devicehub_core::APP_DOCUMENT_TRANSFER_CANCELLED,
         ] {
             let (reply, response) = oneshot::channel::<Result<(), String>>();
             reply.send(Err(error.into())).unwrap();

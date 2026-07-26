@@ -9,12 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 
-use crate::browser_video::BrowserVideoSlot;
-use crate::device_runtime::{InputCmd, InputSink};
 use devicehub_core::hardware_button;
 use devicehub_core::{
     DeviceInputCommand, HARDWARE_BUTTON_NAMES, Orientation, RotateDir, TouchContact, norm,
     unrotate_norm,
+};
+use devicehub_runtime::{
+    BrowserVideoSlot, DeviceSessionCommand as InputCmd, SessionCommandSlot as InputSink,
 };
 
 #[derive(Deserialize)]
@@ -70,11 +71,11 @@ enum ClientMessage {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct WebContact {
-    pub(crate) identity: u8,
-    pub(crate) touching: bool,
-    pub(crate) x: f32,
-    pub(crate) y: f32,
+pub(super) struct WebContact {
+    pub(super) identity: u8,
+    pub(super) touching: bool,
+    pub(super) x: f32,
+    pub(super) y: f32,
 }
 
 #[derive(Deserialize)]
@@ -85,7 +86,7 @@ enum RotateRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClientVideoFeedback {
+pub(super) enum ClientVideoFeedback {
     None,
     BrowserAccepted(u64),
     FramePresented(u64),
@@ -96,8 +97,8 @@ pub(crate) enum ClientVideoFeedback {
 /// Separates decoder ingress acknowledgements from presentation telemetry.
 /// A browser credit is released only by the matching sequence, so a late
 /// acknowledgement cannot accidentally admit a newer frame.
-pub(crate) fn handle_client_message(
-    input: &InputSink,
+pub(super) fn handle_client_message<HostPath>(
+    input: &InputSink<HostPath>,
     orientation: Orientation,
     browser_frames: &BrowserVideoSlot,
     text: &str,
@@ -234,7 +235,7 @@ pub(crate) fn handle_client_message(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn valid_frontend_metrics(
+fn valid_frontend_metrics(
     window_ms: f64,
     received_frames: u64,
     replaced_frames: u64,
@@ -256,7 +257,7 @@ pub(crate) fn valid_frontend_metrics(
         && decode_errors <= received_frames
 }
 
-pub(crate) fn validate_contacts(
+fn validate_contacts(
     contacts: Vec<WebContact>,
     orientation: Orientation,
 ) -> Option<Vec<TouchContact>> {
@@ -288,7 +289,7 @@ pub(crate) fn validate_contacts(
         .collect()
 }
 
-pub(crate) fn send_all_up(input: &InputSink, pressed_keyboard: &HashSet<u64>) {
+pub(super) fn send_all_up<HostPath>(input: &InputSink<HostPath>, pressed_keyboard: &HashSet<u64>) {
     input.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
         (0..5)
             .map(|identity| TouchContact {
@@ -311,6 +312,267 @@ pub(crate) fn send_all_up(input: &InputSink, pressed_keyboard: &HashSet<u64>) {
     }
 }
 
-pub(crate) fn valid_keyboard_usage(usage: u64) -> bool {
+fn valid_keyboard_usage(usage: u64) -> bool {
     matches!(usage, 0x04..=0x73 | 0x85 | 0x87 | 0x89 | 0xe0..=0xe7)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use serde_json::json;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    use super::*;
+    use devicehub_core::{DeviceInputCommand, Orientation, norm};
+
+    fn test_state() -> (
+        InputSink<PathBuf>,
+        BrowserVideoSlot,
+        UnboundedReceiver<InputCmd<PathBuf>>,
+    ) {
+        let input = InputSink::default();
+        let (input_tx, input_rx) = unbounded_channel();
+        input.set(Some(input_tx));
+        (input, BrowserVideoSlot::default(), input_rx)
+    }
+
+    fn handle_test_client_message(
+        input: &InputSink<PathBuf>,
+        browser_frames: &BrowserVideoSlot,
+        text: &str,
+        pressed_keyboard: &mut HashSet<u64>,
+    ) -> ClientVideoFeedback {
+        handle_client_message(
+            input,
+            Orientation::Portrait,
+            browser_frames,
+            text,
+            pressed_keyboard,
+            &AtomicBool::new(true),
+            &AtomicBool::new(false),
+        )
+    }
+
+    #[test]
+    fn browser_feedback_messages_keep_acceptance_and_presentation_distinct() {
+        let (input, browser_frames, _input_rx) = test_state();
+        let mut pressed = HashSet::new();
+        assert_eq!(
+            handle_test_client_message(
+                &input,
+                &browser_frames,
+                r#"{"type":"browser_frame_accepted","sequence":"42"}"#,
+                &mut pressed,
+            ),
+            ClientVideoFeedback::BrowserAccepted(42)
+        );
+        assert_eq!(
+            handle_test_client_message(
+                &input,
+                &browser_frames,
+                r#"{"type":"frame_presented","sequence":"42"}"#,
+                &mut pressed,
+            ),
+            ClientVideoFeedback::FramePresented(42)
+        );
+    }
+
+    #[tokio::test]
+    async fn video_demand_resumes_with_a_keyframe_request() {
+        let (input, browser_frames, _input_rx) = test_state();
+        let active = AtomicBool::new(true);
+        let resync = AtomicBool::new(false);
+        let keyframes = browser_frames.clone();
+        let mut pressed = HashSet::new();
+
+        assert_eq!(
+            handle_client_message(
+                &input,
+                Orientation::Portrait,
+                &browser_frames,
+                r#"{"type":"video_demand","active":false}"#,
+                &mut pressed,
+                &active,
+                &resync,
+            ),
+            ClientVideoFeedback::ResetAll
+        );
+        assert!(!active.load(Ordering::Relaxed));
+        assert_eq!(
+            handle_client_message(
+                &input,
+                Orientation::Portrait,
+                &browser_frames,
+                r#"{"type":"video_demand","active":true}"#,
+                &mut pressed,
+                &active,
+                &resync,
+            ),
+            ClientVideoFeedback::None
+        );
+        assert!(active.load(Ordering::Relaxed));
+        assert!(resync.load(Ordering::Relaxed));
+        tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
+            .await
+            .expect("video demand resume should request a keyframe");
+    }
+
+    #[tokio::test]
+    async fn browser_decoder_keyframe_request_enters_resync() {
+        let (input, browser_frames, _input_rx) = test_state();
+        let active = AtomicBool::new(true);
+        let resync = AtomicBool::new(false);
+        let keyframes = browser_frames.clone();
+
+        assert_eq!(
+            handle_client_message(
+                &input,
+                Orientation::Portrait,
+                &browser_frames,
+                r#"{"type":"browser_video_keyframe"}"#,
+                &mut HashSet::new(),
+                &active,
+                &resync,
+            ),
+            ClientVideoFeedback::ResetBrowser
+        );
+        assert!(resync.load(Ordering::Acquire));
+        tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
+            .await
+            .expect("browser decoder recovery should request a keyframe");
+    }
+
+    #[test]
+    fn frontend_metrics_reject_impossible_or_unbounded_values() {
+        assert!(valid_frontend_metrics(
+            5_000.0, 300, 0, 299, 600.0, 100.0, 2, 1
+        ));
+        assert!(!valid_frontend_metrics(
+            5_000.0, 300, 301, 299, 600.0, 100.0, 2, 1,
+        ));
+        assert!(!valid_frontend_metrics(f64::NAN, 0, 0, 0, 0.0, 0.0, 0, 0,));
+    }
+
+    #[test]
+    fn contact_validation_rejects_duplicate_ids() {
+        let contacts = vec![
+            WebContact {
+                identity: 1,
+                touching: true,
+                x: 0.2,
+                y: 0.3,
+            },
+            WebContact {
+                identity: 1,
+                touching: true,
+                x: 0.4,
+                y: 0.5,
+            },
+        ];
+        assert!(validate_contacts(contacts, Orientation::Portrait).is_none());
+    }
+
+    #[test]
+    fn contact_validation_unrotates_landscape() {
+        let contacts = vec![WebContact {
+            identity: 2,
+            touching: true,
+            x: 0.25,
+            y: 0.75,
+        }];
+        let result = validate_contacts(contacts, Orientation::LandscapeRight).unwrap();
+        assert_eq!(result[0].x, norm(0.75));
+        assert_eq!(result[0].y, norm(0.75));
+    }
+
+    #[test]
+    fn keyboard_messages_validate_and_track_pressed_usages() {
+        let (input, browser_frames, mut input_rx) = test_state();
+        let mut pressed = HashSet::new();
+
+        for message in [
+            r#"{"type":"keyboard_down","usage":4}"#,
+            r#"{"type":"keyboard_down","usage":4}"#,
+            r#"{"type":"keyboard_down","usage":65535}"#,
+        ] {
+            handle_test_client_message(&input, &browser_frames, message, &mut pressed);
+        }
+
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InputCmd::DeviceInput(DeviceInputCommand::KeyboardDown(4)))
+        ));
+        assert!(input_rx.try_recv().is_err());
+        assert_eq!(pressed, HashSet::from([4]));
+
+        handle_test_client_message(
+            &input,
+            &browser_frames,
+            r#"{"type":"keyboard_up","usage":4}"#,
+            &mut pressed,
+        );
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(4)))
+        ));
+        assert!(pressed.is_empty());
+    }
+
+    #[test]
+    fn text_messages_are_bounded_before_dispatch() {
+        let (input, browser_frames, mut input_rx) = test_state();
+        let mut pressed = HashSet::new();
+
+        handle_test_client_message(
+            &input,
+            &browser_frames,
+            r#"{"type":"text","text":"Hello, iPhone!"}"#,
+            &mut pressed,
+        );
+        handle_test_client_message(
+            &input,
+            &browser_frames,
+            r#"{"type":"text","text":""}"#,
+            &mut pressed,
+        );
+        let oversized =
+            serde_json::to_string(&json!({ "type": "text", "text": "x".repeat(129) })).unwrap();
+        handle_test_client_message(&input, &browser_frames, &oversized, &mut pressed);
+
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InputCmd::DeviceInput(DeviceInputCommand::Text(text)))
+                if text == "Hello, iPhone!"
+        ));
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn websocket_cleanup_releases_pressed_keyboard_usages() {
+        let (input, _browser_frames, mut input_rx) = test_state();
+        send_all_up(&input, &HashSet::from([0x04, 0xe1]));
+
+        let commands: Vec<_> = std::iter::from_fn(|| input_rx.try_recv().ok()).collect();
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(0x04))
+        )));
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(0xe1))
+        )));
+    }
+
+    #[test]
+    fn keyboard_usage_validation_matches_frontend_ranges() {
+        for usage in [0x04, 0x65, 0x67, 0x73, 0x85, 0x87, 0x89, 0xe0, 0xe7] {
+            assert!(valid_keyboard_usage(usage));
+        }
+        for usage in [0x00, 0x03, 0x74, 0x84, 0x86, 0x88, 0x8a, 0xdf, 0xe8] {
+            assert!(!valid_keyboard_usage(usage));
+        }
+    }
 }

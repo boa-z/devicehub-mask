@@ -18,7 +18,8 @@ Tauri, a future headless process, HTTP/WebSocket, and MCP are hosts or adapters 
 ```text
 devicehub-desktop -----> devicehub-runtime -----> devicehub-core
 devicehub-headless ----> devicehub-runtime -----> devicehub-core
-devicehub-server --------------------------------> devicehub-core
+devicehub-desktop -----> devicehub-server -----> devicehub-runtime
+devicehub-headless ----> devicehub-server -----> devicehub-runtime
 devicehub-mcp -----------------------------------> devicehub-core
 ```
 
@@ -47,6 +48,8 @@ Its host-facing facade exposes typed commands, observations, and capability port
 The host-facing `RuntimeClient` has two explicit ownership groups. `RuntimeManagerClient` exposes only discovery inventory, active selection, and manager lifecycle control. `DeviceSessionClient` exposes the media, input, observation, service, and device-operation surface associated with the currently selected session. The root client only combines these groups. The internal `CoreRuntimeState` mirrors the same split through private manager and device-session state groups, so manager views and host clients cannot accidentally project different ownership. The `runtime` facade keeps its owner-thread executor and state graph in separate private modules. This preserves the current single-session behavior while providing the boundary required for a later registry of isolated device runtimes.
 
 The host owns directory selection, environment and command-line parsing, setting persistence, operating-system process resolution, Tauri capabilities, HTTP listeners, authentication, TLS and LAN policy, and the choice of local or remote audio consumers. Host-resolved paths, FFmpeg configuration, sidecar adapters, and diagnostic overrides enter through configuration or capability ports. Boundary checks prevent production runtime code from reintroducing environment reads, process launching, or FFmpeg path resolution.
+
+`devicehub-server` owns reusable wire adapters but not listener or runtime lifecycle. Its WebSocket adapter contains status publication, validated input, WebCodecs packet delivery, flow control, telemetry, and disconnect cleanup. Its MCP adapter contains the complete tool catalog, validation, handler implementation, and Streamable HTTP router while preserving the existing `devicehub_mask` server identity. Dedicated HTTP adapters own application discovery and lifecycle, bounded crash reports, the performance workbench, public AFC/application-container storage, and long-running diagnostic exports; each receives only its narrow runtime commands and observations. Storage routes pass opaque host paths through typed runtime commands, while runtime transfers use the host-injected filesystem port for validation, streaming, and atomic publication. Capture checks and diagnostic target normalization enter their adapters through purpose-specific asynchronous host capabilities. Desktop and future headless composition roots inject an existing `RuntimeClient` and bounded adapter configuration; the adapters cannot read process environment, bind a production port, or start a device session.
 
 ## Target APIs
 

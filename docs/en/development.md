@@ -9,6 +9,10 @@ devicehub-mask/
 ├── .github/workflows/       # verification and nightly publishing
 ├── docs/en/                 # English documentation
 ├── docs/zh-CN/              # Simplified Chinese documentation
+├── crates/
+│   ├── devicehub-core/      # host-independent domain policy and state
+│   ├── devicehub-runtime/   # Apple-device sessions and supervision
+│   └── devicehub-server/    # reusable HTTP/WebSocket protocol adapters
 ├── scripts/                 # device preparation and packaging helpers
 ├── src/                     # React application
 ├── src-tauri/

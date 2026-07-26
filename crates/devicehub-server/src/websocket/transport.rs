@@ -16,40 +16,60 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::browser_video::BrowserVideoSlot;
-use crate::device_runtime::InputSink;
-use crate::web_status;
-use crate::websocket_flow::{
-    BrowserFrameDecision, FrameCredit, FramePacer, browser_frame_decision,
-    configured_in_flight_frames, duration_average_ms,
-};
-use crate::websocket_input::{ClientVideoFeedback, handle_client_message, send_all_up};
+use super::input::{ClientVideoFeedback, handle_client_message, send_all_up};
+use crate::status;
 use devicehub_core::VideoCounters;
-use devicehub_runtime::{ClipboardSlot, RuntimeClient};
+use devicehub_runtime::{
+    BrowserFrameDecision, BrowserVideoSlot, ClipboardSlot, FrameCredit, FramePacer, RuntimeClient,
+    SessionCommandSlot as InputSink, browser_frame_decision, duration_average_ms, encode_packet,
+};
+
+const DEFAULT_MAX_IN_FLIGHT_FRAMES: usize = 8;
+const MAX_IN_FLIGHT_FRAMES: usize = 8;
+
+/// Explicit host configuration for one WebSocket transport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WebSocketConfig {
+    max_in_flight_frames: usize,
+}
+
+impl WebSocketConfig {
+    pub fn new(max_in_flight_frames: usize) -> Self {
+        Self {
+            max_in_flight_frames: max_in_flight_frames.clamp(1, MAX_IN_FLIGHT_FRAMES),
+        }
+    }
+}
+
+impl Default for WebSocketConfig {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_IN_FLIGHT_FRAMES)
+    }
+}
 
 #[derive(Clone)]
-pub(crate) struct WebSocketState {
+pub struct WebSocketState {
     application: RuntimeClient<std::path::PathBuf>,
     browser_frames: BrowserVideoSlot,
     clipboard: ClipboardSlot,
     video_counters: VideoCounters,
-    input: InputSink,
+    input: InputSink<std::path::PathBuf>,
+    config: WebSocketConfig,
 }
 
 impl WebSocketState {
-    pub(crate) fn new(
-        application: RuntimeClient<std::path::PathBuf>,
-        browser_frames: BrowserVideoSlot,
-        clipboard: ClipboardSlot,
-        video_counters: VideoCounters,
-        input: InputSink,
-    ) -> Self {
+    pub fn new(application: RuntimeClient<std::path::PathBuf>, config: WebSocketConfig) -> Self {
+        let browser_frames = application.device.browser_frames.clone();
+        let clipboard = application.device.clipboard.clone();
+        let video_counters = application.device.video_counters.clone();
+        let input = application.device.commands.clone();
         Self {
             application,
             browser_frames,
             clipboard,
             video_counters,
             input,
+            config,
         }
     }
 }
@@ -69,7 +89,7 @@ struct StreamMetricsView {
     megabits_per_second: f64,
 }
 
-pub(crate) async fn upgrade(ws: WebSocketUpgrade, state: WebSocketState) -> impl IntoResponse {
+pub async fn upgrade(ws: WebSocketUpgrade, state: WebSocketState) -> impl IntoResponse {
     ws.protocols(["devicehub-mask"])
         .on_upgrade(move |socket| run(socket, state))
 }
@@ -77,9 +97,7 @@ pub(crate) async fn upgrade(ws: WebSocketUpgrade, state: WebSocketState) -> impl
 async fn run(socket: WebSocket, state: WebSocketState) {
     let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
-    let max_in_flight_frames = configured_in_flight_frames(
-        std::env::var_os("DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES").as_deref(),
-    );
+    let max_in_flight_frames = state.config.max_in_flight_frames;
     tracing::debug!(max_in_flight_frames, "configured video frame pipeline");
     let frame_pacer = Arc::new(FramePacer::new(max_in_flight_frames));
     // A newly connected WebView must opt into video. Control/status messages
@@ -113,7 +131,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         loop {
             tokio::select! {
                 _ = status_tick.tick() => {
-                    let snapshot = web_status::snapshot(&send_state.application);
+                    let snapshot = status::snapshot(&send_state.application);
                     if let Ok(text) = serde_json::to_string(
                         &json!({"type": "status", "payload": snapshot}),
                     ) && text != last_status {
@@ -149,7 +167,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                                     continue;
                                 }
                             };
-                            let packet = crate::browser_video::encode_packet(&frame);
+                            let packet = encode_packet(&frame);
                             frame_age += Instant::now()
                                 .saturating_duration_since(frame.published_at);
                             sent_frames += 1;
@@ -315,4 +333,16 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     }
     send_task.abort();
     send_all_up(&state.input, &pressed_keyboard);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WebSocketConfig;
+
+    #[test]
+    fn transport_bounds_host_supplied_frame_credits() {
+        assert_eq!(WebSocketConfig::new(0).max_in_flight_frames, 1);
+        assert_eq!(WebSocketConfig::new(2).max_in_flight_frames, 2);
+        assert_eq!(WebSocketConfig::new(usize::MAX).max_in_flight_frames, 8);
+    }
 }

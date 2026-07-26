@@ -1,3 +1,8 @@
 [workspace]
-members = ["crates/devicehub-core", "crates/devicehub-runtime", "src-tauri"]
+members = [
+  "crates/devicehub-core",
+  "crates/devicehub-runtime",
+  "crates/devicehub-server",
+  "src-tauri",
+]
 resolver = "3"

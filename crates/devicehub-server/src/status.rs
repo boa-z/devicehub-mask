@@ -15,7 +15,7 @@ struct DeviceView {
 }
 
 #[derive(Serialize)]
-pub(crate) struct StatusView {
+pub struct StatusView {
     status: String,
     active_udid: Option<String>,
     active_device_id: Option<String>,
@@ -25,7 +25,7 @@ pub(crate) struct StatusView {
     location: LocationStatus,
 }
 
-pub(crate) fn snapshot(application: &RuntimeClient<std::path::PathBuf>) -> StatusView {
+pub fn snapshot<HostPath>(application: &RuntimeClient<HostPath>) -> StatusView {
     StatusView {
         status: application.device.status.get(),
         active_udid: application.manager.active.get(),
@@ -55,5 +55,22 @@ fn orientation_name(orientation: Orientation) -> &'static str {
         Orientation::PortraitUpsideDown => "portrait_upside_down",
         Orientation::LandscapeLeft => "landscape_left",
         Orientation::LandscapeRight => "landscape_right",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snapshot;
+
+    #[test]
+    fn snapshot_accepts_an_opaque_host_path_type() {
+        let (client, _control) =
+            devicehub_runtime::RuntimeClientFixture::<String>::default().build();
+        client.device.status.set("connected");
+
+        let status = snapshot(&client);
+
+        assert_eq!(status.status, "connected");
+        assert!(status.active_device_id.is_none());
     }
 }

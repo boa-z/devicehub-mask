@@ -1,37 +1,20 @@
-mod app_documents;
 mod audio_output;
-mod bluetooth_capture;
-mod browser_video;
 mod build_info;
 mod capture_files;
 mod decode;
 mod developer_image;
 mod device_backup;
-mod device_files;
 mod device_runtime;
 mod diagnostic_files;
 mod diagnostics;
 mod host_files;
-mod http_apps;
-mod http_crash_reports;
-mod http_diagnostics;
-mod http_performance;
 mod http_profiles;
-mod http_storage;
-mod log_archive;
 mod mcp;
 mod netmuxd;
-mod network_capture;
 mod provisioning;
 mod session;
 mod settings;
-mod supervisor;
-mod sysdiagnose;
 mod web;
-mod web_status;
-mod websocket_flow;
-mod websocket_input;
-mod websocket_transport;
 mod wifi_devices;
 
 use std::path::PathBuf;
@@ -165,6 +148,11 @@ fn spawn_backend(
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let token = uuid::Uuid::new_v4().simple().to_string();
     let server_token = token.clone();
+    let websocket_config = devicehub_server::websocket::WebSocketConfig::new(
+        devicehub_runtime::configured_in_flight_frames(
+            std::env::var_os("DEVICEHUB_VIDEO_IN_FLIGHT_FRAMES").as_deref(),
+        ),
+    );
 
     let thread = std::thread::Builder::new()
         .name("devicehub-private-server".into())
@@ -178,7 +166,7 @@ fn spawn_backend(
                 let app = web::router(
                     web::AppState {
                         application: client.clone(),
-                        performance_http: http_performance::PerformanceHttpState::new(
+                        performance_http: devicehub_server::http::PerformanceHttpState::new(
                             client.device.performance,
                             client.device.performance_demand,
                             client.device.device_logs,
@@ -188,31 +176,35 @@ fn spawn_backend(
                             client.device.bluetooth_capture,
                             client.device.service_registry,
                             client.device.commands.clone(),
+                            devicehub_server::http::CaptureDestinationValidator::new(
+                                capture_files::validate_http_destination,
+                            ),
                         ),
                         profiles_http: http_profiles::ProfileHttpState::new(profile_dir),
-                        storage_http: http_storage::StorageHttpState::new(
+                        storage_http: devicehub_server::http::StorageHttpState::new(
                             client.device.commands.clone(),
                             client.device.app_documents,
                             client.device.device_files,
                         ),
-                        diagnostics_http: http_diagnostics::DiagnosticsHttpState::new(
+                        diagnostics_http: devicehub_server::http::DiagnosticsHttpState::new(
                             client.device.commands.clone(),
                             client.device.device_backup,
                             client.device.sysdiagnose,
                             client.device.log_archive,
+                            devicehub_server::http::DiagnosticDestinationPreparer::new(
+                                diagnostic_files::prepare_http_destination,
+                            ),
                         ),
-                        apps_http: http_apps::AppHttpState::new(
+                        apps_http: devicehub_server::http::AppHttpState::new(
                             client.device.commands.clone(),
                             client.device.app_operation,
                         ),
-                        crash_reports_http: http_crash_reports::CrashReportHttpState::new(
+                        crash_reports_http: devicehub_server::http::CrashReportHttpState::new(
                             client.device.commands.clone(),
                         ),
-                        browser_frames: client.device.browser_frames,
-                        clipboard: client.device.clipboard,
                         developer_image: client.device.developer_image,
-                        video_counters: client.device.video_counters,
                         input: client.device.commands,
+                        websocket_config,
                     },
                     server_token,
                 );

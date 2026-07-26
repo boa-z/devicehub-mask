@@ -1,13 +1,7 @@
-#[cfg(test)]
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-#[cfg(test)]
-use axum::extract::Query;
 use axum::extract::{Path, Request, State, WebSocketUpgrade};
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
@@ -16,49 +10,41 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::json;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use crate::device_runtime::{ControlCmd, InputCmd, InputSink};
-#[cfg(test)]
-use crate::websocket_input::{
-    ClientVideoFeedback, WebContact, handle_client_message, send_all_up, valid_frontend_metrics,
-    valid_keyboard_usage, validate_contacts,
-};
 use devicehub_core::{
-    ForgetDeviceResult, LocationStatus, PairDeviceResult, VideoCounters, validate_device_name,
-    validate_paste_text,
+    ForgetDeviceResult, LocationStatus, PairDeviceResult, validate_device_name, validate_paste_text,
 };
-use devicehub_runtime::ClipboardSlot;
 
 #[derive(Clone)]
 pub struct AppState {
     pub application: devicehub_runtime::RuntimeClient<PathBuf>,
-    pub performance_http: crate::http_performance::PerformanceHttpState,
+    pub performance_http: devicehub_server::http::PerformanceHttpState,
     pub profiles_http: crate::http_profiles::ProfileHttpState,
-    pub storage_http: crate::http_storage::StorageHttpState,
-    pub diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState,
-    pub apps_http: crate::http_apps::AppHttpState,
-    pub crash_reports_http: crate::http_crash_reports::CrashReportHttpState,
-    pub browser_frames: crate::browser_video::BrowserVideoSlot,
-    pub clipboard: ClipboardSlot,
+    pub storage_http: devicehub_server::http::StorageHttpState,
+    pub diagnostics_http: devicehub_server::http::DiagnosticsHttpState,
+    pub apps_http: devicehub_server::http::AppHttpState,
+    pub crash_reports_http: devicehub_server::http::CrashReportHttpState,
     pub developer_image: crate::developer_image::DeveloperImageMountSlot,
-    pub video_counters: VideoCounters,
     pub input: InputSink,
+    pub websocket_config: devicehub_server::websocket::WebSocketConfig,
 }
 
 #[derive(Clone)]
 struct ApiToken(Arc<str>);
 
 pub fn router(state: AppState, token: String) -> Router {
-    let performance_routes = crate::http_performance::router(state.performance_http.clone());
+    let performance_routes =
+        devicehub_server::http::performance_router(state.performance_http.clone());
     let profile_routes = crate::http_profiles::router(state.profiles_http.clone());
-    let storage_routes = crate::http_storage::router(state.storage_http.clone());
-    let diagnostics_routes = crate::http_diagnostics::router(state.diagnostics_http.clone());
-    let app_routes = crate::http_apps::router(state.apps_http.clone());
-    let crash_report_routes = crate::http_crash_reports::router(state.crash_reports_http.clone());
+    let storage_routes = devicehub_server::http::storage_router(state.storage_http.clone());
+    let diagnostics_routes =
+        devicehub_server::http::diagnostics_router(state.diagnostics_http.clone());
+    let app_routes = devicehub_server::http::apps_router(state.apps_http.clone());
+    let crash_report_routes =
+        devicehub_server::http::crash_reports_router(state.crash_reports_http.clone());
     Router::new()
         .route("/api/status", get(status))
         .merge(performance_routes)
@@ -156,8 +142,8 @@ fn private_api_authorized(headers: &HeaderMap, token: &str) -> bool {
     bearer_matches || websocket_protocol_matches
 }
 
-async fn status(State(state): State<AppState>) -> Json<crate::web_status::StatusView> {
-    Json(crate::web_status::snapshot(&state.application))
+async fn status(State(state): State<AppState>) -> Json<devicehub_server::status::StatusView> {
+    Json(devicehub_server::status::snapshot(&state.application))
 }
 
 async fn refresh_devices(State(state): State<AppState>) -> StatusCode {
@@ -979,15 +965,9 @@ async fn await_provisioning_response<T>(
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    crate::websocket_transport::upgrade(
+    devicehub_server::websocket::upgrade(
         ws,
-        crate::websocket_transport::WebSocketState::new(
-            state.application,
-            state.browser_frames,
-            state.clipboard,
-            state.video_counters,
-            state.input,
-        ),
+        devicehub_server::websocket::WebSocketState::new(state.application, state.websocket_config),
     )
     .await
 }
@@ -995,33 +975,11 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http_crash_reports::{
-        CrashReportSummaryQuery, DeleteCrashReportRequest, ExportCrashReportRequest,
-        crash_report_summary, delete_crash_report, export_crash_report,
-    };
-    use devicehub_core::DeviceInputCommand;
-    use devicehub_core::{Orientation, norm};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     fn test_state() -> (AppState, UnboundedReceiver<InputCmd>) {
         let (state, input_rx, _control_rx) = test_state_with_control();
         (state, input_rx)
-    }
-
-    fn handle_test_client_message(
-        state: &AppState,
-        text: &str,
-        pressed_keyboard: &mut HashSet<u64>,
-    ) -> ClientVideoFeedback {
-        handle_client_message(
-            &state.input,
-            state.application.device.orientation.get(),
-            &state.browser_frames,
-            text,
-            pressed_keyboard,
-            &AtomicBool::new(true),
-            &AtomicBool::new(false),
-        )
     }
 
     fn test_state_with_control() -> (
@@ -1036,11 +994,10 @@ mod tests {
             devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default()
                 .with_commands(input.clone())
                 .build();
-        let browser_frames = application.device.browser_frames.clone();
         (
             AppState {
                 application: application.clone(),
-                performance_http: crate::http_performance::PerformanceHttpState::new(
+                performance_http: devicehub_server::http::PerformanceHttpState::new(
                     application.device.performance.clone(),
                     application.device.performance_demand.clone(),
                     application.device.device_logs.clone(),
@@ -1050,31 +1007,35 @@ mod tests {
                     application.device.bluetooth_capture.clone(),
                     application.device.service_registry.clone(),
                     input.clone(),
+                    devicehub_server::http::CaptureDestinationValidator::new(|_, _| async {
+                        Ok(())
+                    }),
                 ),
                 profiles_http: crate::http_profiles::ProfileHttpState::new(PathBuf::new()),
-                storage_http: crate::http_storage::StorageHttpState::new(
+                storage_http: devicehub_server::http::StorageHttpState::new(
                     input.clone(),
                     application.device.app_documents.clone(),
                     application.device.device_files.clone(),
                 ),
-                diagnostics_http: crate::http_diagnostics::DiagnosticsHttpState::new(
+                diagnostics_http: devicehub_server::http::DiagnosticsHttpState::new(
                     input.clone(),
                     application.device.device_backup.clone(),
                     application.device.sysdiagnose.clone(),
                     application.device.log_archive.clone(),
+                    devicehub_server::http::DiagnosticDestinationPreparer::new(
+                        |destination, _| async move { Ok(destination) },
+                    ),
                 ),
-                apps_http: crate::http_apps::AppHttpState::new(
+                apps_http: devicehub_server::http::AppHttpState::new(
                     input.clone(),
                     application.device.app_operation.clone(),
                 ),
-                crash_reports_http: crate::http_crash_reports::CrashReportHttpState::new(
+                crash_reports_http: devicehub_server::http::CrashReportHttpState::new(
                     input.clone(),
                 ),
-                browser_frames,
-                clipboard: application.device.clipboard,
                 developer_image: application.device.developer_image,
-                video_counters: application.device.video_counters,
                 input,
+                websocket_config: devicehub_server::websocket::WebSocketConfig::default(),
             },
             input_rx,
             control_rx,
@@ -1369,195 +1330,6 @@ mod tests {
         assert!(response.error.is_none());
     }
 
-    #[test]
-    fn browser_feedback_messages_keep_acceptance_and_presentation_distinct() {
-        let (state, _input_rx) = test_state();
-        let mut pressed = HashSet::new();
-        assert_eq!(
-            handle_test_client_message(
-                &state,
-                r#"{"type":"browser_frame_accepted","sequence":"42"}"#,
-                &mut pressed,
-            ),
-            ClientVideoFeedback::BrowserAccepted(42)
-        );
-        assert_eq!(
-            handle_test_client_message(
-                &state,
-                r#"{"type":"frame_presented","sequence":"42"}"#,
-                &mut pressed,
-            ),
-            ClientVideoFeedback::FramePresented(42)
-        );
-    }
-
-    #[tokio::test]
-    async fn video_demand_resumes_with_a_keyframe_request() {
-        let (state, _input_rx) = test_state();
-        let active = AtomicBool::new(true);
-        let resync = AtomicBool::new(false);
-        let keyframes = state.browser_frames.clone();
-        let mut pressed = HashSet::new();
-
-        assert_eq!(
-            handle_client_message(
-                &state.input,
-                state.application.device.orientation.get(),
-                &state.browser_frames,
-                r#"{"type":"video_demand","active":false}"#,
-                &mut pressed,
-                &active,
-                &resync,
-            ),
-            ClientVideoFeedback::ResetAll
-        );
-        assert!(!active.load(Ordering::Relaxed));
-        assert_eq!(
-            handle_client_message(
-                &state.input,
-                state.application.device.orientation.get(),
-                &state.browser_frames,
-                r#"{"type":"video_demand","active":true}"#,
-                &mut pressed,
-                &active,
-                &resync,
-            ),
-            ClientVideoFeedback::None
-        );
-        assert!(active.load(Ordering::Relaxed));
-        assert!(resync.load(Ordering::Relaxed));
-        tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
-            .await
-            .expect("video demand resume should request a keyframe");
-    }
-
-    #[tokio::test]
-    async fn browser_decoder_keyframe_request_enters_resync() {
-        let (state, _input_rx) = test_state();
-        let active = AtomicBool::new(true);
-        let resync = AtomicBool::new(false);
-        let keyframes = state.browser_frames.clone();
-
-        assert_eq!(
-            handle_client_message(
-                &state.input,
-                state.application.device.orientation.get(),
-                &state.browser_frames,
-                r#"{"type":"browser_video_keyframe"}"#,
-                &mut HashSet::new(),
-                &active,
-                &resync,
-            ),
-            ClientVideoFeedback::ResetBrowser
-        );
-        assert!(resync.load(Ordering::Acquire));
-        tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
-            .await
-            .expect("browser decoder recovery should request a keyframe");
-    }
-
-    #[test]
-    fn frontend_metrics_reject_impossible_or_unbounded_values() {
-        assert!(valid_frontend_metrics(
-            5_000.0, 300, 0, 299, 600.0, 100.0, 2, 1
-        ));
-        assert!(!valid_frontend_metrics(
-            5_000.0, 300, 301, 299, 600.0, 100.0, 2, 1,
-        ));
-        assert!(!valid_frontend_metrics(f64::NAN, 0, 0, 0, 0.0, 0.0, 0, 0,));
-    }
-
-    #[test]
-    fn contact_validation_rejects_duplicate_ids() {
-        let contacts = vec![
-            WebContact {
-                identity: 1,
-                touching: true,
-                x: 0.2,
-                y: 0.3,
-            },
-            WebContact {
-                identity: 1,
-                touching: true,
-                x: 0.4,
-                y: 0.5,
-            },
-        ];
-        assert!(validate_contacts(contacts, Orientation::Portrait).is_none());
-    }
-
-    #[test]
-    fn contact_validation_unrotates_landscape() {
-        let contacts = vec![WebContact {
-            identity: 2,
-            touching: true,
-            x: 0.25,
-            y: 0.75,
-        }];
-        let result = validate_contacts(contacts, Orientation::LandscapeRight).unwrap();
-        assert_eq!(result[0].x, norm(0.75));
-        assert_eq!(result[0].y, norm(0.75));
-    }
-
-    #[test]
-    fn keyboard_messages_validate_and_track_pressed_usages() {
-        let (state, mut input_rx) = test_state();
-        let mut pressed = HashSet::new();
-
-        handle_test_client_message(
-            &state,
-            r#"{"type":"keyboard_down","usage":4}"#,
-            &mut pressed,
-        );
-        handle_test_client_message(
-            &state,
-            r#"{"type":"keyboard_down","usage":4}"#,
-            &mut pressed,
-        );
-        handle_test_client_message(
-            &state,
-            r#"{"type":"keyboard_down","usage":65535}"#,
-            &mut pressed,
-        );
-
-        assert!(matches!(
-            input_rx.try_recv(),
-            Ok(InputCmd::DeviceInput(DeviceInputCommand::KeyboardDown(4)))
-        ));
-        assert!(input_rx.try_recv().is_err());
-        assert_eq!(pressed, HashSet::from([4]));
-
-        handle_test_client_message(&state, r#"{"type":"keyboard_up","usage":4}"#, &mut pressed);
-        assert!(matches!(
-            input_rx.try_recv(),
-            Ok(InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(4)))
-        ));
-        assert!(pressed.is_empty());
-    }
-
-    #[test]
-    fn text_messages_are_bounded_before_dispatch() {
-        let (state, mut input_rx) = test_state();
-        let mut pressed = HashSet::new();
-
-        handle_test_client_message(
-            &state,
-            r#"{"type":"text","text":"Hello, iPhone!"}"#,
-            &mut pressed,
-        );
-        handle_test_client_message(&state, r#"{"type":"text","text":""}"#, &mut pressed);
-        let oversized =
-            serde_json::to_string(&json!({ "type": "text", "text": "x".repeat(129) })).unwrap();
-        handle_test_client_message(&state, &oversized, &mut pressed);
-
-        assert!(matches!(
-            input_rx.try_recv(),
-            Ok(InputCmd::DeviceInput(DeviceInputCommand::Text(text)))
-                if text == "Hello, iPhone!"
-        ));
-        assert!(input_rx.try_recv().is_err());
-    }
-
     #[tokio::test]
     async fn paste_text_endpoint_dispatches_unicode_and_waits_for_completion() {
         let (state, mut input_rx) = test_state();
@@ -1586,32 +1358,6 @@ mod tests {
             .await,
             Err((StatusCode::BAD_REQUEST, _))
         ));
-    }
-
-    #[test]
-    fn websocket_cleanup_releases_pressed_keyboard_usages() {
-        let (state, mut input_rx) = test_state();
-        send_all_up(&state.input, &HashSet::from([0x04, 0xe1]));
-
-        let commands: Vec<_> = std::iter::from_fn(|| input_rx.try_recv().ok()).collect();
-        assert!(commands.iter().any(|command| matches!(
-            command,
-            InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(0x04))
-        )));
-        assert!(commands.iter().any(|command| matches!(
-            command,
-            InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(0xe1))
-        )));
-    }
-
-    #[test]
-    fn keyboard_usage_validation_matches_frontend_ranges() {
-        for usage in [0x04, 0x65, 0x67, 0x73, 0x85, 0x87, 0x89, 0xe0, 0xe7] {
-            assert!(valid_keyboard_usage(usage));
-        }
-        for usage in [0x00, 0x03, 0x74, 0x84, 0x86, 0x88, 0x8a, 0xdf, 0xe8] {
-            assert!(!valid_keyboard_usage(usage));
-        }
     }
 
     #[test]
@@ -1833,13 +1579,6 @@ mod tests {
             .await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
-        assert!(matches!(
-            crate::http_crash_reports::device_crash_reports(State(
-                state.crash_reports_http.clone(),
-            ))
-            .await,
-            Err((StatusCode::SERVICE_UNAVAILABLE, _))
-        ));
     }
 
     #[tokio::test]
@@ -2005,133 +1744,5 @@ mod tests {
             request.await.unwrap(),
             Err((StatusCode::CONFLICT, _))
         ));
-    }
-
-    #[tokio::test]
-    async fn crash_report_list_export_and_delete_use_the_device_session() {
-        let (state, mut input_rx) = test_state();
-        let list_request = tokio::spawn(crate::http_crash_reports::device_crash_reports(State(
-            state.crash_reports_http.clone(),
-        )));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::ListCrashReports(reply) => {
-                reply
-                    .send(Ok(devicehub_core::DeviceCrashReportList {
-                        reports: vec![devicehub_core::DeviceCrashReport {
-                            path: "/Report.ips".into(),
-                            name: "Report.ips".into(),
-                            size_bytes: 42,
-                            modified: "2026-07-24T00:00:00Z".into(),
-                        }],
-                        truncated: false,
-                    }))
-                    .unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        let Json(list) = list_request.await.unwrap().unwrap();
-        assert_eq!(list.reports.len(), 1);
-        assert!(!list.truncated);
-
-        let export_request = tokio::spawn(export_crash_report(
-            State(state.crash_reports_http.clone()),
-            Json(ExportCrashReportRequest {
-                device_path: "/Report.ips".into(),
-                destination: PathBuf::from("/tmp/Report.ips"),
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::ExportCrashReport {
-                device_path,
-                destination,
-                reply,
-            } => {
-                assert_eq!(device_path, "/Report.ips");
-                assert_eq!(destination, PathBuf::from("/tmp/Report.ips"));
-                reply.send(Ok(42)).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        let Json(result) = export_request.await.unwrap().unwrap();
-        assert_eq!(result, serde_json::json!({ "bytes_written": 42 }));
-
-        let delete_request = tokio::spawn(delete_crash_report(
-            State(state.crash_reports_http),
-            Json(DeleteCrashReportRequest {
-                device_path: "/Report.ips".into(),
-            }),
-        ));
-        match input_rx.recv().await.unwrap() {
-            InputCmd::DeleteCrashReport { device_path, reply } => {
-                assert_eq!(device_path, "/Report.ips");
-                reply.send(Ok(())).unwrap();
-            }
-            _ => panic!("unexpected command"),
-        }
-        let Json(result) = delete_request.await.unwrap().unwrap();
-        assert_eq!(result, serde_json::json!({ "deleted": true }));
-    }
-
-    #[tokio::test]
-    async fn crash_report_summary_is_validated_bounded_and_summary_only() {
-        let (state, mut input_rx) = test_state();
-        let invalid = crash_report_summary(
-            State(state.crash_reports_http.clone()),
-            Query(CrashReportSummaryQuery {
-                device_path: "/../private/report.ips".into(),
-            }),
-        )
-        .await;
-        assert!(matches!(invalid, Err((StatusCode::BAD_REQUEST, _))));
-        assert!(input_rx.try_recv().is_err());
-
-        let request = tokio::spawn(crash_report_summary(
-            State(state.crash_reports_http),
-            Query(CrashReportSummaryQuery {
-                device_path: "/Report.ips".into(),
-            }),
-        ));
-        let InputCmd::ReadCrashReport {
-            device_path,
-            max_bytes,
-            reply,
-        } = input_rx.recv().await.unwrap()
-        else {
-            panic!("expected crash report read command");
-        };
-        assert_eq!(device_path, "/Report.ips");
-        assert_eq!(max_bytes, devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES);
-        reply
-            .send(Ok(devicehub_core::DeviceCrashReportContent {
-                device_path,
-                size_bytes: 4_096,
-                bytes_read: 128,
-                truncated: false,
-                lossy_utf8: false,
-                summary: devicehub_core::DeviceCrashReportSummary {
-                    format: devicehub_core::CrashReportFormat::IpsJson,
-                    kind: devicehub_core::CrashReportKind::AppCrash,
-                    process_name: Some("Game".into()),
-                    bundle_id: Some("com.example.game".into()),
-                    app_version: None,
-                    build_version: None,
-                    os_version: None,
-                    timestamp: None,
-                    bug_type: Some("309".into()),
-                    exception_type: None,
-                    exception_signal: None,
-                    termination_namespace: None,
-                    termination_code: None,
-                    faulting_thread: None,
-                    details_parsed: true,
-                    source_truncated: false,
-                },
-                content: "PRIVATE RAW CRASH CONTENT".into(),
-            }))
-            .unwrap();
-        let Json(summary) = request.await.unwrap().unwrap();
-        let serialized = serde_json::to_string(&summary).unwrap();
-        assert!(serialized.contains("com.example.game"));
-        assert!(!serialized.contains("PRIVATE RAW CRASH CONTENT"));
     }
 }

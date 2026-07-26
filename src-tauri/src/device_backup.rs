@@ -2,11 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-pub(crate) use devicehub_core::DeviceBackupState;
-pub(crate) use devicehub_core::{DeviceBackupSlot, DeviceBackupStatus};
-pub(crate) type DeviceBackupCommand = devicehub_runtime::DeviceBackupCommand<PathBuf>;
-
 const MAX_PATH_BYTES: usize = 4_096;
 
 pub(crate) async fn prepare_destination(destination: &Path) -> Result<PathBuf, String> {

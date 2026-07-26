@@ -4,6 +4,25 @@ use std::path::{Path, PathBuf};
 
 const MAX_PATH_BYTES: usize = 4_096;
 
+/// Applies desktop filesystem policy for the reusable diagnostics HTTP
+/// adapter and returns the normalized path consumed by runtime commands.
+pub(crate) async fn prepare_http_destination(
+    destination: PathBuf,
+    kind: devicehub_server::http::DiagnosticDestinationKind,
+) -> Result<PathBuf, String> {
+    match kind {
+        devicehub_server::http::DiagnosticDestinationKind::BackupDirectory => {
+            crate::device_backup::prepare_destination(&destination).await
+        }
+        devicehub_server::http::DiagnosticDestinationKind::SysdiagnoseFile => {
+            prepare_destination(&destination, "sysdiagnose").await
+        }
+        devicehub_server::http::DiagnosticDestinationKind::LogArchiveFile => {
+            prepare_destination(&destination, "log archive").await
+        }
+    }
+}
+
 pub(crate) async fn prepare_destination(
     destination: &Path,
     label: &str,

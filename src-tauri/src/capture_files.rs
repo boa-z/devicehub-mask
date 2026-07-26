@@ -8,6 +8,15 @@ use tokio::io::AsyncWriteExt;
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TokioCaptureFileIo;
 
+/// Adapts desktop filesystem policy to server-side request validation without
+/// exposing filesystem APIs to `devicehub-server`.
+pub(crate) async fn validate_http_destination(
+    destination: PathBuf,
+    kind: CaptureFileKind,
+) -> Result<(), String> {
+    TokioCaptureFileIo.validate(&destination, kind).await
+}
+
 pub(crate) struct TokioCaptureFileWriter {
     file: tokio::fs::File,
     temporary: PathBuf,

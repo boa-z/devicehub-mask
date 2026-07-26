@@ -3,50 +3,84 @@
 //! This module owns HTTP validation and response mapping only. Long-lived
 //! sampling and capture resources remain owned by the active device session.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::device_runtime::{InputCmd, InputSink};
-use crate::supervisor::ServiceRegistry;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use devicehub_core::{
-    AppActivityEvent, DeviceConditionSlot, DeviceLogSlot, PerformanceSlot, PerformanceSnapshot,
+    AppActivityEvent, BluetoothCaptureSlot, BluetoothCaptureStatus, DeviceConditionSlot,
+    DeviceLogSlot, NetworkCaptureSlot, NetworkCaptureStatus, PerformanceSlot, PerformanceSnapshot,
+    ServiceHealth, ServiceRegistry,
 };
-use devicehub_runtime::PerformanceDemand;
+use devicehub_runtime::{CaptureFileKind, PerformanceDemand};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+
+type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
+type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+type CaptureValidationFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>;
+
+/// Host-owned validation for local capture destinations.
+///
+/// The server adapter validates protocol-level duration limits itself, then
+/// delegates filesystem policy without gaining access to host I/O APIs.
+#[derive(Clone)]
+pub struct CaptureDestinationValidator {
+    validate: Arc<dyn Fn(PathBuf, CaptureFileKind) -> CaptureValidationFuture + Send + Sync>,
+}
+
+impl CaptureDestinationValidator {
+    pub fn new<F, Fut>(validate: F) -> Self
+    where
+        F: Fn(PathBuf, CaptureFileKind) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        Self {
+            validate: Arc::new(move |destination, kind| Box::pin(validate(destination, kind))),
+        }
+    }
+
+    async fn validate(&self, destination: PathBuf, kind: CaptureFileKind) -> Result<(), String> {
+        (self.validate)(destination, kind).await
+    }
+}
 
 /// Narrow capability set exposed to performance-workbench HTTP handlers.
 /// Cloning it shares existing slots and demand counters; it does not start any
 /// sampler, capture, or background task.
-#[derive(Clone, Default)]
-pub(crate) struct PerformanceHttpState {
+#[derive(Clone)]
+pub struct PerformanceHttpState {
     performance: PerformanceSlot,
     performance_demand: PerformanceDemand,
     device_logs: DeviceLogSlot,
     device_log_demand: devicehub_runtime::DeviceLogDemand,
     device_conditions: DeviceConditionSlot,
-    network_capture: crate::network_capture::NetworkCaptureSlot,
-    bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
+    network_capture: NetworkCaptureSlot,
+    bluetooth_capture: BluetoothCaptureSlot,
     services: ServiceRegistry,
     input: InputSink,
+    capture_destinations: CaptureDestinationValidator,
 }
 
 impl PerformanceHttpState {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         performance: PerformanceSlot,
         performance_demand: PerformanceDemand,
         device_logs: DeviceLogSlot,
         device_log_demand: devicehub_runtime::DeviceLogDemand,
         device_conditions: DeviceConditionSlot,
-        network_capture: crate::network_capture::NetworkCaptureSlot,
-        bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureSlot,
+        network_capture: NetworkCaptureSlot,
+        bluetooth_capture: BluetoothCaptureSlot,
         services: ServiceRegistry,
         input: InputSink,
+        capture_destinations: CaptureDestinationValidator,
     ) -> Self {
         Self {
             performance,
@@ -58,13 +92,14 @@ impl PerformanceHttpState {
             bluetooth_capture,
             services,
             input,
+            capture_destinations,
         }
     }
 }
 
 /// Supplies this adapter's state before merging it into the application router,
 /// so handlers cannot extract the much broader top-level HTTP state.
-pub(crate) fn router<S>(state: PerformanceHttpState) -> Router<S>
+pub fn router<S>(state: PerformanceHttpState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -102,10 +137,10 @@ where
 struct PerformanceView {
     sample: PerformanceSnapshot,
     app_activity: Vec<AppActivityEvent>,
-    services: Vec<crate::supervisor::ServiceHealth>,
+    services: Vec<ServiceHealth>,
     sampling: bool,
-    network_capture: crate::network_capture::NetworkCaptureStatus,
-    bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureStatus,
+    network_capture: NetworkCaptureStatus,
+    bluetooth_capture: BluetoothCaptureStatus,
     device_conditions: devicehub_core::DeviceConditionStatus,
 }
 
@@ -236,12 +271,16 @@ async fn start_network_capture(
     State(state): State<PerformanceHttpState>,
     Json(request): Json<StartNetworkCaptureRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    crate::network_capture::validate_request(&request.destination, request.duration_seconds)
+    devicehub_runtime::validate_network_capture_duration(request.duration_seconds)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    state
+        .capture_destinations
+        .validate(request.destination.clone(), CaptureFileKind::Network)
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::NetworkCapture(
-        crate::network_capture::NetworkCaptureCommand::Start {
+        devicehub_runtime::NetworkCaptureCommand::Start {
             destination: request.destination,
             duration_seconds: request.duration_seconds,
             process_id: request.process_id,
@@ -262,7 +301,7 @@ async fn stop_network_capture(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::NetworkCapture(
-        crate::network_capture::NetworkCaptureCommand::Stop { reply },
+        devicehub_runtime::NetworkCaptureCommand::Stop { reply },
     )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -311,12 +350,16 @@ async fn start_bluetooth_capture(
     State(state): State<PerformanceHttpState>,
     Json(request): Json<StartBluetoothCaptureRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    crate::bluetooth_capture::validate_request(&request.destination, request.duration_seconds)
+    devicehub_runtime::validate_bluetooth_capture_duration(request.duration_seconds)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    state
+        .capture_destinations
+        .validate(request.destination.clone(), CaptureFileKind::Bluetooth)
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::BluetoothCapture(
-        crate::bluetooth_capture::BluetoothCaptureCommand::Start {
+        devicehub_runtime::BluetoothCaptureCommand::Start {
             destination: request.destination,
             duration_seconds: request.duration_seconds,
             reply,
@@ -336,7 +379,7 @@ async fn stop_bluetooth_capture(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::BluetoothCapture(
-        crate::bluetooth_capture::BluetoothCaptureCommand::Stop { reply },
+        devicehub_runtime::BluetoothCaptureCommand::Stop { reply },
     )) {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -419,7 +462,7 @@ async fn device_logs(
 struct DeviceLogsView {
     #[serde(flatten)]
     batch: devicehub_core::DeviceLogBatch,
-    service: Option<crate::supervisor::ServiceHealth>,
+    service: Option<ServiceHealth>,
 }
 
 async fn start_device_logs(State(state): State<PerformanceHttpState>) -> StatusCode {
@@ -453,10 +496,11 @@ mod tests {
                 DeviceLogSlot::default(),
                 devicehub_runtime::DeviceLogDemand::default(),
                 DeviceConditionSlot::default(),
-                crate::network_capture::NetworkCaptureSlot::default(),
-                crate::bluetooth_capture::BluetoothCaptureSlot::default(),
+                NetworkCaptureSlot::default(),
+                BluetoothCaptureSlot::default(),
                 ServiceRegistry::default(),
                 input,
+                CaptureDestinationValidator::new(|_, _| async { Ok(()) }),
             ),
             input_rx,
         )
@@ -536,10 +580,7 @@ mod tests {
     #[tokio::test]
     async fn network_capture_endpoints_validate_and_dispatch_commands() {
         let (state, mut input_rx) = test_state();
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-http-performance-{}.pcap",
-            uuid::Uuid::new_v4()
-        ));
+        let destination = std::env::temp_dir().join("devicehub-mask-http-performance.pcap");
         let invalid = start_network_capture(
             State(state.clone()),
             Json(StartNetworkCaptureRequest {
@@ -562,7 +603,7 @@ mod tests {
             }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::NetworkCapture(crate::network_capture::NetworkCaptureCommand::Start {
+            InputCmd::NetworkCapture(devicehub_runtime::NetworkCaptureCommand::Start {
                 destination: actual,
                 duration_seconds,
                 process_id,
@@ -579,21 +620,48 @@ mod tests {
 
         let stop = tokio::spawn(stop_network_capture(State(state)));
         match input_rx.recv().await.unwrap() {
-            InputCmd::NetworkCapture(crate::network_capture::NetworkCaptureCommand::Stop {
-                reply,
-            }) => reply.send(Ok(())).unwrap(),
+            InputCmd::NetworkCapture(devicehub_runtime::NetworkCaptureCommand::Stop { reply }) => {
+                reply.send(Ok(())).unwrap()
+            }
             _ => panic!("unexpected command"),
         }
         assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
+    async fn capture_destination_policy_rejects_before_device_dispatch() {
+        let (mut state, mut input_rx) = test_state();
+        state.capture_destinations =
+            CaptureDestinationValidator::new(|destination, kind| async move {
+                assert_eq!(kind, CaptureFileKind::Network);
+                assert_eq!(
+                    destination.file_name().and_then(|name| name.to_str()),
+                    Some("denied.pcap")
+                );
+                Err("capture destination denied by host".into())
+            });
+
+        let error = start_network_capture(
+            State(state),
+            Json(StartNetworkCaptureRequest {
+                destination: std::env::temp_dir().join("denied.pcap"),
+                duration_seconds: 30,
+                process_id: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1, "capture destination denied by host");
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn bluetooth_capture_endpoints_validate_and_dispatch_commands() {
         let (state, mut input_rx) = test_state();
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-bluetooth-http-performance-{}.pcap",
-            uuid::Uuid::new_v4()
-        ));
+        let destination =
+            std::env::temp_dir().join("devicehub-mask-bluetooth-http-performance.pcap");
         let invalid = start_bluetooth_capture(
             State(state.clone()),
             Json(StartBluetoothCaptureRequest {
@@ -614,13 +682,11 @@ mod tests {
             }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::BluetoothCapture(
-                crate::bluetooth_capture::BluetoothCaptureCommand::Start {
-                    destination: actual,
-                    duration_seconds,
-                    reply,
-                },
-            ) => {
+            InputCmd::BluetoothCapture(devicehub_runtime::BluetoothCaptureCommand::Start {
+                destination: actual,
+                duration_seconds,
+                reply,
+            }) => {
                 assert_eq!(actual, destination);
                 assert_eq!(duration_seconds, 30);
                 reply.send(Ok(())).unwrap();
@@ -631,9 +697,9 @@ mod tests {
 
         let stop = tokio::spawn(stop_bluetooth_capture(State(state)));
         match input_rx.recv().await.unwrap() {
-            InputCmd::BluetoothCapture(
-                crate::bluetooth_capture::BluetoothCaptureCommand::Stop { reply },
-            ) => reply.send(Ok(())).unwrap(),
+            InputCmd::BluetoothCapture(devicehub_runtime::BluetoothCaptureCommand::Stop {
+                reply,
+            }) => reply.send(Ok(())).unwrap(),
             _ => panic!("unexpected command"),
         }
         assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);

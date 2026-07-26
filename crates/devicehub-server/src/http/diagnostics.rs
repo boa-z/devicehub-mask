@@ -3,7 +3,10 @@
 //! The active session owns each export task. This module owns only request
 //! validation, bounded command acknowledgement, and read-only status mapping.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
@@ -13,33 +16,82 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::oneshot;
 
-use crate::device_runtime::{InputCmd, InputSink};
+use devicehub_core::{
+    DeviceBackupSlot, DeviceBackupStatus, LogArchiveSlot, LogArchiveStatus, SysdiagnoseSlot,
+    SysdiagnoseStatus,
+};
 
-#[derive(Clone, Default)]
-pub(crate) struct DiagnosticsHttpState {
+type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
+type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+type DeviceBackupCommand = devicehub_runtime::DeviceBackupCommand<PathBuf>;
+type SysdiagnoseCommand = devicehub_runtime::SysdiagnoseCommand<PathBuf>;
+type LogArchiveCommand = devicehub_runtime::LogArchiveCommand<PathBuf>;
+type DiagnosticDestinationFuture =
+    Pin<Box<dyn Future<Output = Result<PathBuf, String>> + Send + 'static>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticDestinationKind {
+    BackupDirectory,
+    SysdiagnoseFile,
+    LogArchiveFile,
+}
+
+/// Host capability for validating and normalizing diagnostic export targets.
+#[derive(Clone)]
+pub struct DiagnosticDestinationPreparer {
+    prepare: Arc<
+        dyn Fn(PathBuf, DiagnosticDestinationKind) -> DiagnosticDestinationFuture + Send + Sync,
+    >,
+}
+
+impl DiagnosticDestinationPreparer {
+    pub fn new<F, Fut>(prepare: F) -> Self
+    where
+        F: Fn(PathBuf, DiagnosticDestinationKind) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<PathBuf, String>> + Send + 'static,
+    {
+        Self {
+            prepare: Arc::new(move |destination, kind| Box::pin(prepare(destination, kind))),
+        }
+    }
+
+    async fn prepare(
+        &self,
+        destination: PathBuf,
+        kind: DiagnosticDestinationKind,
+    ) -> Result<PathBuf, String> {
+        (self.prepare)(destination, kind).await
+    }
+}
+
+#[derive(Clone)]
+pub struct DiagnosticsHttpState {
     input: InputSink,
-    device_backup: crate::device_backup::DeviceBackupSlot,
-    sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
-    log_archive: crate::log_archive::LogArchiveSlot,
+    device_backup: DeviceBackupSlot,
+    sysdiagnose: SysdiagnoseSlot,
+    log_archive: LogArchiveSlot,
+    destinations: DiagnosticDestinationPreparer,
 }
 
 impl DiagnosticsHttpState {
-    pub(crate) fn new(
+    pub fn new(
         input: InputSink,
-        device_backup: crate::device_backup::DeviceBackupSlot,
-        sysdiagnose: crate::sysdiagnose::SysdiagnoseSlot,
-        log_archive: crate::log_archive::LogArchiveSlot,
+        device_backup: DeviceBackupSlot,
+        sysdiagnose: SysdiagnoseSlot,
+        log_archive: LogArchiveSlot,
+        destinations: DiagnosticDestinationPreparer,
     ) -> Self {
         Self {
             input,
             device_backup,
             sysdiagnose,
             log_archive,
+            destinations,
         }
     }
 }
 
-pub(crate) fn router<S>(state: DiagnosticsHttpState) -> Router<S>
+pub fn router<S>(state: DiagnosticsHttpState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -67,7 +119,7 @@ where
 
 async fn device_backup_status(
     State(state): State<DiagnosticsHttpState>,
-) -> Json<crate::device_backup::DeviceBackupStatus> {
+) -> Json<DeviceBackupStatus> {
     Json(state.device_backup.get())
 }
 
@@ -82,17 +134,23 @@ async fn start_device_backup(
     State(state): State<DiagnosticsHttpState>,
     Json(request): Json<StartDeviceBackupRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let destination = crate::device_backup::prepare_destination(&request.destination)
+    let destination = state
+        .destinations
+        .prepare(
+            request.destination,
+            DiagnosticDestinationKind::BackupDirectory,
+        )
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceBackup(
-        crate::device_backup::DeviceBackupCommand::Start {
+    if !state
+        .input
+        .try_send(InputCmd::DeviceBackup(DeviceBackupCommand::Start {
             destination,
             full: request.full,
             reply,
-        },
-    )) {
+        }))
+    {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -112,9 +170,10 @@ async fn stop_device_backup(
     State(state): State<DiagnosticsHttpState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceBackup(
-        crate::device_backup::DeviceBackupCommand::Stop { reply },
-    )) {
+    if !state
+        .input
+        .try_send(InputCmd::DeviceBackup(DeviceBackupCommand::Stop { reply }))
+    {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -130,9 +189,7 @@ async fn stop_device_backup(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn sysdiagnose_status(
-    State(state): State<DiagnosticsHttpState>,
-) -> Json<crate::sysdiagnose::SysdiagnoseStatus> {
+async fn sysdiagnose_status(State(state): State<DiagnosticsHttpState>) -> Json<SysdiagnoseStatus> {
     Json(state.sysdiagnose.get())
 }
 
@@ -145,13 +202,22 @@ async fn start_sysdiagnose(
     State(state): State<DiagnosticsHttpState>,
     Json(request): Json<StartSysdiagnoseRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let destination = crate::sysdiagnose::prepare_destination(&request.destination)
+    let destination = state
+        .destinations
+        .prepare(
+            request.destination,
+            DiagnosticDestinationKind::SysdiagnoseFile,
+        )
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::Sysdiagnose(
-        crate::sysdiagnose::SysdiagnoseCommand::Start { destination, reply },
-    )) {
+    if !state
+        .input
+        .try_send(InputCmd::Sysdiagnose(SysdiagnoseCommand::Start {
+            destination,
+            reply,
+        }))
+    {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -171,9 +237,10 @@ async fn stop_sysdiagnose(
     State(state): State<DiagnosticsHttpState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::Sysdiagnose(
-        crate::sysdiagnose::SysdiagnoseCommand::Stop { reply },
-    )) {
+    if !state
+        .input
+        .try_send(InputCmd::Sysdiagnose(SysdiagnoseCommand::Stop { reply }))
+    {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -189,9 +256,7 @@ async fn stop_sysdiagnose(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn log_archive_status(
-    State(state): State<DiagnosticsHttpState>,
-) -> Json<crate::log_archive::LogArchiveStatus> {
+async fn log_archive_status(State(state): State<DiagnosticsHttpState>) -> Json<LogArchiveStatus> {
     Json(state.log_archive.get())
 }
 
@@ -205,19 +270,26 @@ async fn start_log_archive(
     State(state): State<DiagnosticsHttpState>,
     Json(request): Json<StartLogArchiveRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let destination = crate::log_archive::prepare_destination(&request.destination)
+    let destination = state
+        .destinations
+        .prepare(
+            request.destination,
+            DiagnosticDestinationKind::LogArchiveFile,
+        )
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let age_limit_hours = crate::log_archive::validate_age_limit_hours(request.age_limit_hours)
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let age_limit_hours =
+        devicehub_runtime::validate_log_archive_age_limit_hours(request.age_limit_hours)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::LogArchive(
-        crate::log_archive::LogArchiveCommand::Start {
+    if !state
+        .input
+        .try_send(InputCmd::LogArchive(LogArchiveCommand::Start {
             destination,
             age_limit_hours,
             reply,
-        },
-    )) {
+        }))
+    {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -237,9 +309,10 @@ async fn stop_log_archive(
     State(state): State<DiagnosticsHttpState>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::LogArchive(
-        crate::log_archive::LogArchiveCommand::Stop { reply },
-    )) {
+    if !state
+        .input
+        .try_send(InputCmd::LogArchive(LogArchiveCommand::Stop { reply }))
+    {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no active device session".into(),
@@ -297,25 +370,54 @@ mod tests {
         (
             DiagnosticsHttpState::new(
                 input,
-                crate::device_backup::DeviceBackupSlot::default(),
-                crate::sysdiagnose::SysdiagnoseSlot::default(),
-                crate::log_archive::LogArchiveSlot::default(),
+                DeviceBackupSlot::default(),
+                SysdiagnoseSlot::default(),
+                LogArchiveSlot::default(),
+                DiagnosticDestinationPreparer::new(|destination, _| async move {
+                    if destination.is_absolute() {
+                        Ok(destination)
+                    } else {
+                        Err("diagnostic destination must be absolute".into())
+                    }
+                }),
             ),
             input_rx,
         )
     }
 
     #[tokio::test]
+    async fn host_destination_policy_rejects_before_device_dispatch() {
+        let (mut state, mut input_rx) = test_state();
+        state.destinations = DiagnosticDestinationPreparer::new(|destination, kind| async move {
+            assert_eq!(kind, DiagnosticDestinationKind::SysdiagnoseFile);
+            assert_eq!(
+                destination.file_name().and_then(|name| name.to_str()),
+                Some("denied.tar.gz")
+            );
+            Err("diagnostic destination denied by host".into())
+        });
+
+        let error = start_sysdiagnose(
+            State(state),
+            Json(StartSysdiagnoseRequest {
+                destination: std::env::temp_dir().join("denied.tar.gz"),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1, "diagnostic destination denied by host");
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn device_backup_endpoints_validate_and_dispatch_commands() {
         let (state, mut input_rx) = test_state();
-        let missing = std::env::temp_dir().join(format!(
-            "devicehub-mask-missing-web-backup-{}",
-            uuid::Uuid::new_v4()
-        ));
         let invalid = start_device_backup(
             State(state.clone()),
             Json(StartDeviceBackupRequest {
-                destination: missing,
+                destination: PathBuf::from("relative-backup"),
                 full: false,
             }),
         )
@@ -325,7 +427,7 @@ mod tests {
         assert!(input_rx.try_recv().is_err());
 
         let destination = std::env::temp_dir();
-        let expected = tokio::fs::canonicalize(&destination).await.unwrap();
+        let expected = destination.clone();
         let start = tokio::spawn(start_device_backup(
             State(state.clone()),
             Json(StartDeviceBackupRequest {
@@ -334,7 +436,7 @@ mod tests {
             }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::DeviceBackup(crate::device_backup::DeviceBackupCommand::Start {
+            InputCmd::DeviceBackup(DeviceBackupCommand::Start {
                 destination,
                 full,
                 reply,
@@ -348,12 +450,12 @@ mod tests {
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
         assert_eq!(
             device_backup_status(State(state.clone())).await.0.state,
-            crate::device_backup::DeviceBackupState::Idle
+            devicehub_core::DeviceBackupState::Idle
         );
 
         let stop = tokio::spawn(stop_device_backup(State(state)));
         match input_rx.recv().await.unwrap() {
-            InputCmd::DeviceBackup(crate::device_backup::DeviceBackupCommand::Stop { reply }) => {
+            InputCmd::DeviceBackup(DeviceBackupCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
             }
             _ => panic!("unexpected command"),
@@ -375,22 +477,14 @@ mod tests {
         assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
         assert!(input_rx.try_recv().is_err());
 
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-web-sysdiagnose-{}.tar.gz",
-            uuid::Uuid::new_v4()
-        ));
-        let expected = crate::sysdiagnose::prepare_destination(&destination)
-            .await
-            .unwrap();
+        let destination = std::env::temp_dir().join("devicehub-mask-web-sysdiagnose.tar.gz");
+        let expected = destination.clone();
         let start = tokio::spawn(start_sysdiagnose(
             State(state.clone()),
             Json(StartSysdiagnoseRequest { destination }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::Sysdiagnose(crate::sysdiagnose::SysdiagnoseCommand::Start {
-                destination,
-                reply,
-            }) => {
+            InputCmd::Sysdiagnose(SysdiagnoseCommand::Start { destination, reply }) => {
                 assert_eq!(destination, expected);
                 reply.send(Ok(())).unwrap();
             }
@@ -399,12 +493,12 @@ mod tests {
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
         assert_eq!(
             sysdiagnose_status(State(state.clone())).await.0.state,
-            crate::sysdiagnose::SysdiagnoseState::Idle
+            devicehub_core::SysdiagnoseState::Idle
         );
 
         let stop = tokio::spawn(stop_sysdiagnose(State(state)));
         match input_rx.recv().await.unwrap() {
-            InputCmd::Sysdiagnose(crate::sysdiagnose::SysdiagnoseCommand::Stop { reply }) => {
+            InputCmd::Sysdiagnose(SysdiagnoseCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
             }
             _ => panic!("unexpected command"),
@@ -427,10 +521,7 @@ mod tests {
         assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
         assert!(input_rx.try_recv().is_err());
 
-        let destination = std::env::temp_dir().join(format!(
-            "devicehub-mask-web-log-archive-{}.tar",
-            uuid::Uuid::new_v4()
-        ));
+        let destination = std::env::temp_dir().join("devicehub-mask-web-log-archive.tar");
         let invalid_age = start_log_archive(
             State(state.clone()),
             Json(StartLogArchiveRequest {
@@ -443,9 +534,7 @@ mod tests {
         assert_eq!(invalid_age.0, StatusCode::BAD_REQUEST);
         assert!(input_rx.try_recv().is_err());
 
-        let expected = crate::log_archive::prepare_destination(&destination)
-            .await
-            .unwrap();
+        let expected = destination.clone();
         let start = tokio::spawn(start_log_archive(
             State(state.clone()),
             Json(StartLogArchiveRequest {
@@ -454,7 +543,7 @@ mod tests {
             }),
         ));
         match input_rx.recv().await.unwrap() {
-            InputCmd::LogArchive(crate::log_archive::LogArchiveCommand::Start {
+            InputCmd::LogArchive(LogArchiveCommand::Start {
                 destination,
                 age_limit_hours,
                 reply,
@@ -468,12 +557,12 @@ mod tests {
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
         assert_eq!(
             log_archive_status(State(state.clone())).await.0.state,
-            crate::log_archive::LogArchiveState::Idle
+            devicehub_core::LogArchiveState::Idle
         );
 
         let stop = tokio::spawn(stop_log_archive(State(state)));
         match input_rx.recv().await.unwrap() {
-            InputCmd::LogArchive(crate::log_archive::LogArchiveCommand::Stop { reply }) => {
+            InputCmd::LogArchive(LogArchiveCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
             }
             _ => panic!("unexpected command"),

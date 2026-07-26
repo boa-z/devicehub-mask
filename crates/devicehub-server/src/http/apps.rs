@@ -13,24 +13,26 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::oneshot;
 
-use crate::device_runtime::{InputCmd, InputSink};
 use devicehub_core::AppOperationSlot;
+
+type InputCmd = devicehub_runtime::DeviceSessionCommand<std::path::PathBuf>;
+type InputSink = devicehub_runtime::SessionCommandSlot<std::path::PathBuf>;
 
 const DEVICE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone, Default)]
-pub(crate) struct AppHttpState {
+pub struct AppHttpState {
     input: InputSink,
     operation: AppOperationSlot,
 }
 
 impl AppHttpState {
-    pub(crate) fn new(input: InputSink, operation: AppOperationSlot) -> Self {
+    pub fn new(input: InputSink, operation: AppOperationSlot) -> Self {
         Self { input, operation }
     }
 }
 
-pub(crate) fn router<S>(state: AppHttpState) -> Router<S>
+pub fn router<S>(state: AppHttpState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {

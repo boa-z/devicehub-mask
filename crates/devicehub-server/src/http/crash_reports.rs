@@ -13,22 +13,23 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::oneshot;
 
-use crate::device_runtime::{InputCmd, InputSink};
+type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
+type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Default)]
-pub(crate) struct CrashReportHttpState {
+pub struct CrashReportHttpState {
     input: InputSink,
 }
 
 impl CrashReportHttpState {
-    pub(crate) fn new(input: InputSink) -> Self {
+    pub fn new(input: InputSink) -> Self {
         Self { input }
     }
 }
 
-pub(crate) fn router<S>(state: CrashReportHttpState) -> Router<S>
+pub fn router<S>(state: CrashReportHttpState) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -45,7 +46,7 @@ where
         .with_state(state)
 }
 
-pub(crate) async fn device_crash_reports(
+async fn device_crash_reports(
     State(state): State<CrashReportHttpState>,
 ) -> Result<Json<devicehub_core::DeviceCrashReportList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
@@ -55,11 +56,11 @@ pub(crate) async fn device_crash_reports(
 }
 
 #[derive(Deserialize)]
-pub(crate) struct CrashReportSummaryQuery {
-    pub(crate) device_path: String,
+struct CrashReportSummaryQuery {
+    device_path: String,
 }
 
-pub(crate) async fn crash_report_summary(
+async fn crash_report_summary(
     State(state): State<CrashReportHttpState>,
     Query(query): Query<CrashReportSummaryQuery>,
 ) -> Result<Json<devicehub_core::DeviceCrashReportSummary>, (StatusCode, String)> {
@@ -76,12 +77,12 @@ pub(crate) async fn crash_report_summary(
 }
 
 #[derive(Deserialize)]
-pub(crate) struct ExportCrashReportRequest {
-    pub(crate) device_path: String,
-    pub(crate) destination: PathBuf,
+struct ExportCrashReportRequest {
+    device_path: String,
+    destination: PathBuf,
 }
 
-pub(crate) async fn export_crash_report(
+async fn export_crash_report(
     State(state): State<CrashReportHttpState>,
     Json(request): Json<ExportCrashReportRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -96,11 +97,11 @@ pub(crate) async fn export_crash_report(
 }
 
 #[derive(Deserialize)]
-pub(crate) struct DeleteCrashReportRequest {
-    pub(crate) device_path: String,
+struct DeleteCrashReportRequest {
+    device_path: String,
 }
 
-pub(crate) async fn delete_crash_report(
+async fn delete_crash_report(
     State(state): State<CrashReportHttpState>,
     Json(request): Json<DeleteCrashReportRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {

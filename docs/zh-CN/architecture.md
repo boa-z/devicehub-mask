@@ -36,7 +36,7 @@ Axum 是内部传输层，而不是独立部署的网页服务器。默认监听
 
 WebSocket 传输带版本头的 Annex-B HEVC Access Unit 和类型化控制消息。前端发送归一化触点，而不是原始 HID report。Rust 会在分发前验证触点身份、五触点上限、坐标范围和画面方向。Axum 路由只负责构造窄化的 `WebSocketState`；实时传输仅能访问应用状态槽、浏览器画面、剪贴板事件、视频计数器和输入 sink。JSON/HID 校验与有界 WebCodecs 入口流控分别位于独立模块，无法访问 HTTP handler 或设备服务 client。共用状态投影也不属于任一适配器，使 HTTP 与 WebSocket 响应保持一致，同时保留各自独立的生命周期。
 
-性能工作台 HTTP 路由同样是有界适配层。其专用状态只包含性能与设备日志槽、需求计数器、抓取与设备条件状态、服务健康注册表和活动会话命令入口。子路由会先取得该状态，再合并到私有 API，因此 handler 无法提取宽泛的 HTTP 应用状态，也不能访问文件、应用管理、视频、剪贴板或配置存储。构造适配层只会克隆轻量句柄，不会启动采样或抓取任务；这些资源仍由设备会话所有，并受需求门控。
+性能工作台 HTTP 路由是有界的 `devicehub-server` 适配层。其专用状态只包含性能与设备日志槽、需求计数器、抓取与设备条件状态、服务健康注册表和活动会话命令入口。子路由会先取得该状态，再合并到私有 API，因此 handler 无法提取宽泛的 HTTP 应用状态，也不能访问文件、应用管理、视频、剪贴板或配置存储。协议层抓包时长校验保留在适配器中，不透明的本机目标则由异步宿主能力按桌面或无头文件系统策略检查。构造适配层只会克隆轻量句柄，不会启动采样或抓取任务；这些资源仍由设备会话所有，并受需求门控。
 
 有界设备日志缓冲、游标语义、元数据清理规则和设备条件观察槽与其规范化值一并位于 `devicehub-core`。runtime worker 将统一日志、syslog 与 DVT 响应转换到这些端口，但继续持有需求门控、连接监督、设备 client 和条件命令。宿主适配器直接观察 core 端口，不能通过这些端口取得 Apple 协议 client。
 
@@ -44,13 +44,13 @@ WebSocket 传输带版本头的 Annex-B HEVC Access Unit 和类型化控制消�
 
 Developer Disk Image 状态、进度和基于 iOS 主版本选择镜像类型的策略同样属于 `devicehub-core`。runtime 继续持有不透明的宿主资源请求、加载端口、TSS 个性化、镜像挂载 client、取消和受监督命令 worker。桌面适配器提供经过校验的本机文件且不向 core 暴露路径，未来无头宿主可以实现相同的加载契约。
 
-设备备份、sysdiagnose 与统一日志归档路由使用独立的诊断 HTTP 适配器。其状态仅包含活动会话命令入口和三个只读操作状态槽。请求校验与有界确认超时属于适配器，MobileBackup2、DiagnosticsService 和日志流 worker 仍由设备会话持有。构造或合并该子路由不会启动导出、设备连接、计时器或轮询任务，handler 也无法访问视频、App 管理、性能、剪贴板或配置状态。
+设备备份、sysdiagnose 与统一日志归档路由使用独立的 `devicehub-server` 诊断 HTTP 适配器。其状态仅包含活动会话命令入口、三个只读操作状态槽和宿主注入的目标 preparer。preparer 会区分现有非根备份目录与可替换的 sysdiagnose/日志归档文件，随后只返回规范化的不透明路径。协议校验与有界确认超时属于适配器，文件系统检查、MobileBackup2、DiagnosticsService 和日志流 worker 仍由宿主或设备会话持有。构造或合并该子路由不会启动导出、设备连接、计时器或轮询任务，handler 也无法访问视频、App 管理、性能、剪贴板或配置状态。
 
 App 发现、图标、生命周期控制、卸载与有界控制台抓取使用独立的 App HTTP 适配器。其状态仅包含活动会话命令入口和共享的 App 操作进度槽。Bundle ID 校验、响应期限与 HTTP 错误映射保留在该边界；CoreDevice、DVT、InstallationProxy 与控制台资源仍由会话持有。该适配器无法访问视频、文件、性能、诊断、剪贴板或配置状态，构造时也不会启动设备任务。
 
 崩溃报告列表、有界摘要、导出与删除使用独立的崩溃报告 HTTP 适配器，状态仅包含活动会话命令入口。设备路径校验、响应期限与仅披露摘要的约束属于该边界，CrashReportCopyMobile worker 与传输仍由会话持有。构造适配器不会启动服务或传输，也不能访问无关应用状态。
 
-设备 AFC 与单 App 存储路由使用另一层有界 HTTP 适配器。其状态只包含活动会话命令入口和两个按范围隔离的传输活动槽，因此文件 handler 无法访问视频、应用管理、性能服务、剪贴板或配置存储。传输 worker 与 AFC client 继续由活动设备会话所有；构造或合并该适配器不会启动任务、连接或轮询。
+设备 AFC 与单 App 存储路由使用另一层有界的 `devicehub-server` HTTP 适配器。其状态只包含活动会话命令入口和两个按范围隔离的传输活动槽，因此文件 handler 无法访问视频、应用管理、性能服务、剪贴板或配置存储。宿主路径对适配器保持不透明；校验、流式 I/O、回滚与原子发布通过 runtime 的宿主注入文件系统端口执行。传输 worker 与 AFC client 继续由活动设备会话所有；构造或合并该适配器不会启动任务、连接或轮询。
 
 公共 AFC 与应用容器的条目、列表、传输计数、活动状态机、取消语义、Bundle ID 校验和设备路径约束规则归 `devicehub-core` 所有。`devicehub-runtime` 只持有类型化执行命令以及 AFC、House Arrest 传输，宿主则提供不透明的本机文件系统路径和流式文件 I/O。桌面适配器直接从 core 导入存储领域值，不再依赖 runtime 的兼容转发。
 
@@ -66,7 +66,7 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
-`start_runtime` 现在把共享服务状态、控制通道、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；`SessionManager`、底层 `CoreRuntimeState`、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 明确分离管理视图（设备清单、当前选择和生命周期控制）与设备会话视图（媒体、输入、服务及设备操作）。当前 runtime 仍只持有一个选中会话，但宿主适配器不再消费暗示管理状态属于该设备的扁平 API。HTTP、WebSocket、MCP 和未来无头适配器取得完整的分组接口，因此不再投影内部 slot，也不会意外启动另一套会话循环。桌面宿主在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
+`start_runtime` 现在把共享服务状态、控制通道、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；`SessionManager`、底层 `CoreRuntimeState`、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 明确分离管理视图（设备清单、当前选择和生命周期控制）与设备会话视图（媒体、输入、服务及设备操作）。当前 runtime 仍只持有一个选中会话，但宿主适配器不再消费暗示管理状态属于该设备的扁平 API。可复用的 `devicehub-server` 适配器接收该分组 client：WebSocket 负责状态、输入校验、WebCodecs 传输、遥测和断连清理；MCP 负责工具目录、handler 与 Streamable HTTP router；App 与崩溃报告 HTTP 子路由持有其有界校验、截止时间和错误映射。它们均不读取环境、监听生产端口或启动设备 runtime；桌面宿主在独立 server runtime 上保留地址策略和监听器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
 
 会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。独立的 RTCP 传输模块拥有 peer 探测、接收统计、liveness report、RCTL 实验和带防抖的 PLI/FIR 请求；RTP 接收只能记录 packet、重置已替换媒体源或提交复用 RTCP，不能直接修改 RTCP 计数或构造反馈 packet。两个模块都不持有设备客户端、解码进程或应用命令，因此传输与会话编排可以独立于缓冲及反馈策略演进。
 
