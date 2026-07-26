@@ -31,7 +31,7 @@ pub trait WifiPairingStore: Clone + Send + Sync + 'static {
     fn remove(&self, udid: &str) -> Result<(), String>;
 }
 
-pub struct WifiDiscovery<Store> {
+pub(crate) struct WifiDiscovery<Store> {
     store: Store,
     pairing_files: HashMap<String, PairingFile>,
     refreshed_pairings: HashSet<String>,
@@ -49,7 +49,7 @@ impl<Store> WifiDiscovery<Store>
 where
     Store: WifiPairingStore,
 {
-    pub fn start(store: Store) -> Result<Self, String> {
+    pub(crate) fn start(store: Store) -> Result<Self, String> {
         let pairing_files = load_pairing_files(&store);
         let daemon = ServiceDaemon::new()
             .map_err(|error| format!("cannot initialize Bonjour discovery: {error}"))?;
@@ -79,7 +79,11 @@ where
         })
     }
 
-    pub fn cache_pairing(&mut self, udid: &str, pairing_file: PairingFile) -> Result<(), String> {
+    pub(crate) fn cache_pairing(
+        &mut self,
+        udid: &str,
+        pairing_file: PairingFile,
+    ) -> Result<(), String> {
         let bytes = pairing_file
             .clone()
             .serialize()
@@ -98,15 +102,15 @@ where
         Ok(())
     }
 
-    pub fn pairing_needs_refresh(&self, udid: &str) -> bool {
+    pub(crate) fn pairing_needs_refresh(&self, udid: &str) -> bool {
         !self.refreshed_pairings.contains(udid)
     }
 
-    pub fn mark_pairing_refreshed(&mut self, udid: &str) {
+    pub(crate) fn mark_pairing_refreshed(&mut self, udid: &str) {
         self.refreshed_pairings.insert(udid.to_owned());
     }
 
-    pub fn remove_pairing(&mut self, udid: &str) -> Result<(), String> {
+    pub(crate) fn remove_pairing(&mut self, udid: &str) -> Result<(), String> {
         self.pairing_files.remove(udid);
         self.refreshed_pairings.remove(udid);
         self.store.remove(udid)?;
@@ -117,7 +121,7 @@ where
         Ok(())
     }
 
-    pub fn refresh(&mut self) -> Vec<WifiEndpoint> {
+    pub(crate) fn refresh(&mut self) -> Vec<WifiEndpoint> {
         self.expire_removed_services();
         while let Ok(event) = self.receiver.try_recv() {
             match event {
@@ -204,7 +208,7 @@ where
         }
     }
 
-    pub fn requires_pairing(&self) -> bool {
+    pub(crate) fn requires_pairing(&self) -> bool {
         self.services
             .values()
             .any(|service| !service_matches_pairing(service, &self.pairing_files))

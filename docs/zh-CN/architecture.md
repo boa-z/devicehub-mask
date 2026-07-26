@@ -56,7 +56,7 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
-内部 `DeviceRuntime` 现已统一创建共享服务状态，并独占 CoreDevice 线程与 session manager。桌面宿主根据可克隆的服务句柄，在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
+内部 `DeviceRuntime` 现已统一创建共享服务状态，并独占 CoreDevice 线程与 session manager。只有 `CoreRuntimeState` 可以构造供 HTTP、WebSocket、MCP 和未来无头适配器复用的 `RuntimeClient`，因此宿主无法拼装第二套设备状态图或会话控制面。桌面宿主在独立 server runtime 上运行私有 Axum 与 MCP 适配器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
 
 会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。独立的 RTCP 传输模块拥有 peer 探测、接收统计、liveness report、RCTL 实验和带防抖的 PLI/FIR 请求；RTP 接收只能记录 packet、重置已替换媒体源或提交复用 RTCP，不能直接修改 RTCP 计数或构造反馈 packet。两个模块都不持有设备客户端、解码进程或应用命令，因此传输与会话编排可以独立于缓冲及反馈策略演进。
 

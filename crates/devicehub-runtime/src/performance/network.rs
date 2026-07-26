@@ -125,7 +125,7 @@ impl NetworkAccumulator {
     }
 }
 
-pub async fn supervise_performance_network(
+pub(crate) async fn supervise_performance_network(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     slot: PerformanceSlot,

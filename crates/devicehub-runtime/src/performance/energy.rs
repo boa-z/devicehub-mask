@@ -15,7 +15,7 @@ use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(4);
 
-pub async fn supervise_performance_energy(
+pub(crate) async fn supervise_performance_energy(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     slot: PerformanceSlot,

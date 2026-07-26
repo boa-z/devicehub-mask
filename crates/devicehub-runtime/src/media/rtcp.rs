@@ -105,7 +105,7 @@ impl ReceptionStats {
 
 /// State shared by RTP ingest and RTCP receive/send tasks.
 #[derive(Default)]
-pub struct RtcpShared {
+pub(crate) struct RtcpShared {
     media_ssrc: Option<u32>,
     stats: ReceptionStats,
     sender_report: Option<SenderReportEcho>,
@@ -121,7 +121,13 @@ pub struct RtcpOptions {
 }
 
 impl RtcpShared {
-    pub fn note_inbound(&mut self, bytes: &[u8], source_port: u16, separate: bool, now: Instant) {
+    pub(crate) fn note_inbound(
+        &mut self,
+        bytes: &[u8],
+        source_port: u16,
+        separate: bool,
+        now: Instant,
+    ) {
         self.peer = if separate {
             RtcpPeer::Separate(source_port)
         } else {
@@ -136,12 +142,12 @@ impl RtcpShared {
         }
     }
 
-    pub fn reset_media_source(&mut self, ssrc: u32) {
+    pub(crate) fn reset_media_source(&mut self, ssrc: u32) {
         self.media_ssrc = Some(ssrc);
         self.stats = ReceptionStats::default();
     }
 
-    pub fn note_rtp_packet(&mut self, ssrc: u32, sequence: u16, marker: bool) {
+    pub(crate) fn note_rtp_packet(&mut self, ssrc: u32, sequence: u16, marker: bool) {
         self.media_ssrc.get_or_insert(ssrc);
         self.stats.on_packet(sequence);
         if marker {
@@ -166,7 +172,7 @@ impl RtcpShared {
 
 /// Receives RTCP from the separate RFC 3550 socket. A missing socket is a valid
 /// rtcp-mux configuration and therefore remains pending for the session lifetime.
-pub async fn receive_task(
+pub(crate) async fn receive_task(
     udp: Option<Arc<UdpSocketHandle>>,
     state: Arc<Mutex<RtcpShared>>,
     counters: VideoCounters,
@@ -198,7 +204,7 @@ pub async fn receive_task(
 
 /// Sends liveness reports and corruption-triggered keyframe requests to the
 /// learned peer without exposing RTCP packet construction to session orchestration.
-pub async fn send_task(
+pub(crate) async fn send_task(
     rtp_udp: Arc<UdpSocketHandle>,
     rtcp_udp: Option<Arc<UdpSocketHandle>>,
     state: Arc<Mutex<RtcpShared>>,

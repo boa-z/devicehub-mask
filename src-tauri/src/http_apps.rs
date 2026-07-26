@@ -13,7 +13,8 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::oneshot;
 
-use crate::protocol::{AppOperationSlot, InputCmd, InputSink};
+use crate::device_runtime::{InputCmd, InputSink};
+use devicehub_core::AppOperationSlot;
 
 const DEVICE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -62,7 +63,7 @@ struct DeviceAppsQuery {
 async fn device_apps(
     State(state): State<AppHttpState>,
     Query(query): Query<DeviceAppsQuery>,
-) -> Result<Json<Vec<crate::protocol::DeviceApp>>, (StatusCode, String)> {
+) -> Result<Json<Vec<devicehub_core::DeviceApp>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     require_active_session(state.input.try_send(InputCmd::Apps(
         devicehub_runtime::AppCommand::List {
@@ -116,7 +117,7 @@ async fn device_app_icon(
 
 async fn app_operation(
     State(state): State<AppHttpState>,
-) -> Json<crate::protocol::AppOperationView> {
+) -> Json<devicehub_core::AppOperationView> {
     Json(state.operation.get())
 }
 

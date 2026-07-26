@@ -68,7 +68,7 @@ impl DeviceRuntime {
 
 1. 引入内部 `DeviceRuntime`、配置、服务和关闭边界，不改变桌面行为。
 2. 从宿主注入路径、FFmpeg、netmuxd、偏好、日志和音频发布决策。
-3. 拆分目前集中在 `protocol.rs` 的领域 DTO、运行时命令与状态槽，以及适配器响应类型。
+3. 拆分领域 DTO、运行时命令与状态槽及适配器响应类型；适配器可以直接导入所有者 crate 后，移除混合的 `protocol.rs` 与领域通配 facade。
 4. 创建 `devicehub-core`，迁移领域模型、校验、策略和类型化服务契约。
 5. 创建 `devicehub-runtime`，迁移会话编排、设备实现、监督层和媒体发布。
 6. 桌面入口只负责组合 runtime、私有 server、MCP 与 Tauri 平台能力。

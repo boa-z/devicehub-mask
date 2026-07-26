@@ -25,7 +25,7 @@ pub enum CompanionDeviceCommand {
     },
 }
 
-pub async fn serve_companion_devices(
+pub(crate) async fn serve_companion_devices(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<CompanionDeviceCommand>,

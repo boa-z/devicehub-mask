@@ -179,7 +179,7 @@ impl ConsoleState {
     }
 }
 
-pub async fn serve_app_console(
+pub(crate) async fn serve_app_console(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     mut commands: mpsc::Receiver<AppConsoleCommand>,

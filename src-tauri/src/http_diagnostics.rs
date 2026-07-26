@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::oneshot;
 
-use crate::protocol::{InputCmd, InputSink};
+use crate::device_runtime::{InputCmd, InputSink};
 
 #[derive(Clone, Default)]
 pub(crate) struct DiagnosticsHttpState {

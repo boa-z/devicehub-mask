@@ -181,7 +181,7 @@ impl DeviceLogDemand {
     }
 }
 
-pub async fn supervise_device_logs(
+pub(crate) async fn supervise_device_logs(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     slot: DeviceLogSlot,

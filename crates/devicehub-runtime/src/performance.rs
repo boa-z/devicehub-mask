@@ -38,10 +38,10 @@ mod slot;
 mod source;
 mod system;
 
-pub use activity::supervise_performance_app_activity;
-pub use energy::supervise_performance_energy;
-pub use graphics::supervise_performance_graphics;
-pub use network::supervise_performance_network;
+pub(crate) use activity::supervise_performance_app_activity;
+pub(crate) use energy::supervise_performance_energy;
+pub(crate) use graphics::supervise_performance_graphics;
+pub(crate) use network::supervise_performance_network;
 #[cfg(test)]
 use network::{
     NetworkAccumulator, TEST_CONNECTION_TTL as NETWORK_CONNECTION_TTL,
@@ -54,7 +54,7 @@ use slot::{
     TEST_MAX_ACTIVITY_EVENTS as MAX_ACTIVITY_EVENTS,
     TEST_MAX_ENERGY_PROCESSES as MAX_ENERGY_PROCESSES,
 };
-pub use system::supervise_performance_system;
+pub(crate) use system::supervise_performance_system;
 #[cfg(test)]
 use system::{
     ProcessSchema, TEST_SAMPLE_INTERVAL_MS as SAMPLE_INTERVAL_MS,

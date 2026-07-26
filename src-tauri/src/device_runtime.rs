@@ -2,21 +2,20 @@
 //!
 //! This module owns the dedicated thread and the single session manager. It
 //! intentionally starts no HTTP, MCP, Tauri, or frontend task; hosts compose
-//! those adapters from the cloneable compatibility services returned here.
-
-pub(crate) mod commands;
-pub(crate) mod state;
+//! those adapters from the cloneable runtime client returned here.
 
 use std::path::PathBuf;
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use self::commands::ControlCmd;
-use self::state::{
-    ActiveSlot, AppOperationSlot, ClipboardSlot, DeviceListSlot, ErrorSlot, InputSink,
-    LocationStatusSlot, OrientationSlot, StatusSlot, VideoCounters,
-};
+use devicehub_core::{AppOperationSlot, VideoCounters};
+use devicehub_runtime::ClipboardSlot;
 pub(crate) use devicehub_runtime::{AudioPublisher, PcmAudioConsumer, RuntimePreferences};
+
+/// Desktop host-path bindings for runtime-owned commands and command slots.
+pub(crate) type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
+pub(crate) type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+pub(crate) type ControlCmd = devicehub_runtime::SessionControlCommand;
 
 /// Host-resolved diagnostics applied to each device session.
 ///
@@ -42,7 +41,7 @@ pub(crate) struct RuntimeConfig {
 /// second, divergent set of device state owners.
 #[derive(Clone)]
 pub(crate) struct RuntimeServices {
-    pub(crate) application: crate::application::ApplicationServices,
+    pub(crate) application: devicehub_runtime::RuntimeClient<PathBuf>,
     pub(crate) browser_frames: crate::browser_video::BrowserVideoSlot,
     pub(crate) video_counters: VideoCounters,
     pub(crate) clipboard: ClipboardSlot,
@@ -66,13 +65,7 @@ pub(crate) struct RuntimeServices {
 
 struct RuntimeParts {
     services: RuntimeServices,
-    status: StatusSlot,
-    orientation: OrientationSlot,
-    devices: DeviceListSlot,
-    active: ActiveSlot,
-    error: ErrorSlot,
-    location: LocationStatusSlot,
-    device_events: devicehub_runtime::DeviceEventSlot,
+    state: devicehub_runtime::CoreRuntimeState<PathBuf>,
     control_rx: UnboundedReceiver<ControlCmd>,
 }
 
@@ -88,41 +81,15 @@ impl DeviceRuntime {
                 let parts = RuntimeParts::new(control, control_rx);
                 let services = parts.services.clone();
                 let task = move || -> devicehub_runtime::CoreRuntimeFuture {
-                    let session_services = parts.services;
                     Box::pin(crate::session::manage(
                         config.initial_udid,
                         config.pairing_dir,
                         config.transport,
                         config.preferences,
-                        session_services.video_counters,
-                        session_services.browser_frames,
                         config.audio,
                         config.audio_decoder,
                         config.session_diagnostics,
-                        parts.status,
-                        session_services.clipboard,
-                        parts.device_events,
-                        session_services.network_capture,
-                        session_services.bluetooth_capture,
-                        session_services.device_backup,
-                        session_services.sysdiagnose,
-                        session_services.log_archive,
-                        session_services.developer_image,
-                        session_services.device_conditions,
-                        parts.orientation,
-                        parts.devices,
-                        parts.active,
-                        parts.error,
-                        session_services.app_operation,
-                        session_services.app_document_activity,
-                        session_services.device_file_activity,
-                        parts.location,
-                        session_services.performance,
-                        session_services.performance_demand,
-                        session_services.device_logs,
-                        session_services.device_log_demand,
-                        session_services.service_registry,
-                        session_services.input,
+                        parts.state,
                         parts.control_rx,
                     ))
                 };
@@ -145,85 +112,33 @@ impl RuntimeParts {
         control: UnboundedSender<ControlCmd>,
         control_rx: UnboundedReceiver<ControlCmd>,
     ) -> Self {
-        let browser_frames = crate::browser_video::BrowserVideoSlot::default();
-        let video_counters = VideoCounters::default();
-        let status = StatusSlot::default();
-        let clipboard = ClipboardSlot::default();
-        let device_events = devicehub_runtime::DeviceEventSlot::default();
-        let network_capture = crate::network_capture::NetworkCaptureSlot::default();
-        let bluetooth_capture = crate::bluetooth_capture::BluetoothCaptureSlot::default();
-        let device_backup = crate::device_backup::DeviceBackupSlot::default();
-        let sysdiagnose = crate::sysdiagnose::SysdiagnoseSlot::default();
-        let log_archive = crate::log_archive::LogArchiveSlot::default();
-        let developer_image = crate::developer_image::DeveloperImageMountSlot::default();
-        let device_conditions = devicehub_runtime::DeviceConditionSlot::default();
-        let orientation = OrientationSlot::default();
-        let devices = DeviceListSlot::default();
-        let active = ActiveSlot::default();
-        let error = ErrorSlot::default();
-        let input = InputSink::default();
-        let app_operation = AppOperationSlot::default();
-        let app_document_activity = crate::app_documents::AppDocumentActivitySlot::default();
-        let device_file_activity = crate::device_files::DeviceFileActivitySlot::default();
-        let location = LocationStatusSlot::default();
-        let performance = devicehub_runtime::PerformanceSlot::default();
-        let performance_demand = devicehub_runtime::PerformanceDemand::default();
-        let device_logs = devicehub_runtime::DeviceLogSlot::default();
-        let device_log_demand = devicehub_runtime::DeviceLogDemand::default();
-        let service_registry = crate::supervisor::ServiceRegistry::default();
-        let device_control =
-            crate::application::DeviceControlService::new(browser_frames.clone(), input.clone());
-        let application = crate::application::ApplicationServices::new(
-            device_control,
-            crate::application::DeviceStateSlots {
-                orientation: orientation.clone(),
-                devices: devices.clone(),
-                active: active.clone(),
-                error: error.clone(),
-                status: status.clone(),
-                location: location.clone(),
-            },
-            crate::application::ObservabilitySlots {
-                device_events: device_events.clone(),
-                device_conditions: device_conditions.clone(),
-                performance: performance.clone(),
-                performance_demand: performance_demand.clone(),
-                device_logs: device_logs.clone(),
-                device_log_demand: device_log_demand.clone(),
-            },
-            control.clone(),
-        );
+        let state = devicehub_runtime::CoreRuntimeState::<PathBuf>::default();
+        let application = state.client(control.clone());
         let services = RuntimeServices {
             application,
-            browser_frames,
-            video_counters,
-            clipboard,
-            network_capture,
-            bluetooth_capture,
-            device_backup,
-            sysdiagnose,
-            log_archive,
-            developer_image,
-            device_conditions,
-            app_operation,
-            app_document_activity,
-            device_file_activity,
-            performance,
-            performance_demand,
-            device_logs,
-            device_log_demand,
-            service_registry,
-            input,
+            browser_frames: state.browser_frames.clone(),
+            video_counters: state.video_counters.clone(),
+            clipboard: state.clipboard.clone(),
+            network_capture: state.network_capture.clone(),
+            bluetooth_capture: state.bluetooth_capture.clone(),
+            device_backup: state.device_backup.clone(),
+            sysdiagnose: state.sysdiagnose.clone(),
+            log_archive: state.log_archive.clone(),
+            developer_image: state.developer_image.clone(),
+            device_conditions: state.device_conditions.clone(),
+            app_operation: state.app_operation.clone(),
+            app_document_activity: state.app_documents.clone(),
+            device_file_activity: state.device_files.clone(),
+            performance: state.performance.clone(),
+            performance_demand: state.performance_demand.clone(),
+            device_logs: state.device_logs.clone(),
+            device_log_demand: state.device_log_demand.clone(),
+            service_registry: state.services.clone(),
+            input: state.commands.clone(),
         };
         Self {
             services,
-            status,
-            orientation,
-            devices,
-            active,
-            error,
-            location,
-            device_events,
+            state,
             control_rx,
         }
     }

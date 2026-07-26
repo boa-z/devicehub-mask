@@ -8,15 +8,26 @@ use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
 use tokio::sync::mpsc;
 
+use crate::applications::{
+    serve_app_console, serve_app_icons, serve_app_lifecycle, serve_running_processes,
+    serve_wda_automation, serve_wda_runner,
+};
 use crate::capture::{
     BluetoothCaptureTransport, CaptureFileIo, NetworkCaptureTransport, serve_bluetooth_capture,
     serve_network_capture,
 };
 use crate::device::{
-    serve_crash_report_exports, serve_developer_image_mount, supervise_provisioning,
+    ScreenCaptureTransport, serve_companion_devices, serve_crash_report_exports,
+    serve_developer_image_mount, serve_home_screen, serve_screen_capture,
+    supervise_device_conditions, supervise_device_events, supervise_device_logs,
+    supervise_location, supervise_provisioning,
 };
 use crate::diagnostics::{
     DeviceBackupTransport, serve_device_backup, serve_log_archive, serve_sysdiagnose,
+};
+use crate::performance::{
+    supervise_performance_app_activity, supervise_performance_energy,
+    supervise_performance_graphics, supervise_performance_network, supervise_performance_system,
 };
 use crate::storage::{
     AppStorageTransport, DeviceFileTransport, HostFileIo, serve_app_documents, serve_device_files,
@@ -36,9 +47,9 @@ use crate::{
 };
 
 /// Location endpoint retained by session input dispatch and status reporting.
-pub struct LocationServicePort {
-    pub sender: mpsc::Sender<LocationCommand>,
-    pub status: LocationStatusSlot,
+pub(crate) struct LocationServicePort {
+    pub(crate) sender: mpsc::Sender<LocationCommand>,
+    pub(crate) status: LocationStatusSlot,
 }
 
 /// Device-management command endpoints with host paths kept generic.
@@ -46,69 +57,69 @@ pub struct LocationServicePort {
 /// A host creates exactly one value per connected session and transfers it to
 /// the sole command dispatcher. The runtime model therefore does not implement
 /// `Clone`, preventing accidental duplicate dispatch ownership.
-pub struct DeviceServicePorts<HostPath> {
-    pub location: LocationServicePort,
-    pub icons: mpsc::Sender<AppIconCommand>,
-    pub companions: mpsc::Sender<CompanionDeviceCommand>,
-    pub home_screen: mpsc::Sender<HomeScreenCommand>,
-    pub running_processes: mpsc::Sender<RunningProcessCommand>,
-    pub app_lifecycle: mpsc::Sender<AppLifecycleCommand>,
-    pub wda: mpsc::Sender<WdaAutomationCommand>,
-    pub wda_runner: mpsc::Sender<WdaRunnerCommand>,
-    pub app_console: mpsc::Sender<AppConsoleCommand>,
-    pub documents: mpsc::Sender<AppDocumentCommand<HostPath>>,
-    pub device_files: mpsc::Sender<DeviceFileCommand<HostPath>>,
-    pub screen_capture: mpsc::Sender<ScreenCaptureCommand>,
-    pub network_capture: mpsc::Sender<NetworkCaptureCommand<HostPath>>,
-    pub bluetooth_capture: mpsc::Sender<BluetoothCaptureCommand<HostPath>>,
-    pub device_backup: mpsc::Sender<DeviceBackupCommand<HostPath>>,
-    pub sysdiagnose: mpsc::Sender<SysdiagnoseCommand<HostPath>>,
-    pub log_archive: mpsc::Sender<LogArchiveCommand<HostPath>>,
-    pub developer_image: mpsc::Sender<DeveloperImageMountCommand<HostPath>>,
-    pub device_conditions: mpsc::Sender<DeviceConditionCommand>,
-    pub provisioning: mpsc::Sender<ProvisioningCommand<HostPath>>,
-    pub crash_report_exports: mpsc::Sender<CrashReportExportCommand<HostPath>>,
+pub(crate) struct DeviceServicePorts<HostPath> {
+    pub(crate) location: LocationServicePort,
+    pub(crate) icons: mpsc::Sender<AppIconCommand>,
+    pub(crate) companions: mpsc::Sender<CompanionDeviceCommand>,
+    pub(crate) home_screen: mpsc::Sender<HomeScreenCommand>,
+    pub(crate) running_processes: mpsc::Sender<RunningProcessCommand>,
+    pub(crate) app_lifecycle: mpsc::Sender<AppLifecycleCommand>,
+    pub(crate) wda: mpsc::Sender<WdaAutomationCommand>,
+    pub(crate) wda_runner: mpsc::Sender<WdaRunnerCommand>,
+    pub(crate) app_console: mpsc::Sender<AppConsoleCommand>,
+    pub(crate) documents: mpsc::Sender<AppDocumentCommand<HostPath>>,
+    pub(crate) device_files: mpsc::Sender<DeviceFileCommand<HostPath>>,
+    pub(crate) screen_capture: mpsc::Sender<ScreenCaptureCommand>,
+    pub(crate) network_capture: mpsc::Sender<NetworkCaptureCommand<HostPath>>,
+    pub(crate) bluetooth_capture: mpsc::Sender<BluetoothCaptureCommand<HostPath>>,
+    pub(crate) device_backup: mpsc::Sender<DeviceBackupCommand<HostPath>>,
+    pub(crate) sysdiagnose: mpsc::Sender<SysdiagnoseCommand<HostPath>>,
+    pub(crate) log_archive: mpsc::Sender<LogArchiveCommand<HostPath>>,
+    pub(crate) developer_image: mpsc::Sender<DeveloperImageMountCommand<HostPath>>,
+    pub(crate) device_conditions: mpsc::Sender<DeviceConditionCommand>,
+    pub(crate) provisioning: mpsc::Sender<ProvisioningCommand<HostPath>>,
+    pub(crate) crash_report_exports: mpsc::Sender<CrashReportExportCommand<HostPath>>,
 }
 
 /// State and demand ports consumed by runtime-owned services.
 #[derive(Clone)]
-pub struct RuntimeServiceViews {
-    pub performance: PerformanceSlot,
-    pub performance_demand: PerformanceDemand,
-    pub device_logs: DeviceLogSlot,
-    pub device_log_demand: DeviceLogDemand,
-    pub services: ServiceRegistry,
-    pub device_events: DeviceEventSlot,
-    pub location: LocationStatusSlot,
-    pub device_conditions: DeviceConditionSlot,
+pub(crate) struct RuntimeServiceViews {
+    pub(crate) performance: PerformanceSlot,
+    pub(crate) performance_demand: PerformanceDemand,
+    pub(crate) device_logs: DeviceLogSlot,
+    pub(crate) device_log_demand: DeviceLogDemand,
+    pub(crate) services: ServiceRegistry,
+    pub(crate) device_events: DeviceEventSlot,
+    pub(crate) location: LocationStatusSlot,
+    pub(crate) device_conditions: DeviceConditionSlot,
 }
 
 /// Command ports for services that require no host filesystem implementation.
 pub(crate) struct RuntimeDeviceServicePorts {
-    pub location: LocationServicePort,
-    pub icons: mpsc::Sender<AppIconCommand>,
-    pub companions: mpsc::Sender<CompanionDeviceCommand>,
-    pub home_screen: mpsc::Sender<HomeScreenCommand>,
-    pub running_processes: mpsc::Sender<RunningProcessCommand>,
-    pub app_lifecycle: mpsc::Sender<AppLifecycleCommand>,
-    pub wda: mpsc::Sender<WdaAutomationCommand>,
-    pub wda_runner: mpsc::Sender<WdaRunnerCommand>,
-    pub app_console: mpsc::Sender<AppConsoleCommand>,
-    pub screen_capture: mpsc::Sender<ScreenCaptureCommand>,
-    pub device_conditions: mpsc::Sender<DeviceConditionCommand>,
+    pub(crate) location: LocationServicePort,
+    pub(crate) icons: mpsc::Sender<AppIconCommand>,
+    pub(crate) companions: mpsc::Sender<CompanionDeviceCommand>,
+    pub(crate) home_screen: mpsc::Sender<HomeScreenCommand>,
+    pub(crate) running_processes: mpsc::Sender<RunningProcessCommand>,
+    pub(crate) app_lifecycle: mpsc::Sender<AppLifecycleCommand>,
+    pub(crate) wda: mpsc::Sender<WdaAutomationCommand>,
+    pub(crate) wda_runner: mpsc::Sender<WdaRunnerCommand>,
+    pub(crate) app_console: mpsc::Sender<AppConsoleCommand>,
+    pub(crate) screen_capture: mpsc::Sender<ScreenCaptureCommand>,
+    pub(crate) device_conditions: mpsc::Sender<DeviceConditionCommand>,
 }
 
 /// Host-visible state shared with filesystem-backed runtime services.
 #[derive(Clone)]
-pub struct RuntimeHostServiceViews {
-    pub app_documents: crate::AppDocumentActivitySlot,
-    pub device_files: crate::DeviceFileActivitySlot,
-    pub network_capture: crate::NetworkCaptureSlot,
-    pub bluetooth_capture: crate::BluetoothCaptureSlot,
-    pub device_backup: crate::DeviceBackupSlot,
-    pub sysdiagnose: crate::SysdiagnoseSlot,
-    pub log_archive: crate::LogArchiveSlot,
-    pub developer_image: crate::DeveloperImageMountSlot,
+pub(crate) struct RuntimeHostServiceViews {
+    pub(crate) app_documents: crate::AppDocumentActivitySlot,
+    pub(crate) device_files: crate::DeviceFileActivitySlot,
+    pub(crate) network_capture: crate::NetworkCaptureSlot,
+    pub(crate) bluetooth_capture: crate::BluetoothCaptureSlot,
+    pub(crate) device_backup: crate::DeviceBackupSlot,
+    pub(crate) sysdiagnose: crate::SysdiagnoseSlot,
+    pub(crate) log_archive: crate::LogArchiveSlot,
+    pub(crate) developer_image: crate::DeveloperImageMountSlot,
 }
 
 /// Host capabilities injected once while the runtime owns service lifecycle.
@@ -166,12 +177,12 @@ impl RuntimeSessionServices {
         views.device_events.reset();
 
         let mut supervisor = ServiceSupervisor::new(views.services);
-        supervisor.spawn(crate::supervise_heartbeat(
+        supervisor.spawn(super::supervise_heartbeat(
             provider.clone(),
             supervisor.reporter("device.heartbeat"),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::supervise_device_logs(
+        supervisor.spawn(supervise_device_logs(
             adapter.clone(),
             handshake.clone(),
             views.device_logs,
@@ -179,14 +190,14 @@ impl RuntimeSessionServices {
             views.device_log_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::supervise_device_events(
+        supervisor.spawn(supervise_device_events(
             adapter.clone(),
             handshake.clone(),
             views.device_events,
             supervisor.reporter("device.notifications"),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::supervise_performance_system(
+        supervisor.spawn(supervise_performance_system(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -194,7 +205,7 @@ impl RuntimeSessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::supervise_performance_graphics(
+        supervisor.spawn(supervise_performance_graphics(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -202,7 +213,7 @@ impl RuntimeSessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::supervise_performance_network(
+        supervisor.spawn(supervise_performance_network(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -210,7 +221,7 @@ impl RuntimeSessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::supervise_performance_energy(
+        supervisor.spawn(supervise_performance_energy(
             adapter.clone(),
             handshake.clone(),
             views.performance.clone(),
@@ -218,7 +229,7 @@ impl RuntimeSessionServices {
             views.performance_demand.subscribe(),
             supervisor.shutdown_receiver(),
         ));
-        supervisor.spawn(crate::supervise_performance_app_activity(
+        supervisor.spawn(supervise_performance_app_activity(
             adapter.clone(),
             handshake.clone(),
             views.performance,
@@ -229,7 +240,7 @@ impl RuntimeSessionServices {
 
         views.location.set(LocationStatus::default());
         let (location_sender, location_receiver) = mpsc::channel(8);
-        supervisor.spawn(crate::supervise_location(
+        supervisor.spawn(supervise_location(
             adapter.clone(),
             handshake.clone(),
             provider.clone(),
@@ -244,14 +255,14 @@ impl RuntimeSessionServices {
         };
 
         let (icons, icon_commands) = mpsc::channel(16);
-        supervisor.spawn(crate::serve_app_icons(
+        supervisor.spawn(serve_app_icons(
             adapter.clone(),
             handshake.clone(),
             icon_commands,
             supervisor.shutdown_receiver(),
         ));
         let (companions, companion_commands) = mpsc::channel(2);
-        supervisor.spawn(crate::serve_companion_devices(
+        supervisor.spawn(serve_companion_devices(
             adapter.clone(),
             handshake.clone(),
             companion_commands,
@@ -259,7 +270,7 @@ impl RuntimeSessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (home_screen, home_screen_commands) = mpsc::channel(2);
-        supervisor.spawn(crate::serve_home_screen(
+        supervisor.spawn(serve_home_screen(
             adapter.clone(),
             handshake.clone(),
             home_screen_commands,
@@ -267,7 +278,7 @@ impl RuntimeSessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (running_processes, running_process_commands) = mpsc::channel(2);
-        supervisor.spawn(crate::serve_running_processes(
+        supervisor.spawn(serve_running_processes(
             adapter.clone(),
             handshake.clone(),
             running_process_commands,
@@ -275,7 +286,7 @@ impl RuntimeSessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (app_lifecycle, app_lifecycle_commands) = mpsc::channel(2);
-        supervisor.spawn(crate::serve_app_lifecycle(
+        supervisor.spawn(serve_app_lifecycle(
             adapter.clone(),
             handshake.clone(),
             app_lifecycle_commands,
@@ -283,21 +294,21 @@ impl RuntimeSessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (wda, wda_commands) = mpsc::channel(4);
-        supervisor.spawn(crate::serve_wda_automation(
+        supervisor.spawn(serve_wda_automation(
             provider.clone(),
             wda_commands,
             supervisor.reporter("device.wda"),
             supervisor.shutdown_receiver(),
         ));
         let (wda_runner, wda_runner_commands) = mpsc::channel(2);
-        supervisor.spawn(crate::serve_wda_runner(
+        supervisor.spawn(serve_wda_runner(
             provider.clone(),
             wda_runner_commands,
             supervisor.reporter("device.wda_runner"),
             supervisor.shutdown_receiver(),
         ));
         let (app_console, app_console_commands) = mpsc::channel(4);
-        supervisor.spawn(crate::serve_app_console(
+        supervisor.spawn(serve_app_console(
             adapter.clone(),
             handshake.clone(),
             app_console_commands,
@@ -305,18 +316,13 @@ impl RuntimeSessionServices {
             supervisor.shutdown_receiver(),
         ));
         let (screen_capture, screen_capture_commands) = mpsc::channel(1);
-        supervisor.spawn(crate::serve_screen_capture(
-            crate::ScreenCaptureTransport::new(
-                provider,
-                connection,
-                adapter.clone(),
-                handshake.clone(),
-            ),
+        supervisor.spawn(serve_screen_capture(
+            ScreenCaptureTransport::new(provider, connection, adapter.clone(), handshake.clone()),
             screen_capture_commands,
             supervisor.shutdown_receiver(),
         ));
         let (device_conditions, device_condition_commands) = mpsc::channel(4);
-        supervisor.spawn(crate::supervise_device_conditions(
+        supervisor.spawn(supervise_device_conditions(
             adapter,
             handshake,
             device_condition_commands,

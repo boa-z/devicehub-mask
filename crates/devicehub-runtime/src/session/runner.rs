@@ -4,42 +4,45 @@ use devicehub_core::{AppOperationSlot, ErrorSlot, OrientationSlot, StatusSlot, V
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::{
-    DiagnosticDumpSinkFactory, RuntimeHostServiceViews, RuntimeServiceViews,
-    RuntimeSessionHostAdapters, RuntimeSessionServices, SessionDiagnostics, connect_device_input,
-    run_device_command_loop, run_management_command_loop,
+    DeviceManagementBootstrap, DiagnosticDumpSinkFactory, OrientationWatcher,
+    RuntimeHostServiceViews, RuntimeServiceViews, RuntimeSessionHostAdapters,
+    RuntimeSessionServices, SessionDiagnostics, connect_device_input, run_device_command_loop,
+    run_management_command_loop,
+};
+use crate::clipboard::{HostClipboardFactory, connect_device_clipboard};
+use crate::media::{
+    MediaSessionConfig, MediaSessionRuntime, VideoRtpOptions, start_screen_media_stream,
 };
 use crate::{
     BrowserVideoSlot, CaptureFileIo, ClipboardSlot, CoreTunnelConfig, DeveloperImageAssetLoader,
-    DeviceAudioPipeline, DeviceBackupExecutor, DeviceManagementBootstrap, DeviceSessionCommand,
-    HostClipboardFactory, HostFileIo, MediaSessionConfig, MediaSessionRuntime, OrientationWatcher,
-    ProvisioningProfileLoader, SessionEndpoint, VideoRtpOptions, connect_device_clipboard,
-    connect_provider, start_screen_media_stream,
+    DeviceAudioPipeline, DeviceBackupExecutor, DeviceSessionCommand, HostFileIo,
+    ProvisioningProfileLoader, SessionEndpoint, connect_provider,
 };
 
 /// Session state published to host-facing adapters without giving the host
 /// ownership of protocol clients or supervised tasks.
 #[derive(Clone)]
-pub struct ConnectedSessionViews {
-    pub status: StatusSlot,
-    pub orientation: OrientationSlot,
-    pub error: ErrorSlot,
-    pub app_operation: AppOperationSlot,
-    pub clipboard: ClipboardSlot,
-    pub video_counters: VideoCounters,
-    pub browser_frames: BrowserVideoSlot,
-    pub runtime_services: RuntimeServiceViews,
-    pub host_services: RuntimeHostServiceViews,
+pub(crate) struct ConnectedSessionViews {
+    pub(crate) status: StatusSlot,
+    pub(crate) orientation: OrientationSlot,
+    pub(crate) error: ErrorSlot,
+    pub(crate) app_operation: AppOperationSlot,
+    pub(crate) clipboard: ClipboardSlot,
+    pub(crate) video_counters: VideoCounters,
+    pub(crate) browser_frames: BrowserVideoSlot,
+    pub(crate) runtime_services: RuntimeServiceViews,
+    pub(crate) host_services: RuntimeHostServiceViews,
 }
 
 /// Immutable media policy applied to one connected session.
-pub struct ConnectedSessionMedia<DiagnosticSource> {
-    pub clipboard_sync_enabled: bool,
-    pub diagnostics: SessionDiagnostics<DiagnosticSource>,
+pub(crate) struct ConnectedSessionMedia<DiagnosticSource> {
+    pub(crate) clipboard_sync_enabled: bool,
+    pub(crate) diagnostics: SessionDiagnostics<DiagnosticSource>,
 }
 
 /// Host capabilities used by a connected session. Protocol and lifecycle
 /// ownership remain in the runtime; only platform implementations cross here.
-pub struct ConnectedSessionHost<
+pub(crate) struct ConnectedSessionHost<
     Audio,
     DiagnosticSinks,
     Files,
@@ -48,17 +51,17 @@ pub struct ConnectedSessionHost<
     DeveloperImages,
     Profiles,
 > {
-    pub audio: Audio,
-    pub diagnostic_sinks: DiagnosticSinks,
-    pub clipboard: Option<HostClipboardFactory>,
-    pub services:
+    pub(crate) audio: Audio,
+    pub(crate) diagnostic_sinks: DiagnosticSinks,
+    pub(crate) clipboard: Option<HostClipboardFactory>,
+    pub(crate) services:
         RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImages, Profiles>,
 }
 
 /// Run one selected device session until setup fails or the command channel
 /// closes. Management services remain available when screen control is absent.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_connected_session<
+pub(crate) async fn run_connected_session<
     Audio,
     DiagnosticSinks,
     Files,
@@ -213,7 +216,8 @@ where
     );
     media_runtime
         .run(
-            host.audio.run(negotiated.audio_udp),
+            host.audio
+                .run(crate::DeviceAudioSource::new(negotiated.audio_udp)),
             clipboard_session.run(views.clipboard, &mut adapter, &mut handshake),
             orientation_task,
             run_device_command_loop(

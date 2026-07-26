@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use crate::protocol::{InputCmd, InputSink};
+use crate::device_runtime::{InputCmd, InputSink};
 
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);

@@ -136,7 +136,7 @@ pub fn validate_runner_bundle_id(bundle_id: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub async fn serve_wda_runner(
+pub(crate) async fn serve_wda_runner(
     provider: Arc<dyn IdeviceProvider>,
     mut commands: mpsc::Receiver<WdaRunnerCommand>,
     reporter: ServiceReporter,
@@ -322,7 +322,7 @@ async fn start_runner(
 
     match tokio::time::timeout(
         Duration::from_secs(4),
-        crate::is_developer_image_mounted_for_device(provider.as_ref()),
+        crate::device::is_developer_image_mounted_for_device(provider.as_ref()),
     )
     .await
     {

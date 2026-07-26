@@ -3,10 +3,8 @@ use tokio::sync::broadcast;
 
 mod session;
 
-pub use session::{
-    ClipboardBridge, ClipboardImage, DeviceClipboardSession, HostClipboard, HostClipboardFactory,
-    HostClipboardProvider, connect_device_clipboard,
-};
+pub use session::{ClipboardImage, HostClipboard, HostClipboardProvider};
+pub(crate) use session::{HostClipboardFactory, connect_device_clipboard};
 
 /// Bounded clipboard event fan-out. Slow hosts lose stale metadata rather than
 /// delaying the device pasteboard session; clipboard payloads are never retained.

@@ -56,7 +56,7 @@ impl HomeScreenCommand {
     }
 }
 
-pub async fn serve_home_screen(
+pub(crate) async fn serve_home_screen(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<HomeScreenCommand>,

@@ -16,19 +16,20 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::application::ApplicationServices;
 use crate::browser_video::BrowserVideoSlot;
-use crate::protocol::{ClipboardSlot, InputSink, VideoCounters};
+use crate::device_runtime::InputSink;
 use crate::web_status;
 use crate::websocket_flow::{
     BrowserFrameDecision, FrameCredit, FramePacer, browser_frame_decision,
     configured_in_flight_frames, duration_average_ms,
 };
 use crate::websocket_input::{ClientVideoFeedback, handle_client_message, send_all_up};
+use devicehub_core::VideoCounters;
+use devicehub_runtime::{ClipboardSlot, RuntimeClient};
 
 #[derive(Clone)]
 pub(crate) struct WebSocketState {
-    application: ApplicationServices,
+    application: RuntimeClient<std::path::PathBuf>,
     browser_frames: BrowserVideoSlot,
     clipboard: ClipboardSlot,
     video_counters: VideoCounters,
@@ -37,7 +38,7 @@ pub(crate) struct WebSocketState {
 
 impl WebSocketState {
     pub(crate) fn new(
-        application: ApplicationServices,
+        application: RuntimeClient<std::path::PathBuf>,
         browser_frames: BrowserVideoSlot,
         clipboard: ClipboardSlot,
         video_counters: VideoCounters,

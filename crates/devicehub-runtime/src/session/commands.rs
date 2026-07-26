@@ -104,10 +104,15 @@ pub enum SessionControlCommand {
 }
 
 /// Active connected-session command endpoint swapped atomically on reconnect.
-#[derive(Clone)]
 pub struct SessionCommandSlot<HostPath>(
     Arc<Mutex<Option<UnboundedSender<DeviceSessionCommand<HostPath>>>>>,
 );
+
+impl<HostPath> Clone for SessionCommandSlot<HostPath> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<HostPath> Default for SessionCommandSlot<HostPath> {
     fn default() -> Self {

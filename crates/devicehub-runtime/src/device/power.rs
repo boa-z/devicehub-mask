@@ -12,20 +12,20 @@ use tokio::sync::oneshot;
 const POWER_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, Copy)]
-pub enum DevicePowerAction {
+pub(crate) enum DevicePowerAction {
     Lock,
     Restart,
     Shutdown,
 }
 
 #[derive(Clone)]
-pub struct DevicePowerController {
+pub(crate) struct DevicePowerController {
     provider: Arc<dyn IdeviceProvider>,
     slot: DevicePowerSlot,
 }
 
 impl DevicePowerController {
-    pub fn new(provider: Arc<dyn IdeviceProvider>) -> Self {
+    pub(crate) fn new(provider: Arc<dyn IdeviceProvider>) -> Self {
         Self {
             provider,
             slot: DevicePowerSlot::default(),
@@ -33,7 +33,11 @@ impl DevicePowerController {
     }
 
     /// Start one power operation without blocking the session command loop.
-    pub fn start(&self, action: DevicePowerAction, reply: oneshot::Sender<Result<(), String>>) {
+    pub(crate) fn start(
+        &self,
+        action: DevicePowerAction,
+        reply: oneshot::Sender<Result<(), String>>,
+    ) {
         match self.slot.try_start() {
             Ok(lease) => spawn(self.provider.clone(), action, reply, lease),
             Err(error) => {

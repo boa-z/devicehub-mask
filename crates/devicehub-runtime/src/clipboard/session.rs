@@ -15,7 +15,7 @@ use idevice::{
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use super::ClipboardSlot;
-use crate::{ClipboardWriteFuture, DeviceClipboard};
+use crate::session::{ClipboardWriteFuture, DeviceClipboard};
 
 const CLIPBOARD_POLL: Duration = Duration::from_millis(600);
 const CLIPBOARD_PREVIEW_LEN: usize = 48;
@@ -40,7 +40,7 @@ pub trait HostClipboard {
 
 /// Lazy host capability construction avoids touching the system clipboard when
 /// synchronization is disabled or the device Pasteboard service is absent.
-pub type HostClipboardFactory =
+pub(crate) type HostClipboardFactory =
     Box<dyn FnOnce() -> Result<Box<dyn HostClipboard>, String> + 'static>;
 
 /// Reusable host capability that opens a fresh clipboard for each session.
@@ -65,7 +65,7 @@ struct ClipboardCommands(Receiver<ClipboardCommand>);
 
 /// Command capability shared with the device input dispatcher for paste-text.
 #[derive(Clone)]
-pub struct ClipboardBridge(Sender<ClipboardCommand>);
+pub(crate) struct ClipboardBridge(Sender<ClipboardCommand>);
 
 impl ClipboardBridge {
     fn channel() -> (Self, ClipboardCommands) {
@@ -99,7 +99,7 @@ impl DeviceClipboard for ClipboardBridge {
 }
 
 /// Owns the one Pasteboard client allowed for a connected device session.
-pub struct DeviceClipboardSession {
+pub(crate) struct DeviceClipboardSession {
     pasteboard: Option<PasteboardServiceClient<Box<dyn ReadWrite>>>,
     host: Option<Box<dyn HostClipboard>>,
     sync_enabled: bool,
@@ -109,7 +109,7 @@ pub struct DeviceClipboardSession {
 /// Establish the optional Pasteboard service and its command bridge. Explicit
 /// paste remains available through lazy reconnect even when automatic sync is
 /// disabled or the first Pasteboard connection fails.
-pub async fn connect_device_clipboard(
+pub(crate) async fn connect_device_clipboard(
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
     sync_enabled: bool,
@@ -166,7 +166,7 @@ struct ClipState {
 }
 
 impl DeviceClipboardSession {
-    pub async fn run(
+    pub(crate) async fn run(
         self,
         activity: ClipboardSlot,
         adapter: &mut AdapterHandle,

@@ -20,7 +20,10 @@ pub enum DeveloperModeCommand {
     },
 }
 
-pub fn execute_developer_mode(provider: Arc<dyn IdeviceProvider>, command: DeveloperModeCommand) {
+pub(crate) fn execute_developer_mode(
+    provider: Arc<dyn IdeviceProvider>,
+    command: DeveloperModeCommand,
+) {
     match command {
         DeveloperModeCommand::RevealOption { reply } => {
             tokio::spawn(async move {
@@ -37,7 +40,9 @@ pub fn execute_developer_mode(provider: Arc<dyn IdeviceProvider>, command: Devel
     }
 }
 
-pub async fn read_developer_mode_status(provider: &dyn IdeviceProvider) -> Result<bool, String> {
+pub(crate) async fn read_developer_mode_status(
+    provider: &dyn IdeviceProvider,
+) -> Result<bool, String> {
     let mut client = AmfiClient::connect(provider)
         .await
         .map_err(|error| format!("unable to connect to the AMFI service: {error}"))?;

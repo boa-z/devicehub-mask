@@ -68,7 +68,7 @@ Starting runtime creates no HTTP, MCP, Tauri, or frontend task. Starting an adap
 
 1. Add an internal `DeviceRuntime`, configuration, services, and shutdown boundary without changing desktop behavior.
 2. Inject paths, FFmpeg, netmuxd, preferences, logging, and audio publication decisions from the host.
-3. Separate domain DTOs, runtime commands and slots, and adapter response types currently concentrated in `protocol.rs`.
+3. Separate domain DTOs, runtime commands and slots, and adapter response types, then remove the mixed `protocol.rs` and wildcard domain facades once adapters import their owner crates directly.
 4. Create `devicehub-core` and move domain models, validation, policy, and typed service contracts.
 5. Create `devicehub-runtime` and move session orchestration, device implementations, supervision, and media publication.
 6. Keep the desktop entry point as the composition root for runtime, private server, MCP, and Tauri platform capabilities.

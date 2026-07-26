@@ -14,17 +14,17 @@ use idevice::{IdeviceError, ReadWrite, RsdService};
 const CLIENT_SUPPORTED_FEATURES: u64 = 140;
 
 /// Active DisplayService media session and its local RTP/RTCP sockets.
-pub struct ScreenMediaStream {
-    pub client: DisplayServiceClient<Box<dyn ReadWrite>>,
-    pub audio_udp: UdpSocketHandle,
-    pub video_udp: UdpSocketHandle,
+pub(crate) struct ScreenMediaStream {
+    pub(crate) client: DisplayServiceClient<Box<dyn ReadWrite>>,
+    pub(crate) audio_udp: UdpSocketHandle,
+    pub(crate) video_udp: UdpSocketHandle,
     /// RFC 3550 video RTCP socket. `None` means the session relies on rtcp-mux.
-    pub rtcp_udp: Option<UdpSocketHandle>,
+    pub(crate) rtcp_udp: Option<UdpSocketHandle>,
 }
 
 /// Starts audio first to establish the shared session, then adds video using
 /// the same `clientSessionID`.
-pub async fn start_screen_media_stream(
+pub(crate) async fn start_screen_media_stream(
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
     our_ssrc: u32,

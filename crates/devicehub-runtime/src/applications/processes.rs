@@ -55,7 +55,7 @@ impl RunningProcessCommand {
     }
 }
 
-pub async fn serve_running_processes(
+pub(crate) async fn serve_running_processes(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     mut commands: mpsc::Receiver<RunningProcessCommand>,

@@ -19,15 +19,15 @@ const SSRC_TAKEOVER_GRACE: Duration = Duration::from_millis(250);
 /// Optional diagnostics for video ingestion. Defaults preserve the production
 /// media path: no experimental frame ACK and no Annex-B copy.
 #[derive(Default)]
-pub struct VideoRtpOptions {
-    pub send_frame_ack: bool,
-    pub annexb_sink: Option<mpsc::Sender<Vec<u8>>>,
+pub(crate) struct VideoRtpOptions {
+    pub(crate) send_frame_ack: bool,
+    pub(crate) annexb_sink: Option<mpsc::Sender<Vec<u8>>>,
 }
 
 /// Receives video RTP, depacketizes HEVC, and queues complete Annex-B access
 /// units. The optional sink is diagnostic-only and must not apply backpressure
 /// to the real-time media path.
-pub async fn receive_video_rtp(
+pub(crate) async fn receive_video_rtp(
     udp: Arc<UdpSocketHandle>,
     hevc_queue: Arc<HevcQueue>,
     rtcp: Arc<Mutex<RtcpShared>>,

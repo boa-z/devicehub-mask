@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use idevice::usbmuxd::UsbmuxdAddr;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -78,11 +77,11 @@ impl NetmuxdSupervisor {
     }
 
     /// Return the private shim address, starting or restarting our child when needed.
-    pub async fn ensure_ready(&mut self) -> Option<UsbmuxdAddr> {
+    pub async fn ensure_ready(&mut self) -> Option<SocketAddr> {
         let binary = self.binary.clone()?;
         let had_child = self.child.is_some();
         if self.child_is_running() {
-            return self.address.map(UsbmuxdAddr::TcpSocket);
+            return self.address;
         }
         if had_child {
             self.retry_after = Some(Instant::now() + RESTART_BACKOFF);
@@ -98,7 +97,7 @@ impl NetmuxdSupervisor {
         match self.start(&binary).await {
             Ok(address) => {
                 self.retry_after = None;
-                Some(UsbmuxdAddr::TcpSocket(address))
+                Some(address)
             }
             Err(error) => {
                 tracing::warn!(%error, "netmuxd sidecar unavailable; using direct Wi-Fi fallback");

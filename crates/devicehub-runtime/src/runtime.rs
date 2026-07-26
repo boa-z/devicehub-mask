@@ -11,13 +11,143 @@ use std::thread::JoinHandle;
 
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::SessionControlCommand;
+use devicehub_core::{
+    ActiveSlot, AppOperationSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot,
+    StatusSlot, VideoCounters,
+};
+
+use crate::session::{
+    ConnectedSessionViews, RuntimeHostServiceViews, RuntimeServiceViews, SessionManagerViews,
+};
+use crate::{
+    AppDocumentActivitySlot, BluetoothCaptureSlot, BrowserVideoSlot, ClipboardSlot,
+    DeveloperImageMountSlot, DeviceBackupSlot, DeviceConditionSlot, DeviceEventSlot,
+    DeviceFileActivitySlot, DeviceLogDemand, DeviceLogSlot, LogArchiveSlot, NetworkCaptureSlot,
+    PerformanceDemand, PerformanceSlot, RuntimeClient, ServiceRegistry, SessionCommandSlot,
+    SessionControlCommand, SysdiagnoseSlot,
+};
 
 const OWNER_THREAD_NAME: &str = "devicehub-coredevice";
 pub const OWNER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 /// Non-`Send` session-manager future created after entering the owner thread.
 pub type CoreRuntimeFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
+
+/// Cloneable state shared by one runtime owner and any number of host adapters.
+///
+/// The host path remains opaque to the runtime. All slots are created together
+/// so desktop, HTTP, MCP, and future headless adapters cannot accidentally
+/// observe a second, divergent device state graph.
+#[derive(Clone)]
+pub struct CoreRuntimeState<HostPath> {
+    pub status: StatusSlot,
+    pub orientation: OrientationSlot,
+    pub devices: DeviceListSlot,
+    pub active: ActiveSlot,
+    pub error: ErrorSlot,
+    pub location: LocationStatusSlot,
+    pub browser_frames: BrowserVideoSlot,
+    pub video_counters: VideoCounters,
+    pub clipboard: ClipboardSlot,
+    pub device_events: DeviceEventSlot,
+    pub network_capture: NetworkCaptureSlot,
+    pub bluetooth_capture: BluetoothCaptureSlot,
+    pub device_backup: DeviceBackupSlot,
+    pub sysdiagnose: SysdiagnoseSlot,
+    pub log_archive: LogArchiveSlot,
+    pub developer_image: DeveloperImageMountSlot,
+    pub device_conditions: DeviceConditionSlot,
+    pub app_operation: AppOperationSlot,
+    pub app_documents: AppDocumentActivitySlot,
+    pub device_files: DeviceFileActivitySlot,
+    pub performance: PerformanceSlot,
+    pub performance_demand: PerformanceDemand,
+    pub device_logs: DeviceLogSlot,
+    pub device_log_demand: DeviceLogDemand,
+    pub services: ServiceRegistry,
+    pub commands: SessionCommandSlot<HostPath>,
+}
+
+impl<HostPath> Default for CoreRuntimeState<HostPath> {
+    fn default() -> Self {
+        Self {
+            status: StatusSlot::default(),
+            orientation: OrientationSlot::default(),
+            devices: DeviceListSlot::default(),
+            active: ActiveSlot::default(),
+            error: ErrorSlot::default(),
+            location: LocationStatusSlot::default(),
+            browser_frames: BrowserVideoSlot::default(),
+            video_counters: VideoCounters::default(),
+            clipboard: ClipboardSlot::default(),
+            device_events: DeviceEventSlot::default(),
+            network_capture: NetworkCaptureSlot::default(),
+            bluetooth_capture: BluetoothCaptureSlot::default(),
+            device_backup: DeviceBackupSlot::default(),
+            sysdiagnose: SysdiagnoseSlot::default(),
+            log_archive: LogArchiveSlot::default(),
+            developer_image: DeveloperImageMountSlot::default(),
+            device_conditions: DeviceConditionSlot::default(),
+            app_operation: AppOperationSlot::default(),
+            app_documents: AppDocumentActivitySlot::default(),
+            device_files: DeviceFileActivitySlot::default(),
+            performance: PerformanceSlot::default(),
+            performance_demand: PerformanceDemand::default(),
+            device_logs: DeviceLogSlot::default(),
+            device_log_demand: DeviceLogDemand::default(),
+            services: ServiceRegistry::default(),
+            commands: SessionCommandSlot::default(),
+        }
+    }
+}
+
+impl<HostPath> CoreRuntimeState<HostPath> {
+    /// Create the cloneable host client for this sole runtime state graph.
+    pub fn client(
+        &self,
+        control: UnboundedSender<SessionControlCommand>,
+    ) -> RuntimeClient<HostPath> {
+        RuntimeClient::from_state(self, control)
+    }
+
+    /// Build the complete manager view from the sole shared state graph.
+    pub(crate) fn manager_views(&self) -> SessionManagerViews<HostPath> {
+        SessionManagerViews {
+            connected: ConnectedSessionViews {
+                status: self.status.clone(),
+                orientation: self.orientation.clone(),
+                error: self.error.clone(),
+                app_operation: self.app_operation.clone(),
+                clipboard: self.clipboard.clone(),
+                video_counters: self.video_counters.clone(),
+                browser_frames: self.browser_frames.clone(),
+                runtime_services: RuntimeServiceViews {
+                    performance: self.performance.clone(),
+                    performance_demand: self.performance_demand.clone(),
+                    device_logs: self.device_logs.clone(),
+                    device_log_demand: self.device_log_demand.clone(),
+                    services: self.services.clone(),
+                    device_events: self.device_events.clone(),
+                    location: self.location.clone(),
+                    device_conditions: self.device_conditions.clone(),
+                },
+                host_services: RuntimeHostServiceViews {
+                    app_documents: self.app_documents.clone(),
+                    device_files: self.device_files.clone(),
+                    network_capture: self.network_capture.clone(),
+                    bluetooth_capture: self.bluetooth_capture.clone(),
+                    device_backup: self.device_backup.clone(),
+                    sysdiagnose: self.sysdiagnose.clone(),
+                    log_archive: self.log_archive.clone(),
+                    developer_image: self.developer_image.clone(),
+                },
+            },
+            devices: self.devices.clone(),
+            active: self.active.clone(),
+            commands: self.commands.clone(),
+        }
+    }
+}
 
 /// Owns the session manager's control channel and dedicated executor thread.
 pub struct CoreRuntime {
@@ -99,7 +229,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{CoreRuntime, CoreRuntimeFuture};
+    use super::{CoreRuntime, CoreRuntimeFuture, CoreRuntimeState};
     use crate::SessionControlCommand;
 
     #[test]
@@ -126,5 +256,24 @@ mod tests {
 
         assert!(stopped.load(Ordering::Acquire));
         assert!(runtime.is_stopped());
+    }
+
+    #[test]
+    fn manager_views_share_the_single_runtime_state_graph() {
+        let state = CoreRuntimeState::<String>::default();
+        let views = state.manager_views();
+
+        state.status.set("connected");
+        state
+            .active
+            .set_selected("device".into(), "device::usb".into());
+
+        assert_eq!(views.connected.status.get(), "connected");
+        assert_eq!(views.active.selection_id().as_deref(), Some("device::usb"));
+        assert!(
+            !state
+                .commands
+                .try_send(crate::DeviceSessionCommand::Shutdown)
+        );
     }
 }

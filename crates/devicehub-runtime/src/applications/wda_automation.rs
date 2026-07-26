@@ -367,7 +367,7 @@ pub fn parse_wait_state(state: &str) -> Result<WdaElementWaitState, &'static str
     }
 }
 
-pub async fn serve_wda_automation(
+pub(crate) async fn serve_wda_automation(
     provider: Arc<dyn IdeviceProvider>,
     mut commands: mpsc::Receiver<WdaAutomationCommand>,
     reporter: ServiceReporter,

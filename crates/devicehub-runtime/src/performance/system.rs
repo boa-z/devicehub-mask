@@ -21,7 +21,7 @@ pub(super) const TEST_SAMPLE_INTERVAL_MS: u32 = SAMPLE_INTERVAL_MS;
 #[cfg(test)]
 pub(super) const TEST_TOP_PROCESSES_PER_METRIC: usize = TOP_PROCESSES_PER_METRIC;
 
-pub async fn supervise_performance_system(
+pub(crate) async fn supervise_performance_system(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     slot: PerformanceSlot,

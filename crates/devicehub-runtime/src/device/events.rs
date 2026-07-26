@@ -108,7 +108,7 @@ fn should_publish(
     }
 }
 
-pub async fn supervise_device_events(
+pub(crate) async fn supervise_device_events(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     events: DeviceEventSlot,

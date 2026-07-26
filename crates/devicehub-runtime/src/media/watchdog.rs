@@ -33,7 +33,7 @@ fn observation(
 
 /// Recover only from evidence of a decoder stall or a genuinely silent transport.
 /// RTCP-only activity is healthy for a static screen and must not trigger PLI.
-pub async fn stall_watchdog(counters: VideoCounters, corruption: &Notify) {
+pub(crate) async fn stall_watchdog(counters: VideoCounters, corruption: &Notify) {
     let mut previous = counters.snapshot();
     let mut silent_windows = 0_u8;
     loop {

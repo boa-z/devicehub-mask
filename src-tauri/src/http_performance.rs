@@ -6,6 +6,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::device_runtime::{InputCmd, InputSink};
+use crate::supervisor::ServiceRegistry;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
@@ -14,9 +16,6 @@ use devicehub_core::{AppActivityEvent, PerformanceSnapshot};
 use devicehub_runtime::{PerformanceDemand, PerformanceSlot};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-
-use crate::protocol::{InputCmd, InputSink};
-use crate::supervisor::ServiceRegistry;
 
 /// Narrow capability set exposed to performance-workbench HTTP handlers.
 /// Cloning it shares existing slots and demand counters; it does not start any
@@ -105,7 +104,7 @@ struct PerformanceView {
     sampling: bool,
     network_capture: crate::network_capture::NetworkCaptureStatus,
     bluetooth_capture: crate::bluetooth_capture::BluetoothCaptureStatus,
-    device_conditions: crate::domain::DeviceConditionStatus,
+    device_conditions: devicehub_core::DeviceConditionStatus,
 }
 
 async fn performance(State(state): State<PerformanceHttpState>) -> Json<PerformanceView> {
@@ -122,7 +121,7 @@ async fn performance(State(state): State<PerformanceHttpState>) -> Json<Performa
 
 async fn running_processes(
     State(state): State<PerformanceHttpState>,
-) -> Result<Json<crate::domain::RunningProcessList>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::RunningProcessList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::RunningProcess(
         devicehub_runtime::RunningProcessCommand::List { reply },
@@ -689,8 +688,8 @@ mod tests {
             panic!("expected running process query");
         };
         reply
-            .send(Ok(crate::domain::RunningProcessList {
-                processes: vec![crate::domain::RunningProcess {
+            .send(Ok(devicehub_core::RunningProcessList {
+                processes: vec![devicehub_core::RunningProcess {
                     pid: 42,
                     name: "Example".into(),
                     app_name: Some("Example App".into()),

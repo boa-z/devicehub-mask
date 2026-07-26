@@ -9,7 +9,7 @@ use super::PerformanceSlot;
 use super::source::{SETUP_TIMEOUT, connect_remote, wait_until_enabled};
 use crate::supervisor::{ServiceReporter, reconnect_backoff, wait_for_retry};
 
-pub async fn supervise_performance_graphics(
+pub(crate) async fn supervise_performance_graphics(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     slot: PerformanceSlot,

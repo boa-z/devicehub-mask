@@ -10,10 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Deserialize;
 
 use crate::browser_video::BrowserVideoSlot;
-use crate::domain::hardware_button;
-use crate::protocol::{
-    HARDWARE_BUTTON_NAMES, InputCmd, InputSink, Orientation, RotateDir, norm, unrotate_norm,
-};
+use crate::device_runtime::{InputCmd, InputSink};
+use devicehub_core::hardware_button;
+use devicehub_core::{HARDWARE_BUTTON_NAMES, Orientation, RotateDir, norm, unrotate_norm};
 use devicehub_runtime::{DeviceInputCommand, TouchContact};
 
 #[derive(Deserialize)]

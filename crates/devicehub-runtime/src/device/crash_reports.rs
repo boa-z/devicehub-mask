@@ -104,7 +104,7 @@ where
     Ok(data.len() as u64)
 }
 
-pub async fn list_crash_reports(
+pub(crate) async fn list_crash_reports(
     provider: Arc<dyn IdeviceProvider>,
 ) -> Result<DeviceCrashReportList, String> {
     match tokio::time::timeout(Duration::from_secs(3), flush_reports(provider.as_ref())).await {
@@ -168,7 +168,7 @@ pub async fn list_crash_reports(
     Ok(DeviceCrashReportList { reports, truncated })
 }
 
-pub async fn download_crash_report(
+pub(crate) async fn download_crash_report(
     provider: Arc<dyn IdeviceProvider>,
     device_path: String,
 ) -> Result<Vec<u8>, String> {
@@ -189,7 +189,7 @@ pub async fn download_crash_report(
     read_exact_report(&mut client, device_path, info.size).await
 }
 
-pub async fn read_crash_report(
+pub(crate) async fn read_crash_report(
     provider: Arc<dyn IdeviceProvider>,
     device_path: String,
     max_bytes: usize,
@@ -213,7 +213,7 @@ pub async fn read_crash_report(
     Ok(build_crash_report_content(device_path, info.size, data))
 }
 
-pub async fn delete_crash_report(
+pub(crate) async fn delete_crash_report(
     provider: Arc<dyn IdeviceProvider>,
     device_path: String,
 ) -> Result<(), String> {

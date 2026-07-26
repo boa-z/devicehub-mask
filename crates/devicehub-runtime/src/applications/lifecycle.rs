@@ -46,7 +46,7 @@ impl AppLifecycleCommand {
     }
 }
 
-pub async fn serve_app_lifecycle(
+pub(crate) async fn serve_app_lifecycle(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     mut commands: mpsc::Receiver<AppLifecycleCommand>,

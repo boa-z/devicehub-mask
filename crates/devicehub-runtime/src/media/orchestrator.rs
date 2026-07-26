@@ -14,15 +14,15 @@ use super::{
 };
 
 /// Explicit media protocol options supplied by a host adapter.
-pub struct MediaSessionConfig {
-    pub our_ssrc: u32,
-    pub cname: String,
-    pub video: VideoRtpOptions,
-    pub rtcp: RtcpOptions,
+pub(crate) struct MediaSessionConfig {
+    pub(crate) our_ssrc: u32,
+    pub(crate) cname: String,
+    pub(crate) video: VideoRtpOptions,
+    pub(crate) rtcp: RtcpOptions,
 }
 
 /// Runtime-owned transport and publication state for an active media session.
-pub struct MediaSessionRuntime {
+pub(crate) struct MediaSessionRuntime {
     video_udp: UdpSocketHandle,
     rtcp_udp: Option<UdpSocketHandle>,
     counters: VideoCounters,
@@ -31,7 +31,7 @@ pub struct MediaSessionRuntime {
 }
 
 impl MediaSessionRuntime {
-    pub fn new(
+    pub(crate) fn new(
         video_udp: UdpSocketHandle,
         rtcp_udp: Option<UdpSocketHandle>,
         counters: VideoCounters,
@@ -50,7 +50,7 @@ impl MediaSessionRuntime {
     /// Runs runtime media tasks beside host-provided session capabilities.
     /// Completion of any task ends the task set so the host can perform its
     /// ordered service and DisplayService teardown.
-    pub async fn run<Audio, Clipboard, Orientation, Input>(
+    pub(crate) async fn run<Audio, Clipboard, Orientation, Input>(
         self,
         audio: Audio,
         clipboard: Clipboard,

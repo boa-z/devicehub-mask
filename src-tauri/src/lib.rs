@@ -1,5 +1,4 @@
 mod app_documents;
-mod application;
 mod audio_output;
 mod bluetooth_capture;
 mod browser_video;
@@ -12,7 +11,6 @@ mod device_files;
 mod device_runtime;
 mod diagnostic_files;
 mod diagnostics;
-mod domain;
 mod host_files;
 mod http_apps;
 mod http_crash_reports;
@@ -24,7 +22,6 @@ mod log_archive;
 mod mcp;
 mod netmuxd;
 mod network_capture;
-mod protocol;
 mod provisioning;
 mod session;
 mod settings;
@@ -249,7 +246,7 @@ fn spawn_backend(
                     tracing::error!("control API stopped: {error}");
                 }
             });
-            let _ = runtime_control.send(protocol::ControlCmd::Quit);
+            let _ = runtime_control.send(device_runtime::ControlCmd::Quit);
         })
         .map_err(|error| format!("cannot start private server thread: {error}"))?;
 

@@ -14,17 +14,20 @@ mod power;
 mod provisioning;
 mod screenshot;
 
-pub use companions::{CompanionDeviceCommand, serve_companion_devices};
+pub use companions::CompanionDeviceCommand;
+pub(crate) use companions::serve_companion_devices;
+pub(crate) use conditions::supervise_device_conditions;
 pub use conditions::{
-    DeviceConditionCommand, DeviceConditionSlot, supervise_device_conditions,
+    DeviceConditionCommand, DeviceConditionSlot,
     validate_identifiers as validate_device_condition_identifiers,
 };
-pub(crate) use crash_reports::serve_crash_report_exports;
 pub use crash_reports::{
-    CrashReportExportCommand, MAX_CRASH_REPORT_READ_BYTES, delete_crash_report,
-    download_crash_report, list_crash_reports, read_crash_report, validate_crash_report_path,
+    CrashReportExportCommand, MAX_CRASH_REPORT_READ_BYTES, validate_crash_report_path,
 };
-pub use details::{
+pub(crate) use crash_reports::{
+    delete_crash_report, list_crash_reports, read_crash_report, serve_crash_report_exports,
+};
+pub(crate) use details::{
     read_activation_state, read_device_battery, read_device_details,
     read_device_developer_mode_status, rename_device,
 };
@@ -32,25 +35,30 @@ pub(crate) use developer_image::serve_developer_image_mount;
 pub use developer_image::{
     DeveloperImageAssetFuture, DeveloperImageAssetLoader, DeveloperImageMountCommand,
     DeveloperImageMountRequest, DeveloperImageMountSlot, DeveloperImageMountState,
-    DeveloperImageMountStatus, developer_image_type_for_version, is_developer_image_mounted,
-    is_developer_image_mounted_for_device, read_device_product_version,
+    DeveloperImageMountStatus, developer_image_type_for_version,
 };
-pub use developer_mode::{
-    DeveloperModeCommand, DeveloperModePreparation, execute_developer_mode,
-    read_developer_mode_status,
+pub(crate) use developer_image::{
+    is_developer_image_mounted, is_developer_image_mounted_for_device,
 };
-pub use events::{DeviceEventSlot, supervise_device_events};
-pub use home_screen::{HomeScreenCommand, serve_home_screen};
-pub use location::{LocationCommand, supervise_location};
+pub(crate) use developer_mode::execute_developer_mode;
+pub use developer_mode::{DeveloperModeCommand, DeveloperModePreparation};
+pub use events::DeviceEventSlot;
+pub(crate) use events::supervise_device_events;
+pub use home_screen::HomeScreenCommand;
+pub(crate) use home_screen::serve_home_screen;
+pub use location::LocationCommand;
+pub(crate) use location::supervise_location;
+pub(crate) use logs::supervise_device_logs;
 pub use logs::{
     DeviceLogBatch, DeviceLogDemand, DeviceLogEntry, DeviceLogLevel, DeviceLogSlot,
-    DeviceLogSource, MAX_BATCH_ENTRIES, supervise_device_logs,
+    DeviceLogSource, MAX_BATCH_ENTRIES,
 };
-pub use power::{DevicePowerAction, DevicePowerController};
+pub(crate) use power::{DevicePowerAction, DevicePowerController};
 pub(crate) use provisioning::supervise_provisioning;
 pub use provisioning::{
     MAX_PROVISIONING_PROFILE_BYTES, ProvisioningCommand, ProvisioningFailure, ProvisioningInstall,
     ProvisioningProfileFuture, ProvisioningProfileLoader, parse_provisioning_profile,
     prepare_provisioning_install, profiles_from_raw, unreadable_profile,
 };
-pub use screenshot::{ScreenCaptureCommand, ScreenCaptureTransport, serve_screen_capture};
+pub use screenshot::ScreenCaptureCommand;
+pub(crate) use screenshot::{ScreenCaptureTransport, serve_screen_capture};

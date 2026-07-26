@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -26,11 +27,11 @@ use super::{
     connection_kind, connection_kind_priority, connection_priority, uses_usbmuxd_core_proxy,
     wifi_provider,
 };
-use crate::PairingCredentialStore;
+use crate::session::PairingCredentialStore;
 
 const NAME_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub type MuxSidecarFuture<'a> = Pin<Box<dyn Future<Output = Option<UsbmuxdAddr>> + Send + 'a>>;
+pub type MuxSidecarFuture<'a> = Pin<Box<dyn Future<Output = Option<SocketAddr>> + Send + 'a>>;
 
 /// Optional host process that exposes an additional usbmuxd-compatible endpoint.
 pub trait MuxSidecar: Send + 'static {
@@ -38,7 +39,7 @@ pub trait MuxSidecar: Send + 'static {
     fn ensure_ready(&mut self) -> MuxSidecarFuture<'_>;
 }
 
-pub struct DeviceDiscovery<Sidecar, Store> {
+pub(crate) struct DeviceDiscovery<Sidecar, Store> {
     /// Names are stable enough to cache for the manager lifetime. Explicit
     /// refresh and trust changes invalidate them through [`Self::invalidate`].
     names: HashMap<String, String>,
@@ -54,7 +55,11 @@ where
     Sidecar: MuxSidecar,
     Store: WifiPairingStore,
 {
-    pub fn new(sidecar: Sidecar, wifi_store: Option<Store>, tunnel: CoreTunnelConfig) -> Self {
+    pub(crate) fn new(
+        sidecar: Sidecar,
+        wifi_store: Option<Store>,
+        tunnel: CoreTunnelConfig,
+    ) -> Self {
         let prefer_netmuxd = sidecar.is_forced();
         let wifi = wifi_store.clone().and_then(start_wifi_discovery);
         Self {
@@ -67,11 +72,11 @@ where
         }
     }
 
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.names.clear();
     }
 
-    pub fn requires_pairing(&self) -> bool {
+    pub(crate) fn requires_pairing(&self) -> bool {
         self.wifi
             .as_ref()
             .is_some_and(WifiDiscovery::requires_pairing)
@@ -99,7 +104,7 @@ where
     /// Produce one consistent picker snapshot and its exact connection targets.
     /// Failures are best-effort and yield fewer devices rather than terminating
     /// the manager, allowing later idle scans to recover automatically.
-    pub async fn refresh(&mut self) -> (Vec<DeviceInfo>, HashMap<String, SessionEndpoint>) {
+    pub(crate) async fn refresh(&mut self) -> (Vec<DeviceInfo>, HashMap<String, SessionEndpoint>) {
         let netmuxd_addr = if self.prefer_netmuxd || self.wifi.is_none() {
             self.sidecar.ensure_ready().await
         } else {
@@ -113,7 +118,7 @@ where
         });
         let mut candidates = Vec::new();
         if let Some(address) = netmuxd_addr {
-            candidates.push((address, true));
+            candidates.push((UsbmuxdAddr::TcpSocket(address), true));
         }
         if let Ok(address) = system_addr {
             candidates.push((address, false));

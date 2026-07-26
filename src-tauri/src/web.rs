@@ -21,19 +21,21 @@ use serde_json::json;
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
-use crate::protocol::{
-    ClipboardSlot, ControlCmd, ForgetDeviceResult, InputCmd, InputSink, LocationStatus,
-    PairDeviceResult, VideoCounters, validate_device_name, validate_paste_text,
-};
+use crate::device_runtime::{ControlCmd, InputCmd, InputSink};
 #[cfg(test)]
 use crate::websocket_input::{
     ClientVideoFeedback, WebContact, handle_client_message, send_all_up, valid_frontend_metrics,
     valid_keyboard_usage, validate_contacts,
 };
+use devicehub_core::{
+    ForgetDeviceResult, LocationStatus, PairDeviceResult, VideoCounters, validate_device_name,
+    validate_paste_text,
+};
+use devicehub_runtime::ClipboardSlot;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub application: crate::application::ApplicationServices,
+    pub application: devicehub_runtime::RuntimeClient<PathBuf>,
     pub performance_http: crate::http_performance::PerformanceHttpState,
     pub profiles_http: crate::http_profiles::ProfileHttpState,
     pub storage_http: crate::http_storage::StorageHttpState,
@@ -359,7 +361,7 @@ async fn await_device_command(
 
 async fn device_details(
     State(state): State<AppState>,
-) -> Result<Json<crate::protocol::DeviceDetails>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::DeviceDetails>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::GetDeviceDetails(reply)) {
         return Err((
@@ -548,14 +550,14 @@ async fn device_screenshot(
         .capture_screenshot(SCREENSHOT_REQUEST_TIMEOUT)
         .await
         .map_err(|error| match error {
-            crate::application::DeviceControlError::Unavailable
-            | crate::application::DeviceControlError::SessionEnded => {
+            devicehub_runtime::DeviceControlError::Unavailable
+            | devicehub_runtime::DeviceControlError::SessionEnded => {
                 (StatusCode::SERVICE_UNAVAILABLE, error.to_string())
             }
-            crate::application::DeviceControlError::Timeout(_) => {
+            devicehub_runtime::DeviceControlError::Timeout(_) => {
                 (StatusCode::GATEWAY_TIMEOUT, error.to_string())
             }
-            crate::application::DeviceControlError::Operation(_) => {
+            devicehub_runtime::DeviceControlError::Operation(_) => {
                 (StatusCode::BAD_GATEWAY, error.to_string())
             }
         })?;
@@ -738,7 +740,7 @@ async fn stop_wda_runner(
 
 async fn device_companions(
     State(state): State<AppState>,
-) -> Result<Json<Vec<crate::domain::CompanionDevice>>, (StatusCode, String)> {
+) -> Result<Json<Vec<devicehub_core::CompanionDevice>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::ListCompanionDevices(reply)) {
         return Err((
@@ -766,7 +768,7 @@ async fn device_companions(
 
 async fn device_home_screen(
     State(state): State<AppState>,
-) -> Result<Json<crate::domain::HomeScreenLayout>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::HomeScreenLayout>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::GetHomeScreenLayout(reply)) {
         return Err((
@@ -796,7 +798,7 @@ async fn device_wallpaper(
     State(state): State<AppState>,
     Path(kind): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let kind = crate::domain::WallpaperKind::parse(&kind).ok_or_else(|| {
+    let kind = devicehub_core::WallpaperKind::parse(&kind).ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
             "wallpaper kind must be home or lock".into(),
@@ -832,7 +834,7 @@ async fn device_wallpaper(
 
 async fn device_provisioning_profiles(
     State(state): State<AppState>,
-) -> Result<Json<Vec<crate::protocol::ProvisioningProfile>>, (StatusCode, String)> {
+) -> Result<Json<Vec<devicehub_core::ProvisioningProfile>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::Provisioning(
         crate::provisioning::ProvisioningCommand::List {
@@ -857,7 +859,7 @@ struct InstallProvisioningProfileRequest {
 async fn install_provisioning_profile(
     State(state): State<AppState>,
     Json(request): Json<InstallProvisioningProfileRequest>,
-) -> Result<Json<crate::protocol::ProvisioningProfile>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::ProvisioningProfile>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state.input.try_send(InputCmd::Provisioning(
         crate::provisioning::ProvisioningCommand::Install {
@@ -986,7 +988,7 @@ mod tests {
         CrashReportSummaryQuery, DeleteCrashReportRequest, ExportCrashReportRequest,
         crash_report_summary, delete_crash_report, export_crash_report,
     };
-    use crate::protocol::{Orientation, norm};
+    use devicehub_core::{Orientation, norm};
     use devicehub_runtime::DeviceInputCommand;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -1020,8 +1022,11 @@ mod tests {
         let (input_tx, input_rx) = unbounded_channel();
         input.set(Some(input_tx));
         let (control, control_rx) = unbounded_channel();
-        let browser_frames = crate::browser_video::BrowserVideoSlot::default();
-        let observability = crate::application::ObservabilitySlots::default();
+        let runtime_state = devicehub_runtime::CoreRuntimeState::<std::path::PathBuf> {
+            commands: input.clone(),
+            ..Default::default()
+        };
+        let browser_frames = runtime_state.browser_frames.clone();
         let network_capture = crate::network_capture::NetworkCaptureSlot::default();
         let bluetooth_capture = crate::bluetooth_capture::BluetoothCaptureSlot::default();
         let services = crate::supervisor::ServiceRegistry::default();
@@ -1029,21 +1034,13 @@ mod tests {
         let device_file_activity = crate::device_files::DeviceFileActivitySlot::default();
         (
             AppState {
-                application: crate::application::ApplicationServices::new(
-                    crate::application::DeviceControlService::new(
-                        browser_frames.clone(),
-                        input.clone(),
-                    ),
-                    crate::application::DeviceStateSlots::default(),
-                    observability.clone(),
-                    control,
-                ),
+                application: runtime_state.client(control),
                 performance_http: crate::http_performance::PerformanceHttpState::new(
-                    observability.performance.clone(),
-                    observability.performance_demand.clone(),
-                    observability.device_logs.clone(),
-                    observability.device_log_demand.clone(),
-                    observability.device_conditions.clone(),
+                    runtime_state.performance.clone(),
+                    runtime_state.performance_demand.clone(),
+                    runtime_state.device_logs.clone(),
+                    runtime_state.device_log_demand.clone(),
+                    runtime_state.device_conditions.clone(),
                     network_capture,
                     bluetooth_capture,
                     services,
@@ -1063,7 +1060,7 @@ mod tests {
                 ),
                 apps_http: crate::http_apps::AppHttpState::new(
                     input.clone(),
-                    crate::protocol::AppOperationSlot::default(),
+                    devicehub_core::AppOperationSlot::default(),
                 ),
                 crash_reports_http: crate::http_crash_reports::CrashReportHttpState::new(
                     input.clone(),
@@ -1165,7 +1162,7 @@ mod tests {
             panic!("expected provisioning install command");
         };
         assert_eq!(source, PathBuf::from("/tmp/Game.mobileprovision"));
-        let profile = crate::protocol::ProvisioningProfile {
+        let profile = devicehub_core::ProvisioningProfile {
             name: "Game Development".into(),
             uuid: "00000000-1111-2222-3333-444444444444".into(),
             team_identifiers: vec!["TEAM123".into()],
@@ -1329,13 +1326,13 @@ mod tests {
         assert_eq!(selection_id, "device-1::usb");
         reply
             .send(PairDeviceResult {
-                outcome: crate::protocol::PairDeviceOutcome::Paired,
+                outcome: devicehub_core::PairDeviceOutcome::Paired,
                 error: None,
             })
             .unwrap();
 
         let response = request.await.unwrap().unwrap().0;
-        assert_eq!(response.outcome, crate::protocol::PairDeviceOutcome::Paired);
+        assert_eq!(response.outcome, devicehub_core::PairDeviceOutcome::Paired);
         assert!(response.error.is_none());
     }
 
@@ -1354,7 +1351,7 @@ mod tests {
         assert_eq!(selection_id, "device-1::usb");
         reply
             .send(ForgetDeviceResult {
-                outcome: crate::protocol::ForgetDeviceOutcome::Forgotten,
+                outcome: devicehub_core::ForgetDeviceOutcome::Forgotten,
                 error: None,
             })
             .unwrap();
@@ -1362,7 +1359,7 @@ mod tests {
         let response = request.await.unwrap().unwrap().0;
         assert_eq!(
             response.outcome,
-            crate::protocol::ForgetDeviceOutcome::Forgotten
+            devicehub_core::ForgetDeviceOutcome::Forgotten
         );
         assert!(response.error.is_none());
     }
@@ -1638,7 +1635,7 @@ mod tests {
             panic!("expected companion device query");
         };
         reply
-            .send(Ok(vec![crate::domain::CompanionDevice {
+            .send(Ok(vec![devicehub_core::CompanionDevice {
                 identifier: "watch-id".into(),
                 name: Some("Test Watch".into()),
                 product_type: Some("Watch7,5".into()),
@@ -1659,17 +1656,17 @@ mod tests {
             panic!("expected home screen layout query");
         };
         reply
-            .send(Ok(crate::domain::HomeScreenLayout {
-                apps: vec![crate::domain::HomeScreenAppLocation {
+            .send(Ok(devicehub_core::HomeScreenLayout {
+                apps: vec![devicehub_core::HomeScreenAppLocation {
                     bundle_id: "com.example.game".into(),
                     name: Some("Game".into()),
-                    container: crate::domain::HomeScreenContainer::Page,
+                    container: devicehub_core::HomeScreenContainer::Page,
                     page: Some(2),
                     position: 3,
                     folders: Vec::new(),
                 }],
                 page_count: 2,
-                metrics: Some(crate::domain::HomeScreenIconMetrics {
+                metrics: Some(devicehub_core::HomeScreenIconMetrics {
                     screen_width: Some(810),
                     screen_height: Some(1080),
                     icon_width: Some(68),
@@ -1704,7 +1701,7 @@ mod tests {
         let request = tokio::spawn(device_wallpaper(State(state), Path("lock".into())));
         match input_rx.recv().await.unwrap() {
             InputCmd::GetWallpaper { kind, reply } => {
-                assert_eq!(kind, crate::domain::WallpaperKind::Lock);
+                assert_eq!(kind, devicehub_core::WallpaperKind::Lock);
                 reply.send(Ok(vec![1, 2, 3])).unwrap();
             }
             _ => panic!("expected lock-screen wallpaper query"),
@@ -2014,8 +2011,8 @@ mod tests {
         match input_rx.recv().await.unwrap() {
             InputCmd::ListCrashReports(reply) => {
                 reply
-                    .send(Ok(crate::protocol::DeviceCrashReportList {
-                        reports: vec![crate::protocol::DeviceCrashReport {
+                    .send(Ok(devicehub_core::DeviceCrashReportList {
+                        reports: vec![devicehub_core::DeviceCrashReport {
                             path: "/Report.ips".into(),
                             name: "Report.ips".into(),
                             size_bytes: 42,
@@ -2100,15 +2097,15 @@ mod tests {
         assert_eq!(device_path, "/Report.ips");
         assert_eq!(max_bytes, devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES);
         reply
-            .send(Ok(crate::protocol::DeviceCrashReportContent {
+            .send(Ok(devicehub_core::DeviceCrashReportContent {
                 device_path,
                 size_bytes: 4_096,
                 bytes_read: 128,
                 truncated: false,
                 lossy_utf8: false,
-                summary: crate::protocol::DeviceCrashReportSummary {
-                    format: crate::protocol::CrashReportFormat::IpsJson,
-                    kind: crate::protocol::CrashReportKind::AppCrash,
+                summary: devicehub_core::DeviceCrashReportSummary {
+                    format: devicehub_core::CrashReportFormat::IpsJson,
+                    kind: devicehub_core::CrashReportKind::AppCrash,
                     process_name: Some("Game".into()),
                     bundle_id: Some("com.example.game".into()),
                     app_version: None,

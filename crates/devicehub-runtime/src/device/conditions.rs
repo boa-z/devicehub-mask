@@ -66,7 +66,7 @@ pub fn validate_identifiers(
     validate_identifier(profile_identifier, "condition profile")
 }
 
-pub async fn supervise_device_conditions(
+pub(crate) async fn supervise_device_conditions(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     mut commands: mpsc::Receiver<DeviceConditionCommand>,

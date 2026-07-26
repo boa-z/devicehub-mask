@@ -8,13 +8,13 @@ const WIFI_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(8);
 const WIFI_STABLE_SESSION: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SessionRetry {
-    pub attempt: u32,
-    pub delay: Duration,
+pub(crate) struct SessionRetry {
+    pub(crate) attempt: u32,
+    pub(crate) delay: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionFailureAction {
+pub(crate) enum SessionFailureAction {
     Stop,
     Retry(SessionRetry),
 }
@@ -22,12 +22,12 @@ pub enum SessionFailureAction {
 /// Tracks retry state for the parent device session. Child service recovery is
 /// handled separately by [`crate::ServiceSupervisor`].
 #[derive(Debug, Default)]
-pub struct SessionRetryPolicy {
+pub(crate) struct SessionRetryPolicy {
     wifi_attempt: u32,
 }
 
 impl SessionRetryPolicy {
-    pub fn after_failure(
+    pub(crate) fn after_failure(
         &mut self,
         connection: ConnKind,
         error_message: &str,
@@ -49,7 +49,7 @@ impl SessionRetryPolicy {
         })
     }
 
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.wifi_attempt = 0;
     }
 }

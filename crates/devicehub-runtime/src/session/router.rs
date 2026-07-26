@@ -12,19 +12,22 @@ use tokio::sync::mpsc;
 use super::commands::DeviceSessionCommand;
 use super::services::DeviceServicePorts;
 use crate::applications::{AppClientSet, AppManagement, AppServiceTransport};
+use crate::device::{
+    DevicePowerAction, DevicePowerController, delete_crash_report, execute_developer_mode,
+    is_developer_image_mounted, list_crash_reports, read_activation_state, read_crash_report,
+    read_device_battery, read_device_details, read_device_developer_mode_status, rename_device,
+};
 use crate::{
     AppIconCommand, BluetoothCaptureCommand, CompanionDeviceCommand, CrashReportExportCommand,
     DeveloperImageMountCommand, DeviceBackupCommand, DeviceConditionCommand, DeviceFileCommand,
-    DevicePowerAction, DevicePowerController, HomeScreenCommand, LocationCommand,
-    LogArchiveCommand, NetworkCaptureCommand, ScreenCaptureCommand, SysdiagnoseCommand,
-    read_activation_state, read_device_battery, read_device_details,
-    read_device_developer_mode_status, rename_device,
+    HomeScreenCommand, LocationCommand, LogArchiveCommand, NetworkCaptureCommand,
+    ScreenCaptureCommand, SysdiagnoseCommand,
 };
 
 /// Routes management commands while returning HID and clipboard commands that
 /// require capabilities owned by the host session loop. Filesystem operations
 /// cross bounded host-service ports rather than executing in this router.
-pub struct DeviceSessionRouter<HostPath> {
+pub(crate) struct DeviceSessionRouter<HostPath> {
     provider: Arc<dyn IdeviceProvider>,
     power: DevicePowerController,
     details: Option<DeviceDetails>,
@@ -35,7 +38,7 @@ pub struct DeviceSessionRouter<HostPath> {
 /// First phase of device management startup. Lockdown identity and the legacy
 /// Installation Proxy fallback are available before the CoreDevice tunnel is
 /// established, preserving connection order while keeping client types private.
-pub struct DeviceManagementBootstrap {
+pub(crate) struct DeviceManagementBootstrap {
     provider: Arc<dyn IdeviceProvider>,
     app_operation: AppOperationSlot,
     details: Option<DeviceDetails>,
@@ -43,7 +46,7 @@ pub struct DeviceManagementBootstrap {
 }
 
 impl DeviceManagementBootstrap {
-    pub async fn prepare(
+    pub(crate) async fn prepare(
         provider: Arc<dyn IdeviceProvider>,
         requested_udid: String,
         app_operation: AppOperationSlot,
@@ -65,7 +68,7 @@ impl DeviceManagementBootstrap {
         }
     }
 
-    pub fn bind_transport(
+    pub(crate) fn bind_transport(
         self,
         adapter: AdapterHandle,
         handshake: RsdHandshake,
@@ -81,7 +84,7 @@ impl DeviceManagementBootstrap {
 }
 
 /// Opaque App management capability bound to one CoreDevice session.
-pub struct DeviceManagementSession {
+pub(crate) struct DeviceManagementSession {
     provider: Arc<dyn IdeviceProvider>,
     app_operation: AppOperationSlot,
     details: Option<DeviceDetails>,
@@ -90,11 +93,11 @@ pub struct DeviceManagementSession {
 }
 
 impl DeviceManagementSession {
-    pub fn details(&self) -> Option<&DeviceDetails> {
+    pub(crate) fn details(&self) -> Option<&DeviceDetails> {
         self.details.as_ref()
     }
 
-    pub async fn connect_app_service(
+    pub(crate) async fn connect_app_service(
         &mut self,
         adapter: &mut AdapterHandle,
         handshake: &mut RsdHandshake,
@@ -104,7 +107,7 @@ impl DeviceManagementSession {
             .await;
     }
 
-    pub fn into_router<HostPath>(
+    pub(crate) fn into_router<HostPath>(
         self,
         services: DeviceServicePorts<HostPath>,
     ) -> DeviceSessionRouter<HostPath> {
@@ -144,7 +147,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
         }
     }
 
-    pub async fn handle(
+    pub(crate) async fn handle(
         &mut self,
         command: DeviceSessionCommand<HostPath>,
     ) -> Option<DeviceSessionCommand<HostPath>>
@@ -197,7 +200,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
                 None
             }
             DeviceSessionCommand::DeveloperMode(command) => {
-                crate::execute_developer_mode(self.provider.clone(), command);
+                execute_developer_mode(self.provider.clone(), command);
                 None
             }
             DeviceSessionCommand::ListCompanionDevices(reply) => {
@@ -415,7 +418,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
             DeviceSessionCommand::ListCrashReports(reply) => {
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    let _ = reply.send(crate::list_crash_reports(provider).await);
+                    let _ = reply.send(list_crash_reports(provider).await);
                 });
                 None
             }
@@ -426,7 +429,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
             } => {
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    let result = crate::read_crash_report(provider, device_path, max_bytes).await;
+                    let result = read_crash_report(provider, device_path, max_bytes).await;
                     let _ = reply.send(result);
                 });
                 None
@@ -451,7 +454,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
             DeviceSessionCommand::DeleteCrashReport { device_path, reply } => {
                 let provider = self.provider.clone();
                 tokio::spawn(async move {
-                    let result = crate::delete_crash_report(provider, device_path).await;
+                    let result = delete_crash_report(provider, device_path).await;
                     let _ = reply.send(result);
                 });
                 None
@@ -492,7 +495,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
                 ),
                 tokio::time::timeout(
                     Duration::from_secs(3),
-                    crate::is_developer_image_mounted(provider.as_ref(), &details.product_version,),
+                    is_developer_image_mounted(provider.as_ref(), &details.product_version,),
                 ),
                 tokio::time::timeout(
                     Duration::from_secs(3),
@@ -749,8 +752,9 @@ mod tests {
 
     use devicehub_core::{LocationStatus, LocationStatusSlot};
 
+    use super::super::services::LocationServicePort;
     use super::{route, route_location};
-    use crate::{LocationCommand, LocationServicePort};
+    use crate::LocationCommand;
 
     #[tokio::test]
     async fn bounded_route_reports_busy_and_unavailable_without_losing_command() {

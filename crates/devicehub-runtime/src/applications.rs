@@ -11,14 +11,17 @@ mod processes;
 mod wda_automation;
 mod wda_runner;
 
-pub use console::{
-    AppConsoleCommand, AppConsoleLine, AppConsolePhase, AppConsoleSnapshot, serve_app_console,
-};
-pub use icons::{AppIconCommand, serve_app_icons};
-pub use lifecycle::{AppLifecycleCommand, serve_app_lifecycle};
+pub(crate) use console::serve_app_console;
+pub use console::{AppConsoleCommand, AppConsoleLine, AppConsolePhase, AppConsoleSnapshot};
+pub use icons::AppIconCommand;
+pub(crate) use icons::serve_app_icons;
+pub use lifecycle::AppLifecycleCommand;
+pub(crate) use lifecycle::serve_app_lifecycle;
 pub use manager::{APP_CONTROL_REQUEST_TIMEOUT, APP_LIST_REQUEST_TIMEOUT};
 pub(crate) use manager::{AppClientSet, AppManagement, AppServiceTransport};
-pub use processes::{RunningProcessCommand, serve_running_processes};
+pub use processes::RunningProcessCommand;
+pub(crate) use processes::serve_running_processes;
+pub(crate) use wda_automation::serve_wda_automation;
 pub use wda_automation::{
     DEFAULT_SOURCE_CHARS, MAX_ATTRIBUTE_BYTES, MAX_ATTRIBUTE_CHARACTERS,
     MAX_BACKGROUND_DURATION_MS, MAX_ELEMENTS, MAX_HOLD_DURATION_MS, MAX_SELECTOR_BYTES,
@@ -26,11 +29,12 @@ pub use wda_automation::{
     MIN_BACKGROUND_DURATION_MS, MIN_HOLD_DURATION_MS, WdaAutomationCommand, WdaBoundedText,
     WdaDeviceState, WdaElement, WdaElementDetails, WdaElementWaitResult, WdaElementWaitState,
     WdaOrientation, WdaRect, WdaSize, WdaStatus, WdaUiTree, WdaUnlockResult, parse_wait_state,
-    serve_wda_automation, validate_background_duration, validate_hold_duration,
-    validate_scroll_direction, validate_selector, validate_text, validate_wait_timeout,
+    validate_background_duration, validate_hold_duration, validate_scroll_direction,
+    validate_selector, validate_text, validate_wait_timeout,
 };
+pub(crate) use wda_runner::serve_wda_runner;
 pub use wda_runner::{
-    WdaRunnerCommand, WdaRunnerPhase, WdaRunnerStatus, serve_wda_runner, validate_runner_bundle_id,
+    WdaRunnerCommand, WdaRunnerPhase, WdaRunnerStatus, validate_runner_bundle_id,
 };
 
 #[derive(Debug)]

@@ -15,14 +15,16 @@ use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 use super::{
     ConnectedSessionHost, ConnectedSessionMedia, ConnectedSessionViews, SessionFailureAction,
-    SessionRetry, SessionRetryPolicy, run_connected_session,
+    SessionRetry, SessionRetryPolicy, forget_device, pair_device, run_connected_session,
 };
+use crate::clipboard::HostClipboardFactory;
+use crate::transport::DeviceDiscovery;
 use crate::{
-    CaptureFileIo, CoreTunnelConfig, DeveloperImageAssetLoader, DeviceAudioPipelineFactory,
-    DeviceBackupExecutor, DeviceDiscovery, DeviceSessionCommand, DiagnosticDumpSinkFactory,
-    HostClipboardFactory, HostClipboardProvider, HostFileIo, MuxSidecar, ProvisioningProfileLoader,
-    RuntimePreferences, RuntimeSessionHostAdapters, SessionCommandSlot, SessionControlCommand,
-    SessionDiagnostics, SessionEndpoint, WifiPairingStore, forget_device, pair_device,
+    CaptureFileIo, CoreRuntimeState, CoreTunnelConfig, DeveloperImageAssetLoader,
+    DeviceAudioPipelineFactory, DeviceBackupExecutor, DeviceSessionCommand,
+    DiagnosticDumpSinkFactory, HostClipboardProvider, HostFileIo, MuxSidecar,
+    ProvisioningProfileLoader, RuntimePreferences, RuntimeSessionHostAdapters, SessionCommandSlot,
+    SessionControlCommand, SessionDiagnostics, SessionEndpoint, WifiPairingStore,
     resolve_device_selection,
 };
 
@@ -30,8 +32,12 @@ const IDLE_RESCAN: Duration = Duration::from_secs(2);
 const ACTIVE_RESCAN: Duration = Duration::from_secs(8);
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
 
-/// Host capabilities reused while the manager creates successive sessions.
-pub struct SessionManagerHost<
+/// Runtime-owned outer session manager assembled from host capability ports.
+///
+/// Device discovery, trust transitions, reconnect policy, and connected-session
+/// ownership remain private implementation details. Hosts supply capabilities
+/// once and can only run this single coherent lifecycle.
+pub struct SessionManager<
     Sidecar,
     Store,
     AudioFactory,
@@ -43,22 +49,105 @@ pub struct SessionManagerHost<
     DeveloperImages,
     Profiles,
 > {
-    pub discovery: DeviceDiscovery<Sidecar, Store>,
-    pub tunnel: CoreTunnelConfig,
-    pub audio: AudioFactory,
-    pub diagnostic_sinks: DiagnosticSinks,
-    pub clipboard: Clipboard,
-    pub services:
-        RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImages, Profiles>,
+    discovery: DeviceDiscovery<Sidecar, Store>,
+    tunnel: CoreTunnelConfig,
+    audio: AudioFactory,
+    diagnostic_sinks: DiagnosticSinks,
+    clipboard: Clipboard,
+    services: RuntimeSessionHostAdapters<Files, CaptureFiles, Backup, DeveloperImages, Profiles>,
+}
+
+impl<
+    Sidecar,
+    Store,
+    AudioFactory,
+    DiagnosticSinks,
+    Clipboard,
+    Files,
+    CaptureFiles,
+    Backup,
+    DeveloperImages,
+    Profiles,
+>
+    SessionManager<
+        Sidecar,
+        Store,
+        AudioFactory,
+        DiagnosticSinks,
+        Clipboard,
+        Files,
+        CaptureFiles,
+        Backup,
+        DeveloperImages,
+        Profiles,
+    >
+where
+    Sidecar: MuxSidecar,
+    Store: WifiPairingStore,
+    AudioFactory: DeviceAudioPipelineFactory,
+    DiagnosticSinks: DiagnosticDumpSinkFactory,
+    Clipboard: HostClipboardProvider,
+    Files: HostFileIo,
+    CaptureFiles: CaptureFileIo<Destination = Files::Path>,
+    Backup: DeviceBackupExecutor<Destination = Files::Path>,
+    DeveloperImages: DeveloperImageAssetLoader<Source = Files::Path>,
+    Profiles: ProvisioningProfileLoader<Source = Files::Path>,
+{
+    /// Bind host capabilities without exposing discovery or session internals.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        sidecar: Sidecar,
+        wifi_store: Option<Store>,
+        tunnel: CoreTunnelConfig,
+        audio: AudioFactory,
+        diagnostic_sinks: DiagnosticSinks,
+        clipboard: Clipboard,
+        services: RuntimeSessionHostAdapters<
+            Files,
+            CaptureFiles,
+            Backup,
+            DeveloperImages,
+            Profiles,
+        >,
+    ) -> Self {
+        Self {
+            discovery: DeviceDiscovery::new(sidecar, wifi_store, tunnel.clone()),
+            tunnel,
+            audio,
+            diagnostic_sinks,
+            clipboard,
+            services,
+        }
+    }
+
+    /// Run discovery and exactly one selected device session until shutdown.
+    pub async fn run(
+        self,
+        initial_selection: Option<String>,
+        preferences: RuntimePreferences,
+        diagnostics: SessionDiagnostics<DiagnosticSinks::Source>,
+        state: CoreRuntimeState<Files::Path>,
+        control_rx: UnboundedReceiver<SessionControlCommand>,
+    ) {
+        run_session_manager(
+            initial_selection,
+            preferences,
+            diagnostics,
+            self,
+            state,
+            control_rx,
+        )
+        .await;
+    }
 }
 
 /// State surfaces shared with host adapters without exposing session ownership.
 #[derive(Clone)]
-pub struct SessionManagerViews<HostPath> {
-    pub connected: ConnectedSessionViews,
-    pub devices: DeviceListSlot,
-    pub active: ActiveSlot,
-    pub commands: SessionCommandSlot<HostPath>,
+pub(crate) struct SessionManagerViews<HostPath> {
+    pub(crate) connected: ConnectedSessionViews,
+    pub(crate) devices: DeviceListSlot,
+    pub(crate) active: ActiveSlot,
+    pub(crate) commands: SessionCommandSlot<HostPath>,
 }
 
 enum Next {
@@ -125,7 +214,7 @@ fn reset_idle_views<HostPath>(views: &SessionManagerViews<HostPath>) {
 }
 
 /// Run discovery and exactly one selected device session until the host quits.
-pub async fn run_session_manager<
+async fn run_session_manager<
     Sidecar,
     Store,
     AudioFactory,
@@ -140,7 +229,7 @@ pub async fn run_session_manager<
     initial_selection: Option<String>,
     preferences: RuntimePreferences,
     diagnostics: SessionDiagnostics<DiagnosticSinks::Source>,
-    mut host: SessionManagerHost<
+    mut host: SessionManager<
         Sidecar,
         Store,
         AudioFactory,
@@ -152,7 +241,7 @@ pub async fn run_session_manager<
         DeveloperImages,
         Profiles,
     >,
-    views: SessionManagerViews<Files::Path>,
+    state: CoreRuntimeState<Files::Path>,
     mut control_rx: UnboundedReceiver<SessionControlCommand>,
 ) where
     Sidecar: MuxSidecar,
@@ -166,6 +255,7 @@ pub async fn run_session_manager<
     DeveloperImages: DeveloperImageAssetLoader<Source = Files::Path>,
     Profiles: ProvisioningProfileLoader<Source = Files::Path>,
 {
+    let views = state.manager_views();
     // Auto-pick only before the first connection. Returning to idle after a
     // session ends prevents a persistent hardware failure from hot-looping.
     let mut auto_pick = initial_selection.is_none();

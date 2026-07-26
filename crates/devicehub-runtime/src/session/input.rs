@@ -19,7 +19,7 @@ use crate::{DeviceInputCommand, DeviceInputDispatcher};
 /// Establish every authenticated HID capability for one active screen session.
 /// DisplayService must already be running because it opens the authorization
 /// gate used by Universal HID and Indigo keyboard services.
-pub async fn connect_device_input(
+pub(crate) async fn connect_device_input(
     adapter: &mut AdapterHandle,
     handshake: &mut RsdHandshake,
     orientation_view: OrientationSlot,
@@ -52,19 +52,20 @@ pub async fn connect_device_input(
     ))
 }
 
-pub type ClipboardWriteFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub(crate) type ClipboardWriteFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 /// Minimal device-clipboard capability required by the paste command.
 ///
 /// The host adapter retains ownership of pasteboard reconnection and optional
 /// host clipboard synchronization. Runtime orchestration only prepares text
 /// before sending the HID paste chord.
-pub trait DeviceClipboard: Send + Sync {
+pub(crate) trait DeviceClipboard: Send + Sync {
     fn set_text(&self, text: String) -> ClipboardWriteFuture<'_>;
 }
 
 /// Runs commands for a session with authenticated HID and clipboard services.
-pub async fn run_device_command_loop<HostPath>(
+pub(crate) async fn run_device_command_loop<HostPath>(
     mut device_input: DeviceInputDispatcher,
     mut router: DeviceSessionRouter<HostPath>,
     commands: &mut UnboundedReceiver<DeviceSessionCommand<HostPath>>,
@@ -97,7 +98,7 @@ pub async fn run_device_command_loop<HostPath>(
 
 /// Runs commands when screen control and HID setup failed but management
 /// services remain available.
-pub async fn run_management_command_loop<HostPath>(
+pub(crate) async fn run_management_command_loop<HostPath>(
     mut router: DeviceSessionRouter<HostPath>,
     commands: &mut UnboundedReceiver<DeviceSessionCommand<HostPath>>,
 ) where

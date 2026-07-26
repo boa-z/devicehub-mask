@@ -1,4 +1,4 @@
-//! Host filesystem adapter for runtime-owned Bonjour device discovery.
+//! Host filesystem adapter for runtime-owned device pairing credentials.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -6,25 +6,51 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use devicehub_runtime::{StoredWifiPairingRecord, WifiPairingStore};
+use devicehub_runtime::{RemotePairingStore, StoredWifiPairingRecord, WifiPairingStore};
 
 const MAX_PAIRING_RECORD_BYTES: u64 = 1024 * 1024;
 
-#[derive(Clone)]
-pub(crate) struct HostWifiPairingStore {
-    directory: PathBuf,
+#[derive(Clone, Default)]
+pub(crate) struct HostPairingStore {
+    directories: Option<PairingDirectories>,
 }
 
-impl HostWifiPairingStore {
+#[derive(Clone)]
+struct PairingDirectories {
+    lockdown: PathBuf,
+    remote: PathBuf,
+}
+
+impl HostPairingStore {
     pub(crate) fn new(directory: PathBuf) -> Result<Self, String> {
         secure_directory(&directory)?;
-        Ok(Self { directory })
+        let remote = directory
+            .parent()
+            .unwrap_or(&directory)
+            .join("remote-pairings");
+        Ok(Self {
+            directories: Some(PairingDirectories {
+                lockdown: directory,
+                remote,
+            }),
+        })
+    }
+
+    pub(crate) fn unavailable() -> Self {
+        Self::default()
+    }
+
+    fn directories(&self) -> Result<&PairingDirectories, String> {
+        self.directories
+            .as_ref()
+            .ok_or_else(|| "pairing credential storage is unavailable".into())
     }
 }
 
-impl WifiPairingStore for HostWifiPairingStore {
+impl WifiPairingStore for HostPairingStore {
     fn load(&self) -> Result<Vec<StoredWifiPairingRecord>, String> {
-        let entries = std::fs::read_dir(&self.directory)
+        let directory = &self.directories()?.lockdown;
+        let entries = std::fs::read_dir(directory)
             .map_err(|error| format!("cannot read pairing directory: {error}"))?;
         let mut records = Vec::new();
         for entry in entries.flatten() {
@@ -66,15 +92,54 @@ impl WifiPairingStore for HostWifiPairingStore {
         if bytes.len() as u64 > MAX_PAIRING_RECORD_BYTES {
             return Err("pairing record exceeds the storage limit".into());
         }
-        write_private_file(&pairing_path(&self.directory, udid)?, bytes)
+        write_private_file(&pairing_path(&self.directories()?.lockdown, udid)?, bytes)
     }
 
     fn remove(&self, udid: &str) -> Result<(), String> {
-        let path = pairing_path(&self.directory, udid)?;
+        let path = pairing_path(&self.directories()?.lockdown, udid)?;
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(format!("cannot remove cached pairing record: {error}")),
+        }
+    }
+}
+
+impl RemotePairingStore for HostPairingStore {
+    fn load_remote_pairing(&self, udid: &str) -> Result<Option<Vec<u8>>, String> {
+        let path = pairing_path(&self.directories()?.remote, udid)?;
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect remote pairing credentials: {error}"
+                ));
+            }
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PAIRING_RECORD_BYTES {
+            return Err("remote pairing credential file is invalid or too large".into());
+        }
+        std::fs::read(path)
+            .map(Some)
+            .map_err(|error| format!("cannot read remote pairing credentials: {error}"))
+    }
+
+    fn save_remote_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() as u64 > MAX_PAIRING_RECORD_BYTES {
+            return Err("remote pairing credentials exceed the storage limit".into());
+        }
+        let directory = &self.directories()?.remote;
+        secure_directory(directory)?;
+        write_private_file(&pairing_path(directory, udid)?, bytes)
+    }
+
+    fn remove_remote_pairing(&self, udid: &str) -> Result<(), String> {
+        let path = pairing_path(&self.directories()?.remote, udid)?;
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("cannot remove remote pairing credentials: {error}")),
         }
     }
 }
@@ -141,7 +206,7 @@ mod tests {
             "devicehub-mask-pairing-removal-{}",
             uuid::Uuid::new_v4()
         ));
-        let store = HostWifiPairingStore::new(directory.clone()).unwrap();
+        let store = HostPairingStore::new(directory.clone()).unwrap();
         let udid = "00008110-0011223344556677";
         store.save(udid, b"pairing").unwrap();
 
@@ -151,5 +216,27 @@ mod tests {
         assert!(store.remove("../outside").is_err());
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn remote_pairing_storage_is_private_idempotent_and_confined() {
+        let base = std::env::temp_dir().join(format!(
+            "devicehub-mask-remote-pairing-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = HostPairingStore::new(base.join("pairings")).unwrap();
+        let udid = "00008110-0011223344556677";
+
+        assert_eq!(store.load_remote_pairing(udid).unwrap(), None);
+        store.save_remote_pairing(udid, b"remote-pairing").unwrap();
+        assert_eq!(
+            store.load_remote_pairing(udid).unwrap(),
+            Some(b"remote-pairing".to_vec())
+        );
+        store.remove_remote_pairing(udid).unwrap();
+        store.remove_remote_pairing(udid).unwrap();
+        assert!(store.remove_remote_pairing("../outside").is_err());
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

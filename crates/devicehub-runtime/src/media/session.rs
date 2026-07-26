@@ -8,10 +8,10 @@ const HEVC_AUD: &[u8] = b"\0\0\0\x01\x46\x01\x50";
 /// Bound compressed video waiting for the WebSocket/WebCodecs publisher.
 /// This is deliberately byte-based: access-unit sizes vary dramatically
 /// between static P-frames and an IRAP.
-pub const HEVC_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const HEVC_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
-pub struct RunningStats {
+pub(crate) struct RunningStats {
     count: u64,
     mean: f64,
     squared_deviations: f64,
@@ -32,7 +32,7 @@ impl Default for RunningStats {
 }
 
 impl RunningStats {
-    pub fn push(&mut self, value: f64) {
+    pub(crate) fn push(&mut self, value: f64) {
         self.count += 1;
         let delta = value - self.mean;
         self.mean += delta / self.count as f64;
@@ -41,38 +41,38 @@ impl RunningStats {
         self.max = self.max.max(value);
     }
 
-    pub fn mean(&self) -> Option<f64> {
+    pub(crate) fn mean(&self) -> Option<f64> {
         (self.count > 0).then_some(self.mean)
     }
 
-    pub fn min(&self) -> Option<f64> {
+    pub(crate) fn min(&self) -> Option<f64> {
         (self.count > 0).then_some(self.min)
     }
 
-    pub fn max(&self) -> Option<f64> {
+    pub(crate) fn max(&self) -> Option<f64> {
         (self.count > 0).then_some(self.max)
     }
 
-    pub fn standard_deviation(&self) -> Option<f64> {
+    pub(crate) fn standard_deviation(&self) -> Option<f64> {
         (self.count > 0).then(|| (self.squared_deviations / self.count as f64).sqrt())
     }
 }
 
 #[derive(Debug)]
-pub struct HevcAccessUnit {
-    pub bytes: Vec<u8>,
-    pub is_irap: bool,
-    pub rtp_timestamp: u32,
+pub(crate) struct HevcAccessUnit {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) is_irap: bool,
+    pub(crate) rtp_timestamp: u32,
 }
 
 #[derive(Debug, Default)]
-pub struct AccessUnitAssembler {
+pub(crate) struct AccessUnitAssembler {
     pending: Vec<u8>,
     pending_timestamp: Option<u32>,
 }
 
 impl AccessUnitAssembler {
-    pub fn push(&mut self, bytes: &[u8], rtp_timestamp: u32) -> Vec<HevcAccessUnit> {
+    pub(crate) fn push(&mut self, bytes: &[u8], rtp_timestamp: u32) -> Vec<HevcAccessUnit> {
         if self.pending.is_empty() {
             self.pending_timestamp = Some(rtp_timestamp);
         }
@@ -101,7 +101,7 @@ impl AccessUnitAssembler {
         completed
     }
 
-    pub fn finish(&mut self) -> Option<HevcAccessUnit> {
+    pub(crate) fn finish(&mut self) -> Option<HevcAccessUnit> {
         if self.pending.is_empty() {
             return None;
         }
@@ -113,20 +113,20 @@ impl AccessUnitAssembler {
         })
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.pending.clear();
         self.pending_timestamp = None;
     }
 }
 
 #[derive(Debug, Default)]
-pub struct RtpVideoClock {
+pub(crate) struct RtpVideoClock {
     last_timestamp: Option<u32>,
     elapsed_ticks: u64,
 }
 
 impl RtpVideoClock {
-    pub fn timestamp_us(&mut self, timestamp: u32) -> u64 {
+    pub(crate) fn timestamp_us(&mut self, timestamp: u32) -> u64 {
         if let Some(previous) = self.last_timestamp {
             let delta = timestamp.wrapping_sub(previous);
             if delta < (1 << 31) {
@@ -145,7 +145,7 @@ struct QueuedHevcAccessUnit {
 }
 
 #[derive(Debug)]
-pub enum HevcQueuePush {
+pub(crate) enum HevcQueuePush {
     Enqueued,
     Dropped,
     NeedsKeyframe {
@@ -173,14 +173,14 @@ struct HevcQueueState {
 }
 
 #[derive(Debug)]
-pub struct HevcQueue {
+pub(crate) struct HevcQueue {
     max_bytes: usize,
     state: Mutex<HevcQueueState>,
     ready: Notify,
 }
 
 impl HevcQueue {
-    pub fn new(max_bytes: usize) -> Self {
+    pub(crate) fn new(max_bytes: usize) -> Self {
         Self {
             max_bytes,
             state: Mutex::new(HevcQueueState {
@@ -199,7 +199,7 @@ impl HevcQueue {
         }
     }
 
-    pub fn push(&self, access_unit: HevcAccessUnit) -> HevcQueuePush {
+    pub(crate) fn push(&self, access_unit: HevcAccessUnit) -> HevcQueuePush {
         let incoming_bytes = access_unit.bytes.len();
         let mut state = self.state.lock().unwrap();
         if state.closed {
@@ -277,7 +277,7 @@ impl HevcQueue {
         HevcQueuePush::Enqueued
     }
 
-    pub fn force_resync(&self) -> (u64, u64) {
+    pub(crate) fn force_resync(&self) -> (u64, u64) {
         let mut state = self.state.lock().unwrap();
         state.dropped_access_units = state
             .dropped_access_units
@@ -291,7 +291,7 @@ impl HevcQueue {
         (state.dropped_access_units, state.dropped_bytes)
     }
 
-    pub async fn pop(&self) -> Option<HevcAccessUnit> {
+    pub(crate) async fn pop(&self) -> Option<HevcAccessUnit> {
         loop {
             let notified = self.ready.notified();
             {
@@ -312,7 +312,7 @@ impl HevcQueue {
         }
     }
 
-    pub fn take_snapshot(&self) -> HevcQueueSnapshot {
+    pub(crate) fn take_snapshot(&self) -> HevcQueueSnapshot {
         let mut state = self.state.lock().unwrap();
         let snapshot = HevcQueueSnapshot {
             queued_access_units: state.access_units.len(),
@@ -333,20 +333,20 @@ impl HevcQueue {
         snapshot
     }
 
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         self.state.lock().unwrap().closed = true;
         self.ready.notify_waiters();
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct HevcQueueSnapshot {
-    pub queued_access_units: usize,
-    pub queued_bytes: usize,
-    pub peak_bytes: usize,
-    pub waiting_for_irap: bool,
-    pub wait_ms: f64,
-    pub wait_max_ms: f64,
+pub(crate) struct HevcQueueSnapshot {
+    pub(crate) queued_access_units: usize,
+    pub(crate) queued_bytes: usize,
+    pub(crate) peak_bytes: usize,
+    pub(crate) waiting_for_irap: bool,
+    pub(crate) wait_ms: f64,
+    pub(crate) wait_max_ms: f64,
 }
 
 pub fn audio_decoder_restart_backoff(attempt: u32) -> Duration {

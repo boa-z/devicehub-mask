@@ -26,7 +26,7 @@ pub struct ScreenCaptureCommand {
     pub reply: oneshot::Sender<Result<Vec<u8>, String>>,
 }
 
-pub struct ScreenCaptureTransport {
+pub(crate) struct ScreenCaptureTransport {
     provider: Arc<dyn IdeviceProvider>,
     connection: ConnKind,
     adapter: AdapterHandle,
@@ -34,7 +34,7 @@ pub struct ScreenCaptureTransport {
 }
 
 impl ScreenCaptureTransport {
-    pub fn new(
+    pub(crate) fn new(
         provider: Arc<dyn IdeviceProvider>,
         connection: ConnKind,
         adapter: AdapterHandle,
@@ -150,7 +150,7 @@ impl NativeScreenCaptureClient {
     }
 }
 
-pub async fn serve_screen_capture(
+pub(crate) async fn serve_screen_capture(
     mut transport: ScreenCaptureTransport,
     mut commands: mpsc::Receiver<ScreenCaptureCommand>,
     mut shutdown: watch::Receiver<bool>,

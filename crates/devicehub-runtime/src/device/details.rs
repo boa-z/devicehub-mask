@@ -13,7 +13,7 @@ use idevice::mobile_image_mounter::ImageMounter;
 use idevice::mobileactivationd::MobileActivationdClient;
 use idevice::provider::IdeviceProvider;
 
-pub async fn read_device_details(
+pub(crate) async fn read_device_details(
     provider: &dyn IdeviceProvider,
     requested_udid: String,
 ) -> Option<DeviceDetails> {
@@ -65,7 +65,7 @@ pub async fn read_device_details(
     })
 }
 
-pub async fn rename_device(
+pub(crate) async fn rename_device(
     provider: &dyn IdeviceProvider,
     requested_name: &str,
 ) -> Result<String, String> {
@@ -113,7 +113,7 @@ pub async fn rename_device(
     Ok(name)
 }
 
-pub async fn read_activation_state(
+pub(crate) async fn read_activation_state(
     provider: &dyn IdeviceProvider,
 ) -> Result<DeviceActivationState, String> {
     let raw = MobileActivationdClient::new(provider)
@@ -125,7 +125,7 @@ pub async fn read_activation_state(
 
 /// Uses AMFI first and preserves the legacy MobileImageMounter fallback for
 /// devices whose AMFI service does not expose the status operation.
-pub async fn read_device_developer_mode_status(
+pub(crate) async fn read_device_developer_mode_status(
     provider: &dyn IdeviceProvider,
 ) -> Result<bool, String> {
     match tokio::time::timeout(
@@ -151,7 +151,9 @@ pub async fn read_device_developer_mode_status(
         .map_err(|error| format!("cannot query developer mode: {error:?}"))
 }
 
-pub async fn read_device_battery(provider: &dyn IdeviceProvider) -> Result<DeviceBattery, String> {
+pub(crate) async fn read_device_battery(
+    provider: &dyn IdeviceProvider,
+) -> Result<DeviceBattery, String> {
     let mut diagnostics = DiagnosticsRelayClient::connect(provider)
         .await
         .map_err(|error| format!("cannot connect diagnostics relay: {error:?}"))?;
@@ -334,6 +336,26 @@ fn normalized_diagnostic_label(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn reads_developer_mode_status_from_hardware() {
+        use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection};
+
+        let mut usbmuxd = UsbmuxdConnection::default().await.expect("connect usbmuxd");
+        let device = usbmuxd
+            .get_devices()
+            .await
+            .expect("list devices")
+            .into_iter()
+            .find(|device| matches!(device.connection_type, Connection::Usb))
+            .expect("connected USB device");
+        let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-details-test");
+        let enabled = read_device_developer_mode_status(&provider)
+            .await
+            .expect("query developer mode");
+        eprintln!("developer mode enabled: {enabled}");
+    }
 
     fn dictionary<const N: usize>(entries: [(&str, plist::Value); N]) -> plist::Dictionary {
         entries

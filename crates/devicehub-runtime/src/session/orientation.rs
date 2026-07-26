@@ -12,13 +12,13 @@ use idevice::{
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-pub struct OrientationWatcher(SpringBoardServicesClient);
+pub(crate) struct OrientationWatcher(SpringBoardServicesClient);
 
 impl OrientationWatcher {
     /// Connect and seed the current interface orientation. Screen streaming can
     /// continue when SpringBoard is unavailable, so absence is represented by
     /// `None` instead of failing the device session.
-    pub async fn connect(
+    pub(crate) async fn connect(
         adapter: &mut AdapterHandle,
         handshake: &mut RsdHandshake,
         view: &OrientationSlot,
@@ -41,7 +41,7 @@ impl OrientationWatcher {
         }
     }
 
-    pub async fn run(mut self, view: OrientationSlot) {
+    pub(crate) async fn run(mut self, view: OrientationSlot) {
         let mut reported_error = false;
         loop {
             match refresh(&mut self.0, &view).await {

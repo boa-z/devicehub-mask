@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::oneshot;
 
-use crate::protocol::{InputCmd, InputSink};
+use crate::device_runtime::{InputCmd, InputSink};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -47,7 +47,7 @@ where
 
 pub(crate) async fn device_crash_reports(
     State(state): State<CrashReportHttpState>,
-) -> Result<Json<crate::protocol::DeviceCrashReportList>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::DeviceCrashReportList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     require_active_session(state.input.try_send(InputCmd::ListCrashReports(reply)))?;
     let reports = await_session_result(response, "crash report list request").await?;
@@ -62,7 +62,7 @@ pub(crate) struct CrashReportSummaryQuery {
 pub(crate) async fn crash_report_summary(
     State(state): State<CrashReportHttpState>,
     Query(query): Query<CrashReportSummaryQuery>,
-) -> Result<Json<crate::protocol::DeviceCrashReportSummary>, (StatusCode, String)> {
+) -> Result<Json<devicehub_core::DeviceCrashReportSummary>, (StatusCode, String)> {
     devicehub_runtime::validate_crash_report_path(&query.device_path)
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
@@ -159,8 +159,8 @@ mod tests {
         let list_request = tokio::spawn(device_crash_reports(State(state.clone())));
         match input_rx.recv().await.unwrap() {
             InputCmd::ListCrashReports(reply) => reply
-                .send(Ok(crate::protocol::DeviceCrashReportList {
-                    reports: vec![crate::protocol::DeviceCrashReport {
+                .send(Ok(devicehub_core::DeviceCrashReportList {
+                    reports: vec![devicehub_core::DeviceCrashReport {
                         path: "/Report.ips".into(),
                         name: "Report.ips".into(),
                         size_bytes: 42,
@@ -248,15 +248,15 @@ mod tests {
         assert_eq!(device_path, "/Report.ips");
         assert_eq!(max_bytes, devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES);
         reply
-            .send(Ok(crate::protocol::DeviceCrashReportContent {
+            .send(Ok(devicehub_core::DeviceCrashReportContent {
                 device_path,
                 size_bytes: 4_096,
                 bytes_read: 128,
                 truncated: false,
                 lossy_utf8: false,
-                summary: crate::protocol::DeviceCrashReportSummary {
-                    format: crate::protocol::CrashReportFormat::IpsJson,
-                    kind: crate::protocol::CrashReportKind::AppCrash,
+                summary: devicehub_core::DeviceCrashReportSummary {
+                    format: devicehub_core::CrashReportFormat::IpsJson,
+                    kind: devicehub_core::CrashReportKind::AppCrash,
                     process_name: Some("Game".into()),
                     bundle_id: Some("com.example.game".into()),
                     app_version: None,

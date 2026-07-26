@@ -97,7 +97,7 @@ impl BrowserVideoSlot {
 
 /// Publishes complete HEVC access units to browser consumers while preserving
 /// source cadence and requesting recovery when an IRAP lacks a readable SPS.
-pub async fn publish_hevc_queue(
+pub(crate) async fn publish_hevc_queue(
     hevc_queue: Arc<HevcQueue>,
     frames: BrowserVideoSlot,
     counters: VideoCounters,
@@ -131,7 +131,7 @@ pub async fn publish_hevc_queue(
 
 /// Converts browser-side resynchronization requests into the session's shared
 /// corruption signal, which the RTCP loop services with PLI and FIR packets.
-pub async fn forward_keyframe_requests(frames: BrowserVideoSlot, corruption: Arc<Notify>) {
+pub(crate) async fn forward_keyframe_requests(frames: BrowserVideoSlot, corruption: Arc<Notify>) {
     loop {
         frames.keyframe_requested().await;
         corruption.notify_one();
@@ -152,7 +152,7 @@ pub fn encode_packet(frame: &BrowserVideoFrame) -> Vec<u8> {
     packet
 }
 
-pub fn hevc_dimensions(access_unit: &[u8]) -> Option<(u16, u16)> {
+pub(crate) fn hevc_dimensions(access_unit: &[u8]) -> Option<(u16, u16)> {
     annexb_nals(access_unit).find_map(|nal| {
         (nal.len() >= 2 && ((nal[0] >> 1) & 0x3f) == 33)
             .then(|| parse_hevc_sps_dimensions(nal))

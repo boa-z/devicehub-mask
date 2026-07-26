@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::protocol::HARDWARE_BUTTON_NAMES;
+use devicehub_core::HARDWARE_BUTTON_NAMES;
 
 #[derive(Clone)]
 pub(crate) struct ProfileHttpState {

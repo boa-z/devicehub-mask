@@ -74,7 +74,7 @@ impl IconCache {
     }
 }
 
-pub async fn serve_app_icons(
+pub(crate) async fn serve_app_icons(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<AppIconCommand>,

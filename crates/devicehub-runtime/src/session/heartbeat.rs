@@ -16,7 +16,7 @@ const HEARTBEAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Keep the Lockdown heartbeat alive until the session shuts down, reconnecting
 /// the service independently when a transient transport failure occurs.
-pub async fn supervise_heartbeat(
+pub(crate) async fn supervise_heartbeat(
     provider: Arc<dyn IdeviceProvider>,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,

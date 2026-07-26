@@ -2,8 +2,8 @@
 
 use serde::Serialize;
 
-use crate::application::ApplicationServices;
-use crate::protocol::{LocationStatus, Orientation};
+use devicehub_core::{LocationStatus, Orientation};
+use devicehub_runtime::RuntimeClient;
 
 #[derive(Serialize)]
 struct DeviceView {
@@ -11,7 +11,7 @@ struct DeviceView {
     udid: String,
     name: String,
     connection: &'static str,
-    pairing: crate::protocol::DevicePairingState,
+    pairing: devicehub_core::DevicePairingState,
 }
 
 #[derive(Serialize)]
@@ -25,7 +25,7 @@ pub(crate) struct StatusView {
     location: LocationStatus,
 }
 
-pub(crate) fn snapshot(application: &ApplicationServices) -> StatusView {
+pub(crate) fn snapshot(application: &RuntimeClient<std::path::PathBuf>) -> StatusView {
     StatusView {
         status: application.status.get(),
         active_udid: application.active.get(),

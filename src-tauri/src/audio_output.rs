@@ -7,7 +7,7 @@ use bytes::Bytes;
 use rodio::{OutputStream, OutputStreamBuilder, Sink, buffer::SamplesBuffer};
 use serde::Serialize;
 
-use crate::protocol::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+use devicehub_core::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 
 const PCM_QUEUE_CAPACITY: usize = 16;
 const MAX_QUEUED_CHUNKS: usize = 12;

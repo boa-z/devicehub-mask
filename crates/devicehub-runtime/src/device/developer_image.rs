@@ -28,7 +28,9 @@ pub fn developer_image_type_for_version(product_version: &str) -> Result<&'stati
 }
 
 /// Reads the device OS version required to choose the image protocol.
-pub async fn read_device_product_version(provider: &dyn IdeviceProvider) -> Result<String, String> {
+pub(crate) async fn read_device_product_version(
+    provider: &dyn IdeviceProvider,
+) -> Result<String, String> {
     let mut lockdown = LockdownClient::connect(provider)
         .await
         .map_err(|error| format!("cannot connect Lockdown: {error:?}"))?;
@@ -41,7 +43,7 @@ pub async fn read_device_product_version(provider: &dyn IdeviceProvider) -> Resu
 }
 
 /// Queries whether the compatible Developer Disk Image is mounted.
-pub async fn is_developer_image_mounted(
+pub(crate) async fn is_developer_image_mounted(
     provider: &dyn IdeviceProvider,
     product_version: &str,
 ) -> Result<bool, String> {
@@ -57,7 +59,7 @@ pub async fn is_developer_image_mounted(
 }
 
 /// Reads the OS version and queries Developer Disk Image readiness in one call.
-pub async fn is_developer_image_mounted_for_device(
+pub(crate) async fn is_developer_image_mounted_for_device(
     provider: &dyn IdeviceProvider,
 ) -> Result<bool, String> {
     let product_version = read_device_product_version(provider).await?;

@@ -17,7 +17,7 @@ struct AacAuHeader {
 
 /// Drains negotiated audio RTP, optionally forwarding RFC 3640 packets to a
 /// local decoder socket while retaining bounded transport diagnostics.
-pub async fn receive_audio_rtp(
+pub(crate) async fn receive_audio_rtp(
     udp: &UdpSocketHandle,
     forwarding: Option<(&tokio::net::UdpSocket, SocketAddr)>,
 ) {

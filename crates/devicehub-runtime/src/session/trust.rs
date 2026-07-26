@@ -24,11 +24,11 @@ const PAIRING_TIMEOUT: Duration = Duration::from_secs(90);
 const FORGET_DEVICE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Host credential cleanup required after device and usbmuxd revocation.
-pub trait PairingCredentialStore {
+pub(crate) trait PairingCredentialStore {
     fn remove_cached_pairing(&mut self, udid: &str) -> Result<(), String>;
 }
 
-pub async fn pair_device(
+pub(crate) async fn pair_device(
     selection_id: &str,
     endpoints: &HashMap<String, SessionEndpoint>,
     status: &StatusSlot,
@@ -49,7 +49,7 @@ pub async fn pair_device(
     }
 }
 
-pub async fn forget_device<Store>(
+pub(crate) async fn forget_device<Store>(
     selection_id: &str,
     endpoints: &HashMap<String, SessionEndpoint>,
     status: &StatusSlot,

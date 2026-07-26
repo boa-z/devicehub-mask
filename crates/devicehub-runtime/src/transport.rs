@@ -9,7 +9,6 @@ mod discovery;
 mod wifi_discovery;
 
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,8 +37,19 @@ pub const WIFI_REAUTHORIZE_REQUIRED: &str = "Wi-Fi control authorization is no l
 
 type WifiPairingClient = RemotePairingClient<RpPairingSocket<tokio::net::TcpStream>>;
 
-pub use discovery::{DeviceDiscovery, MuxSidecar, MuxSidecarFuture};
-pub use wifi_discovery::{StoredWifiPairingRecord, WifiDiscovery, WifiPairingStore};
+pub(crate) use discovery::DeviceDiscovery;
+pub use discovery::{MuxSidecar, MuxSidecarFuture};
+pub(crate) use wifi_discovery::WifiDiscovery;
+pub use wifi_discovery::{StoredWifiPairingRecord, WifiPairingStore};
+
+/// Host persistence for the RemotePairing identity used by CoreDevice Wi-Fi
+/// tunnels. The runtime owns serialization and authorization policy; the host
+/// only stores opaque credential bytes in its platform-appropriate location.
+pub trait RemotePairingStore: Send + Sync + 'static {
+    fn load_remote_pairing(&self, udid: &str) -> Result<Option<Vec<u8>>, String>;
+    fn save_remote_pairing(&self, udid: &str, bytes: &[u8]) -> Result<(), String>;
+    fn remove_remote_pairing(&self, udid: &str) -> Result<(), String>;
+}
 
 #[derive(Clone, Debug)]
 pub struct SystemUsbmuxdConfig {
@@ -49,18 +59,31 @@ pub struct SystemUsbmuxdConfig {
 /// Host-resolved inputs required to establish one CoreDevice tunnel.
 ///
 /// The runtime owns transport policy and credential use, while hosts decide
-/// where the application-confined pairing directory lives and whether a
-/// non-default system usbmuxd endpoint was configured.
-#[derive(Clone, Debug)]
+/// how credentials are persisted and whether a non-default system usbmuxd
+/// endpoint was configured.
+#[derive(Clone)]
 pub struct CoreTunnelConfig {
-    pairing_dir: PathBuf,
+    remote_pairings: Arc<dyn RemotePairingStore>,
     system_usbmuxd: SystemUsbmuxdConfig,
 }
 
+impl std::fmt::Debug for CoreTunnelConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CoreTunnelConfig")
+            .field("remote_pairings", &"host adapter")
+            .field("system_usbmuxd", &self.system_usbmuxd)
+            .finish()
+    }
+}
+
 impl CoreTunnelConfig {
-    pub fn from_host(pairing_dir: PathBuf, system_usbmuxd: SystemUsbmuxdConfig) -> Self {
+    pub fn from_host<Store>(remote_pairings: Store, system_usbmuxd: SystemUsbmuxdConfig) -> Self
+    where
+        Store: RemotePairingStore,
+    {
         Self {
-            pairing_dir,
+            remote_pairings: Arc::new(remote_pairings),
             system_usbmuxd,
         }
     }
@@ -74,7 +97,7 @@ impl CoreTunnelConfig {
         connect_core_tunnel(
             endpoint,
             provider,
-            &self.pairing_dir,
+            self.remote_pairings.as_ref(),
             status,
             &self.system_usbmuxd,
         )
@@ -86,7 +109,7 @@ impl CoreTunnelConfig {
     }
 
     pub(crate) fn remove_remote_pairing_credentials(&self, udid: &str) -> Result<(), String> {
-        remove_remote_pairing_credentials(&self.pairing_dir, udid)
+        self.remote_pairings.remove_remote_pairing(udid)
     }
 }
 
@@ -97,7 +120,7 @@ impl SystemUsbmuxdConfig {
         }
     }
 
-    pub fn address(&self) -> Result<UsbmuxdAddr, String> {
+    pub(crate) fn address(&self) -> Result<UsbmuxdAddr, String> {
         self.address.clone()
     }
 }
@@ -163,37 +186,37 @@ impl WifiPairingVerificationError {
 }
 
 #[derive(Clone, Debug)]
-pub struct WifiEndpoint {
-    pub udid: String,
-    pub address: IpAddr,
-    pub scope_id: Option<u32>,
-    pub remote_pairing_address: IpAddr,
-    pub remote_pairing_scope_id: Option<u32>,
-    pub remote_pairing_port: u16,
-    pub pairing_file: idevice::pairing_file::PairingFile,
+pub(crate) struct WifiEndpoint {
+    pub(crate) udid: String,
+    pub(crate) address: IpAddr,
+    pub(crate) scope_id: Option<u32>,
+    pub(crate) remote_pairing_address: IpAddr,
+    pub(crate) remote_pairing_scope_id: Option<u32>,
+    pub(crate) remote_pairing_port: u16,
+    pub(crate) pairing_file: idevice::pairing_file::PairingFile,
 }
 
 #[derive(Clone, Debug)]
-pub struct UsbmuxdEndpoint {
-    pub device: UsbmuxdDevice,
-    pub address: UsbmuxdAddr,
+pub(crate) struct UsbmuxdEndpoint {
+    pub(crate) device: UsbmuxdDevice,
+    pub(crate) address: UsbmuxdAddr,
 }
 
 #[derive(Clone, Debug)]
-pub enum SessionEndpoint {
+pub(crate) enum SessionEndpoint {
     Usbmuxd(Box<UsbmuxdEndpoint>),
     Wifi(Box<WifiEndpoint>),
 }
 
 impl SessionEndpoint {
-    pub fn udid(&self) -> &str {
+    pub(crate) fn udid(&self) -> &str {
         match self {
             Self::Usbmuxd(endpoint) => &endpoint.device.udid,
             Self::Wifi(endpoint) => &endpoint.udid,
         }
     }
 
-    pub fn connection(&self) -> ConnKind {
+    pub(crate) fn connection(&self) -> ConnKind {
         match self {
             Self::Usbmuxd(endpoint) => connection_kind(&endpoint.device.connection_type),
             Self::Wifi(_) => ConnKind::Network,
@@ -203,7 +226,7 @@ impl SessionEndpoint {
 
 /// Build exactly the provider represented by the picker selection. Transport
 /// fallback belongs to discovery/reconnection and must not happen implicitly.
-pub async fn connect_provider(
+pub(crate) async fn connect_provider(
     endpoint: SessionEndpoint,
 ) -> Result<(Arc<dyn IdeviceProvider>, ConnKind), String> {
     let udid = endpoint.udid().to_owned();
@@ -224,7 +247,7 @@ pub async fn connect_provider(
     Ok((provider, connection))
 }
 
-pub fn connection_priority(connection: &Connection) -> u8 {
+pub(crate) fn connection_priority(connection: &Connection) -> u8 {
     match connection {
         Connection::Usb => 0,
         Connection::Network(_) => 1,
@@ -232,11 +255,11 @@ pub fn connection_priority(connection: &Connection) -> u8 {
     }
 }
 
-pub fn uses_usbmuxd_core_proxy(connection: &Connection) -> bool {
+pub(crate) fn uses_usbmuxd_core_proxy(connection: &Connection) -> bool {
     matches!(connection, Connection::Usb)
 }
 
-pub fn connection_kind(connection: &Connection) -> ConnKind {
+pub(crate) fn connection_kind(connection: &Connection) -> ConnKind {
     match connection {
         Connection::Network(_) => ConnKind::Network,
         Connection::Usb => ConnKind::Usb,
@@ -244,7 +267,7 @@ pub fn connection_kind(connection: &Connection) -> ConnKind {
     }
 }
 
-pub fn connection_kind_priority(connection: ConnKind) -> u8 {
+pub(crate) fn connection_kind_priority(connection: ConnKind) -> u8 {
     match connection {
         ConnKind::Usb => 0,
         ConnKind::Network => 1,
@@ -252,7 +275,7 @@ pub fn connection_kind_priority(connection: ConnKind) -> u8 {
     }
 }
 
-pub fn resolve_device_selection(requested: &str, devices: &[DeviceInfo]) -> Option<String> {
+pub(crate) fn resolve_device_selection(requested: &str, devices: &[DeviceInfo]) -> Option<String> {
     devices
         .iter()
         .find(|device| device.id == requested)
@@ -265,22 +288,7 @@ pub fn resolve_device_selection(requested: &str, devices: &[DeviceInfo]) -> Opti
         .map(|device| device.id.clone())
 }
 
-pub fn select_preferred_usbmuxd_device(
-    devices: Vec<UsbmuxdDevice>,
-    udid: Option<&str>,
-) -> Option<UsbmuxdDevice> {
-    devices
-        .into_iter()
-        .filter(|device| udid.is_none_or(|wanted| device.udid == wanted))
-        .min_by_key(|device| {
-            (
-                connection_priority(&device.connection_type),
-                device.device_id,
-            )
-        })
-}
-
-pub fn wifi_provider(endpoint: &WifiEndpoint) -> TcpProvider {
+pub(crate) fn wifi_provider(endpoint: &WifiEndpoint) -> TcpProvider {
     TcpProvider {
         addr: endpoint.address,
         scope_id: endpoint.scope_id,
@@ -292,17 +300,17 @@ pub fn wifi_provider(endpoint: &WifiEndpoint) -> TcpProvider {
 /// Build the RSD tunnel matching the already-selected endpoint. The returned
 /// adapter and handshake are cloneable capabilities consumed by device services;
 /// their lifetime is still supervised by the parent session.
-pub async fn connect_core_tunnel(
+pub(crate) async fn connect_core_tunnel(
     endpoint: &SessionEndpoint,
     provider: &dyn IdeviceProvider,
-    pairing_dir: &Path,
+    remote_pairings: &dyn RemotePairingStore,
     status: &StatusSlot,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<(AdapterHandle, RsdHandshake), String> {
     match endpoint {
         SessionEndpoint::Usbmuxd(_) => connect_usb_core_tunnel(provider).await,
         SessionEndpoint::Wifi(endpoint) => {
-            connect_wifi_core_tunnel(endpoint, pairing_dir, status, system_usbmuxd).await
+            connect_wifi_core_tunnel(endpoint, remote_pairings, status, system_usbmuxd).await
         }
     }
 }
@@ -330,7 +338,7 @@ async fn connect_usb_core_tunnel(
 
 async fn connect_wifi_core_tunnel(
     endpoint: &WifiEndpoint,
-    pairing_dir: &Path,
+    remote_pairings: &dyn RemotePairingStore,
     status: &StatusSlot,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<(AdapterHandle, RsdHandshake), String> {
@@ -338,25 +346,19 @@ async fn connect_wifi_core_tunnel(
     // subsequent network sessions. Missing credentials are the only condition
     // that starts interactive authorization; transport errors must not erase or
     // silently replace an existing identity.
-    let pairing_path = remote_pairing_path(pairing_dir, &endpoint.udid)?;
-    let mut pairing_file = match RpPairingFile::read_from_file(&pairing_path).await {
-        Ok(pairing_file) => pairing_file,
-        Err(_) => {
-            status.set("unlock the device and approve Wi-Fi control...");
-            tracing::info!(
-                device_id = %device_id_fingerprint(&endpoint.udid),
-                "remote pairing credentials missing; authorizing over USB"
-            );
-            tokio::time::timeout(
-                INITIAL_WIFI_PAIRING_TIMEOUT,
-                pair_remote_via_usb(&endpoint.udid, &pairing_path, system_usbmuxd),
-            )
-            .await
-            .map_err(|_| {
-                "initial Wi-Fi authorization timed out; unlock the device and accept its trust prompt"
-                    .to_string()
-            })??
-        }
+    let mut pairing_file = match remote_pairings.load_remote_pairing(&endpoint.udid)? {
+        Some(bytes) => match RpPairingFile::from_bytes(&bytes) {
+            Ok(pairing_file) => pairing_file,
+            Err(error) => {
+                tracing::warn!(
+                    device_id = %device_id_fingerprint(&endpoint.udid),
+                    ?error,
+                    "remote pairing credentials are invalid; authorizing again"
+                );
+                authorize_remote_pairing(endpoint, remote_pairings, status, system_usbmuxd).await?
+            }
+        },
+        None => authorize_remote_pairing(endpoint, remote_pairings, status, system_usbmuxd).await?,
     };
     status.set("verifying Wi-Fi control authorization...");
     let address = scoped_socket_addr(
@@ -450,6 +452,28 @@ async fn connect_wifi_core_tunnel(
     Ok((adapter, handshake))
 }
 
+async fn authorize_remote_pairing(
+    endpoint: &WifiEndpoint,
+    remote_pairings: &dyn RemotePairingStore,
+    status: &StatusSlot,
+    system_usbmuxd: &SystemUsbmuxdConfig,
+) -> Result<RpPairingFile, String> {
+    status.set("unlock the device and approve Wi-Fi control...");
+    tracing::info!(
+        device_id = %device_id_fingerprint(&endpoint.udid),
+        "remote pairing credentials missing; authorizing over USB"
+    );
+    tokio::time::timeout(
+        INITIAL_WIFI_PAIRING_TIMEOUT,
+        pair_remote_via_usb(&endpoint.udid, remote_pairings, system_usbmuxd),
+    )
+    .await
+    .map_err(|_| {
+        "initial Wi-Fi authorization timed out; unlock the device and accept its trust prompt"
+            .to_string()
+    })?
+}
+
 async fn verify_remote_pairing_once(
     address: std::net::SocketAddr,
     pairing_file: &mut RpPairingFile,
@@ -475,7 +499,7 @@ async fn verify_remote_pairing_once(
 
 async fn pair_remote_via_usb(
     udid: &str,
-    path: &Path,
+    remote_pairings: &dyn RemotePairingStore,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<RpPairingFile, String> {
     // This is authorization for future Wi-Fi control, not normal USB session
@@ -530,47 +554,12 @@ async fn pair_remote_via_usb(
         .connect(&mut pairing_file, async || "000000".to_string())
         .await
         .map_err(|error| format!("USB remote pairing failed: {error:?}"))?;
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("cannot create remote pairing directory: {error}"))?;
-    }
-    pairing_file
-        .write_to_file(path)
-        .await
-        .map_err(|error| format!("cannot save remote pairing credentials: {error:?}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("cannot secure remote pairing credentials: {error}"))?;
-    }
+    remote_pairings.save_remote_pairing(udid, &pairing_file.to_bytes())?;
     tracing::info!(
         device_id = %device_id_fingerprint(udid),
         "created remote pairing credentials over USB"
     );
     Ok(pairing_file)
-}
-
-fn remote_pairing_path(pairing_dir: &Path, udid: &str) -> Result<PathBuf, String> {
-    if udid.is_empty()
-        || !udid
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
-        return Err("device UDID contains unsupported characters".into());
-    }
-    let base = pairing_dir.parent().unwrap_or(pairing_dir);
-    Ok(base.join("remote-pairings").join(format!("{udid}.plist")))
-}
-
-pub fn remove_remote_pairing_credentials(pairing_dir: &Path, udid: &str) -> Result<(), String> {
-    let path = remote_pairing_path(pairing_dir, udid)?;
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("cannot remove remote pairing credentials: {error}")),
-    }
 }
 
 fn scoped_socket_addr(
@@ -591,14 +580,11 @@ fn scoped_socket_addr(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use idevice::usbmuxd::Connection;
 
     use super::{
         WIFI_REAUTHORIZE_REQUIRED, WifiPairingVerificationError, parse_system_usbmuxd_address,
-        remote_pairing_path, remove_remote_pairing_credentials, resolve_device_selection,
-        uses_usbmuxd_core_proxy,
+        resolve_device_selection, uses_usbmuxd_core_proxy,
     };
     use devicehub_core::{ConnKind, DeviceInfo, DevicePairingState, device_selector};
     use idevice::IdeviceError;
@@ -665,20 +651,6 @@ mod tests {
     }
 
     #[test]
-    fn remote_pairing_credentials_stay_inside_application_data() {
-        let pairing_dir = Path::new("app-data").join("pairings");
-        assert_eq!(
-            remote_pairing_path(&pairing_dir, "00008030-001905C02106402E").unwrap(),
-            Path::new("app-data")
-                .join("remote-pairings")
-                .join("00008030-001905C02106402E.plist")
-        );
-        assert!(remote_pairing_path(&pairing_dir, "../outside").is_err());
-        assert!(remote_pairing_path(&pairing_dir, "phone/plist").is_err());
-        assert!(remote_pairing_path(&pairing_dir, "").is_err());
-    }
-
-    #[test]
     fn transient_remote_pairing_disconnects_are_retryable() {
         for kind in [
             std::io::ErrorKind::UnexpectedEof,
@@ -704,26 +676,5 @@ mod tests {
         ));
         assert!(!error.is_transient());
         assert_eq!(error.user_message(), WIFI_REAUTHORIZE_REQUIRED);
-    }
-
-    #[test]
-    fn removing_remote_pairing_credentials_is_idempotent_and_confined() {
-        let base = std::env::temp_dir().join(format!(
-            "devicehub-mask-remote-pairing-removal-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let pairing_dir = base.join("pairings");
-        let remote_dir = base.join("remote-pairings");
-        std::fs::create_dir_all(&remote_dir).unwrap();
-        let udid = "00008110-0011223344556677";
-        let path = remote_dir.join(format!("{udid}.plist"));
-        std::fs::write(&path, b"private credentials").unwrap();
-
-        remove_remote_pairing_credentials(&pairing_dir, udid).unwrap();
-        assert!(!path.exists());
-        remove_remote_pairing_credentials(&pairing_dir, udid).unwrap();
-        assert!(remove_remote_pairing_credentials(&pairing_dir, "../outside").is_err());
-
-        std::fs::remove_dir_all(base).unwrap();
     }
 }

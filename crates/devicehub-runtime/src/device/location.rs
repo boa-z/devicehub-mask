@@ -296,7 +296,7 @@ async fn run_backend<B: LocationOperations>(
     BackendExit::Stopped
 }
 
-pub async fn supervise_location(
+pub(crate) async fn supervise_location(
     adapter: AdapterHandle,
     handshake: RsdHandshake,
     provider: Arc<dyn IdeviceProvider>,

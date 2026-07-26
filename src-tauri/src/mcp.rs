@@ -20,20 +20,18 @@ use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
-use crate::application::ApplicationServices;
 #[cfg(test)]
-use crate::application::{DeviceControlService, DeviceStateSlots, ObservabilitySlots};
-use crate::domain::hardware_button;
+use crate::device_runtime::InputSink;
+use crate::device_runtime::{ControlCmd, InputCmd};
+use devicehub_core::hardware_button;
 #[cfg(test)]
-use crate::protocol::{
-    ActiveSlot, DeviceListSlot, ErrorSlot, InputSink, LocationStatusSlot, OrientationSlot,
-    StatusSlot,
+use devicehub_core::{
+    ActiveSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot, StatusSlot,
 };
-use crate::protocol::{
-    ControlCmd, InputCmd, Orientation, RotateDir, norm, unrotate_norm, validate_paste_text,
-};
+use devicehub_core::{Orientation, RotateDir, norm, unrotate_norm, validate_paste_text};
 #[cfg(test)]
 use devicehub_runtime::DeviceEventSlot;
+use devicehub_runtime::RuntimeClient;
 use devicehub_runtime::{DeviceInputCommand, TouchContact};
 #[cfg(test)]
 use devicehub_runtime::{DeviceLogDemand, DeviceLogSlot};
@@ -88,7 +86,7 @@ struct McpObservability {
 
 #[derive(Clone)]
 struct DeviceHub {
-    application: ApplicationServices,
+    application: RuntimeClient<std::path::PathBuf>,
     last_image: Arc<Mutex<Option<(u32, u32)>>>,
     gesture_lock: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<DeviceHub>,
@@ -735,29 +733,27 @@ impl DeviceHub {
             device_logs,
             device_log_demand,
         } = observability;
-        Self::new_with_service(ApplicationServices::new(
-            DeviceControlService::new(browser_frames, input),
-            DeviceStateSlots {
-                orientation,
-                devices,
-                active,
-                error,
-                status,
-                location,
-            },
-            ObservabilitySlots {
-                device_events,
-                device_conditions,
-                performance,
-                performance_demand,
-                device_logs,
-                device_log_demand,
-            },
-            control,
-        ))
+        let state = devicehub_runtime::CoreRuntimeState::<std::path::PathBuf> {
+            browser_frames,
+            commands: input,
+            orientation,
+            devices,
+            active,
+            error,
+            status,
+            location,
+            device_events,
+            device_conditions,
+            performance,
+            performance_demand,
+            device_logs,
+            device_log_demand,
+            ..Default::default()
+        };
+        Self::new_with_service(state.client(control))
     }
 
-    fn new_with_service(application: ApplicationServices) -> Self {
+    fn new_with_service(application: RuntimeClient<std::path::PathBuf>) -> Self {
         Self {
             application,
             last_image: Arc::new(Mutex::new(None)),
@@ -2259,7 +2255,7 @@ impl DeviceHub {
             .find(|device| device.id == udid)
             .or_else(|| devices.iter().find(|device| device.udid == udid));
         if selected
-            .is_some_and(|device| device.pairing == crate::protocol::DevicePairingState::Unpaired)
+            .is_some_and(|device| device.pairing == devicehub_core::DevicePairingState::Unpaired)
         {
             return ok_text(
                 "This USB device has not trusted the computer. Complete pairing from the DeviceHub Mask desktop device picker first.",
@@ -2586,7 +2582,7 @@ impl ServerHandler for DeviceHub {
     }
 }
 
-pub async fn serve(application: ApplicationServices) {
+pub async fn serve(application: RuntimeClient<std::path::PathBuf>) {
     let address = std::env::var("DEVICEHUB_MCP_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
     if !address.starts_with("127.0.0.1:")
         && !address.starts_with("[::1]:")
@@ -2630,8 +2626,8 @@ mod tests {
         transport::StreamableHttpClientTransport,
     };
 
-    fn test_device_details() -> crate::protocol::DeviceDetails {
-        crate::protocol::DeviceDetails {
+    fn test_device_details() -> devicehub_core::DeviceDetails {
+        devicehub_core::DeviceDetails {
             udid: "private-udid".into(),
             name: "Test iPhone".into(),
             product_type: "iPhone14,3".into(),
@@ -2647,16 +2643,16 @@ mod tests {
             ecid: Some("123456789".into()),
             total_disk_capacity: Some(256_000_000_000),
             storage: None,
-            activation_state: Some(crate::protocol::DeviceActivationState::Activated),
+            activation_state: Some(devicehub_core::DeviceActivationState::Activated),
             developer_mode_enabled: Some(true),
             developer_image_mounted: Some(true),
-            regional_settings: Some(crate::protocol::DeviceRegionalSettings {
+            regional_settings: Some(devicehub_core::DeviceRegionalSettings {
                 language: Some("zh-Hant".into()),
                 locale: Some("zh_TW".into()),
                 time_zone: Some("Asia/Taipei".into()),
                 uses_24_hour_clock: Some(true),
             }),
-            battery: Some(crate::protocol::DeviceBattery {
+            battery: Some(devicehub_core::DeviceBattery {
                 level_percent: Some(78),
                 temperature_celsius: Some(31.5),
                 is_charging: Some(true),
@@ -2766,19 +2762,19 @@ mod tests {
     async fn device_list_distinguishes_usb_and_wifi_transports() {
         let devices = DeviceListSlot::default();
         devices.set(vec![
-            crate::protocol::DeviceInfo {
+            devicehub_core::DeviceInfo {
                 id: "phone::usb".into(),
                 udid: "phone".into(),
                 name: "iPhone".into(),
-                connection: crate::protocol::ConnKind::Usb,
-                pairing: crate::protocol::DevicePairingState::Unpaired,
+                connection: devicehub_core::ConnKind::Usb,
+                pairing: devicehub_core::DevicePairingState::Unpaired,
             },
-            crate::protocol::DeviceInfo {
+            devicehub_core::DeviceInfo {
                 id: "phone::wifi".into(),
                 udid: "phone".into(),
                 name: "iPhone".into(),
-                connection: crate::protocol::ConnKind::Network,
-                pairing: crate::protocol::DevicePairingState::NotApplicable,
+                connection: devicehub_core::ConnKind::Network,
+                pairing: devicehub_core::DevicePairingState::NotApplicable,
             },
         ]);
         let active = ActiveSlot::default();
@@ -2885,7 +2881,7 @@ mod tests {
             panic!("expected companion device command");
         };
         reply
-            .send(Ok(vec![crate::domain::CompanionDevice {
+            .send(Ok(vec![devicehub_core::CompanionDevice {
                 identifier: "watch-id".into(),
                 name: Some("Test Watch".into()),
                 product_type: Some("Watch7,5".into()),
@@ -2928,8 +2924,8 @@ mod tests {
             panic!("expected running process command");
         };
         reply
-            .send(Ok(crate::domain::RunningProcessList {
-                processes: vec![crate::domain::RunningProcess {
+            .send(Ok(devicehub_core::RunningProcessList {
+                processes: vec![devicehub_core::RunningProcess {
                     pid: 42,
                     name: "Example".into(),
                     app_name: Some("Example App".into()),
@@ -2984,7 +2980,7 @@ mod tests {
         };
         assert_eq!(pid, 42);
         reply
-            .send(Ok(crate::domain::RunningProcessStatus {
+            .send(Ok(devicehub_core::RunningProcessStatus {
                 pid,
                 running: true,
                 executable_name: Some("Example".into()),
@@ -3034,11 +3030,11 @@ mod tests {
         assert!(!expected_running);
         assert_eq!(timeout_ms, 500);
         reply
-            .send(Ok(crate::domain::RunningProcessWaitResult {
+            .send(Ok(devicehub_core::RunningProcessWaitResult {
                 condition_met: true,
                 expected_running,
                 elapsed_ms: 250,
-                process: crate::domain::RunningProcessStatus {
+                process: devicehub_core::RunningProcessStatus {
                     pid,
                     running: false,
                     executable_name: None,
@@ -3090,7 +3086,7 @@ mod tests {
         };
         assert_eq!(bundle_id, "com.example.game");
         reply
-            .send(Ok(crate::domain::AppLifecycleStatus {
+            .send(Ok(devicehub_core::AppLifecycleStatus {
                 bundle_id,
                 installed: true,
                 running: true,
@@ -3142,11 +3138,11 @@ mod tests {
         assert!(!expected_running);
         assert_eq!(timeout_ms, 500);
         reply
-            .send(Ok(crate::domain::AppLifecycleWaitResult {
+            .send(Ok(devicehub_core::AppLifecycleWaitResult {
                 condition_met: true,
                 expected_running,
                 elapsed_ms: 250,
-                app: crate::domain::AppLifecycleStatus {
+                app: devicehub_core::AppLifecycleStatus {
                     bundle_id,
                     installed: true,
                     running: false,
@@ -3215,17 +3211,17 @@ mod tests {
             panic!("expected home screen command");
         };
         reply
-            .send(Ok(crate::domain::HomeScreenLayout {
-                apps: vec![crate::domain::HomeScreenAppLocation {
+            .send(Ok(devicehub_core::HomeScreenLayout {
+                apps: vec![devicehub_core::HomeScreenAppLocation {
                     bundle_id: "com.example.game".into(),
                     name: Some("Game".into()),
-                    container: crate::domain::HomeScreenContainer::Dock,
+                    container: devicehub_core::HomeScreenContainer::Dock,
                     page: None,
                     position: 2,
                     folders: Vec::new(),
                 }],
                 page_count: 3,
-                metrics: Some(crate::domain::HomeScreenIconMetrics {
+                metrics: Some(devicehub_core::HomeScreenIconMetrics {
                     screen_width: Some(810),
                     screen_height: Some(1080),
                     icon_width: Some(68),
@@ -3870,7 +3866,7 @@ mod tests {
         let observability = McpObservability::default();
         observability
             .device_events
-            .publish(crate::domain::DeviceEventKind::AppInstalled);
+            .publish(devicehub_core::DeviceEventKind::AppInstalled);
         let (control, _control_rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = DeviceHub::new(
             crate::browser_video::BrowserVideoSlot::default(),
@@ -3911,7 +3907,7 @@ mod tests {
         tokio::task::yield_now().await;
         observability
             .device_events
-            .publish(crate::domain::DeviceEventKind::RegionalSettingsChanged);
+            .publish(devicehub_core::DeviceEventKind::RegionalSettingsChanged);
         let future = waiter.await.unwrap();
         assert!(future.content.iter().any(|content| {
             content
@@ -3941,11 +3937,11 @@ mod tests {
         let observability = McpObservability::default();
         observability
             .device_conditions
-            .set(crate::domain::DeviceConditionStatus {
+            .set(devicehub_core::DeviceConditionStatus {
                 available: true,
-                groups: vec![crate::domain::DeviceConditionGroup {
+                groups: vec![devicehub_core::DeviceConditionGroup {
                     identifier: "Network".into(),
-                    profiles: vec![crate::domain::DeviceConditionProfile {
+                    profiles: vec![devicehub_core::DeviceConditionProfile {
                         identifier: "LTE".into(),
                         description: "LTE profile".into(),
                     }],
@@ -4109,15 +4105,15 @@ mod tests {
             panic!("expected crash report list command");
         };
         reply
-            .send(Ok(crate::protocol::DeviceCrashReportList {
+            .send(Ok(devicehub_core::DeviceCrashReportList {
                 reports: vec![
-                    crate::protocol::DeviceCrashReport {
+                    devicehub_core::DeviceCrashReport {
                         path: "/Game-2026-07-24.ips".into(),
                         name: "Game-2026-07-24.ips".into(),
                         size_bytes: 4096,
                         modified: "2026-07-24T10:00:00Z".into(),
                     },
-                    crate::protocol::DeviceCrashReport {
+                    devicehub_core::DeviceCrashReport {
                         path: "/Other-2026-07-24.ips".into(),
                         name: "Other-2026-07-24.ips".into(),
                         size_bytes: 2048,
@@ -4157,15 +4153,15 @@ mod tests {
         assert_eq!(device_path, "/Game-2026-07-24.ips");
         assert_eq!(max_bytes, 4096);
         reply
-            .send(Ok(crate::protocol::DeviceCrashReportContent {
+            .send(Ok(devicehub_core::DeviceCrashReportContent {
                 device_path,
                 size_bytes: 4096,
                 bytes_read: 24,
                 truncated: true,
                 lossy_utf8: false,
-                summary: crate::protocol::DeviceCrashReportSummary {
-                    format: crate::protocol::CrashReportFormat::LegacyText,
-                    kind: crate::protocol::CrashReportKind::AppCrash,
+                summary: devicehub_core::DeviceCrashReportSummary {
+                    format: devicehub_core::CrashReportFormat::LegacyText,
+                    kind: devicehub_core::CrashReportKind::AppCrash,
                     process_name: Some("Game".into()),
                     bundle_id: Some("com.example.game".into()),
                     app_version: None,
