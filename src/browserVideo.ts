@@ -338,7 +338,6 @@ function decoderCandidates(codec: string, width: number, height: number): VideoD
       codedWidth: width,
       codedHeight: height,
       hardwareAcceleration: "prefer-hardware" as HardwareAcceleration,
-      optimizeForLatency: true,
     },
     {
       codec: candidateCodec,

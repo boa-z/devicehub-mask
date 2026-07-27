@@ -192,9 +192,10 @@ describe("browser video decoder recovery", () => {
     decoder.close();
   });
 
-  it("retries a simpler configuration when configure rejects a supported candidate", async () => {
+  it("uses the reference hardware configuration before a generic fallback", async () => {
     class InconsistentVideoDecoder {
       static instances: InconsistentVideoDecoder[] = [];
+      static configurations: VideoDecoderConfig[] = [];
       static async isConfigSupported(config: VideoDecoderConfig) {
         return { supported: true, config };
       }
@@ -208,7 +209,10 @@ describe("browser video decoder recovery", () => {
       }
 
       configure(config: VideoDecoderConfig) {
-        if (config.optimizeForLatency) throw new DOMException("Unsupported configuration", "OperationError");
+        InconsistentVideoDecoder.configurations.push(config);
+        if (config.hardwareAcceleration === "prefer-hardware") {
+          throw new DOMException("Unsupported configuration", "OperationError");
+        }
         this.state = "configured";
       }
 
@@ -239,6 +243,13 @@ describe("browser video decoder recovery", () => {
 
     await vi.waitFor(() => expect(InconsistentVideoDecoder.instances[1]?.decodeCalls).toBe(1));
     expect(InconsistentVideoDecoder.instances).toHaveLength(2);
+    expect(InconsistentVideoDecoder.configurations[0]).toMatchObject({
+      hardwareAcceleration: "prefer-hardware",
+    });
+    expect(InconsistentVideoDecoder.configurations[0]?.optimizeForLatency).toBeUndefined();
+    expect(InconsistentVideoDecoder.configurations[1]).toMatchObject({
+      hardwareAcceleration: "no-preference",
+    });
     expect(fatal).not.toHaveBeenCalled();
     decoder.close();
   });
