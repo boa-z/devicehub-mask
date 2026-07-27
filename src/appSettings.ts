@@ -35,12 +35,12 @@ export function setAudioPlayback(muted: boolean, volume: number) {
 
 export function readAudioOutputStatus() {
   if (runningInDesktopHost()) return invoke<AudioOutputStatus>("audio_output_status");
-  return Promise.resolve<AudioOutputStatus>({
-    state: "unavailable",
-    muted: false,
-    volume: 0,
+  return readAppSettings().then<AudioOutputStatus>((settings) => ({
+    state: settings.audio_enabled ? "running" : "idle",
+    muted: settings.audio_muted,
+    volume: settings.audio_volume,
     dropped_chunks: 0,
-  });
+  }));
 }
 
 export function setClipboardSyncEnabled(enabled: boolean) {

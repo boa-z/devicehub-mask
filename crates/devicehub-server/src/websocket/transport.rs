@@ -15,6 +15,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::json;
+use tokio::sync::broadcast;
 
 use super::input::{ClientVideoFeedback, handle_client_message, send_all_up};
 use crate::status;
@@ -26,6 +27,39 @@ use devicehub_runtime::{
 
 const DEFAULT_MAX_IN_FLIGHT_FRAMES: usize = 8;
 const MAX_IN_FLIGHT_FRAMES: usize = 8;
+const AUDIO_CHANNEL_CAPACITY: usize = 16;
+const AUDIO_PACKET_HEADER_BYTES: usize = 12;
+const AUDIO_PACKET_MAGIC: &[u8; 4] = b"DHA1";
+
+#[derive(Clone)]
+pub struct BrowserAudioSlot(broadcast::Sender<bytes::Bytes>);
+
+impl Default for BrowserAudioSlot {
+    fn default() -> Self {
+        let (sender, _) = broadcast::channel(AUDIO_CHANNEL_CAPACITY);
+        Self(sender)
+    }
+}
+
+impl BrowserAudioSlot {
+    pub fn publish(&self, pcm: bytes::Bytes) {
+        let _ = self.0.send(pcm);
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<bytes::Bytes> {
+        self.0.subscribe()
+    }
+}
+
+fn encode_audio_packet(pcm: &[u8]) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(AUDIO_PACKET_HEADER_BYTES + pcm.len());
+    packet.extend_from_slice(AUDIO_PACKET_MAGIC);
+    packet.extend_from_slice(&devicehub_core::AUDIO_SAMPLE_RATE.to_be_bytes());
+    packet.extend_from_slice(&u16::from(devicehub_core::AUDIO_CHANNELS).to_be_bytes());
+    packet.extend_from_slice(&0_u16.to_be_bytes());
+    packet.extend_from_slice(pcm);
+    packet
+}
 
 /// Explicit host configuration for one WebSocket transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,10 +89,15 @@ pub struct WebSocketState {
     video_counters: VideoCounters,
     input: InputSink<std::path::PathBuf>,
     config: WebSocketConfig,
+    browser_audio: Option<BrowserAudioSlot>,
 }
 
 impl WebSocketState {
-    pub fn new(application: RuntimeClient<std::path::PathBuf>, config: WebSocketConfig) -> Self {
+    pub fn new(
+        application: RuntimeClient<std::path::PathBuf>,
+        config: WebSocketConfig,
+        browser_audio: Option<BrowserAudioSlot>,
+    ) -> Self {
         let browser_frames = application.device.browser_frames.clone();
         let clipboard = application.device.clipboard.clone();
         let video_counters = application.device.video_counters.clone();
@@ -70,6 +109,7 @@ impl WebSocketState {
             video_counters,
             input,
             config,
+            browser_audio,
         }
     }
 }
@@ -127,6 +167,10 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         let mut browser_frame_rx = send_state.browser_frames.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
         let mut device_event_rx = send_state.application.device.device_events.subscribe();
+        let mut browser_audio_rx = send_state
+            .browser_audio
+            .as_ref()
+            .map(BrowserAudioSlot::subscribe);
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
@@ -259,6 +303,26 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
+                audio = async {
+                    match browser_audio_rx.as_mut() {
+                        Some(receiver) => receiver.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match audio {
+                        Ok(pcm) => {
+                            if sender.send(Message::Binary(encode_audio_packet(&pcm).into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::debug!(skipped, "browser audio client skipped stale PCM chunks");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            browser_audio_rx = None;
+                        }
+                    }
+                }
                 _ = metrics_tick.tick() => {
                     let elapsed = metrics_started.elapsed().as_secs_f64().max(f64::EPSILON);
                     let counters = send_state.video_counters.snapshot();
@@ -368,7 +432,7 @@ mod tests {
 
     use devicehub_runtime::{FrameCredit, FramePacer};
 
-    use super::{WebSocketConfig, synchronize_browser_generation};
+    use super::{WebSocketConfig, encode_audio_packet, synchronize_browser_generation};
 
     #[test]
     fn transport_bounds_host_supplied_frame_credits() {
@@ -393,5 +457,14 @@ mod tests {
         assert_eq!(generation, 2);
         assert!(resync.load(Ordering::Acquire));
         assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
+    }
+
+    #[test]
+    fn audio_packet_has_stable_header_and_preserves_pcm() {
+        let packet = encode_audio_packet(&[1, 2, 3, 4]);
+        assert_eq!(&packet[..4], b"DHA1");
+        assert_eq!(u32::from_be_bytes(packet[4..8].try_into().unwrap()), 48_000);
+        assert_eq!(u16::from_be_bytes(packet[8..10].try_into().unwrap()), 2);
+        assert_eq!(&packet[12..], &[1, 2, 3, 4]);
     }
 }

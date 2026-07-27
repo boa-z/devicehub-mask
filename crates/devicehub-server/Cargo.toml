@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
+bytes = "1"
 devicehub-core = { path = "../devicehub-core" }
 devicehub-runtime = { path = "../devicehub-runtime" }
 futures-util = "0.3"

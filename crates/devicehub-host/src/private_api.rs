@@ -63,5 +63,6 @@ pub fn state(
         crash_reports_http: devicehub_server::http::CrashReportHttpState::new(commands),
         host_http: devicehub_server::http::HostHttpState::unavailable(),
         websocket_config,
+        browser_audio: None,
     }
 }

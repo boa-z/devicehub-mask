@@ -32,6 +32,7 @@ pub struct PrivateApiState {
     pub crash_reports_http: http::CrashReportHttpState,
     pub host_http: http::HostHttpState,
     pub websocket_config: websocket::WebSocketConfig,
+    pub browser_audio: Option<websocket::BrowserAudioSlot>,
 }
 
 #[derive(Clone)]
@@ -108,7 +109,11 @@ async fn ws_upgrade(
 ) -> impl IntoResponse {
     websocket::upgrade(
         ws,
-        websocket::WebSocketState::new(state.application, state.websocket_config),
+        websocket::WebSocketState::new(
+            state.application,
+            state.websocket_config,
+            state.browser_audio,
+        ),
     )
     .await
 }
@@ -206,6 +211,7 @@ mod tests {
             crash_reports_http: http::CrashReportHttpState::new(commands),
             host_http: http::HostHttpState::unavailable(),
             websocket_config: websocket::WebSocketConfig::default(),
+            browser_audio: None,
         }
     }
 

@@ -132,12 +132,6 @@ impl devicehub_runtime::HostClipboardProvider for UnavailableClipboard {
     }
 }
 
-struct DiscardPcm;
-
-impl devicehub_runtime::PcmAudioConsumer for DiscardPcm {
-    fn publish(&self, _pcm: bytes::Bytes) {}
-}
-
 fn read_token(path: Option<&Path>) -> Result<String, String> {
     let Some(path) = path else {
         return Ok(uuid::Uuid::new_v4().simple().to_string());
@@ -228,6 +222,8 @@ async fn run(config: Config) -> Result<(), String> {
     let system_usbmuxd = devicehub_runtime::SystemUsbmuxdConfig::from_host(config.system_usbmuxd);
     let host_control = host::HeadlessHostControl::load(config.data_dir.join("settings.json"));
     let preferences = host_control.runtime_preferences();
+    let browser_audio = devicehub_server::websocket::BrowserAudioSlot::default();
+    let runtime_browser_audio = browser_audio.clone();
     let diagnostics = devicehub_runtime::SessionDiagnostics {
         send_frame_ack: false,
         rtcp: devicehub_runtime::RtcpOptions::default(),
@@ -245,7 +241,9 @@ async fn run(config: Config) -> Result<(), String> {
                 pairing_store,
                 system_usbmuxd,
                 audio: devicehub_host::decode::FfmpegAudioPipelineFactory::new(
-                    devicehub_runtime::AudioPublisher::new(DiscardPcm),
+                    devicehub_runtime::AudioPublisher::new(host::BrowserPcmConsumer(
+                        runtime_browser_audio.clone(),
+                    )),
                     audio_decoder,
                 ),
                 diagnostic_sinks: devicehub_host::diagnostic_sinks::TokioDiagnosticDumpSinks,
@@ -268,6 +266,7 @@ async fn run(config: Config) -> Result<(), String> {
         host::build_info(),
         host_control,
     );
+    api_state.browser_audio = Some(browser_audio);
     let api = devicehub_server::private_api::router(api_state, token.clone());
     let app = devicehub_server::spa::router(api, config.frontend_dir);
     let listener = tokio::net::TcpListener::bind(config.listen)

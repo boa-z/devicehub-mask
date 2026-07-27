@@ -13,6 +13,8 @@ const DEFAULT_AUDIO_VOLUME: f32 = 0.8;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct PersistedSettings {
     #[serde(default)]
+    audio_enabled: bool,
+    #[serde(default)]
     audio_muted: bool,
     #[serde(default = "default_audio_volume")]
     audio_volume: f32,
@@ -21,6 +23,7 @@ struct PersistedSettings {
 impl Default for PersistedSettings {
     fn default() -> Self {
         Self {
+            audio_enabled: false,
             audio_muted: false,
             audio_volume: DEFAULT_AUDIO_VOLUME,
         }
@@ -58,10 +61,11 @@ impl HeadlessHostControl {
             }
         };
         let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
+        let audio_enabled = settings.audio_enabled;
         Self(Arc::new(HeadlessHostInner {
             settings_path,
             settings: RwLock::new(settings),
-            runtime_preferences: RuntimePreferences::new(false, false),
+            runtime_preferences: RuntimePreferences::new(audio_enabled, false),
             log_filter,
             run_id: uuid::Uuid::new_v4().simple().to_string(),
         }))
@@ -95,7 +99,7 @@ impl HostControl for HeadlessHostControl {
             .read()
             .expect("headless settings lock poisoned");
         HostSettingsStatus {
-            audio_enabled: false,
+            audio_enabled: settings.audio_enabled,
             audio_muted: settings.audio_muted,
             audio_volume: settings.audio_volume,
             clipboard_sync_enabled: false,
@@ -103,11 +107,6 @@ impl HostControl for HeadlessHostControl {
     }
 
     fn update_settings(&self, patch: HostSettingsPatch) -> Result<HostSettingsStatus, String> {
-        if patch.audio_enabled == Some(true) {
-            return Err(
-                "device audio will be available after browser audio transport is enabled".into(),
-            );
-        }
         if patch.clipboard_sync_enabled == Some(true) {
             return Err("host clipboard synchronization is unavailable in headless mode".into());
         }
@@ -117,10 +116,14 @@ impl HostControl for HeadlessHostControl {
             .write()
             .map_err(|_| "headless settings lock poisoned".to_owned())?;
         let next = PersistedSettings {
+            audio_enabled: patch.audio_enabled.unwrap_or(settings.audio_enabled),
             audio_muted: patch.audio_muted.unwrap_or(settings.audio_muted),
             audio_volume: patch.audio_volume.unwrap_or(settings.audio_volume),
         };
         self.save(&next)?;
+        self.0
+            .runtime_preferences
+            .set_audio_enabled(next.audio_enabled);
         *settings = next;
         drop(settings);
         Ok(self.settings())
@@ -143,6 +146,7 @@ impl HostControl for HeadlessHostControl {
 pub fn capabilities() -> HostCapabilities {
     HostCapabilities {
         system_fullscreen: true,
+        device_audio: true,
         ..HostCapabilities::default()
     }
 }
@@ -162,21 +166,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsupported_session_preferences_cannot_be_enabled() {
+    fn settings_update_runtime_audio_preference() {
         let path = std::env::temp_dir().join(format!(
             "devicehub-headless-settings-{}.json",
             uuid::Uuid::new_v4().simple()
         ));
         let control = HeadlessHostControl::load(path.clone());
-        assert!(
-            control
-                .update_settings(HostSettingsPatch {
-                    audio_enabled: Some(true),
-                    ..HostSettingsPatch::default()
-                })
-                .is_err()
-        );
-        assert!(!control.runtime_preferences().audio_enabled());
+        control
+            .update_settings(HostSettingsPatch {
+                audio_enabled: Some(true),
+                ..HostSettingsPatch::default()
+            })
+            .unwrap();
+        assert!(control.runtime_preferences().audio_enabled());
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[derive(Clone)]
+pub struct BrowserPcmConsumer(pub devicehub_server::websocket::BrowserAudioSlot);
+
+impl devicehub_runtime::PcmAudioConsumer for BrowserPcmConsumer {
+    fn publish(&self, pcm: bytes::Bytes) {
+        self.0.publish(pcm);
     }
 }

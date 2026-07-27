@@ -3,4 +3,4 @@
 mod input;
 mod transport;
 
-pub use transport::{WebSocketConfig, WebSocketState, upgrade};
+pub use transport::{BrowserAudioSlot, WebSocketConfig, WebSocketState, upgrade};

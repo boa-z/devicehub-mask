@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BrowserVideoDecoder, BrowserVideoSequenceTracker, parseBrowserVideoPacket } from "./browserVideo";
+import { BrowserPcmPlayer, parseBrowserAudioPacket } from "./browserAudio";
 import { logFrontend } from "./diagnostics";
 import { hasSourceVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "./types";
@@ -24,6 +25,9 @@ type Options = {
   orientation: Orientation;
   videoDemand: boolean;
   monitorStall: boolean;
+  audioEnabled: boolean;
+  audioMuted: boolean;
+  audioVolume: number;
   onStatus: (status: DeviceStatus) => void;
   onClipboard: (event: ClipboardEvent) => void;
   onDeviceEvent: (event: DeviceEvent) => void;
@@ -94,6 +98,9 @@ export function useDeviceVideoStream({
   orientation,
   videoDemand,
   monitorStall,
+  audioEnabled,
+  audioMuted,
+  audioVolume,
   onStatus,
   onClipboard,
   onDeviceEvent,
@@ -118,9 +125,28 @@ export function useDeviceVideoStream({
   const orientationRef = useRef(orientation);
   const videoDemandRef = useRef(videoDemand);
   const callbacksRef = useRef({ onStatus, onClipboard, onDeviceEvent, onDisconnect });
+  const audioPreferencesRef = useRef({ enabled: audioEnabled, muted: audioMuted, volume: audioVolume });
+  const audioPlayerRef = useRef<BrowserPcmPlayer | null>(null);
   orientationRef.current = orientation;
   videoDemandRef.current = videoDemand;
   callbacksRef.current = { onStatus, onClipboard, onDeviceEvent, onDisconnect };
+  audioPreferencesRef.current = { enabled: audioEnabled, muted: audioMuted, volume: audioVolume };
+
+  useEffect(() => {
+    audioPlayerRef.current?.setPreferences(audioMuted, audioVolume);
+  }, [audioMuted, audioVolume]);
+
+  useEffect(() => {
+    const resume = () => {
+      if (audioEnabled) void audioPlayerRef.current?.resume();
+    };
+    window.addEventListener("pointerdown", resume);
+    window.addEventListener("keydown", resume);
+    return () => {
+      window.removeEventListener("pointerdown", resume);
+      window.removeEventListener("keydown", resume);
+    };
+  }, [audioEnabled]);
 
   const bindCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     canvasRef.current = canvas;
@@ -255,6 +281,9 @@ export function useDeviceVideoStream({
           }
         },
       });
+      const audioPlayer = new BrowserPcmPlayer();
+      audioPlayer.setPreferences(audioPreferencesRef.current.muted, audioPreferencesRef.current.volume);
+      audioPlayerRef.current = audioPlayer;
       const flushFrontendMetrics = () => {
         const now = performance.now();
         if (socket.readyState === WebSocket.OPEN) {
@@ -293,6 +322,8 @@ export function useDeviceVideoStream({
         );
         if (metricsTimer !== undefined) window.clearInterval(metricsTimer);
         browserDecoder.close();
+        audioPlayer.close();
+        if (audioPlayerRef.current === audioPlayer) audioPlayerRef.current = null;
         callbacksRef.current.onDisconnect?.();
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
@@ -324,6 +355,19 @@ export function useDeviceVideoStream({
           return;
         }
         const buffer = event.data as ArrayBuffer;
+        let audioPacket: ReturnType<typeof parseBrowserAudioPacket>;
+        try {
+          audioPacket = parseBrowserAudioPacket(buffer);
+        } catch (error) {
+          logFrontend("warn", "audio", "browser_packet", error);
+          return;
+        }
+        if (audioPacket) {
+          const preferences = audioPreferencesRef.current;
+          audioPlayer.setPreferences(preferences.muted, preferences.volume);
+          if (preferences.enabled) audioPlayer.enqueue(audioPacket);
+          return;
+        }
         frontendMetrics.receivedFrames += 1;
         lastSourceActivityAtRef.current = performance.now();
         let browserPacket: ReturnType<typeof parseBrowserVideoPacket>;
