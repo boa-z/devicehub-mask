@@ -28,6 +28,7 @@ impl HostPairingStore {
             .parent()
             .unwrap_or(&directory)
             .join("remote-pairings");
+        secure_directory(&remote)?;
         Ok(Self {
             directories: PairingDirectories {
                 lockdown: directory,
@@ -224,6 +225,24 @@ mod tests {
         store.remove_remote_pairing(udid).unwrap();
         assert!(store.remove_remote_pairing("../outside").is_err());
 
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_secures_an_existing_remote_pairing_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "devicehub-mask-remote-permissions-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let remote = base.join("remote-pairings");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::set_permissions(&remote, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        HostPairingStore::new(base.join("pairings")).unwrap();
+
+        let mode = std::fs::metadata(&remote).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
         std::fs::remove_dir_all(base).unwrap();
     }
 }
