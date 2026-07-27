@@ -178,7 +178,6 @@ where
         .connect_app_service(&mut adapter, &mut handshake)
         .await;
 
-    views.browser_frames.reset_dimensions();
     tracing::info!(
         decoder_backend = "webcodecs",
         "selected video decoder backend"

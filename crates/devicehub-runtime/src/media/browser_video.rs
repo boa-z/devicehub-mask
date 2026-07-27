@@ -13,11 +13,12 @@ use super::session::{HevcQueue, RtpVideoClock};
 // Cover short WebSocket stalls while a large IRAP access unit is copied into the
 // platform WebView. At 60 FPS this retains roughly half a second of compressed data.
 const CHANNEL_CAPACITY: usize = 32;
-const PACKET_MAGIC: &[u8; 4] = b"DHV1";
-const PACKET_HEADER_LEN: usize = 28;
+const PACKET_MAGIC: &[u8; 4] = b"DHV2";
+const PACKET_HEADER_LEN: usize = 36;
 
 #[derive(Debug)]
 pub struct BrowserVideoFrame {
+    pub generation: u64,
     pub sequence: u64,
     pub timestamp_us: u64,
     pub key: bool,
@@ -30,6 +31,7 @@ pub struct BrowserVideoFrame {
 struct BrowserVideoSlotInner {
     sender: broadcast::Sender<Arc<BrowserVideoFrame>>,
     sequence: AtomicU64,
+    generation: AtomicU64,
     dimensions: AtomicU64,
     keyframe: Notify,
 }
@@ -43,6 +45,7 @@ impl Default for BrowserVideoSlot {
         Self(Arc::new(BrowserVideoSlotInner {
             sender,
             sequence: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
             dimensions: AtomicU64::new(0),
             keyframe: Notify::new(),
         }))
@@ -52,11 +55,13 @@ impl Default for BrowserVideoSlot {
 impl BrowserVideoSlot {
     pub fn publish(&self, timestamp_us: u64, key: bool, width: u16, height: u16, bytes: Vec<u8>) {
         let sequence = self.0.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        let generation = self.0.generation.load(Ordering::Acquire);
         self.0.dimensions.store(
             (u64::from(width) << 32) | u64::from(height),
             Ordering::Relaxed,
         );
         let _ = self.0.sender.send(Arc::new(BrowserVideoFrame {
+            generation,
             sequence,
             timestamp_us,
             key,
@@ -80,6 +85,17 @@ impl BrowserVideoSlot {
         let width = (packed >> 32) as u32;
         let height = packed as u32;
         (width > 0 && height > 0).then_some((width, height))
+    }
+
+    /// Starts a distinct media stream. Consumers use the generation to discard
+    /// decoder and flow-control state retained across a device handoff.
+    pub fn begin_stream(&self) -> u64 {
+        self.0.dimensions.store(0, Ordering::Relaxed);
+        self.0.generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.0.generation.load(Ordering::Acquire)
     }
 
     pub fn reset_dimensions(&self) {
@@ -146,6 +162,7 @@ pub fn encode_packet(frame: &BrowserVideoFrame) -> Vec<u8> {
     packet.extend_from_slice(&[0, 0, 0]);
     packet.extend_from_slice(&frame.timestamp_us.to_be_bytes());
     packet.extend_from_slice(&frame.sequence.to_be_bytes());
+    packet.extend_from_slice(&frame.generation.to_be_bytes());
     packet.extend_from_slice(&frame.width.to_be_bytes());
     packet.extend_from_slice(&frame.height.to_be_bytes());
     packet.extend_from_slice(&frame.bytes);
@@ -317,6 +334,7 @@ mod tests {
     #[test]
     fn browser_packet_has_stable_big_endian_header() {
         let frame = BrowserVideoFrame {
+            generation: 3,
             sequence: 7,
             timestamp_us: 16_667,
             key: true,
@@ -333,9 +351,24 @@ mod tests {
             16_667
         );
         assert_eq!(u64::from_be_bytes(packet[16..24].try_into().unwrap()), 7);
-        assert_eq!(u16::from_be_bytes(packet[24..26].try_into().unwrap()), 1290);
-        assert_eq!(u16::from_be_bytes(packet[26..28].try_into().unwrap()), 2796);
-        assert_eq!(&packet[28..], frame.bytes.as_ref());
+        assert_eq!(u64::from_be_bytes(packet[24..32].try_into().unwrap()), 3);
+        assert_eq!(u16::from_be_bytes(packet[32..34].try_into().unwrap()), 1290);
+        assert_eq!(u16::from_be_bytes(packet[34..36].try_into().unwrap()), 2796);
+        assert_eq!(&packet[36..], frame.bytes.as_ref());
+    }
+
+    #[tokio::test]
+    async fn new_stream_generation_tags_frames_and_clears_dimensions() {
+        let slot = BrowserVideoSlot::default();
+        let mut receiver = slot.subscribe();
+        slot.publish(1, true, 100, 200, vec![1]);
+        assert_eq!(receiver.recv().await.unwrap().generation, 0);
+        assert_eq!(slot.dimensions(), Some((100, 200)));
+
+        assert_eq!(slot.begin_stream(), 1);
+        assert_eq!(slot.dimensions(), None);
+        slot.publish(2, true, 300, 400, vec![2]);
+        assert_eq!(receiver.recv().await.unwrap().generation, 1);
     }
 
     #[tokio::test]

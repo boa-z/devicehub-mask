@@ -1,23 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserVideoDecoder, browserVideoSequenceDiscontinuous, hevcCodecFromAnnexB, parseBrowserVideoPacket, type BrowserVideoPacket } from "./browserVideo";
+import { BrowserVideoDecoder, BrowserVideoSequenceTracker, browserVideoSequenceDiscontinuous, hevcCodecFromAnnexB, parseBrowserVideoPacket, type BrowserVideoPacket } from "./browserVideo";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("browser video packet", () => {
   it("parses the versioned big-endian header", () => {
-    const buffer = new ArrayBuffer(31);
+    const buffer = new ArrayBuffer(39);
     const bytes = new Uint8Array(buffer);
-    bytes.set([0x44, 0x48, 0x56, 0x31]);
+    bytes.set([0x44, 0x48, 0x56, 0x32]);
     const view = new DataView(buffer);
     view.setUint8(4, 1);
     view.setBigUint64(8, 16_667n);
     view.setBigUint64(16, 7n);
-    view.setUint16(24, 1290);
-    view.setUint16(26, 2796);
-    bytes.set([1, 2, 3], 28);
+    view.setBigUint64(24, 3n);
+    view.setUint16(32, 1290);
+    view.setUint16(34, 2796);
+    bytes.set([1, 2, 3], 36);
 
     const packet = parseBrowserVideoPacket(buffer);
-    expect(packet).toMatchObject({ key: true, timestamp: 16_667, sequence: 7n, width: 1290, height: 2796 });
+    expect(packet).toMatchObject({ key: true, timestamp: 16_667, sequence: 7n, generation: 3n, width: 1290, height: 2796 });
     expect([...packet!.data]).toEqual([1, 2, 3]);
   });
 
@@ -30,6 +31,7 @@ describe("browser video packet", () => {
       key: false,
       timestamp: 2,
       sequence: 9n,
+      generation: 1n,
       width: 100,
       height: 200,
       data: new Uint8Array(),
@@ -37,6 +39,41 @@ describe("browser video packet", () => {
     expect(browserVideoSequenceDiscontinuous(7n, packet)).toBe(true);
     expect(browserVideoSequenceDiscontinuous(7n, { ...packet, key: true })).toBe(false);
     expect(browserVideoSequenceDiscontinuous(8n, packet)).toBe(false);
+  });
+
+  it("resets decoder state when a continuing socket receives a new stream generation", () => {
+    const tracker = new BrowserVideoSequenceTracker();
+    const packet: BrowserVideoPacket = {
+      key: true,
+      timestamp: 1,
+      sequence: 10n,
+      generation: 1n,
+      width: 100,
+      height: 200,
+      data: new Uint8Array(),
+    };
+
+    expect(tracker.inspect(packet)).toEqual({ accept: true, resetDecoder: false });
+    expect(tracker.inspect({ ...packet, sequence: 11n, key: false })).toEqual({ accept: true, resetDecoder: false });
+    expect(tracker.inspect({ ...packet, generation: 2n, sequence: 12n })).toEqual({ accept: true, resetDecoder: true });
+  });
+
+  it("drops a new generation until its keyframe arrives", () => {
+    const tracker = new BrowserVideoSequenceTracker();
+    const packet: BrowserVideoPacket = {
+      key: true,
+      timestamp: 1,
+      sequence: 1n,
+      generation: 1n,
+      width: 100,
+      height: 200,
+      data: new Uint8Array(),
+    };
+
+    tracker.inspect(packet);
+    expect(tracker.inspect({ ...packet, generation: 2n, sequence: 2n, key: false })).toEqual({ accept: false, resetDecoder: true });
+    expect(tracker.inspect({ ...packet, generation: 2n, sequence: 3n, key: false })).toEqual({ accept: false, resetDecoder: false });
+    expect(tracker.inspect({ ...packet, generation: 2n, sequence: 4n })).toEqual({ accept: true, resetDecoder: false });
   });
 });
 
@@ -83,6 +120,7 @@ describe("browser video decoder recovery", () => {
       key: true,
       timestamp: 1,
       sequence: 1n,
+      generation: 1n,
       width: 1290,
       height: 2796,
       data: Uint8Array.from([
@@ -134,6 +172,7 @@ describe("browser video decoder recovery", () => {
       key: true,
       timestamp: 1,
       sequence: 1n,
+      generation: 1n,
       width: 1290,
       height: 2796,
       data: Uint8Array.from([
@@ -188,6 +227,7 @@ describe("browser video decoder recovery", () => {
       key: true,
       timestamp: 1,
       sequence: 1n,
+      generation: 1n,
       width: 1632,
       height: 2176,
       data: Uint8Array.from([
@@ -247,6 +287,7 @@ describe("browser video decoder recovery", () => {
       key: true,
       timestamp: 1,
       sequence: 1n,
+      generation: 1n,
       width: 1290,
       height: 2796,
       data: Uint8Array.from([

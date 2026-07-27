@@ -1,5 +1,5 @@
-const packetMagic = [0x44, 0x48, 0x56, 0x31] as const;
-const packetHeaderBytes = 28;
+const packetMagic = [0x44, 0x48, 0x56, 0x32] as const;
+const packetHeaderBytes = 36;
 const decoderOutputTimeoutMs = 3_000;
 const maxPendingPackets = 8;
 
@@ -7,6 +7,7 @@ export type BrowserVideoPacket = {
   key: boolean;
   timestamp: number;
   sequence: bigint;
+  generation: bigint;
   width: number;
   height: number;
   data: Uint8Array;
@@ -17,13 +18,14 @@ export function parseBrowserVideoPacket(buffer: ArrayBuffer): BrowserVideoPacket
   const bytes = new Uint8Array(buffer);
   if (!packetMagic.every((value, index) => bytes[index] === value)) return null;
   const view = new DataView(buffer);
-  const width = view.getUint16(24);
-  const height = view.getUint16(26);
+  const width = view.getUint16(32);
+  const height = view.getUint16(34);
   if (width === 0 || height === 0) throw new Error("Browser video packet has invalid dimensions");
   return {
     key: view.getUint8(4) === 1,
     timestamp: Number(view.getBigUint64(8)),
     sequence: view.getBigUint64(16),
+    generation: view.getBigUint64(24),
     width,
     height,
     data: new Uint8Array(buffer, packetHeaderBytes),
@@ -32,6 +34,38 @@ export function parseBrowserVideoPacket(buffer: ArrayBuffer): BrowserVideoPacket
 
 export function browserVideoSequenceDiscontinuous(previous: bigint | null, packet: BrowserVideoPacket): boolean {
   return previous !== null && packet.sequence !== previous + 1n && !packet.key;
+}
+
+export type BrowserVideoSequenceDecision = {
+  accept: boolean;
+  resetDecoder: boolean;
+};
+
+/** Keeps compressed-stream boundaries out of the React/WebSocket lifecycle. */
+export class BrowserVideoSequenceTracker {
+  private generation: bigint | null = null;
+  private sequence: bigint | null = null;
+  private waitingForKeyframe = false;
+
+  inspect(packet: BrowserVideoPacket): BrowserVideoSequenceDecision {
+    let resetDecoder = false;
+    if (this.generation !== packet.generation) {
+      resetDecoder = this.generation !== null;
+      this.generation = packet.generation;
+      this.sequence = null;
+      this.waitingForKeyframe = !packet.key;
+    }
+    if (this.waitingForKeyframe && !packet.key) {
+      return { accept: false, resetDecoder };
+    }
+    if (browserVideoSequenceDiscontinuous(this.sequence, packet)) {
+      this.waitingForKeyframe = true;
+      return { accept: false, resetDecoder: true };
+    }
+    if (packet.key) this.waitingForKeyframe = false;
+    this.sequence = packet.sequence;
+    return { accept: true, resetDecoder };
+  }
 }
 
 export function hevcCodecFromAnnexB(data: Uint8Array): string | null {

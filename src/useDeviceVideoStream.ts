@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BrowserVideoDecoder, browserVideoSequenceDiscontinuous, parseBrowserVideoPacket } from "./browserVideo";
+import { BrowserVideoDecoder, BrowserVideoSequenceTracker, parseBrowserVideoPacket } from "./browserVideo";
 import { logFrontend } from "./diagnostics";
 import { hasSourceVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "./types";
@@ -179,8 +179,7 @@ export function useDeviceVideoStream({
       const socket = new WebSocket(wsUrl(backend), ["devicehub-mask", backend.token]);
       activeSocket = socket;
       let receivedWebCodecsPacket = false;
-      let lastBrowserSequence: bigint | null = null;
-      let browserSequenceResync = false;
+      const browserSequence = new BrowserVideoSequenceTracker();
       let metricsTimer: number | undefined;
       let frontendMetrics = createFrontendMetrics();
       const presentFrame = (
@@ -337,15 +336,12 @@ export function useDeviceVideoStream({
         }
         if (browserPacket) {
           receivedWebCodecsPacket = true;
-          if (browserSequenceResync && !browserPacket.key) return;
-          if (browserVideoSequenceDiscontinuous(lastBrowserSequence, browserPacket)) {
+          const sequenceDecision = browserSequence.inspect(browserPacket);
+          if (sequenceDecision.resetDecoder) browserDecoder.resync();
+          if (!sequenceDecision.accept) {
             frontendMetrics.replacedFrames += 1;
-            browserSequenceResync = true;
-            browserDecoder.resync();
             return;
           }
-          if (browserPacket.key) browserSequenceResync = false;
-          lastBrowserSequence = browserPacket.sequence;
           const accepted = browserDecoder.enqueue(browserPacket);
           if (accepted && socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({

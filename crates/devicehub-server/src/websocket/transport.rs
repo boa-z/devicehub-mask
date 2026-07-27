@@ -94,6 +94,21 @@ pub async fn upgrade(ws: WebSocketUpgrade, state: WebSocketState) -> impl IntoRe
         .on_upgrade(move |socket| run(socket, state))
 }
 
+fn synchronize_browser_generation(
+    observed: &mut u64,
+    incoming: u64,
+    pacer: &FramePacer,
+    resync: &AtomicBool,
+) -> bool {
+    if *observed == incoming {
+        return false;
+    }
+    *observed = incoming;
+    pacer.clear_browser();
+    resync.store(true, Ordering::Release);
+    true
+}
+
 async fn run(socket: WebSocket, state: WebSocketState) {
     let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
@@ -128,6 +143,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         let mut websocket_send_time = Duration::ZERO;
         let mut skipped_for_backpressure = 0_u64;
         let mut metrics_log_windows = 0_u8;
+        let mut browser_generation = send_state.browser_frames.generation();
         loop {
             tokio::select! {
                 _ = status_tick.tick() => {
@@ -146,6 +162,17 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Ok(frame) => {
                             if !send_video_active.load(Ordering::Acquire) {
                                 continue;
+                            }
+                            if synchronize_browser_generation(
+                                &mut browser_generation,
+                                frame.generation,
+                                &send_pacer,
+                                &send_browser_resync,
+                            ) {
+                                tracing::debug!(
+                                    generation = frame.generation,
+                                    "resetting browser video transport for a new device stream"
+                                );
                             }
                             let completes_resync = match browser_frame_decision(
                                 frame.key,
@@ -337,12 +364,34 @@ async fn run(socket: WebSocket, state: WebSocketState) {
 
 #[cfg(test)]
 mod tests {
-    use super::WebSocketConfig;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use devicehub_runtime::{FrameCredit, FramePacer};
+
+    use super::{WebSocketConfig, synchronize_browser_generation};
 
     #[test]
     fn transport_bounds_host_supplied_frame_credits() {
         assert_eq!(WebSocketConfig::new(0).max_in_flight_frames, 1);
         assert_eq!(WebSocketConfig::new(2).max_in_flight_frames, 2);
         assert_eq!(WebSocketConfig::new(usize::MAX).max_in_flight_frames, 8);
+    }
+
+    #[test]
+    fn stream_generation_change_clears_stale_credits_and_requires_keyframe() {
+        let pacer = FramePacer::new(1);
+        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(7)));
+        let resync = AtomicBool::new(false);
+        let mut generation = 1;
+
+        assert!(synchronize_browser_generation(
+            &mut generation,
+            2,
+            &pacer,
+            &resync,
+        ));
+        assert_eq!(generation, 2);
+        assert!(resync.load(Ordering::Acquire));
+        assert!(pacer.try_acquire(FrameCredit::BrowserAccepted(8)));
     }
 }

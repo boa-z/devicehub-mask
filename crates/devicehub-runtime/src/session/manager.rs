@@ -464,6 +464,7 @@ async fn run_session_manager<
             .active
             .set_selected(udid.clone(), selection_id.clone());
         views.connected.error.set(None);
+        views.connected.browser_frames.begin_stream();
 
         let clipboard_sync_enabled = preferences.clipboard_sync_enabled();
         let clipboard_provider = host.clipboard.clone();
