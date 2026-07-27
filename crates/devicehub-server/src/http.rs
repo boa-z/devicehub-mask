@@ -34,5 +34,6 @@ pub use profiles::{
     ProfileRepositorySnapshot, StoredProfile, router as profiles_router,
 };
 pub use provisioning::{ProvisioningHttpState, router as provisioning_router};
+pub use storage::{BrowserTransferFuture, BrowserTransferStore};
 pub use storage::{StorageHttpState, router as storage_router};
 pub use wda::{WdaHttpState, router as wda_router};

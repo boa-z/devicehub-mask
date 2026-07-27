@@ -244,6 +244,10 @@ const hostProvisioningProfiles = readFileSync(
   "crates/devicehub-host/src/provisioning.rs",
   "utf8",
 );
+const hostBrowserTransfers = readFileSync(
+  "crates/devicehub-host/src/browser_transfers.rs",
+  "utf8",
+);
 const tauriWebProduction = productionSource(
   readFileSync("src-tauri/src/web.rs", "utf8"),
 );
@@ -344,6 +348,16 @@ if (
   ].some((route) => tauriWebProduction.includes(route)) ||
   !serverStorageHttp.includes("pub fn router<S>(state: StorageHttpState)") ||
   !serverStorageHttp.includes("validate_app_bundle_id") ||
+  !serverStorageHttp.includes("pub trait BrowserTransferStore") ||
+  !serverHttp.includes(
+    "pub use storage::{BrowserTransferFuture, BrowserTransferStore}",
+  ) ||
+  !hostBrowserTransfers.includes(
+    "impl BrowserTransferStore for TokioBrowserTransferStore",
+  ) ||
+  ["tokio::fs", "std::fs", "std::env"].some((token) =>
+    productionSource(serverStorageHttp).includes(token),
+  ) ||
   !serverProfilesHttp.includes("pub trait ProfileRepository") ||
   !serverProfilesHttp.includes("pub fn router<S>(state: ProfileHttpState)") ||
   !hostProfileFiles.includes("impl ProfileRepository for TokioProfileRepository") ||

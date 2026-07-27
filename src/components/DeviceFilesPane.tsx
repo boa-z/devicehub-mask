@@ -22,6 +22,8 @@ import { normalizeAfcPath, sortAfcEntries } from "../afcBrowser";
 import type { AfcSortDirection, AfcSortField } from "../afcBrowser";
 import { formatFileSize } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
+import { downloadBrowserResponse, pickBrowserFile } from "../browserFiles";
+import { runningInDesktopHost } from "../hostApi";
 import type { DeviceFileActivity, DeviceFileEntry, DeviceFileList } from "../types";
 import { ErrorAlert } from "./ErrorPresentation";
 
@@ -201,6 +203,25 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
   };
 
   const importPath = async (directory: boolean) => {
+    if (!runningInDesktopHost()) {
+      if (directory) {
+        void showErrorMessage(t("deviceInspector.browserDirectoryTransferUnsupported"));
+        return;
+      }
+      const file = await pickBrowserFile();
+      if (!file) return;
+      const query = new URLSearchParams({ directory: path, name: file.name });
+      await mutate(
+        "import",
+        () => request(`/api/device/files/browser-import?${query}`, {
+          method: "PUT",
+          headers: { "content-type": file.type || "application/octet-stream" },
+          body: file,
+        }),
+        t("deviceInspector.deviceFileImported"),
+      );
+      return;
+    }
     const source = await openDialog({ multiple: false, directory });
     if (!source || Array.isArray(source)) return;
     setCancelPending(false);
@@ -219,6 +240,26 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
 
   const exportPath = async (entry: DeviceFileEntry) => {
     if (entry.kind === "other") return;
+    if (!runningInDesktopHost()) {
+      if (entry.kind !== "file") {
+        void showErrorMessage(t("deviceInspector.browserDirectoryTransferUnsupported"));
+        return;
+      }
+      setBusy(`export:${entry.path}`);
+      try {
+        const query = new URLSearchParams({ path: entry.path, name: entry.name });
+        await downloadBrowserResponse(
+          await request(`/api/device/files/browser-export?${query}`),
+          entry.name,
+        );
+        void message.success(t("deviceInspector.deviceFileExported", { size: formatFileSize(entry.size_bytes), count: 1 }));
+      } catch (error) {
+        void showErrorMessage(t("deviceInspector.deviceFileExportFailed", { error: String(error) }));
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
     const destination = await save({ defaultPath: entry.name });
     if (!destination) return;
     const version = ++requestVersion.current;

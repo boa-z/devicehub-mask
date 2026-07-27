@@ -3,6 +3,7 @@
 //! This crate resolves files and child processes, but does not own device
 //! policy, listeners, authentication, or application lifecycle.
 
+pub mod browser_transfers;
 pub mod capture_files;
 pub mod decode;
 pub mod developer_image;

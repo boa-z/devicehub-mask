@@ -3,11 +3,17 @@
 //! The active session owns AFC clients and transfer tasks. This module only
 //! validates HTTP requests, dispatches typed commands, and maps responses.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::Bytes;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -27,6 +33,16 @@ type DeviceFileCommand = devicehub_runtime::DeviceFileCommand<PathBuf>;
 
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);
+const BROWSER_UPLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+
+pub type BrowserTransferFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
+
+pub trait BrowserTransferStore: Send + Sync + 'static {
+    fn stage_upload(&self, name: String, bytes: Bytes) -> BrowserTransferFuture<PathBuf>;
+    fn prepare_download(&self, name: String) -> BrowserTransferFuture<PathBuf>;
+    fn read_and_remove(&self, path: PathBuf) -> BrowserTransferFuture<Bytes>;
+    fn remove(&self, path: PathBuf) -> BrowserTransferFuture<()>;
+}
 
 /// Narrow capability set for storage HTTP routes. Activity cancellation bypasses
 /// the serialized session command queue through the session-owned slots.
@@ -35,6 +51,7 @@ pub struct StorageHttpState {
     input: InputSink,
     app_document_activity: AppDocumentActivitySlot,
     device_file_activity: DeviceFileActivitySlot,
+    browser_transfers: Option<Arc<dyn BrowserTransferStore>>,
 }
 
 impl StorageHttpState {
@@ -47,7 +64,13 @@ impl StorageHttpState {
             input,
             app_document_activity,
             device_file_activity,
+            browser_transfers: None,
         }
+    }
+
+    pub fn with_browser_transfers(mut self, store: impl BrowserTransferStore) -> Self {
+        self.browser_transfers = Some(Arc::new(store));
+        self
     }
 }
 
@@ -67,6 +90,15 @@ where
         )
         .route("/api/device/files/export", put(export_device_file))
         .route("/api/device/files/import", put(import_device_file))
+        .route(
+            "/api/device/files/browser-import",
+            put(browser_import_device_file)
+                .layer(DefaultBodyLimit::max(BROWSER_UPLOAD_LIMIT_BYTES)),
+        )
+        .route(
+            "/api/device/files/browser-export",
+            get(browser_export_device_file),
+        )
         .route(
             "/api/device/files/directory",
             put(create_device_file_directory),
@@ -103,6 +135,15 @@ where
         .route(
             "/api/device/apps/{bundle_id}/storage/import",
             put(import_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/browser-import",
+            put(browser_import_app_document)
+                .layer(DefaultBodyLimit::max(BROWSER_UPLOAD_LIMIT_BYTES)),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/browser-export",
+            get(browser_export_app_document),
         )
         .route(
             "/api/device/apps/{bundle_id}/storage/directory",
@@ -254,6 +295,95 @@ async fn import_app_document(
     Ok(Json(
         await_app_document_response(response, "application document upload").await?,
     ))
+}
+
+#[derive(Deserialize)]
+struct BrowserAppDocumentQuery {
+    directory: String,
+    name: String,
+    #[serde(default)]
+    scope: AppStorageScope,
+}
+
+#[derive(Deserialize)]
+struct BrowserAppDocumentExportQuery {
+    path: String,
+    name: String,
+    #[serde(default)]
+    scope: AppStorageScope,
+}
+
+async fn browser_import_app_document(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Query(query): Query<BrowserAppDocumentQuery>,
+    bytes: Bytes,
+) -> Result<Json<AppDocumentEntry>, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    validate_browser_file_name(&query.name)?;
+    let store = browser_transfer_store(&state)?;
+    let source = store
+        .stage_upload(query.name, bytes)
+        .await
+        .map_err(browser_transfer_error)?;
+    let cleanup = source.clone();
+    let (reply, response) = oneshot::channel();
+    let result = dispatch_app_document_command(
+        &state,
+        AppDocumentCommand::Import {
+            bundle_id,
+            scope: query.scope,
+            directory: query.directory,
+            source,
+            reply,
+        },
+    )
+    .map(|_| response);
+    let result = match result {
+        Ok(response) => await_app_document_response(response, "browser application upload").await,
+        Err(error) => Err(error),
+    };
+    let _ = store.remove(cleanup).await;
+    result.map(Json)
+}
+
+async fn browser_export_app_document(
+    State(state): State<StorageHttpState>,
+    Path(bundle_id): Path<String>,
+    Query(query): Query<BrowserAppDocumentExportQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    validate_browser_file_name(&query.name)?;
+    let store = browser_transfer_store(&state)?;
+    let destination = store
+        .prepare_download(query.name)
+        .await
+        .map_err(browser_transfer_error)?;
+    let cleanup = destination.clone();
+    let (reply, response) = oneshot::channel();
+    if let Err(error) = dispatch_app_document_command(
+        &state,
+        AppDocumentCommand::Export {
+            bundle_id,
+            scope: query.scope,
+            path: query.path,
+            destination,
+            reply,
+        },
+    ) {
+        let _ = store.remove(cleanup).await;
+        return Err(error);
+    }
+    if let Err(error) = await_app_document_response(response, "browser application download").await
+    {
+        let _ = store.remove(cleanup).await;
+        return Err(error);
+    }
+    let bytes = store
+        .read_and_remove(cleanup)
+        .await
+        .map_err(browser_transfer_error)?;
+    Ok(binary_download(bytes))
 }
 
 async fn create_app_document_directory(
@@ -490,6 +620,118 @@ async fn import_device_file(
     ))
 }
 
+#[derive(Deserialize)]
+struct BrowserDeviceImportQuery {
+    directory: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserDeviceExportQuery {
+    path: String,
+    name: String,
+}
+
+async fn browser_import_device_file(
+    State(state): State<StorageHttpState>,
+    Query(query): Query<BrowserDeviceImportQuery>,
+    bytes: Bytes,
+) -> Result<Json<DeviceFileEntry>, (StatusCode, String)> {
+    validate_browser_file_name(&query.name)?;
+    let store = browser_transfer_store(&state)?;
+    let source = store
+        .stage_upload(query.name, bytes)
+        .await
+        .map_err(browser_transfer_error)?;
+    let cleanup = source.clone();
+    let (reply, response) = oneshot::channel();
+    let result = dispatch_device_file_command(
+        &state,
+        DeviceFileCommand::Import {
+            directory: query.directory,
+            source,
+            reply,
+        },
+    )
+    .map(|_| response);
+    let result = match result {
+        Ok(response) => await_device_file_response(response, "browser device file upload").await,
+        Err(error) => Err(error),
+    };
+    let _ = store.remove(cleanup).await;
+    result.map(Json)
+}
+
+async fn browser_export_device_file(
+    State(state): State<StorageHttpState>,
+    Query(query): Query<BrowserDeviceExportQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    validate_browser_file_name(&query.name)?;
+    let store = browser_transfer_store(&state)?;
+    let destination = store
+        .prepare_download(query.name)
+        .await
+        .map_err(browser_transfer_error)?;
+    let cleanup = destination.clone();
+    let (reply, response) = oneshot::channel();
+    if let Err(error) = dispatch_device_file_command(
+        &state,
+        DeviceFileCommand::Export {
+            path: query.path,
+            destination,
+            reply,
+        },
+    ) {
+        let _ = store.remove(cleanup).await;
+        return Err(error);
+    }
+    if let Err(error) = await_device_file_response(response, "browser device file download").await {
+        let _ = store.remove(cleanup).await;
+        return Err(error);
+    }
+    let bytes = store
+        .read_and_remove(cleanup)
+        .await
+        .map_err(browser_transfer_error)?;
+    Ok(binary_download(bytes))
+}
+
+fn validate_browser_file_name(name: &str) -> Result<(), (StatusCode, String)> {
+    if name.is_empty()
+        || name.len() > 255
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', '\0'])
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid browser file name".into()));
+    }
+    Ok(())
+}
+
+fn browser_transfer_store(
+    state: &StorageHttpState,
+) -> Result<Arc<dyn BrowserTransferStore>, (StatusCode, String)> {
+    state.browser_transfers.clone().ok_or((
+        StatusCode::NOT_IMPLEMENTED,
+        "browser file transfer is unavailable in this host".into(),
+    ))
+}
+
+fn browser_transfer_error(error: String) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, error)
+}
+
+fn binary_download(bytes: Bytes) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CONTENT_DISPOSITION, "attachment"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 async fn create_device_file_directory(
     State(state): State<StorageHttpState>,
     Json(request): Json<CreateDeviceFileDirectoryRequest>,
@@ -637,6 +879,14 @@ mod tests {
             .await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
+    }
+
+    #[test]
+    fn browser_file_names_cannot_introduce_paths() {
+        assert!(validate_browser_file_name("save.dat").is_ok());
+        assert!(validate_browser_file_name("../save.dat").is_err());
+        assert!(validate_browser_file_name("folder/save.dat").is_err());
+        assert!(validate_browser_file_name("").is_err());
     }
 
     #[tokio::test]

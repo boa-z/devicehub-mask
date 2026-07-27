@@ -200,6 +200,14 @@ async fn main() {
 async fn run(config: Config) -> Result<(), String> {
     std::fs::create_dir_all(&config.data_dir)
         .map_err(|error| format!("cannot create data directory: {error}"))?;
+    let transfer_dir = config.data_dir.join("transfers");
+    match tokio::fs::remove_dir_all(&transfer_dir).await {
+        Ok(()) => {
+            tracing::info!(path = %transfer_dir.display(), "removed stale browser transfer staging")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot clean browser transfer staging: {error}")),
+    }
     let token = read_token(config.token_file.as_deref())?;
     let pairing_dir = config.data_dir.join("pairings");
     let profile_dir = config.data_dir.join("profiles");
@@ -265,6 +273,9 @@ async fn run(config: Config) -> Result<(), String> {
         host::capabilities(),
         host::build_info(),
         host_control,
+    );
+    api_state.storage_http = api_state.storage_http.with_browser_transfers(
+        devicehub_host::browser_transfers::TokioBrowserTransferStore::new(transfer_dir),
     );
     api_state.browser_audio = Some(browser_audio);
     let api = devicehub_server::private_api::router(api_state, token.clone());

@@ -612,6 +612,7 @@ export const zhCN = {
     deleteDeviceDirectoryConfirm: "要从设备删除 {{name}} 及其中的全部内容吗？此操作无法撤销。",
     deviceFileDeleted: "设备文件已删除。",
     deviceFileOperationFailed: "设备文件操作失败：{{error}}",
+    browserDirectoryTransferUnsupported: "浏览器暂不支持目录传输，请改为传输单个文件。",
     deviceFileOperationRetry: "请修正错误后重试。",
     backupTitle: "本地设备备份",
     backupHint: "在所选电脑目录中创建未加密的 MobileBackup2 备份。请保持设备解锁并持续连接。",

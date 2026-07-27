@@ -617,6 +617,7 @@ export const enUS = {
     deleteDeviceDirectoryConfirm: "Delete {{name}} and all of its contents from the device? This cannot be undone.",
     deviceFileDeleted: "Device file deleted.",
     deviceFileOperationFailed: "Device file operation failed: {{error}}",
+    browserDirectoryTransferUnsupported: "Browser directory transfer is not supported yet. Transfer individual files instead.",
     deviceFileOperationRetry: "Correct the error and retry.",
     backupTitle: "Local device backup",
     backupHint: "Creates an unencrypted MobileBackup2 backup in the selected host directory. Keep the device unlocked and connected.",

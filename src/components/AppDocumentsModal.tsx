@@ -17,6 +17,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatFileSize } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
+import { downloadBrowserResponse, pickBrowserFile } from "../browserFiles";
+import { runningInDesktopHost } from "../hostApi";
 import type { AppDocumentActivity, AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
 import { ErrorAlert } from "./ErrorPresentation";
 
@@ -171,6 +173,25 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
 
   const upload = async (directory: boolean) => {
     if (!app) return;
+    if (!runningInDesktopHost()) {
+      if (directory) {
+        void showErrorMessage(t("deviceInspector.browserDirectoryTransferUnsupported"));
+        return;
+      }
+      const file = await pickBrowserFile();
+      if (!file) return;
+      const query = new URLSearchParams({ directory: path, name: file.name, scope });
+      await mutate(
+        "upload",
+        () => request(`${endpoint(app.bundle_id, "/browser-import")}?${query}`, {
+          method: "PUT",
+          headers: { "content-type": file.type || "application/octet-stream" },
+          body: file,
+        }),
+        t("deviceInspector.documentUploaded"),
+      );
+      return;
+    }
     const source = await open({ multiple: false, directory });
     if (!source || Array.isArray(source)) return;
     setCancelPending(false);
@@ -189,6 +210,26 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
 
   const download = async (entry: AppDocumentEntry) => {
     if (!app || entry.kind === "other") return;
+    if (!runningInDesktopHost()) {
+      if (entry.kind !== "file") {
+        void showErrorMessage(t("deviceInspector.browserDirectoryTransferUnsupported"));
+        return;
+      }
+      setBusy(`export:${entry.path}`);
+      try {
+        const query = new URLSearchParams({ path: entry.path, name: entry.name, scope });
+        await downloadBrowserResponse(
+          await request(`${endpoint(app.bundle_id, "/browser-export")}?${query}`),
+          entry.name,
+        );
+        void message.success(t("deviceInspector.documentExported", { size: formatFileSize(entry.size_bytes), count: 1 }));
+      } catch (error) {
+        void showErrorMessage(t("deviceInspector.documentOperationFailed", { error: String(error) }));
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
     const destination = await save({ defaultPath: entry.name });
     if (!destination) return;
     setCancelPending(false);

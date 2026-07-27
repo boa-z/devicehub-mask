@@ -146,6 +146,7 @@ impl HostControl for HeadlessHostControl {
 pub fn capabilities() -> HostCapabilities {
     HostCapabilities {
         system_fullscreen: true,
+        browser_file_transfer: true,
         device_audio: true,
         ..HostCapabilities::default()
     }
