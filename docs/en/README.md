@@ -26,8 +26,8 @@ Use this documentation by task rather than reading it in order.
 | Tauri desktop UI | Supported | Supported | Supported |
 | CoreDevice USB display | Primary development platform | Supported with device preparation | Depends on host pairing/usbmuxd setup |
 | Universal HID control | Supported when advertised by the device | Supported when advertised by the device | Depends on CoreDevice availability |
-| CI packages | Universal DMG | x64 NSIS and MSI | x64 AppImage and DEB |
-| Headless nightly package | Universal tar.gz | x64 zip | x64 tar.gz |
+| CI packages | Universal DMG | x64 NSIS and MSI | x64 and ARM64 AppImage and DEB |
+| Headless nightly package | Universal tar.gz | x64 zip | x64 and ARM64 tar.gz |
 | In-app updates | Signed app archive | Signed NSIS installer | Signed AppImage |
 
 Apple controls CoreDevice capability availability. A successful USB pairing does not guarantee that a given hardware and iOS combination advertises remote display or Universal HID services.

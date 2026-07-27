@@ -15,7 +15,7 @@
 - **verify** 使用相互独立失败的 macOS、Windows 和 Linux 矩阵。每个平台运行前端 lint、测试和构建，Rust 格式、测试和 Clippy，以及 Tauri debug 应用构建。
 - **build-macos** 生成 Apple Silicon/Intel Universal DMG 和 Universal 无头 tarball，并验证两个可执行架构和完整应用签名。
 - **build-windows** 生成 x64 NSIS、MSI 安装包和 x64 无头 zip。
-- **build-linux** 生成 x64 AppImage、DEB 和 x64 无头 tarball。
+- **build-linux** 使用 GitHub 托管的原生 x64、ARM64 runner，分别生成 AppImage、DEB 和无头 tarball。
 - **publish-release** 等待全部安装包，将更新片段合并成一个 `latest.json`，然后原子替换滚动 nightly release 的资源。
 
 工作流 artifact 保留 14 天。公开滚动发布地址：
@@ -45,9 +45,13 @@ devicehub-mask_<base-version>+<build>_x64.msi
 devicehub-mask_<base-version>+<build>_amd64.AppImage
 devicehub-mask_<base-version>+<build>_amd64.AppImage.sig
 devicehub-mask_<base-version>+<build>_amd64.deb
+devicehub-mask_<base-version>+<build>_arm64.AppImage
+devicehub-mask_<base-version>+<build>_arm64.AppImage.sig
+devicehub-mask_<base-version>+<build>_arm64.deb
 devicehub-mask-headless_<base-version>+<build>_macos-universal.tar.gz
 devicehub-mask-headless_<base-version>+<build>_windows-x64.zip
 devicehub-mask-headless_<base-version>+<build>_linux-x64.tar.gz
+devicehub-mask-headless_<base-version>+<build>_linux-arm64.tar.gz
 latest.json
 ```
 

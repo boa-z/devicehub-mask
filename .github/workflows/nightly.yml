@@ -492,10 +492,24 @@ jobs:
           retention-days: 14
 
   build-linux:
-    name: Package Linux x64
+    name: Package Linux (${{ matrix.name }})
     needs: validate-release
     if: github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            os: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            package_arch: amd64
+            updater_platform: linux-x86_64
+          - name: ARM64
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            package_arch: arm64
+            updater_platform: linux-aarch64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
@@ -519,7 +533,7 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-linux-x64
+          key: release-linux-${{ matrix.package_arch }}
           workspaces: src-tauri -> target
 
       - name: Install build dependencies
@@ -542,8 +556,8 @@ jobs:
             echo "app_version=${APP_VERSION}"
             echo "build_number=${BUILD_NUMBER}"
             echo "update_version=${UPDATE_VERSION}"
-            echo "appimage=devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}_amd64.AppImage"
-            echo "deb=devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}_amd64.deb"
+            echo "appimage=devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}_${{ matrix.package_arch }}.AppImage"
+            echo "deb=devicehub-mask_${APP_VERSION}+${BUILD_NUMBER}_${{ matrix.package_arch }}.deb"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build Linux packages
@@ -580,6 +594,7 @@ jobs:
           APPIMAGE: ${{ steps.version.outputs.appimage }}
           DEB: ${{ steps.version.outputs.deb }}
           UPDATER_ENABLED: ${{ steps.build.outputs.updater_enabled }}
+          UPDATER_PLATFORM: ${{ matrix.updater_platform }}
         run: |
           mkdir -p dist
           find src-tauri/target/release/bundle -maxdepth 3 -type f -print
@@ -596,12 +611,12 @@ jobs:
             cp "${APPIMAGE_SOURCE}.sig" "dist/${APPIMAGE}.sig"
             SIGNATURE=$(tr -d '\r\n' < "dist/${APPIMAGE}.sig")
             URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APPIMAGE}"
-            jq -n --arg signature "$SIGNATURE" --arg url "$URL" \
-              '{platforms: {"linux-x86_64": {signature: $signature, url: $url}}}' \
-              > dist/update-fragment-linux.json
+            jq -n --arg platform "$UPDATER_PLATFORM" --arg signature "$SIGNATURE" --arg url "$URL" \
+              '{platforms: {($platform): {signature: $signature, url: $url}}}' \
+              > "dist/update-fragment-${UPDATER_PLATFORM}.json"
           fi
 
-      - name: Package headless Linux x64 service
+      - name: Package headless Linux service
         shell: bash
         timeout-minutes: 20
         env:
@@ -610,7 +625,7 @@ jobs:
           DEVICEHUB_UPDATE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
         run: |
           node scripts/package-headless.mjs \
-            --target x86_64-unknown-linux-gnu \
+            --target "${{ matrix.rust_target }}" \
             --version "${{ steps.version.outputs.app_version }}" \
             --build-number "${{ steps.version.outputs.build_number }}" \
             --output-dir dist \
@@ -620,7 +635,7 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: package-linux-x64
+          name: package-linux-${{ matrix.package_arch }}
           path: |
             dist/*
           if-no-files-found: error
@@ -678,8 +693,8 @@ jobs:
 
           - Version: ${UPDATE_VERSION}
           - Build: ${GITHUB_RUN_NUMBER}
-          - Desktop: macOS universal, Windows x64, Linux x64
-          - Headless browser service: macOS universal, Windows x64, Linux x64
+          - Desktop: macOS universal, Windows x64, Linux x64 and ARM64
+          - Headless browser service: macOS universal, Windows x64, Linux x64 and ARM64
           - Commit: ${GITHUB_SHA}
           EOF
           )

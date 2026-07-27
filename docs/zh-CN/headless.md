@@ -20,6 +20,7 @@
 devicehub-mask-headless_<version>+<build>_macos-universal.tar.gz
 devicehub-mask-headless_<version>+<build>_windows-x64.zip
 devicehub-mask-headless_<version>+<build>_linux-x64.tar.gz
+devicehub-mask-headless_<version>+<build>_linux-arm64.tar.gz
 ```
 
 校验归档后完整解压，不要单独移动可执行文件。归档中的 `devicehub-headless`、`dist/`、FFmpeg、netmuxd、许可证和说明文档必须保持在同一目录。macOS/Linux 可运行 `shasum -a 256 <archive>` 或 `sha256sum <archive>`，Windows 可运行 `Get-FileHash <archive> -Algorithm SHA256`。
@@ -76,7 +77,7 @@ npm ci
 npm run headless:package -- --version 0.1.0 --build-number 1
 ```
 
-产物位于 `release-artifacts/`。`--version` 应与项目版本一致，`--build-number` 应为本次构建编号。该脚本只支持当前发布矩阵中的 macOS arm64/x64、Windows x64 和 Linux x64；CI 使用 `universal-apple-darwin` 合并 Universal macOS 二进制。完整发布规则见[CI、发布与更新](https://github.com/boa-z/devicehub-mask/blob/main/docs/zh-CN/distribution.md)。
+产物位于 `release-artifacts/`。`--version` 应与项目版本一致，`--build-number` 应为本次构建编号。该脚本支持当前发布矩阵中的 macOS arm64/x64、Windows x64 和 Linux x64/ARM64；CI 使用 `universal-apple-darwin` 合并 Universal macOS 二进制。完整发布规则见[CI、发布与更新](https://github.com/boa-z/devicehub-mask/blob/main/docs/zh-CN/distribution.md)。
 
 构建或提交前至少运行：
 

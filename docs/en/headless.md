@@ -20,6 +20,7 @@ Download the headless archive for the host platform and its adjacent `.sha256` f
 devicehub-mask-headless_<version>+<build>_macos-universal.tar.gz
 devicehub-mask-headless_<version>+<build>_windows-x64.zip
 devicehub-mask-headless_<version>+<build>_linux-x64.tar.gz
+devicehub-mask-headless_<version>+<build>_linux-arm64.tar.gz
 ```
 
 Verify and fully extract the archive. Do not move only the executable: `devicehub-headless`, `dist/`, FFmpeg, netmuxd, licenses, and the startup guides must remain together. Use `shasum -a 256 <archive>` or `sha256sum <archive>` on macOS/Linux, and `Get-FileHash <archive> -Algorithm SHA256` on Windows.
@@ -76,7 +77,7 @@ npm ci
 npm run headless:package -- --version 0.1.0 --build-number 1
 ```
 
-Outputs are written to `release-artifacts/`. `--version` should match the project version and `--build-number` should identify the build. The script supports the current release matrix of macOS arm64/x64, Windows x64, and Linux x64; CI uses `universal-apple-darwin` to merge the Universal macOS executable. See [CI, Releases, and Updates](https://github.com/boa-z/devicehub-mask/blob/main/docs/en/distribution.md) for the complete release policy.
+Outputs are written to `release-artifacts/`. `--version` should match the project version and `--build-number` should identify the build. The script supports the current release matrix of macOS arm64/x64, Windows x64, and Linux x64/ARM64; CI uses `universal-apple-darwin` to merge the Universal macOS executable. See [CI, Releases, and Updates](https://github.com/boa-z/devicehub-mask/blob/main/docs/en/distribution.md) for the complete release policy.
 
 Before committing or building a package, run at least:
 

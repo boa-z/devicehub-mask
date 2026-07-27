@@ -26,8 +26,8 @@
 | Tauri 桌面界面 | 支持 | 支持 | 支持 |
 | CoreDevice USB 画面 | 主要开发平台 | 需要完成设备准备 | 取决于主机配对和 usbmuxd 环境 |
 | Universal HID 控制 | 设备开放服务时支持 | 设备开放服务时支持 | 取决于 CoreDevice 服务可用性 |
-| CI 安装包 | Universal DMG | x64 NSIS 和 MSI | x64 AppImage 和 DEB |
-| 无头 nightly 包 | Universal tar.gz | x64 zip | x64 tar.gz |
+| CI 安装包 | Universal DMG | x64 NSIS 和 MSI | x64 和 ARM64 AppImage、DEB |
+| 无头 nightly 包 | Universal tar.gz | x64 zip | x64 和 ARM64 tar.gz |
 | 应用内更新 | 签名 app 压缩包 | 签名 NSIS 安装包 | 签名 AppImage |
 
 CoreDevice 能力由 Apple 控制。USB 配对成功不代表当前硬件和 iOS 组合一定开放远程画面或 Universal HID 服务。

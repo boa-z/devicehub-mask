@@ -15,7 +15,7 @@
 - **verify** is a fail-independent macOS, Windows, and Linux matrix. Each leg runs frontend lint, tests, and build; Rust format, tests, and Clippy; and a debug Tauri application build.
 - **build-macos** creates a Universal Apple Silicon/Intel DMG plus a Universal headless tarball, and verifies both executable architectures and the complete application signature.
 - **build-windows** creates x64 NSIS and MSI installers plus an x64 headless zip.
-- **build-linux** creates x64 AppImage and DEB packages plus an x64 headless tarball.
+- **build-linux** runs on native x64 and ARM64 GitHub-hosted runners, creating AppImage and DEB packages plus a headless tarball for each architecture.
 - **publish-release** waits for every package, merges updater fragments into one `latest.json`, and atomically replaces the rolling nightly release assets.
 
 Workflow artifacts are retained for 14 days. The rolling public release is:
@@ -45,9 +45,13 @@ devicehub-mask_<base-version>+<build>_x64.msi
 devicehub-mask_<base-version>+<build>_amd64.AppImage
 devicehub-mask_<base-version>+<build>_amd64.AppImage.sig
 devicehub-mask_<base-version>+<build>_amd64.deb
+devicehub-mask_<base-version>+<build>_arm64.AppImage
+devicehub-mask_<base-version>+<build>_arm64.AppImage.sig
+devicehub-mask_<base-version>+<build>_arm64.deb
 devicehub-mask-headless_<base-version>+<build>_macos-universal.tar.gz
 devicehub-mask-headless_<base-version>+<build>_windows-x64.zip
 devicehub-mask-headless_<base-version>+<build>_linux-x64.tar.gz
+devicehub-mask-headless_<base-version>+<build>_linux-arm64.tar.gz
 latest.json
 ```
 

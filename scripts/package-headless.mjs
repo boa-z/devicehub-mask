@@ -193,6 +193,9 @@ function targetDescriptor(selectedTarget) {
   if (selectedTarget === "x86_64-unknown-linux-gnu") {
     return { label: "linux-x64", archiveExtension: "tar.gz", universalMac: false, windows: false };
   }
+  if (selectedTarget === "aarch64-unknown-linux-gnu") {
+    return { label: "linux-arm64", archiveExtension: "tar.gz", universalMac: false, windows: false };
+  }
   throw new Error(`Unsupported headless package target: ${selectedTarget}`);
 }
 
