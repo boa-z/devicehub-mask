@@ -18,28 +18,77 @@ pub(crate) async fn read_device_details(
     requested_udid: String,
 ) -> Option<DeviceDetails> {
     let mut lockdown = LockdownClient::connect(provider).await.ok()?;
-    let values = lockdown.get_value(None, None).await.ok()?;
-    let values = values.as_dictionary()?;
-    let integer = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
-    let disk_usage = lockdown
-        .get_value(None, Some("com.apple.disk_usage"))
+    let public_values = lockdown
+        .get_value(None, None)
         .await
-        .ok()
-        .and_then(plist::Value::into_dictionary);
+        .ok()?
+        .into_dictionary()?;
+    // Lockdown exposes only a small public subset before pairing. Disk usage,
+    // serial/model metadata, and regional settings require a session.
+    let session_started = match provider.get_pairing_file().await {
+        Ok(pairing_file) => match lockdown.start_session(&pairing_file).await {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(%error, "unable to start Lockdown session for device details");
+                false
+            }
+        },
+        Err(error) => {
+            tracing::debug!(%error, "unable to load pairing record for device details");
+            false
+        }
+    };
+    let authenticated_values = if session_started {
+        lockdown
+            .get_value(None, None)
+            .await
+            .map_err(|error| {
+                tracing::debug!(%error, "unable to read authenticated Lockdown values");
+            })
+            .ok()
+            .and_then(plist::Value::into_dictionary)
+    } else {
+        None
+    };
+    let values = authenticated_values.as_ref().unwrap_or(&public_values);
+    let integer = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
+    let disk_usage = if session_started {
+        lockdown
+            .get_value(None, Some("com.apple.disk_usage"))
+            .await
+            .map_err(|error| {
+                tracing::debug!(%error, "unable to read Lockdown disk usage");
+            })
+            .ok()
+            .and_then(plist::Value::into_dictionary)
+    } else {
+        None
+    };
+    let mut international = plist::Dictionary::new();
+    if session_started {
+        for key in ["Language", "Locale"] {
+            if let Ok(value) = lockdown
+                .get_value(Some(key), Some("com.apple.international"))
+                .await
+            {
+                international.insert(key.to_string(), value);
+            }
+        }
+    }
     let storage = disk_usage.as_ref().and_then(storage_from_disk_usage);
     let mut total_disk_capacity = disk_usage
         .as_ref()
         .and_then(|values| values.get("TotalDiskCapacity"))
         .and_then(plist::Value::as_unsigned_integer)
         .or_else(|| integer("TotalDiskCapacity"));
-    if total_disk_capacity.is_none() {
+    if session_started && total_disk_capacity.is_none() {
         total_disk_capacity = lockdown
             .get_value(Some("TotalDiskCapacity"), Some("com.apple.disk_usage"))
             .await
             .ok()
             .and_then(|value| value.as_unsigned_integer());
     }
-    Some(DeviceDetails {
+    let details = DeviceDetails {
         udid: identity_token(values, "UniqueDeviceID", 128).unwrap_or(requested_udid),
         name: display_name(values).unwrap_or_else(|| "iOS Device".to_string()),
         product_type: identity_token(values, "ProductType", 32)
@@ -60,9 +109,19 @@ pub(crate) async fn read_device_details(
         activation_state: None,
         developer_mode_enabled: None,
         developer_image_mounted: None,
-        regional_settings: regional_settings(values),
+        regional_settings: regional_settings(values, Some(&international)),
         battery: None,
-    })
+    };
+    if session_started {
+        match tokio::time::timeout(Duration::from_secs(1), lockdown.stop_session()).await {
+            Ok(Ok(())) => tracing::debug!("device details Lockdown session stopped"),
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "unable to stop device details Lockdown session")
+            }
+            Err(_) => tracing::debug!("stopping device details Lockdown session timed out"),
+        }
+    }
+    Some(details)
 }
 
 pub(crate) async fn rename_device(
@@ -162,7 +221,21 @@ pub(crate) async fn read_device_battery(
         .await
         .map_err(|error| format!("cannot query AppleSmartBattery: {error:?}"))?
         .ok_or_else(|| "AppleSmartBattery returned no data".to_string())?;
-    Ok(battery_from_ioregistry(&values))
+    let mut battery = battery_from_ioregistry(&values);
+    if battery.temperature_celsius.is_none() {
+        match diagnostics
+            .ioregistry(None, Some("AppleSmartBatteryPack"), None)
+            .await
+        {
+            Ok(values) => {
+                battery.temperature_celsius = values.as_ref().and_then(battery_temperature_celsius);
+            }
+            Err(error) => {
+                tracing::debug!(?error, "AppleSmartBatteryPack temperature unavailable");
+            }
+        }
+    }
+    Ok(battery)
 }
 
 fn display_name(values: &plist::Dictionary) -> Option<String> {
@@ -187,27 +260,47 @@ fn identity_token(values: &plist::Dictionary, key: &str, max_characters: usize) 
     .then(|| value.to_string())
 }
 
-fn regional_settings(values: &plist::Dictionary) -> Option<DeviceRegionalSettings> {
-    let token = |key: &str, max_chars: usize, allowed: fn(char) -> bool| {
-        values
-            .get(key)
-            .and_then(plist::Value::as_string)
-            .map(str::trim)
-            .filter(|value| {
-                !value.is_empty()
-                    && value.chars().count() <= max_chars
-                    && value.chars().all(allowed)
-            })
-            .map(ToOwned::to_owned)
-    };
+fn regional_settings(
+    values: &plist::Dictionary,
+    international: Option<&plist::Dictionary>,
+) -> Option<DeviceRegionalSettings> {
+    let token =
+        |dictionary: &plist::Dictionary, key: &str, max_chars: usize, allowed: fn(char) -> bool| {
+            dictionary
+                .get(key)
+                .and_then(plist::Value::as_string)
+                .map(str::trim)
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.chars().count() <= max_chars
+                        && value.chars().all(allowed)
+                })
+                .map(ToOwned::to_owned)
+        };
     let regional = DeviceRegionalSettings {
-        language: token("Language", 35, |character| {
-            character.is_ascii_alphanumeric() || character == '-'
-        }),
-        locale: token("Locale", 64, |character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-        }),
-        time_zone: token("TimeZone", 64, |character| {
+        language: international
+            .and_then(|settings| {
+                token(settings, "Language", 35, |character| {
+                    character.is_ascii_alphanumeric() || character == '-'
+                })
+            })
+            .or_else(|| {
+                token(values, "Language", 35, |character| {
+                    character.is_ascii_alphanumeric() || character == '-'
+                })
+            }),
+        locale: international
+            .and_then(|settings| {
+                token(settings, "Locale", 64, |character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+            })
+            .or_else(|| {
+                token(values, "Locale", 64, |character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+            }),
+        time_zone: token(values, "TimeZone", 64, |character| {
             character.is_ascii_alphanumeric() || matches!(character, '/' | '_' | '-' | '+' | '.')
         }),
         uses_24_hour_clock: values
@@ -235,7 +328,10 @@ fn storage_from_disk_usage(values: &plist::Dictionary) -> Option<DeviceStorage> 
     let unsigned = |key: &str| values.get(key).and_then(plist::Value::as_unsigned_integer);
     let storage = DeviceStorage {
         data_capacity_bytes: unsigned("TotalDataCapacity"),
-        data_available_bytes: unsigned("TotalDataAvailable"),
+        // Current iOS reports user-visible free space as AmountDataAvailable;
+        // TotalDataAvailable can include reclaimable or other volume capacity.
+        data_available_bytes: unsigned("AmountDataAvailable")
+            .or_else(|| unsigned("TotalDataAvailable")),
         system_capacity_bytes: unsigned("TotalSystemCapacity"),
         system_available_bytes: unsigned("TotalSystemAvailable"),
     };
@@ -288,17 +384,11 @@ fn battery_from_ioregistry(values: &plist::Dictionary) -> DeviceBattery {
                 .zip(full_charge_capacity_mah)
                 .map(|(design, full)| (full as f64 * 100.0 / design as f64).clamp(0.0, 100.0))
         });
-    let temperature_celsius = signed(values, "Temperature", 8_000)
-        .or_else(|| signed(values, "BatteryTemperature", 8_000))
-        .or_else(|| battery_data.and_then(|data| signed(data, "Temperature", 8_000)))
-        .map(|value| value as f64 / 100.0)
-        .filter(|value| (-20.0..=80.0).contains(value));
-
     DeviceBattery {
         level_percent: unsigned(values, "CurrentCapacity", 100)
             .or_else(|| battery_data.and_then(|data| unsigned(data, "CurrentCapacity", 100)))
             .map(|value| value as u8),
-        temperature_celsius,
+        temperature_celsius: battery_temperature_celsius(values),
         is_charging: boolean(values, "IsCharging")
             .or_else(|| charger_data.and_then(|data| boolean(data, "IsCharging"))),
         external_connected: boolean(values, "ExternalConnected")
@@ -321,6 +411,23 @@ fn battery_from_ioregistry(values: &plist::Dictionary) -> DeviceBattery {
             .and_then(plist::Value::as_string)
             .and_then(normalized_diagnostic_label),
     }
+}
+
+fn battery_temperature_celsius(values: &plist::Dictionary) -> Option<f64> {
+    let bounded = |dictionary: &plist::Dictionary, key: &str| {
+        dictionary
+            .get(key)
+            .and_then(plist::Value::as_signed_integer)
+            .filter(|value| value.unsigned_abs() <= 8_000)
+    };
+    let battery_data = values
+        .get("BatteryData")
+        .and_then(plist::Value::as_dictionary);
+    bounded(values, "Temperature")
+        .or_else(|| bounded(values, "BatteryTemperature"))
+        .or_else(|| battery_data.and_then(|data| bounded(data, "Temperature")))
+        .map(|value| value as f64 / 100.0)
+        .filter(|value| (-20.0..=80.0).contains(value))
 }
 
 fn normalized_diagnostic_label(value: &str) -> Option<String> {
@@ -348,6 +455,41 @@ mod tests {
             .await
             .expect("query developer mode");
         eprintln!("developer mode enabled: {enabled}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn reads_authenticated_device_details_from_hardware() {
+        use idevice::usbmuxd::UsbmuxdAddr;
+
+        let device = crate::test_support::usb_test_device().await;
+        let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-details-test");
+        let details = read_device_details(&provider, device.udid)
+            .await
+            .expect("read device details");
+        let storage = details.storage.expect("device storage");
+        assert!(details.total_disk_capacity.is_some());
+        assert!(storage.data_capacity_bytes.is_some());
+        assert!(storage.data_available_bytes.is_some());
+        assert!(details.model_number.is_some());
+        assert!(details.device_color.is_some());
+        assert!(details.serial_number.is_some());
+        let regional = details.regional_settings.expect("regional settings");
+        assert!(regional.language.is_some());
+        assert!(regional.locale.is_some());
+        assert!(regional.time_zone.is_some());
+        assert!(regional.uses_24_hour_clock.is_some());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a connected physical device"]
+    async fn reads_device_battery_temperature_from_hardware() {
+        use idevice::usbmuxd::UsbmuxdAddr;
+
+        let device = crate::test_support::usb_test_device().await;
+        let provider = device.to_provider(UsbmuxdAddr::default(), "devicehub-mask-battery-test");
+        let battery = read_device_battery(&provider).await.expect("read battery");
+        assert!(battery.temperature_celsius.is_some());
     }
 
     fn dictionary<const N: usize>(entries: [(&str, plist::Value); N]) -> plist::Dictionary {
@@ -396,7 +538,11 @@ mod tests {
             identity_token(&values, "ProductType", 32).as_deref(),
             Some("iPhone14,3")
         );
-        let regional = regional_settings(&values).unwrap();
+        let international = dictionary([
+            ("Language", plist::Value::String("zh-Hant".into())),
+            ("Locale", plist::Value::String("zh_TW".into())),
+        ]);
+        let regional = regional_settings(&values, Some(&international)).unwrap();
         assert_eq!(regional.language.as_deref(), Some("zh-Hant"));
         assert_eq!(regional.locale.as_deref(), Some("zh_TW"));
         assert_eq!(regional.time_zone.as_deref(), Some("Asia/Taipei"));
@@ -409,7 +555,7 @@ mod tests {
         ]);
         assert!(display_name(&invalid).is_none());
         assert!(identity_token(&invalid, "Token", 32).is_none());
-        assert!(regional_settings(&invalid).is_none());
+        assert!(regional_settings(&invalid, None).is_none());
     }
 
     #[test]
@@ -424,13 +570,17 @@ mod tests {
                 plist::Value::Integer(45_000_000_000_u64.into()),
             ),
             (
+                "AmountDataAvailable",
+                plist::Value::Integer(4_500_000_000_u64.into()),
+            ),
+            (
                 "TotalSystemCapacity",
                 plist::Value::Integer(8_000_000_000_u64.into()),
             ),
         ]);
         let storage = storage_from_disk_usage(&values).unwrap();
         assert_eq!(storage.data_capacity_bytes, Some(120_000_000_000));
-        assert_eq!(storage.data_available_bytes, Some(45_000_000_000));
+        assert_eq!(storage.data_available_bytes, Some(4_500_000_000));
         assert_eq!(storage.system_capacity_bytes, Some(8_000_000_000));
         assert_eq!(storage.system_available_bytes, None);
         assert!(storage_from_disk_usage(&plist::Dictionary::new()).is_none());
@@ -468,6 +618,14 @@ mod tests {
             battery.adapter_name.as_deref(),
             Some("20W USB-C Power Adapter")
         );
+        let pack = dictionary([(
+            "BatteryData",
+            plist::Value::Dictionary(dictionary([(
+                "Temperature",
+                plist::Value::Integer(3_679.into()),
+            )])),
+        )]);
+        assert_eq!(battery_temperature_celsius(&pack), Some(36.79));
         assert!((battery.health_percent.unwrap() - 80.508_670_52).abs() < 1e-6);
         assert!(!format!("{battery:?}").contains("must-not-leak"));
     }
