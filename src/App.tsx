@@ -28,7 +28,6 @@ import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
 import SyncOutlined from "@ant-design/icons/es/icons/SyncOutlined";
 import ThunderboltOutlined from "@ant-design/icons/es/icons/ThunderboltOutlined";
 import VideoCameraOutlined from "@ant-design/icons/es/icons/VideoCameraOutlined";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Button, Dropdown, Input, Popover, Segmented, Select, Space, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -54,6 +53,7 @@ import { useDeviceVideoStream } from "./useDeviceVideoStream";
 import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
 import { usePrivateBackend } from "./usePrivateBackend";
+import { currentHostWindow } from "./hostWindow";
 import { useUndoHistory } from "./useUndoHistory";
 import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./appSettings";
 
@@ -111,7 +111,7 @@ export default function App() {
   const { t } = useTranslation();
   const translateRef = useRef(t);
   translateRef.current = t;
-  const appWindow = useMemo(() => getCurrentWindow(), []);
+  const appWindow = useMemo(() => currentHostWindow(), []);
   const [page, setPage] = useState<AppPage>("device");
   const [afcVisited, setAfcVisited] = useState(false);
   const [status, setStatus] = useState<DeviceStatus>(() => ({ ...emptyStatus, status: t("status.starting") }));

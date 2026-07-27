@@ -1,0 +1,17 @@
+[package]
+name = "devicehub-headless"
+version = "0.1.0"
+edition = "2024"
+description = "Headless DeviceHub browser host"
+license = "MIT"
+
+[dependencies]
+axum = "0.8"
+bytes = "1"
+devicehub-host = { path = "../devicehub-host" }
+devicehub-runtime = { path = "../devicehub-runtime" }
+devicehub-server = { path = "../devicehub-server" }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }

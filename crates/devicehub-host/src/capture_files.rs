@@ -6,18 +6,18 @@ use devicehub_runtime::{CaptureFileFuture, CaptureFileIo, CaptureFileKind, Captu
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TokioCaptureFileIo;
+pub struct TokioCaptureFileIo;
 
-/// Adapts desktop filesystem policy to server-side request validation without
+/// Adapts native-host filesystem policy to server-side request validation without
 /// exposing filesystem APIs to `devicehub-server`.
-pub(crate) async fn validate_http_destination(
+pub async fn validate_http_destination(
     destination: PathBuf,
     kind: CaptureFileKind,
 ) -> Result<(), String> {
     TokioCaptureFileIo.validate(&destination, kind).await
 }
 
-pub(crate) struct TokioCaptureFileWriter {
+pub struct TokioCaptureFileWriter {
     file: tokio::fs::File,
     temporary: PathBuf,
     destination: PathBuf,

@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use devicehub_runtime::ProvisioningFailure;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TokioProvisioningProfiles;
+pub struct TokioProvisioningProfiles;
 
 impl devicehub_runtime::ProvisioningProfileLoader for TokioProvisioningProfiles {
     type Source = PathBuf;

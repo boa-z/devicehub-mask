@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(super) struct TokioDiagnosticDumpSinks;
+pub struct TokioDiagnosticDumpSinks;
 
 impl DiagnosticDumpSinkFactory for TokioDiagnosticDumpSinks {
     type Source = PathBuf;

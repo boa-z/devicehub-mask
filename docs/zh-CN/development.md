@@ -11,6 +11,8 @@ devicehub-mask/
 ├── docs/zh-CN/              # 简体中文文档
 ├── crates/
 │   ├── devicehub-core/      # 宿主无关领域策略与状态
+│   ├── devicehub-headless/  # 独立浏览器宿主二进制
+│   ├── devicehub-host/      # 共享文件系统与进程适配器
 │   ├── devicehub-runtime/   # Apple 设备会话与监督
 │   └── devicehub-server/    # 可复用 HTTP/WebSocket 协议适配器
 ├── scripts/                 # 设备准备和打包脚本
@@ -26,6 +28,18 @@ devicehub-mask/
 ```
 
 生成的 `dist/` 和 Cargo `target/` 目录不是源码文档的一部分。
+
+## 无头服务开发
+
+先构建共享的 React 界面，再从仓库根目录启动独立原生宿主：
+
+```sh
+npm run headless:dev -- --listen 127.0.0.1:8080
+```
+
+打开进程输出的 URL。API 令牌放在不会随 HTTP 请求发送的 URL fragment 中，完成引导后会从地址栏移除。需要固定令牌时使用 `--token-file`；该文件必须预先存在，并包含一个至少 24 字符的 URL 安全单行令牌。在 Unix 上还需将文件权限设为 `0600`。
+
+监听地址默认限制在回环接口。非回环 `--listen` 地址必须同时显式传入 `--allow-lan`，否则启动会被拒绝。此开关不提供 TLS、用户账户或可安全暴露到公网的部署能力。MCP 仅在传入 `--mcp-listen` 后启动，并且由于没有鉴权而强制限制在回环接口。运行 `npm run headless:dev -- --help` 可查看全部宿主路径和传输覆盖参数。
 
 ## 开发模式
 

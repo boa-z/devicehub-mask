@@ -1,6 +1,8 @@
 [workspace]
 members = [
   "crates/devicehub-core",
+  "crates/devicehub-headless",
+  "crates/devicehub-host",
   "crates/devicehub-runtime",
   "crates/devicehub-server",
   "src-tauri",

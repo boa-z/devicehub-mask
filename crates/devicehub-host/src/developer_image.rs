@@ -1,4 +1,4 @@
-//! Desktop asset binding for the runtime-owned Developer Disk Image service.
+//! Native-host asset binding for the runtime-owned Developer Disk Image service.
 
 use std::path::PathBuf;
 
@@ -7,7 +7,7 @@ use tokio::io::AsyncReadExt;
 const MAX_PATH_BYTES: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TokioDeveloperImageAssets;
+pub struct TokioDeveloperImageAssets;
 
 impl devicehub_runtime::DeveloperImageAssetLoader for TokioDeveloperImageAssets {
     type Source = PathBuf;

@@ -1,12 +1,12 @@
-//! Desktop path policy for long-running diagnostic exports.
+//! Native-host path policy for long-running diagnostic exports.
 
 use std::path::{Path, PathBuf};
 
 const MAX_PATH_BYTES: usize = 4_096;
 
-/// Applies desktop filesystem policy for the reusable diagnostics HTTP
+/// Applies native-host filesystem policy for the reusable diagnostics HTTP
 /// adapter and returns the normalized path consumed by runtime commands.
-pub(crate) async fn prepare_http_destination(
+pub async fn prepare_http_destination(
     destination: PathBuf,
     kind: devicehub_server::http::DiagnosticDestinationKind,
 ) -> Result<PathBuf, String> {
@@ -23,10 +23,7 @@ pub(crate) async fn prepare_http_destination(
     }
 }
 
-pub(crate) async fn prepare_destination(
-    destination: &Path,
-    label: &str,
-) -> Result<PathBuf, String> {
+pub async fn prepare_destination(destination: &Path, label: &str) -> Result<PathBuf, String> {
     if !destination.is_absolute() || destination.file_name().is_none() {
         return Err(format!("{label} destination must be an absolute file path"));
     }

@@ -7,5 +7,6 @@
 pub mod http;
 pub mod mcp;
 pub mod private_api;
+pub mod spa;
 pub mod status;
 pub mod websocket;

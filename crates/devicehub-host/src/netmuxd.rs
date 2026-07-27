@@ -16,7 +16,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const RESTART_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
-pub(crate) struct NetmuxdConfig {
+pub struct NetmuxdConfig {
     binary: Option<PathBuf>,
     forced: bool,
     log_filter: String,
@@ -26,7 +26,7 @@ pub(crate) struct NetmuxdConfig {
 impl NetmuxdConfig {
     /// Resolve process-level overrides at the host boundary. The runtime owns
     /// sidecar supervision, but never reads the host process environment.
-    pub(crate) fn from_host(
+    pub fn from_host(
         configured: Option<OsString>,
         log_filter: Option<String>,
         upstream_usbmuxd: Option<String>,
@@ -59,7 +59,7 @@ pub struct NetmuxdSupervisor {
 }
 
 impl NetmuxdSupervisor {
-    pub(crate) fn new(pairing_dir: PathBuf, config: NetmuxdConfig) -> Self {
+    pub fn new(pairing_dir: PathBuf, config: NetmuxdConfig) -> Self {
         Self {
             binary: config.binary,
             forced: config.forced,

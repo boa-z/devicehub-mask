@@ -69,6 +69,9 @@ function checkBoundary(packageName, forbidden) {
 
 checkBoundary("devicehub-core", coreForbidden);
 checkBoundary("devicehub-runtime", runtimeForbidden);
+const headlessForbidden = new Set(["arboard", "rodio", "tauri", "wry"]);
+checkBoundary("devicehub-host", headlessForbidden);
+checkBoundary("devicehub-headless", headlessForbidden);
 
 const serverPackage = workspace.packages.find(
   (pkg) => pkg.name === "devicehub-server",
@@ -229,16 +232,16 @@ const serverProfilesHttp = readFileSync(
   "crates/devicehub-server/src/http/profiles.rs",
   "utf8",
 );
-const tauriProfileFiles = readFileSync(
-  "src-tauri/src/profile_files.rs",
+const hostProfileFiles = readFileSync(
+  "crates/devicehub-host/src/profile_files.rs",
   "utf8",
 );
-const tauriDeveloperImageAssets = readFileSync(
-  "src-tauri/src/developer_image.rs",
+const hostDeveloperImageAssets = readFileSync(
+  "crates/devicehub-host/src/developer_image.rs",
   "utf8",
 );
-const tauriProvisioningProfiles = readFileSync(
-  "src-tauri/src/provisioning.rs",
+const hostProvisioningProfiles = readFileSync(
+  "crates/devicehub-host/src/provisioning.rs",
   "utf8",
 );
 const tauriWebProduction = productionSource(
@@ -315,7 +318,7 @@ if (
     (token) => productionSource(serverDeveloperImageHttp).includes(token),
   ) ||
   tauriWebProduction.includes('route("/api/device/developer-image"') ||
-  !tauriDeveloperImageAssets.includes(
+  !hostDeveloperImageAssets.includes(
     "impl devicehub_runtime::DeveloperImageAssetLoader for TokioDeveloperImageAssets",
   ) ||
   !serverProvisioningHttp.includes("pub struct ProvisioningHttpState") ||
@@ -329,7 +332,7 @@ if (
   tauriWebProduction.includes('route("/api/device/provisioning-profiles"') ||
   tauriWebProduction.includes("ProvisioningCommand::") ||
   tauriWebProduction.includes("pub input:") ||
-  !tauriProvisioningProfiles.includes(
+  !hostProvisioningProfiles.includes(
     "impl devicehub_runtime::ProvisioningProfileLoader for TokioProvisioningProfiles",
   ) ||
   [
@@ -343,7 +346,7 @@ if (
   !serverStorageHttp.includes("validate_app_bundle_id") ||
   !serverProfilesHttp.includes("pub trait ProfileRepository") ||
   !serverProfilesHttp.includes("pub fn router<S>(state: ProfileHttpState)") ||
-  !tauriProfileFiles.includes("impl ProfileRepository for TokioProfileRepository") ||
+  !hostProfileFiles.includes("impl ProfileRepository for TokioProfileRepository") ||
   ["tokio::fs", "std::fs", "std::env", "TcpListener::bind", "start_runtime("].some(
     (token) => productionSource(serverProfilesHttp).includes(token),
   ) ||
@@ -366,7 +369,35 @@ if (
   process.exit(1);
 }
 console.log(
-  "devicehub-server owns the authenticated private API graph and all device HTTP adapters while Tauri only injects state, CORS, listener, and filesystem policy.",
+  "devicehub-server owns the authenticated private API graph, devicehub-host injects native filesystem policy, and Tauri owns only its listener and CORS policy.",
+);
+
+const headlessSource = productionSource(
+  readFileSync("crates/devicehub-headless/src/main.rs", "utf8"),
+);
+const hostPrivateApi = productionSource(
+  readFileSync("crates/devicehub-host/src/private_api.rs", "utf8"),
+);
+const serverSpa = productionSource(
+  readFileSync("crates/devicehub-server/src/spa.rs", "utf8"),
+);
+if (
+  !hostPrivateApi.includes("pub fn state(") ||
+  !headlessSource.includes("devicehub_host::private_api::state(") ||
+  !headlessSource.includes("devicehub_server::spa::router(") ||
+  !headlessSource.includes("--allow-lan") ||
+  !headlessSource.includes("with_graceful_shutdown") ||
+  headlessSource.includes("CorsLayer::permissive") ||
+  !serverSpa.includes('route("/api/{*path}"') ||
+  !serverSpa.includes("fallback_service(static_files)")
+) {
+  console.error(
+    "Rust boundary check failed: headless host composition, LAN opt-in, or SPA/API fallback policy drifted",
+  );
+  process.exit(1);
+}
+console.log(
+  "devicehub-headless reuses shared runtime/API composition with explicit LAN exposure and isolated SPA fallback.",
 );
 
 const hostApiForbidden = ["std::path", "std::fs", "tokio::fs", "std::env"];
@@ -775,8 +806,8 @@ const runtimeDeveloperImageMount = readFileSync(
   "crates/devicehub-runtime/src/device/developer_image/mount.rs",
   "utf8",
 );
-const tauriDeveloperImage = readFileSync(
-  "src-tauri/src/developer_image.rs",
+const hostDeveloperImage = readFileSync(
+  "crates/devicehub-host/src/developer_image.rs",
   "utf8",
 );
 const requiredCoreDeveloperImage = [
@@ -798,8 +829,8 @@ if (
   runtimeFacade.includes("DeveloperImageMountStatus") ||
   runtimeFacade.includes("DeveloperImageMountSlot") ||
   runtimeFacade.includes("developer_image_type_for_version") ||
-  tauriDeveloperImage.includes("devicehub_runtime::DeveloperImageMountState") ||
-  tauriDeveloperImage.includes("devicehub_runtime::{DeveloperImageMountSlot") ||
+  hostDeveloperImage.includes("devicehub_runtime::DeveloperImageMountState") ||
+  hostDeveloperImage.includes("devicehub_runtime::{DeveloperImageMountSlot") ||
   !serverDeveloperImageHttp.includes("use devicehub_core::{") ||
   serverDeveloperImageHttp.includes("devicehub_runtime::DeveloperImageMountSlot")
 ) {
@@ -1022,11 +1053,11 @@ const runtimeDiscovery = readFileSync(
   "crates/devicehub-runtime/src/transport/discovery.rs",
   "utf8",
 );
-const tauriSidecar = readFileSync("src-tauri/src/netmuxd.rs", "utf8");
+const hostSidecar = readFileSync("crates/devicehub-host/src/netmuxd.rs", "utf8");
 if (
   exposedTransportInternals.length > 0 ||
   runtimeDiscovery.includes("Future<Output = Option<UsbmuxdAddr>>") ||
-  tauriSidecar.includes("idevice::usbmuxd::UsbmuxdAddr") ||
+  hostSidecar.includes("idevice::usbmuxd::UsbmuxdAddr") ||
   runtimeTransport.includes("pub enum SessionEndpoint") ||
   runtimeTransport.includes("pub struct UsbmuxdEndpoint") ||
   runtimeTransport.includes("pub struct WifiEndpoint") ||
@@ -1039,7 +1070,7 @@ if (
 }
 console.log("devicehub-runtime transport protocol types stay private.");
 
-const tauriPairingStore = readFileSync("src-tauri/src/wifi_devices.rs", "utf8");
+const hostPairingStore = readFileSync("crates/devicehub-host/src/wifi_devices.rs", "utf8");
 const requiredPairingPort = [
   "pub trait PairingStore",
   "fn load_lockdown_pairings(&self)",
@@ -1059,9 +1090,9 @@ if (
   runtimeTransport.includes("RpPairingFile::read_from_file") ||
   runtimeTransport.includes(".write_to_file(") ||
   !runtimeTransport.includes("pub(crate) struct CoreTunnelConfig") ||
-  !tauriPairingStore.includes("impl PairingStore for HostPairingStore") ||
-  tauriPairingStore.includes("impl RemotePairingStore") ||
-  tauriPairingStore.includes("impl WifiPairingStore")
+  !hostPairingStore.includes("impl PairingStore for HostPairingStore") ||
+  hostPairingStore.includes("impl RemotePairingStore") ||
+  hostPairingStore.includes("impl WifiPairingStore")
 ) {
   console.error(
     `Rust boundary check failed: device pairing storage is not unified behind the host port (missing port: ${missingPairingPort.join(", ")})`,
@@ -1071,7 +1102,7 @@ if (
 console.log("devicehub-runtime pairing storage is unified and host-injected.");
 
 const tauriManifest = readFileSync("src-tauri/Cargo.toml", "utf8");
-const tauriBackup = readFileSync("src-tauri/src/device_backup.rs", "utf8");
+const hostBackup = readFileSync("crates/devicehub-host/src/device_backup.rs", "utf8");
 const runtimeBackup = readFileSync(
   "crates/devicehub-runtime/src/diagnostics/device_backup.rs",
   "utf8",
@@ -1088,7 +1119,7 @@ const leakedBackupTypes = forbiddenBackupPortTypes.filter((name) =>
   publicBackupPort.includes(name),
 );
 const retainedTauriBackupProtocol = forbiddenBackupPortTypes.filter((name) =>
-  tauriBackup.includes(name),
+  hostBackup.includes(name),
 );
 if (
   /(^|\n)idevice\s*=/.test(tauriManifest) ||
@@ -1096,7 +1127,7 @@ if (
   retainedTauriBackupProtocol.length > 0 ||
   !runtimeBackup.includes("impl BackupDelegate for ConfinedBackupDelegate") ||
   !runtimeBackup.includes(".backup_from_path(") ||
-  !tauriBackup.includes("impl devicehub_runtime::DeviceBackupDestination")
+  !hostBackup.includes("impl devicehub_runtime::DeviceBackupDestination")
 ) {
   console.error(
     `Rust boundary check failed: MobileBackup2 ownership escaped runtime (public port: ${leakedBackupTypes.join(", ")}; Tauri: ${retainedTauriBackupProtocol.join(", ")})`,
@@ -1321,7 +1352,7 @@ const runtimeAudioPort = readFileSync(
   "crates/devicehub-runtime/src/audio.rs",
   "utf8",
 );
-const tauriAudioAdapter = readFileSync("src-tauri/src/decode.rs", "utf8");
+const hostAudioAdapter = readFileSync("crates/devicehub-host/src/decode.rs", "utf8");
 const requiredAudioSourcePort = [
   "pub struct DeviceAudioSource",
   "pub async fn drain(&self)",
@@ -1336,8 +1367,8 @@ if (
   missingAudioSourcePort.length > 0 ||
   runtimeAudioPort.includes("fn run(&self, udp: UdpSocketHandle)") ||
   runtimeAudioPort.includes("pub udp: UdpSocketHandle") ||
-  tauriAudioAdapter.includes("idevice::tcp::handle::UdpSocketHandle") ||
-  tauriAudioAdapter.includes("receive_audio_rtp")
+  hostAudioAdapter.includes("idevice::tcp::handle::UdpSocketHandle") ||
+  hostAudioAdapter.includes("receive_audio_rtp")
 ) {
   console.error(
     `Rust boundary check failed: audio host port exposes Apple transport ownership (missing source API: ${missingAudioSourcePort.join(", ")})`,

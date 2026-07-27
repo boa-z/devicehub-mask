@@ -1,10 +1,10 @@
-//! Desktop filesystem adapter for runtime-owned MobileBackup2 orchestration.
+//! Native-host filesystem adapter for runtime-owned MobileBackup2 orchestration.
 
 use std::path::{Path, PathBuf};
 
 const MAX_PATH_BYTES: usize = 4_096;
 
-pub(crate) async fn prepare_destination(destination: &Path) -> Result<PathBuf, String> {
+pub async fn prepare_destination(destination: &Path) -> Result<PathBuf, String> {
     if !destination.is_absolute() {
         return Err("backup destination must be an absolute directory".into());
     }
@@ -27,7 +27,7 @@ pub(crate) async fn prepare_destination(destination: &Path) -> Result<PathBuf, S
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct TokioDeviceBackupDestination;
+pub struct TokioDeviceBackupDestination;
 
 impl devicehub_runtime::DeviceBackupDestination for TokioDeviceBackupDestination {
     type Destination = PathBuf;

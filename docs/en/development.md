@@ -11,6 +11,8 @@ devicehub-mask/
 ├── docs/zh-CN/              # Simplified Chinese documentation
 ├── crates/
 │   ├── devicehub-core/      # host-independent domain policy and state
+│   ├── devicehub-headless/  # standalone browser host binary
+│   ├── devicehub-host/      # shared filesystem and process adapters
 │   ├── devicehub-runtime/   # Apple-device sessions and supervision
 │   └── devicehub-server/    # reusable HTTP/WebSocket protocol adapters
 ├── scripts/                 # device preparation and packaging helpers
@@ -26,6 +28,18 @@ devicehub-mask/
 ```
 
 Generated `dist/` and Cargo `target/` directories are not source documentation.
+
+## Headless Development
+
+Build the shared React UI, then start the standalone native host from the repository root:
+
+```sh
+npm run headless:dev -- --listen 127.0.0.1:8080
+```
+
+Open the URL printed by the process. Its API token is placed in the URL fragment, which browsers do not send in HTTP requests, and is removed from the address bar after bootstrap. Use `--token-file` when a stable token is required; the file must already exist and contain one URL-safe token of at least 24 characters. On Unix, set its mode to `0600`.
+
+The listener defaults to loopback. A non-loopback `--listen` value is rejected unless `--allow-lan` is also present. This opt-in does not provide TLS, user accounts, or Internet-safe deployment. MCP is disabled unless `--mcp-listen` is provided and remains loopback-only because it has no authentication. Run `npm run headless:dev -- --help` for all host paths and transport overrides.
 
 ## Development Mode
 

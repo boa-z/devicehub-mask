@@ -1,4 +1,4 @@
-//! Desktop filesystem implementation of key-mapping profile persistence.
+//! Native-host filesystem implementation of key-mapping profile persistence.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,12 +10,12 @@ use devicehub_server::http::{
 };
 
 #[derive(Clone)]
-pub(crate) struct TokioProfileRepository {
+pub struct TokioProfileRepository {
     profile_dir: Arc<PathBuf>,
 }
 
 impl TokioProfileRepository {
-    pub(crate) fn new(profile_dir: PathBuf) -> Self {
+    pub fn new(profile_dir: PathBuf) -> Self {
         Self {
             profile_dir: Arc::new(profile_dir),
         }

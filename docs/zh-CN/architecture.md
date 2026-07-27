@@ -5,11 +5,11 @@
 ## 系统概览
 
 ```text
-Tauri 2 桌面外壳（WKWebView / WebView2 / WebKitGTK）
+Tauri 2 桌面外壳或 devicehub-headless 浏览器宿主
         |
-React 19 + Ant Design 工作区
+共享 React 19 + Ant Design 工作区
         |
-Tauri IPC 启动握手
+Tauri IPC 或同源 URL fragment 启动握手
         |
 经过鉴权的私有回环 WebSocket 和 HTTP API
         |
@@ -18,7 +18,7 @@ Rust / Axum 服务
 idevice：CoreDevice、Lockdown、Installation Proxy、Misagent、Universal HID
 ```
 
-仓库采用标准 Tauri 2 结构。Vite 从 `src/` 构建 React 界面，Rust 桌面代码和 Tauri 配置位于 `src-tauri/`。生产前端资源由 Tauri 嵌入，应用生命周期也由 Tauri 管理。
+Vite 从 `src/` 构建唯一一套 React 界面。Tauri 嵌入这些资源并拥有桌面生命周期；`devicehub-headless` 在不链接 Tauri 或 Wry 的前提下提供同一份 `dist/`。`devicehub-host` 保存两个组合根共用的本地文件、配对、FFmpeg 与 netmuxd 适配器。
 
 已接受的[Core 与 Runtime 提取](core-runtime.md)会把该结构逐步演进为同一仓库内的宿主无关库。迁移完成前桌面端仍是组合根；新增代码必须提前遵守文档规定的所有权与依赖方向。
 

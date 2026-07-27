@@ -5,11 +5,11 @@
 ## System Overview
 
 ```text
-Tauri 2 desktop shell (WKWebView / WebView2 / WebKitGTK)
+Tauri 2 desktop shell or devicehub-headless browser host
         |
-React 19 + Ant Design workspace
+Shared React 19 + Ant Design workspace
         |
-Tauri IPC bootstrap
+Tauri IPC or same-origin URL-fragment bootstrap
         |
 Authenticated private loopback WebSocket and HTTP API
         |
@@ -18,7 +18,7 @@ Rust / Axum service
 idevice: CoreDevice, Lockdown, Installation Proxy, Misagent, Universal HID
 ```
 
-The repository follows the standard Tauri 2 layout. Vite builds the React UI from `src/`; Rust desktop code and Tauri configuration live in `src-tauri/`. Tauri embeds production frontend assets and owns the application lifecycle.
+Vite builds one React UI from `src/`. Tauri embeds those assets and owns desktop lifecycle, while `devicehub-headless` serves the same `dist/` directory without linking Tauri or Wry. `devicehub-host` contains the native file, pairing, FFmpeg, and netmuxd adapters shared by both composition roots.
 
 The accepted [core and runtime extraction](core-runtime.md) evolves this layout into host-independent libraries inside the same repository. Until the migration is complete, the desktop remains the composition root; new code must already follow the documented ownership and dependency direction.
 

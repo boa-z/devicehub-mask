@@ -1,9 +1,7 @@
 //! Desktop composition for runtime-owned device sessions and host adapters.
 
 mod clipboard;
-mod diagnostics;
 mod manager;
-mod services;
 
 pub(crate) use manager::start as start_manager;
 
@@ -11,13 +9,13 @@ use devicehub_runtime::SystemUsbmuxdConfig;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceTransportConfig {
-    pub(crate) netmuxd: crate::netmuxd::NetmuxdConfig,
+    pub(crate) netmuxd: devicehub_host::netmuxd::NetmuxdConfig,
     pub(crate) system_usbmuxd: SystemUsbmuxdConfig,
 }
 
 impl DeviceTransportConfig {
     pub(crate) fn from_host(
-        netmuxd: crate::netmuxd::NetmuxdConfig,
+        netmuxd: devicehub_host::netmuxd::NetmuxdConfig,
         system_usbmuxd: Option<String>,
     ) -> Self {
         Self {

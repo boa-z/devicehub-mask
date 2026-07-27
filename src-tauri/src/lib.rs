@@ -1,21 +1,11 @@
 mod audio_output;
 mod build_info;
-mod capture_files;
-mod decode;
-mod developer_image;
-mod device_backup;
 mod device_runtime;
-mod diagnostic_files;
 mod diagnostics;
-mod host_files;
 mod mcp;
-mod netmuxd;
-mod profile_files;
-mod provisioning;
 mod session;
 mod settings;
 mod web;
-mod wifi_devices;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -164,66 +154,11 @@ fn spawn_backend(
             runtime.block_on(async move {
                 tokio::spawn(mcp::serve(client.clone()));
                 let app = web::router(
-                    web::AppState {
-                        application: client.clone(),
-                        device_manager_http: devicehub_server::http::DeviceManagerHttpState::new(
-                            client.manager.clone(),
-                        ),
-                        device_http: devicehub_server::http::DeviceHttpState::new(
-                            client.device.commands.clone(),
-                            client.device.location.clone(),
-                            client.device.device_control.clone(),
-                        ),
-                        wda_http: devicehub_server::http::WdaHttpState::new(
-                            client.device.commands.clone(),
-                        ),
-                        developer_image_http: devicehub_server::http::DeveloperImageHttpState::new(
-                            client.device.commands.clone(),
-                            client.device.developer_image.clone(),
-                        ),
-                        provisioning_http: devicehub_server::http::ProvisioningHttpState::new(
-                            client.device.commands.clone(),
-                        ),
-                        performance_http: devicehub_server::http::PerformanceHttpState::new(
-                            client.device.performance,
-                            client.device.performance_demand,
-                            client.device.device_logs,
-                            client.device.device_log_demand,
-                            client.device.device_conditions,
-                            client.device.network_capture,
-                            client.device.bluetooth_capture,
-                            client.device.service_registry,
-                            client.device.commands.clone(),
-                            devicehub_server::http::CaptureDestinationValidator::new(
-                                capture_files::validate_http_destination,
-                            ),
-                        ),
-                        profiles_http: devicehub_server::http::ProfileHttpState::new(
-                            profile_files::TokioProfileRepository::new(profile_dir),
-                        ),
-                        storage_http: devicehub_server::http::StorageHttpState::new(
-                            client.device.commands.clone(),
-                            client.device.app_documents,
-                            client.device.device_files,
-                        ),
-                        diagnostics_http: devicehub_server::http::DiagnosticsHttpState::new(
-                            client.device.commands.clone(),
-                            client.device.device_backup,
-                            client.device.sysdiagnose,
-                            client.device.log_archive,
-                            devicehub_server::http::DiagnosticDestinationPreparer::new(
-                                diagnostic_files::prepare_http_destination,
-                            ),
-                        ),
-                        apps_http: devicehub_server::http::AppHttpState::new(
-                            client.device.commands.clone(),
-                            client.device.app_operation,
-                        ),
-                        crash_reports_http: devicehub_server::http::CrashReportHttpState::new(
-                            client.device.commands.clone(),
-                        ),
+                    devicehub_host::private_api::state(
+                        client.clone(),
+                        profile_dir,
                         websocket_config,
-                    },
+                    ),
                     server_token,
                 );
 
@@ -334,7 +269,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let resource_dir = app.path().resource_dir().ok();
             let current_exe = std::env::current_exe().ok();
-            let audio_decoder = decode::AudioDecoderConfig::from_host(
+            let audio_decoder = devicehub_host::decode::AudioDecoderConfig::from_host(
                 std::env::var_os("DEVICEHUB_FFMPEG"),
                 std::env::var_os("PATH"),
                 resource_dir.as_deref(),
@@ -349,7 +284,7 @@ pub fn run() {
                 hid_dump: std::env::var("DEVICEHUB_HID_DUMP").ok().map(PathBuf::from),
             };
             let system_usbmuxd = std::env::var("USBMUXD_SOCKET_ADDRESS").ok();
-            let netmuxd = netmuxd::NetmuxdConfig::from_host(
+            let netmuxd = devicehub_host::netmuxd::NetmuxdConfig::from_host(
                 std::env::var_os("DEVICEHUB_NETMUXD"),
                 std::env::var("DEVICEHUB_NETMUXD_LOG").ok(),
                 system_usbmuxd.clone(),

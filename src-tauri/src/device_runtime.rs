@@ -23,7 +23,7 @@ pub(crate) struct RuntimeConfig {
     pub(crate) transport: crate::session::DeviceTransportConfig,
     pub(crate) preferences: RuntimePreferences,
     pub(crate) audio: AudioPublisher,
-    pub(crate) audio_decoder: crate::decode::AudioDecoderConfig,
+    pub(crate) audio_decoder: devicehub_host::decode::AudioDecoderConfig,
     pub(crate) session_diagnostics: RuntimeSessionDiagnostics<PathBuf>,
 }
 

@@ -4,7 +4,7 @@
 
 DeviceHub Mask 是一个基于 Tauri 2 的 iOS 游戏桌面控制应用，支持 macOS、 Windows 和 Linux。项目将 CoreDevice 屏幕串流、Universal HID 控制与参考 [scrcpy-mask](https://github.com/AkiChase/scrcpy-mask) 设计的按键映射编辑器整合在一起。
 
-本项目不使用 iPhone 镜像，也不使用 scrcpy 的 Android 传输层。内部 Axum 服务只 监听回环地址，每次启动使用独立令牌鉴权，不会作为网页应用对外暴露。
+本项目不使用 iPhone 镜像，也不使用 scrcpy 的 Android 传输层。桌面版内部 Axum 服务只监听回环地址。实验性的独立无头宿主可复用同一套鉴权 API 和 React 界面，监听局域网必须显式启用。
 
 ## 主要能力
 

@@ -11,7 +11,7 @@ use devicehub_runtime::{PairingStore, StoredLockdownPairingRecord};
 const MAX_PAIRING_RECORD_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone)]
-pub(crate) struct HostPairingStore {
+pub struct HostPairingStore {
     directories: PairingDirectories,
 }
 
@@ -22,7 +22,7 @@ struct PairingDirectories {
 }
 
 impl HostPairingStore {
-    pub(crate) fn new(directory: PathBuf) -> Result<Self, String> {
+    pub fn new(directory: PathBuf) -> Result<Self, String> {
         secure_directory(&directory)?;
         let remote = directory
             .parent()

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
-use crate::device_runtime::AudioPublisher;
 use devicehub_core::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+use devicehub_runtime::AudioPublisher;
 use devicehub_runtime::{DeviceAudioSource, audio_decoder_restart_backoff};
 
 const AUDIO_CHUNK_MILLIS: usize = 20;
@@ -23,12 +23,12 @@ const AUDIO_DECODER_STABLE_RUNTIME: Duration = Duration::from_secs(10);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Debug)]
-pub(crate) struct AudioDecoderConfig {
+pub struct AudioDecoderConfig {
     candidates: Arc<[PathBuf]>,
 }
 
 #[derive(Clone)]
-pub(crate) struct FfmpegAudioPipeline {
+pub struct FfmpegAudioPipeline {
     output: AudioPublisher,
     decoder: AudioDecoderConfig,
     enabled: bool,
@@ -37,13 +37,13 @@ pub(crate) struct FfmpegAudioPipeline {
 /// Reuses host-resolved FFmpeg inputs while creating one pipeline per device
 /// session from the latest audio preference.
 #[derive(Clone)]
-pub(crate) struct FfmpegAudioPipelineFactory {
+pub struct FfmpegAudioPipelineFactory {
     output: AudioPublisher,
     decoder: AudioDecoderConfig,
 }
 
 impl FfmpegAudioPipelineFactory {
-    pub(crate) fn new(output: AudioPublisher, decoder: AudioDecoderConfig) -> Self {
+    pub fn new(output: AudioPublisher, decoder: AudioDecoderConfig) -> Self {
         Self { output, decoder }
     }
 }
@@ -57,7 +57,7 @@ impl devicehub_runtime::DeviceAudioPipelineFactory for FfmpegAudioPipelineFactor
 }
 
 impl FfmpegAudioPipeline {
-    pub(crate) fn new(output: AudioPublisher, decoder: AudioDecoderConfig, enabled: bool) -> Self {
+    pub fn new(output: AudioPublisher, decoder: AudioDecoderConfig, enabled: bool) -> Self {
         Self {
             output,
             decoder,
@@ -80,7 +80,7 @@ impl devicehub_runtime::DeviceAudioPipeline for FfmpegAudioPipeline {
 impl AudioDecoderConfig {
     /// Build a lazy FFmpeg search plan from host-resolved process inputs.
     /// Candidate existence is checked only when device audio is enabled.
-    pub(crate) fn from_host(
+    pub fn from_host(
         configured: Option<OsString>,
         search_path: Option<OsString>,
         resource_dir: Option<&std::path::Path>,
@@ -233,7 +233,7 @@ async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioPublisher) {
 
 /// Runs the optional host audio pipeline for one negotiated device session.
 /// Disabled audio still drains RTP so the shared DisplayService session remains healthy.
-pub(crate) async fn run_audio_pipeline(
+pub async fn run_audio_pipeline(
     source: DeviceAudioSource,
     output: AudioPublisher,
     decoder: AudioDecoderConfig,

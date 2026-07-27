@@ -11,6 +11,7 @@
     "rust:boundaries": "node scripts/check-rust-boundaries.mjs",
     "netmuxd:prepare": "node scripts/prepare-netmuxd.mjs",
     "ffmpeg:prepare": "node scripts/prepare-ffmpeg.mjs",
+    "headless:dev": "npm run build && cargo run -p devicehub-headless --",
     "sidecars:prepare": "npm run netmuxd:prepare && npm run ffmpeg:prepare",
     "lint": "eslint .",
     "test": "vitest run",

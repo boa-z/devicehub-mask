@@ -11,7 +11,7 @@ use devicehub_runtime::{
 use tokio::io::AsyncWrite;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TokioHostFileIo;
+pub struct TokioHostFileIo;
 
 struct TokioHostFileWriter(tokio::fs::File);
 
@@ -249,7 +249,7 @@ async fn validate_new_directory_destination(destination: &Path) -> Result<(), St
     }
 }
 
-pub(crate) fn temporary_sibling(destination: &Path, operation: &str) -> Result<PathBuf, String> {
+pub fn temporary_sibling(destination: &Path, operation: &str) -> Result<PathBuf, String> {
     let parent = destination
         .parent()
         .ok_or_else(|| "destination has no parent directory".to_string())?;
@@ -260,7 +260,7 @@ pub(crate) fn temporary_sibling(destination: &Path, operation: &str) -> Result<P
     )))
 }
 
-pub(crate) async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+pub async fn replace_local_file(temporary: &Path, destination: &Path) -> Result<(), String> {
     let backup = temporary_sibling(destination, "backup")?;
     let had_destination = match tokio::fs::metadata(destination).await {
         Ok(metadata) if metadata.is_file() => {

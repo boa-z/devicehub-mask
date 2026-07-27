@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { requestPrivateBackend } from "./usePrivateBackend";
+import { browserBackendConnection, requestPrivateBackend } from "./usePrivateBackend";
 
 describe("private backend requests", () => {
   it("joins an absolute API path and replaces caller authorization", async () => {
@@ -28,5 +28,34 @@ describe("private backend requests", () => {
       { origin: "http://127.0.0.1:54321", token: "session-token" },
       "https://example.com/",
     )).rejects.toThrow("path must be absolute");
+  });
+});
+
+describe("headless backend bootstrap", () => {
+  it("takes the token from the URL fragment, persists it for reloads, and clears it", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    const clearFragment = vi.fn();
+
+    expect(browserBackendConnection({
+      origin: "http://127.0.0.1:8080",
+      hash: "#access_token=session-token",
+      pathname: "/device",
+      search: "?view=control",
+    }, storage, clearFragment)).toEqual({
+      origin: "http://127.0.0.1:8080",
+      token: "session-token",
+    });
+    expect(clearFragment).toHaveBeenCalledWith("/device?view=control");
+
+    expect(browserBackendConnection({
+      origin: "http://127.0.0.1:8080",
+      hash: "",
+      pathname: "/",
+      search: "",
+    }, storage, clearFragment).token).toBe("session-token");
   });
 });
