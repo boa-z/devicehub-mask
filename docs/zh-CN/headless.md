@@ -198,5 +198,5 @@ DeviceHub Mask 不安装、侧载、签名或升级 iOS 应用。桌面端与无
 - 浏览器返回 `401`：重新打开当前进程输出的完整启动 URL；固定令牌部署应确认所有客户端使用同一个受保护令牌文件。
 - 页面可打开但 WebCodecs 不可用：确认浏览器处于安全上下文，并检查 Windows HEVC、GPU 驱动和硬件加速支持。
 - 没有设备：确认设备已解锁并信任、Developer Mode/DDI 就绪以及 Apple Mobile Device Service 或 usbmuxd 正常；再在页面刷新设备列表。
-- 没有声音：在设备设置中启用音频并点击一次页面解除自动播放限制；随后检查 FFmpeg 路径和服务日志。
+- 没有声音：在设备设置中启用音频，然后点击设备工具条中的音频按钮解除浏览器自动播放限制。浏览器对 `http://localhost` 和 `http://<局域网 IP>` 的处理可能不同；如果按钮仍提示播放被阻止，请使用 HTTPS 反向代理，并检查服务日志中的 `browser_playback_suspended` 或 `browser_playback_failed` 诊断以及 FFmpeg 路径。
 - Wi-Fi 设备不可见：先通过 USB 完成配对，确认配对目录可写，并保持设备与服务端处于同一可信网络。

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BrowserVideoDecoder, BrowserVideoSequenceTracker, parseBrowserVideoPacket } from "./browserVideo";
-import { BrowserPcmPlayer, parseBrowserAudioPacket } from "./browserAudio";
+import { BrowserPcmPlayer, parseBrowserAudioPacket, type BrowserAudioPlaybackState } from "./browserAudio";
 import { logFrontend } from "./diagnostics";
 import { hasSourceVideoActivity, isVideoStreamStalled } from "./streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "./types";
@@ -114,6 +114,7 @@ export function useDeviceVideoStream({
   const [canvasReady, setCanvasReady] = useState(false);
   const [streamStalled, setStreamStalled] = useState(false);
   const [decoderError, setDecoderError] = useState<string | null>(null);
+  const [browserAudioState, setBrowserAudioState] = useState<BrowserAudioPlaybackState>("idle");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const canvasReadyRef = useRef(false);
@@ -136,9 +137,15 @@ export function useDeviceVideoStream({
     audioPlayerRef.current?.setPreferences(audioMuted, audioVolume);
   }, [audioMuted, audioVolume]);
 
+  const resumeBrowserAudio = useCallback(async () => {
+    const player = audioPlayerRef.current;
+    if (!player) return "idle" as const;
+    return player.resume();
+  }, []);
+
   useEffect(() => {
     const resume = () => {
-      if (audioEnabled) void audioPlayerRef.current?.resume();
+      if (audioEnabled) void resumeBrowserAudio();
     };
     window.addEventListener("pointerdown", resume);
     window.addEventListener("keydown", resume);
@@ -146,7 +153,7 @@ export function useDeviceVideoStream({
       window.removeEventListener("pointerdown", resume);
       window.removeEventListener("keydown", resume);
     };
-  }, [audioEnabled]);
+  }, [audioEnabled, resumeBrowserAudio]);
 
   const bindCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     canvasRef.current = canvas;
@@ -281,7 +288,22 @@ export function useDeviceVideoStream({
           }
         },
       });
-      const audioPlayer = new BrowserPcmPlayer();
+      const audioPlayer = new BrowserPcmPlayer((state, error) => {
+        setBrowserAudioState(state);
+        if (state === "suspended" || state === "failed") {
+          const userActivation = (navigator as Navigator & {
+            userActivation?: { isActive: boolean; hasBeenActive: boolean };
+          }).userActivation;
+          logFrontend(
+            state === "failed" ? "warn" : "info",
+            "audio",
+            state === "failed" ? "browser_playback_failed" : "browser_playback_suspended",
+            error ?? `origin=${location.origin} secure_context=${window.isSecureContext} user_active=${userActivation?.isActive ?? "unknown"} user_activated_before=${userActivation?.hasBeenActive ?? "unknown"}`,
+          );
+        } else if (state === "running") {
+          logFrontend("info", "audio", "browser_playback_started", `origin=${location.origin}`);
+        }
+      });
       audioPlayer.setPreferences(audioPreferencesRef.current.muted, audioPreferencesRef.current.volume);
       audioPlayerRef.current = audioPlayer;
       const flushFrontendMetrics = () => {
@@ -324,6 +346,7 @@ export function useDeviceVideoStream({
         browserDecoder.close();
         audioPlayer.close();
         if (audioPlayerRef.current === audioPlayer) audioPlayerRef.current = null;
+        setBrowserAudioState("idle");
         callbacksRef.current.onDisconnect?.();
         if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
@@ -416,6 +439,8 @@ export function useDeviceVideoStream({
     canvasReady,
     streamStalled,
     decoderError,
+    browserAudioState,
+    resumeBrowserAudio,
     canvasRef,
     canvasReadyRef,
     bindCanvas,

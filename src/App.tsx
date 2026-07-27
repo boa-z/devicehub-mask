@@ -318,6 +318,8 @@ export default function App() {
     canvasReady,
     streamStalled,
     decoderError,
+    browserAudioState,
+    resumeBrowserAudio,
     canvasRef,
     canvasReadyRef,
     bindCanvas,
@@ -834,6 +836,15 @@ export default function App() {
   const toggleDeviceAudio = async () => {
     const action = deviceAudioControlAction(deviceAudioEnabled, audioPlayback.muted);
     if (action === "unavailable" || deviceAudioBusy) return;
+    if (action === "mute" && browserAudioState !== "running") {
+      const state = await resumeBrowserAudio();
+      if (state === "running") {
+        void message.success(t("device.deviceAudioPlaybackStarted"));
+      } else {
+        void message.warning(t("device.deviceAudioPlaybackStillSuspended"));
+      }
+      return;
+    }
     if (action !== "enable") {
       if (action === "unmute") {
         await updateAudioPlayback({ ...audioPlayback, muted: false });
@@ -943,8 +954,11 @@ export default function App() {
     deviceAudioEnabled,
     audioPlayback.muted,
   );
+  const browserAudioNeedsStart = audioControlAction === "mute" && browserAudioState !== "running";
   const audioControlLabel = audioOutputState === "unavailable"
     ? t("device.deviceAudioOutputUnavailable")
+    : browserAudioNeedsStart
+      ? t("device.startDeviceAudioPlayback")
     : t({
     unavailable: "device.startDeviceAudioPlayback",
     enable: "device.enableDeviceAudio",
@@ -983,7 +997,7 @@ export default function App() {
         <Button
           aria-label={audioControlLabel}
           type={deviceAudioEnabled && !audioPlayback.muted ? "primary" : "default"}
-          danger={audioOutputState === "unavailable"}
+          danger={audioOutputState === "unavailable" || browserAudioState === "failed"}
           disabled={deviceAudioEnabled === null}
           loading={deviceAudioBusy}
           icon={deviceAudioEnabled && !audioPlayback.muted

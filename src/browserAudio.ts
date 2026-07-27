@@ -9,6 +9,22 @@ export type BrowserAudioPacket = {
   pcm: DataView;
 };
 
+export type BrowserAudioPlaybackState = "idle" | "suspended" | "running" | "failed";
+
+type AudioContextLike = Pick<AudioContext,
+  | "state"
+  | "currentTime"
+  | "destination"
+  | "createBuffer"
+  | "createBufferSource"
+  | "createGain"
+  | "resume"
+  | "close"
+  | "onstatechange"
+>;
+
+type AudioContextFactory = (sampleRate: number) => AudioContextLike;
+
 export function parseBrowserAudioPacket(buffer: ArrayBuffer): BrowserAudioPacket | null {
   if (buffer.byteLength < audioHeaderBytes) return null;
   const bytes = new Uint8Array(buffer);
@@ -30,11 +46,19 @@ export function parseBrowserAudioPacket(buffer: ArrayBuffer): BrowserAudioPacket
 }
 
 export class BrowserPcmPlayer {
-  private context: AudioContext | null = null;
+  private context: AudioContextLike | null = null;
   private gain: GainNode | null = null;
   private scheduledUntil = 0;
   private muted = false;
   private volume = 0.8;
+
+  constructor(
+    private readonly onStateChange: (state: BrowserAudioPlaybackState, error?: unknown) => void = () => undefined,
+    private readonly createContext: AudioContextFactory = (sampleRate) => new AudioContext({
+      latencyHint: "interactive",
+      sampleRate,
+    }),
+  ) {}
 
   setPreferences(muted: boolean, volume: number) {
     this.muted = muted;
@@ -44,13 +68,25 @@ export class BrowserPcmPlayer {
     }
   }
 
-  async resume() {
-    const context = this.ensureContext(48_000);
-    if (context.state === "suspended") await context.resume();
+  async resume(): Promise<BrowserAudioPlaybackState> {
+    try {
+      const context = this.ensureContext(48_000);
+      if (context.state !== "running") await context.resume();
+      return this.reportContextState();
+    } catch (error) {
+      this.onStateChange("failed", error);
+      return "failed";
+    }
   }
 
   enqueue(packet: BrowserAudioPacket) {
-    const context = this.ensureContext(packet.sampleRate);
+    let context: AudioContextLike;
+    try {
+      context = this.ensureContext(packet.sampleRate);
+    } catch (error) {
+      this.onStateChange("failed", error);
+      return false;
+    }
     if (context.state !== "running") return false;
     const frames = packet.pcm.byteLength / 2 / packet.channels;
     const buffer = context.createBuffer(packet.channels, frames, packet.sampleRate);
@@ -83,12 +119,26 @@ export class BrowserPcmPlayer {
 
   private ensureContext(sampleRate: number) {
     if (this.context) return this.context;
-    const context = new AudioContext({ latencyHint: "interactive", sampleRate });
+    const context = this.createContext(sampleRate);
     const gain = context.createGain();
     gain.gain.value = this.muted ? 0 : this.volume;
     gain.connect(context.destination);
     this.context = context;
     this.gain = gain;
+    context.onstatechange = () => this.reportContextState();
+    this.reportContextState();
     return context;
+  }
+
+  private reportContextState(): BrowserAudioPlaybackState {
+    const state = this.context?.state === "running"
+      ? "running"
+      : this.context?.state === "closed"
+        ? "failed"
+        : this.context
+          ? "suspended"
+          : "idle";
+    this.onStateChange(state);
+    return state;
   }
 }

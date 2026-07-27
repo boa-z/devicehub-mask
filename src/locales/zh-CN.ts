@@ -376,7 +376,7 @@ export const zhCN = {
     unmuteDeviceAudio: "取消设备音频静音",
     startDeviceAudioPlayback: "开始播放设备音频",
     deviceAudioPlaybackStarted: "设备音频已开始播放。",
-    deviceAudioPlaybackStillSuspended: "系统仍阻止音频播放，请点击应用后重试。",
+    deviceAudioPlaybackStillSuspended: "浏览器仍阻止音频播放，请再次点击音频按钮；局域网访问建议使用 HTTPS。",
     enableDeviceAudio: "启用设备音频并重新连接",
     deviceAudioEnabled: "设备音频已启用，正在重新连接设备。",
     deviceAudioEnabledReconnectManually: "设备音频已启用，请重新连接设备以开始播放。",

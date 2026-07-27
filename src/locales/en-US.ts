@@ -381,7 +381,7 @@ export const enUS = {
     unmuteDeviceAudio: "Unmute device audio",
     startDeviceAudioPlayback: "Start device audio playback",
     deviceAudioPlaybackStarted: "Device audio playback started.",
-    deviceAudioPlaybackStillSuspended: "Audio playback is still blocked. Click the app and try again.",
+    deviceAudioPlaybackStillSuspended: "The browser still blocks audio. Click the audio button again; HTTPS is recommended for LAN access.",
     enableDeviceAudio: "Enable device audio and reconnect",
     deviceAudioEnabled: "Device audio enabled; reconnecting the device.",
     deviceAudioEnabledReconnectManually: "Device audio enabled. Reconnect the device to start playback.",
