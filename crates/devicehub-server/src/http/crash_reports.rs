@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, put};
@@ -19,6 +19,7 @@ use super::browser_transfers::{BrowserTransferStore, binary_download, validate_f
 
 type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
 type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -39,6 +40,13 @@ impl CrashReportHttpState {
     pub fn with_browser_transfers(mut self, store: impl BrowserTransferStore) -> Self {
         self.browser_transfers = Some(Arc::new(store));
         self
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
     }
 }
 
@@ -65,9 +73,14 @@ where
 
 async fn device_crash_reports(
     State(state): State<CrashReportHttpState>,
+    session: RequestSession,
 ) -> Result<Json<devicehub_core::DeviceCrashReportList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::ListCrashReports(reply)))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::ListCrashReports(reply)),
+    )?;
     let reports = await_session_result(response, "crash report list request").await?;
     Ok(Json(reports))
 }
@@ -79,12 +92,13 @@ struct CrashReportSummaryQuery {
 
 async fn crash_report_summary(
     State(state): State<CrashReportHttpState>,
+    session: RequestSession,
     Query(query): Query<CrashReportSummaryQuery>,
 ) -> Result<Json<devicehub_core::DeviceCrashReportSummary>, (StatusCode, String)> {
     devicehub_core::validate_crash_report_path(&query.device_path)
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::ReadCrashReport {
+    require_active_session(state.input(&session).try_send(InputCmd::ReadCrashReport {
         device_path: query.device_path,
         max_bytes: devicehub_runtime::MAX_CRASH_REPORT_READ_BYTES,
         reply,
@@ -101,10 +115,11 @@ struct ExportCrashReportRequest {
 
 async fn export_crash_report(
     State(state): State<CrashReportHttpState>,
+    session: RequestSession,
     Json(request): Json<ExportCrashReportRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::ExportCrashReport {
+    require_active_session(state.input(&session).try_send(InputCmd::ExportCrashReport {
         device_path: request.device_path,
         destination: request.destination,
         reply,
@@ -121,6 +136,7 @@ struct BrowserExportCrashReportQuery {
 
 async fn browser_export_crash_report(
     State(state): State<CrashReportHttpState>,
+    session: RequestSession,
     Query(query): Query<BrowserExportCrashReportQuery>,
 ) -> Result<Response, (StatusCode, String)> {
     devicehub_core::validate_crash_report_path(&query.device_path)
@@ -136,11 +152,13 @@ async fn browser_export_crash_report(
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
     let cleanup = destination.clone();
     let (reply, response) = oneshot::channel();
-    if let Err(error) = require_active_session(state.input.try_send(InputCmd::ExportCrashReport {
-        device_path: query.device_path,
-        destination,
-        reply,
-    })) {
+    if let Err(error) =
+        require_active_session(state.input(&session).try_send(InputCmd::ExportCrashReport {
+            device_path: query.device_path,
+            destination,
+            reply,
+        }))
+    {
         let _ = store.remove(cleanup).await;
         return Err(error);
     }
@@ -162,10 +180,11 @@ struct DeleteCrashReportRequest {
 
 async fn delete_crash_report(
     State(state): State<CrashReportHttpState>,
+    session: RequestSession,
     Json(request): Json<DeleteCrashReportRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::DeleteCrashReport {
+    require_active_session(state.input(&session).try_send(InputCmd::DeleteCrashReport {
         device_path: request.device_path,
         reply,
     }))?;
@@ -254,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn list_export_and_delete_use_the_device_session() {
         let (state, mut input_rx) = test_state();
-        let list_request = tokio::spawn(device_crash_reports(State(state.clone())));
+        let list_request = tokio::spawn(device_crash_reports(State(state.clone()), None));
         match input_rx.recv().await.unwrap() {
             InputCmd::ListCrashReports(reply) => reply
                 .send(Ok(devicehub_core::DeviceCrashReportList {
@@ -275,6 +294,7 @@ mod tests {
 
         let export_request = tokio::spawn(export_crash_report(
             State(state.clone()),
+            None,
             Json(ExportCrashReportRequest {
                 device_path: "/Report.ips".into(),
                 destination: PathBuf::from("/tmp/Report.ips"),
@@ -299,6 +319,7 @@ mod tests {
 
         let delete_request = tokio::spawn(delete_crash_report(
             State(state),
+            None,
             Json(DeleteCrashReportRequest {
                 device_path: "/Report.ips".into(),
             }),
@@ -325,6 +346,7 @@ mod tests {
         });
         let export = tokio::spawn(browser_export_crash_report(
             State(state),
+            None,
             Query(BrowserExportCrashReportQuery {
                 device_path: "/Report.ips".into(),
                 name: "Report.ips".into(),
@@ -355,6 +377,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let invalid = crash_report_summary(
             State(state.clone()),
+            None,
             Query(CrashReportSummaryQuery {
                 device_path: "/../private/report.ips".into(),
             }),
@@ -365,6 +388,7 @@ mod tests {
 
         let request = tokio::spawn(crash_report_summary(
             State(state),
+            None,
             Query(CrashReportSummaryQuery {
                 device_path: "/Report.ips".into(),
             }),
@@ -418,7 +442,7 @@ mod tests {
         let (state, _input_rx) = test_state();
         state.input.set(None);
         assert!(matches!(
-            device_crash_reports(State(state)).await,
+            device_crash_reports(State(state), None).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }

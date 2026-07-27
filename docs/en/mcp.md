@@ -2,11 +2,11 @@
 
 [Simplified Chinese](../zh-CN/mcp.md) | English | [Documentation home](README.md)
 
-DeviceHub Mask exposes its active iOS device session to agents through a built-in Model Context Protocol (MCP) server. This guide covers setup, reliable control workflows, diagnostics, WebDriverAgent (WDA), security, and the operations intentionally kept out of MCP.
+DeviceHub Mask exposes connected iOS device sessions to agents through a built-in Model Context Protocol (MCP) server. This guide covers setup, reliable control workflows, diagnostics, WebDriverAgent (WDA), security, and the operations intentionally kept out of MCP.
 
 ## Before You Connect
 
-Start the DeviceHub Mask desktop app and connect a device first. The MCP server exists only while the desktop app is running and reuses the same CoreDevice session, video stream, input queue, performance services, and bounded log buffers as the UI. It does not open a competing connection to the phone.
+Start the DeviceHub Mask desktop app and connect at least one device first. The MCP server exists only while the desktop app is running. Each MCP protocol connection selects its own device and reuses that device's CoreDevice session, video stream, input queue, performance services, and bounded log buffers. It does not open a competing connection or change the target selected by the desktop UI or another MCP client.
 
 The default Streamable HTTP endpoint is:
 
@@ -20,7 +20,7 @@ For example, register it with Claude Code:
 claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
 ```
 
-Call `status` after registration. If no device is active, call `list_devices`, then pass the exact returned selection ID to `connect_device`. USB and Wi-Fi entries can represent the same physical device but have distinct selection IDs.
+Call `status` after registration. If that MCP connection has no target, call `list_devices`, then pass the exact returned selection ID to `connect_device`. USB and Wi-Fi entries can represent the same physical device but have distinct selection IDs; only one transport for a UDID can run at a time.
 
 The MCP endpoint has no authentication. Keep it bound to loopback. `DEVICEHUB_MCP_ADDR` can change the bind address, but exposing it beyond loopback gives network clients access to device screenshots, input, app control, process names, logs, crash reports, location simulation, and WDA output. A non-loopback bind emits a warning and should be used only on a trusted isolated network.
 
@@ -81,7 +81,7 @@ Coordinate and WDA mutation tools share a gesture lock, so two agent actions do 
 
 ## Device and Session Workflow
 
-Use `list_devices` for the current transport inventory and `status` for the active session. Call `connect_device` to select an attached transport or `reconnect_device` to tear down and rebuild that selection's session. Both wait for a new video frame for a bounded period and may report that connection is still being established; follow with `status` or `screenshot` rather than repeatedly reconnecting.
+Use `list_devices` for the current transport inventory and `status` for this MCP connection's selected session. `connect_device` selects or reuses the exact session without stopping sessions for other physical devices. `reconnect_device` tears down and rebuilds only that target. Both wait for a new video frame for a bounded period and may report that connection is still being established; follow with `status` or `screenshot` rather than repeatedly reconnecting.
 
 `device_details` refreshes normalized product, OS, hardware, storage, activation, Developer Mode, regional, and bounded battery information. Stable identifiers are deliberately omitted unless `include_identifiers=true`; UDID, serial number, and ECID should be requested only when identity is required.
 

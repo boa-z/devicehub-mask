@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -23,6 +23,7 @@ use devicehub_core::{
 
 type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
 type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 type DeviceBackupCommand = devicehub_runtime::DeviceBackupCommand<PathBuf>;
 type SysdiagnoseCommand = devicehub_runtime::SysdiagnoseCommand<PathBuf>;
 type LogArchiveCommand = devicehub_runtime::LogArchiveCommand<PathBuf>;
@@ -89,6 +90,34 @@ impl DiagnosticsHttpState {
             destinations,
         }
     }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
+    }
+
+    fn device_backup(&self, session: &RequestSession) -> DeviceBackupSlot {
+        session
+            .as_ref()
+            .map(|session| session.device_backup.clone())
+            .unwrap_or_else(|| self.device_backup.clone())
+    }
+
+    fn sysdiagnose(&self, session: &RequestSession) -> SysdiagnoseSlot {
+        session
+            .as_ref()
+            .map(|session| session.sysdiagnose.clone())
+            .unwrap_or_else(|| self.sysdiagnose.clone())
+    }
+
+    fn log_archive(&self, session: &RequestSession) -> LogArchiveSlot {
+        session
+            .as_ref()
+            .map(|session| session.log_archive.clone())
+            .unwrap_or_else(|| self.log_archive.clone())
+    }
 }
 
 pub fn router<S>(state: DiagnosticsHttpState) -> Router<S>
@@ -119,8 +148,9 @@ where
 
 async fn device_backup_status(
     State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
 ) -> Json<DeviceBackupStatus> {
-    Json(state.device_backup.get())
+    Json(state.device_backup(&session).get())
 }
 
 #[derive(Deserialize)]
@@ -132,6 +162,7 @@ struct StartDeviceBackupRequest {
 
 async fn start_device_backup(
     State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
     Json(request): Json<StartDeviceBackupRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let destination = state
@@ -144,7 +175,7 @@ async fn start_device_backup(
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     if !state
-        .input
+        .input(&session)
         .try_send(InputCmd::DeviceBackup(DeviceBackupCommand::Start {
             destination,
             full: request.full,
@@ -168,10 +199,11 @@ async fn start_device_backup(
 
 async fn stop_device_backup(
     State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state
-        .input
+        .input(&session)
         .try_send(InputCmd::DeviceBackup(DeviceBackupCommand::Stop { reply }))
     {
         return Err((
@@ -189,8 +221,11 @@ async fn stop_device_backup(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn sysdiagnose_status(State(state): State<DiagnosticsHttpState>) -> Json<SysdiagnoseStatus> {
-    Json(state.sysdiagnose.get())
+async fn sysdiagnose_status(
+    State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
+) -> Json<SysdiagnoseStatus> {
+    Json(state.sysdiagnose(&session).get())
 }
 
 #[derive(Deserialize)]
@@ -200,6 +235,7 @@ struct StartSysdiagnoseRequest {
 
 async fn start_sysdiagnose(
     State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
     Json(request): Json<StartSysdiagnoseRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let destination = state
@@ -212,7 +248,7 @@ async fn start_sysdiagnose(
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     if !state
-        .input
+        .input(&session)
         .try_send(InputCmd::Sysdiagnose(SysdiagnoseCommand::Start {
             destination,
             reply,
@@ -235,10 +271,11 @@ async fn start_sysdiagnose(
 
 async fn stop_sysdiagnose(
     State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state
-        .input
+        .input(&session)
         .try_send(InputCmd::Sysdiagnose(SysdiagnoseCommand::Stop { reply }))
     {
         return Err((
@@ -256,8 +293,11 @@ async fn stop_sysdiagnose(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn log_archive_status(State(state): State<DiagnosticsHttpState>) -> Json<LogArchiveStatus> {
-    Json(state.log_archive.get())
+async fn log_archive_status(
+    State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
+) -> Json<LogArchiveStatus> {
+    Json(state.log_archive(&session).get())
 }
 
 #[derive(Deserialize)]
@@ -268,6 +308,7 @@ struct StartLogArchiveRequest {
 
 async fn start_log_archive(
     State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
     Json(request): Json<StartLogArchiveRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let destination = state
@@ -283,7 +324,7 @@ async fn start_log_archive(
             .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
     if !state
-        .input
+        .input(&session)
         .try_send(InputCmd::LogArchive(LogArchiveCommand::Start {
             destination,
             age_limit_hours,
@@ -307,10 +348,11 @@ async fn start_log_archive(
 
 async fn stop_log_archive(
     State(state): State<DiagnosticsHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     if !state
-        .input
+        .input(&session)
         .try_send(InputCmd::LogArchive(LogArchiveCommand::Stop { reply }))
     {
         return Err((
@@ -399,6 +441,7 @@ mod tests {
 
         let error = start_sysdiagnose(
             State(state),
+            None,
             Json(StartSysdiagnoseRequest {
                 destination: std::env::temp_dir().join("denied.tar.gz"),
             }),
@@ -416,6 +459,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let invalid = start_device_backup(
             State(state.clone()),
+            None,
             Json(StartDeviceBackupRequest {
                 destination: PathBuf::from("relative-backup"),
                 full: false,
@@ -430,6 +474,7 @@ mod tests {
         let expected = destination.clone();
         let start = tokio::spawn(start_device_backup(
             State(state.clone()),
+            None,
             Json(StartDeviceBackupRequest {
                 destination,
                 full: true,
@@ -449,11 +494,14 @@ mod tests {
         }
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
         assert_eq!(
-            device_backup_status(State(state.clone())).await.0.state,
+            device_backup_status(State(state.clone()), None)
+                .await
+                .0
+                .state,
             devicehub_core::DeviceBackupState::Idle
         );
 
-        let stop = tokio::spawn(stop_device_backup(State(state)));
+        let stop = tokio::spawn(stop_device_backup(State(state), None));
         match input_rx.recv().await.unwrap() {
             InputCmd::DeviceBackup(DeviceBackupCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
@@ -468,6 +516,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let invalid = start_sysdiagnose(
             State(state.clone()),
+            None,
             Json(StartSysdiagnoseRequest {
                 destination: PathBuf::from("relative.tar.gz"),
             }),
@@ -481,6 +530,7 @@ mod tests {
         let expected = destination.clone();
         let start = tokio::spawn(start_sysdiagnose(
             State(state.clone()),
+            None,
             Json(StartSysdiagnoseRequest { destination }),
         ));
         match input_rx.recv().await.unwrap() {
@@ -492,11 +542,11 @@ mod tests {
         }
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
         assert_eq!(
-            sysdiagnose_status(State(state.clone())).await.0.state,
+            sysdiagnose_status(State(state.clone()), None).await.0.state,
             devicehub_core::SysdiagnoseState::Idle
         );
 
-        let stop = tokio::spawn(stop_sysdiagnose(State(state)));
+        let stop = tokio::spawn(stop_sysdiagnose(State(state), None));
         match input_rx.recv().await.unwrap() {
             InputCmd::Sysdiagnose(SysdiagnoseCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();
@@ -511,6 +561,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let invalid = start_log_archive(
             State(state.clone()),
+            None,
             Json(StartLogArchiveRequest {
                 destination: PathBuf::from("relative.tar"),
                 age_limit_hours: 2,
@@ -524,6 +575,7 @@ mod tests {
         let destination = std::env::temp_dir().join("devicehub-mask-web-log-archive.tar");
         let invalid_age = start_log_archive(
             State(state.clone()),
+            None,
             Json(StartLogArchiveRequest {
                 destination: destination.clone(),
                 age_limit_hours: 2,
@@ -537,6 +589,7 @@ mod tests {
         let expected = destination.clone();
         let start = tokio::spawn(start_log_archive(
             State(state.clone()),
+            None,
             Json(StartLogArchiveRequest {
                 destination,
                 age_limit_hours: 6,
@@ -556,11 +609,11 @@ mod tests {
         }
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
         assert_eq!(
-            log_archive_status(State(state.clone())).await.0.state,
+            log_archive_status(State(state.clone()), None).await.0.state,
             devicehub_core::LogArchiveState::Idle
         );
 
-        let stop = tokio::spawn(stop_log_archive(State(state)));
+        let stop = tokio::spawn(stop_log_archive(State(state), None));
         match input_rx.recv().await.unwrap() {
             InputCmd::LogArchive(LogArchiveCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap();

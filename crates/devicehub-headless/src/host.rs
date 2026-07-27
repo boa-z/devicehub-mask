@@ -188,7 +188,7 @@ mod tests {
 pub struct BrowserPcmConsumer(pub devicehub_server::websocket::BrowserAudioSlot);
 
 impl devicehub_runtime::PcmAudioConsumer for BrowserPcmConsumer {
-    fn publish(&self, pcm: bytes::Bytes) {
-        self.0.publish(pcm);
+    fn publish(&self, selection_id: &str, pcm: bytes::Bytes) {
+        self.0.publish(selection_id, pcm);
     }
 }

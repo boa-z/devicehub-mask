@@ -253,7 +253,8 @@ async fn run(config: Config) -> Result<(), String> {
                         runtime_browser_audio.clone(),
                     )),
                     audio_decoder,
-                ),
+                )
+                .all_sessions(),
                 diagnostic_sinks: devicehub_host::diagnostic_sinks::TokioDiagnosticDumpSinks,
                 clipboard: UnavailableClipboard,
                 services: devicehub_host::session_adapters(),

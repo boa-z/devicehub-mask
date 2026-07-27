@@ -36,7 +36,10 @@ where
 {
     Router::new()
         .route("/api/devices/refresh", put(refresh_devices))
-        .route("/api/devices/{selection_id}/connect", put(connect_device))
+        .route(
+            "/api/devices/{selection_id}/connect",
+            put(connect_device).delete(disconnect_device),
+        )
         .route(
             "/api/devices/{selection_id}/reconnect",
             put(reconnect_device),
@@ -61,6 +64,17 @@ async fn connect_device(
         .manager
         .control
         .send(SessionControlCommand::Connect(selection_id));
+    StatusCode::ACCEPTED
+}
+
+async fn disconnect_device(
+    State(state): State<DeviceManagerHttpState>,
+    Path(selection_id): Path<String>,
+) -> StatusCode {
+    let _ = state
+        .manager
+        .control
+        .send(SessionControlCommand::Disconnect(selection_id));
     StatusCode::ACCEPTED
 }
 
@@ -176,6 +190,15 @@ mod tests {
         assert!(matches!(
             control.recv().await,
             Some(SessionControlCommand::Connect(id)) if id == "device-1::usb"
+        ));
+
+        assert_eq!(
+            disconnect_device(State(state.clone()), Path("device-1::usb".into())).await,
+            StatusCode::ACCEPTED
+        );
+        assert!(matches!(
+            control.recv().await,
+            Some(SessionControlCommand::Disconnect(id)) if id == "device-1::usb"
         ));
 
         assert_eq!(

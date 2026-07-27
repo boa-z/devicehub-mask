@@ -125,7 +125,7 @@ impl AudioOutput {
 }
 
 impl crate::device_runtime::PcmAudioConsumer for AudioOutput {
-    fn publish(&self, pcm: Bytes) {
+    fn publish(&self, _selection_id: &str, pcm: Bytes) {
         AudioOutput::publish(self, pcm);
     }
 }

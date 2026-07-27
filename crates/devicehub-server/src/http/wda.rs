@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -14,6 +14,7 @@ use devicehub_runtime::{DeviceSessionCommand, SessionCommandSlot, WdaRunnerComma
 
 type InputCmd = DeviceSessionCommand<PathBuf>;
 type InputSink = SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const WDA_RUNNER_START_TIMEOUT: Duration = Duration::from_secs(35);
@@ -26,6 +27,13 @@ pub struct WdaHttpState {
 impl WdaHttpState {
     pub fn new(input: InputSink) -> Self {
         Self { input }
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
     }
 }
 
@@ -50,11 +58,12 @@ struct StartWdaRunnerRequest {
 
 async fn wda_runner_status(
     State(state): State<WdaHttpState>,
+    session: RequestSession,
 ) -> Result<Json<devicehub_core::WdaRunnerStatus>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     require_active_session(
         state
-            .input
+            .input(&session)
             .try_send(InputCmd::WdaRunner(WdaRunnerCommand::Status { reply })),
     )?;
     let status = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
@@ -71,19 +80,18 @@ async fn wda_runner_status(
 
 async fn start_wda_runner(
     State(state): State<WdaHttpState>,
+    session: RequestSession,
     Json(request): Json<StartWdaRunnerRequest>,
 ) -> Result<Json<devicehub_core::WdaRunnerStatus>, (StatusCode, String)> {
     devicehub_core::validate_wda_runner_bundle_id(&request.bundle_id)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.into()))?;
     let (reply, response) = oneshot::channel();
-    require_active_session(
-        state
-            .input
-            .try_send(InputCmd::WdaRunner(WdaRunnerCommand::Start {
-                bundle_id: request.bundle_id,
-                reply,
-            })),
-    )?;
+    require_active_session(state.input(&session).try_send(InputCmd::WdaRunner(
+        WdaRunnerCommand::Start {
+            bundle_id: request.bundle_id,
+            reply,
+        },
+    )))?;
     let status = tokio::time::timeout(WDA_RUNNER_START_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -106,11 +114,12 @@ async fn start_wda_runner(
 
 async fn stop_wda_runner(
     State(state): State<WdaHttpState>,
+    session: RequestSession,
 ) -> Result<Json<devicehub_core::WdaRunnerStatus>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     require_active_session(
         state
-            .input
+            .input(&session)
             .try_send(InputCmd::WdaRunner(WdaRunnerCommand::Stop { reply })),
     )?;
     let status = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
@@ -168,7 +177,7 @@ mod tests {
         let (state, mut commands) = test_state();
         let running = running();
 
-        let status = tokio::spawn(wda_runner_status(State(state.clone())));
+        let status = tokio::spawn(wda_runner_status(State(state.clone()), None));
         let InputCmd::WdaRunner(WdaRunnerCommand::Status { reply }) =
             commands.recv().await.unwrap()
         else {
@@ -179,6 +188,7 @@ mod tests {
 
         let start = tokio::spawn(start_wda_runner(
             State(state.clone()),
+            None,
             Json(StartWdaRunnerRequest {
                 bundle_id: "com.example.WDARunner.xctrunner".into(),
             }),
@@ -192,7 +202,7 @@ mod tests {
         reply.send(Ok(running.clone())).unwrap();
         assert_eq!(start.await.unwrap().unwrap().0, running);
 
-        let stop = tokio::spawn(stop_wda_runner(State(state.clone())));
+        let stop = tokio::spawn(stop_wda_runner(State(state.clone()), None));
         let InputCmd::WdaRunner(WdaRunnerCommand::Stop { reply }) = commands.recv().await.unwrap()
         else {
             panic!("expected stop command");
@@ -203,6 +213,7 @@ mod tests {
         assert!(matches!(
             start_wda_runner(
                 State(state),
+                None,
                 Json(StartWdaRunnerRequest {
                     bundle_id: "com.example.not-a-runner".into(),
                 }),
@@ -217,11 +228,11 @@ mod tests {
     async fn routes_require_an_active_session() {
         let state = WdaHttpState::default();
         assert!(matches!(
-            wda_runner_status(State(state.clone())).await,
+            wda_runner_status(State(state.clone()), None).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            stop_wda_runner(State(state)).await,
+            stop_wda_runner(State(state), None).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }

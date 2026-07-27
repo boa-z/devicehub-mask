@@ -6,15 +6,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Request, State, WebSocketUpgrade};
+use axum::extract::{Query, Request, State, WebSocketUpgrade};
 use axum::http::header::{AUTHORIZATION, SEC_WEBSOCKET_PROTOCOL};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use serde::Deserialize;
 
 use crate::{http, status, websocket};
+
+pub const DEVICE_ID_HEADER: &str = "x-devicehub-device";
 
 #[derive(Clone)]
 pub struct PrivateApiState {
@@ -52,19 +55,26 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
     let crash_report_routes = http::crash_reports_router(state.crash_reports_http.clone());
     let host_routes = http::host_router(state.host_http.clone());
 
-    Router::new()
-        .route("/api/status", get(api_status))
-        .merge(device_manager_routes)
+    let device_scoped_routes = Router::new()
         .merge(device_routes)
         .merge(wda_routes)
         .merge(developer_image_routes)
         .merge(provisioning_routes)
         .merge(performance_routes)
-        .merge(profile_routes)
         .merge(storage_routes)
         .merge(diagnostics_routes)
         .merge(app_routes)
         .merge(crash_report_routes)
+        .layer(from_fn_with_state(
+            state.application.clone(),
+            resolve_device_session,
+        ));
+
+    Router::new()
+        .route("/api/status", get(api_status))
+        .merge(device_manager_routes)
+        .merge(device_scoped_routes)
+        .merge(profile_routes)
         .merge(host_routes)
         .route("/api/ws", get(ws_upgrade))
         .layer(from_fn_with_state(
@@ -72,6 +82,34 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
             authorize_private_api,
         ))
         .with_state(state)
+}
+
+async fn resolve_device_session(
+    State(application): State<devicehub_runtime::RuntimeClient<PathBuf>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let selection_id = match request
+        .headers()
+        .get(DEVICE_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 256)
+    {
+        Some(selection_id) => selection_id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("missing required {DEVICE_ID_HEADER} header"),
+            )
+                .into_response();
+        }
+    };
+    let Some(session) = application.sessions.get(selection_id) else {
+        return (StatusCode::NOT_FOUND, "device session is not available").into_response();
+    };
+    request.extensions_mut().insert(session);
+    next.run(request).await
 }
 
 async fn authorize_private_api(
@@ -103,25 +141,39 @@ async fn api_status(State(state): State<PrivateApiState>) -> Json<status::Status
     Json(status::snapshot(&state.application))
 }
 
+#[derive(Deserialize)]
+struct WebSocketQuery {
+    device_id: String,
+}
+
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
+    Query(query): Query<WebSocketQuery>,
     State(state): State<PrivateApiState>,
-) -> impl IntoResponse {
+) -> Response {
+    let selection_id = query.device_id.trim().to_string();
+    let Some(session) = state.application.sessions.get(&selection_id) else {
+        return (StatusCode::NOT_FOUND, "device session is not available").into_response();
+    };
     websocket::upgrade(
         ws,
         websocket::WebSocketState::new(
             state.application,
+            selection_id,
+            session,
             state.websocket_config,
             state.browser_audio,
         ),
     )
     .await
+    .into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::extract::Extension;
     use axum::http::Request;
     use tower::ServiceExt;
 
@@ -262,5 +314,51 @@ mod tests {
                 .unwrap();
             assert_eq!(authorized.status(), StatusCode::OK);
         }
+    }
+
+    #[tokio::test]
+    async fn device_scope_resolves_exact_session_without_using_legacy_state() {
+        let (phone, _) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default().build();
+        phone.device.status.set("phone");
+        let (tablet, _) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default().build();
+        tablet.device.status.set("tablet");
+        let (application, _) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default()
+            .with_session("phone::usb", phone.device)
+            .with_session("tablet::usb", tablet.device)
+            .build();
+
+        async fn session_status(
+            Extension(session): Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>,
+        ) -> String {
+            session.status.get()
+        }
+
+        let scoped = Router::new()
+            .route("/", get(session_status))
+            .layer(from_fn_with_state(application, resolve_device_session));
+        for (selection_id, expected) in [("phone::usb", "phone"), ("tablet::usb", "tablet")] {
+            let response = scoped
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/")
+                        .header(DEVICE_ID_HEADER, selection_id)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), 32)
+                .await
+                .unwrap();
+            assert_eq!(body, expected);
+        }
+
+        let missing = scoped
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
     }
 }

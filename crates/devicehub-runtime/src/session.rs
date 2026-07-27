@@ -19,7 +19,7 @@ pub(crate) use input::{
     ClipboardWriteFuture, DeviceClipboard, connect_device_input, run_device_command_loop,
     run_management_command_loop,
 };
-pub(crate) use lifecycle::{SessionFailureAction, SessionRetry, SessionRetryPolicy};
+pub(crate) use lifecycle::{SessionFailureAction, SessionRetryPolicy};
 pub(crate) use manager::SessionManagerViews;
 pub use manager::{RuntimeHostAdapters, StartedRuntime, start_runtime};
 pub(crate) use orientation::OrientationWatcher;

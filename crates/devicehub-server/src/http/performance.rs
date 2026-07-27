@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
@@ -24,6 +24,7 @@ use tokio::sync::oneshot;
 
 type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
 type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 type CaptureValidationFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'static>>;
 
 /// Host-owned validation for local capture destinations.
@@ -95,6 +96,19 @@ impl PerformanceHttpState {
             capture_destinations,
         }
     }
+
+    fn session<'a>(
+        &'a self,
+        session: &'a RequestSession,
+    ) -> Option<&'a devicehub_runtime::DeviceSessionClient<PathBuf>> {
+        session.as_ref().map(|session| &session.0)
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        self.session(session)
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
+    }
 }
 
 /// Supplies this adapter's state before merging it into the application router,
@@ -144,23 +158,42 @@ struct PerformanceView {
     device_conditions: devicehub_core::DeviceConditionStatus,
 }
 
-async fn performance(State(state): State<PerformanceHttpState>) -> Json<PerformanceView> {
+async fn performance(
+    State(state): State<PerformanceHttpState>,
+    session: RequestSession,
+) -> Json<PerformanceView> {
+    let scoped = state.session(&session);
+    let performance = scoped.map_or_else(|| state.performance.clone(), |s| s.performance.clone());
     Json(PerformanceView {
-        sample: state.performance.get(),
-        app_activity: state.performance.app_activity(),
-        services: state.services.snapshot(),
-        sampling: state.performance_demand.enabled(),
-        network_capture: state.network_capture.get(),
-        bluetooth_capture: state.bluetooth_capture.get(),
-        device_conditions: state.device_conditions.get(),
+        sample: performance.get(),
+        app_activity: performance.app_activity(),
+        services: scoped.map_or_else(
+            || state.services.snapshot(),
+            |s| s.service_registry.snapshot(),
+        ),
+        sampling: scoped.map_or_else(
+            || state.performance_demand.enabled(),
+            |s| s.performance_demand.enabled(),
+        ),
+        network_capture: scoped
+            .map_or_else(|| state.network_capture.get(), |s| s.network_capture.get()),
+        bluetooth_capture: scoped.map_or_else(
+            || state.bluetooth_capture.get(),
+            |s| s.bluetooth_capture.get(),
+        ),
+        device_conditions: scoped.map_or_else(
+            || state.device_conditions.get(),
+            |s| s.device_conditions.get(),
+        ),
     })
 }
 
 async fn running_processes(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
 ) -> Result<Json<devicehub_core::RunningProcessList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::RunningProcess(
+    if !state.input(&session).try_send(InputCmd::RunningProcess(
         devicehub_runtime::RunningProcessCommand::List { reply },
     )) {
         return Err((
@@ -194,6 +227,7 @@ struct ApplyDeviceConditionRequest {
 
 async fn apply_device_condition(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
     Json(request): Json<ApplyDeviceConditionRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     devicehub_runtime::validate_device_condition_identifiers(
@@ -202,7 +236,7 @@ async fn apply_device_condition(
     )
     .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceCondition(
+    if !state.input(&session).try_send(InputCmd::DeviceCondition(
         devicehub_runtime::DeviceConditionCommand::Apply {
             group_identifier: request.group_identifier,
             profile_identifier: request.profile_identifier,
@@ -221,9 +255,10 @@ async fn apply_device_condition(
 
 async fn clear_device_condition(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::DeviceCondition(
+    if !state.input(&session).try_send(InputCmd::DeviceCondition(
         devicehub_runtime::DeviceConditionCommand::Clear {
             expires_at: tokio::time::Instant::now() + Duration::from_secs(7),
             reply,
@@ -269,6 +304,7 @@ struct StartNetworkCaptureRequest {
 
 async fn start_network_capture(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
     Json(request): Json<StartNetworkCaptureRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     devicehub_runtime::validate_network_capture_duration(request.duration_seconds)
@@ -279,7 +315,7 @@ async fn start_network_capture(
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::NetworkCapture(
+    if !state.input(&session).try_send(InputCmd::NetworkCapture(
         devicehub_runtime::NetworkCaptureCommand::Start {
             destination: request.destination,
             duration_seconds: request.duration_seconds,
@@ -298,9 +334,10 @@ async fn start_network_capture(
 
 async fn stop_network_capture(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::NetworkCapture(
+    if !state.input(&session).try_send(InputCmd::NetworkCapture(
         devicehub_runtime::NetworkCaptureCommand::Stop { reply },
     )) {
         return Err((
@@ -348,6 +385,7 @@ struct StartBluetoothCaptureRequest {
 
 async fn start_bluetooth_capture(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
     Json(request): Json<StartBluetoothCaptureRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     devicehub_runtime::validate_bluetooth_capture_duration(request.duration_seconds)
@@ -358,7 +396,7 @@ async fn start_bluetooth_capture(
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::BluetoothCapture(
+    if !state.input(&session).try_send(InputCmd::BluetoothCapture(
         devicehub_runtime::BluetoothCaptureCommand::Start {
             destination: request.destination,
             duration_seconds: request.duration_seconds,
@@ -376,9 +414,10 @@ async fn start_bluetooth_capture(
 
 async fn stop_bluetooth_capture(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    if !state.input.try_send(InputCmd::BluetoothCapture(
+    if !state.input(&session).try_send(InputCmd::BluetoothCapture(
         devicehub_runtime::BluetoothCaptureCommand::Stop { reply },
     )) {
         return Err((
@@ -419,15 +458,35 @@ async fn await_bluetooth_capture_command(
     })
 }
 
-async fn start_performance_sampling(State(state): State<PerformanceHttpState>) -> StatusCode {
-    state.performance.reset();
-    state.performance_demand.set(true);
+async fn start_performance_sampling(
+    State(state): State<PerformanceHttpState>,
+    session: RequestSession,
+) -> StatusCode {
+    let performance = state
+        .session(&session)
+        .map_or_else(|| state.performance.clone(), |s| s.performance.clone());
+    let demand = state.session(&session).map_or_else(
+        || state.performance_demand.clone(),
+        |s| s.performance_demand.clone(),
+    );
+    performance.reset();
+    demand.set(true);
     StatusCode::NO_CONTENT
 }
 
-async fn stop_performance_sampling(State(state): State<PerformanceHttpState>) -> StatusCode {
-    state.performance_demand.set(false);
-    state.performance.reset();
+async fn stop_performance_sampling(
+    State(state): State<PerformanceHttpState>,
+    session: RequestSession,
+) -> StatusCode {
+    let performance = state
+        .session(&session)
+        .map_or_else(|| state.performance.clone(), |s| s.performance.clone());
+    let demand = state.session(&session).map_or_else(
+        || state.performance_demand.clone(),
+        |s| s.performance_demand.clone(),
+    );
+    demand.set(false);
+    performance.reset();
     StatusCode::NO_CONTENT
 }
 
@@ -439,20 +498,27 @@ struct DeviceLogQuery {
 
 async fn device_logs(
     State(state): State<PerformanceHttpState>,
+    session: RequestSession,
     Query(query): Query<DeviceLogQuery>,
 ) -> Json<DeviceLogsView> {
-    let service = state
-        .services
+    let scoped = state.session(&session);
+    let services = scoped.map_or_else(|| state.services.clone(), |s| s.service_registry.clone());
+    let logs = scoped.map_or_else(|| state.device_logs.clone(), |s| s.device_logs.clone());
+    let demand = scoped.map_or_else(
+        || state.device_log_demand.clone(),
+        |s| s.device_log_demand.clone(),
+    );
+    let service = services
         .snapshot()
         .into_iter()
         .find(|service| service.name == "device.logs");
     Json(DeviceLogsView {
-        batch: state.device_logs.snapshot(
+        batch: logs.snapshot(
             query.after,
             query
                 .limit
                 .unwrap_or(devicehub_core::MAX_DEVICE_LOG_BATCH_ENTRIES),
-            state.device_log_demand.enabled(),
+            demand.enabled(),
         ),
         service,
     })
@@ -465,18 +531,42 @@ struct DeviceLogsView {
     service: Option<ServiceHealth>,
 }
 
-async fn start_device_logs(State(state): State<PerformanceHttpState>) -> StatusCode {
-    state.device_log_demand.set(true);
+async fn start_device_logs(
+    State(state): State<PerformanceHttpState>,
+    session: RequestSession,
+) -> StatusCode {
+    state
+        .session(&session)
+        .map_or_else(
+            || state.device_log_demand.clone(),
+            |s| s.device_log_demand.clone(),
+        )
+        .set(true);
     StatusCode::NO_CONTENT
 }
 
-async fn stop_device_logs(State(state): State<PerformanceHttpState>) -> StatusCode {
-    state.device_log_demand.set(false);
+async fn stop_device_logs(
+    State(state): State<PerformanceHttpState>,
+    session: RequestSession,
+) -> StatusCode {
+    state
+        .session(&session)
+        .map_or_else(
+            || state.device_log_demand.clone(),
+            |s| s.device_log_demand.clone(),
+        )
+        .set(false);
     StatusCode::NO_CONTENT
 }
 
-async fn clear_device_logs(State(state): State<PerformanceHttpState>) -> StatusCode {
-    state.device_logs.clear();
+async fn clear_device_logs(
+    State(state): State<PerformanceHttpState>,
+    session: RequestSession,
+) -> StatusCode {
+    state
+        .session(&session)
+        .map_or_else(|| state.device_logs.clone(), |s| s.device_logs.clone())
+        .clear();
     StatusCode::NO_CONTENT
 }
 
@@ -511,15 +601,15 @@ mod tests {
         let (state, _) = test_state();
         assert!(!state.performance_demand.enabled());
         assert_eq!(
-            start_performance_sampling(State(state.clone())).await,
+            start_performance_sampling(State(state.clone()), None).await,
             StatusCode::NO_CONTENT
         );
         assert!(state.performance_demand.enabled());
-        let view = performance(State(state.clone())).await.0;
+        let view = performance(State(state.clone()), None).await.0;
         assert!(view.sampling);
         assert!(view.app_activity.is_empty());
         assert_eq!(
-            stop_performance_sampling(State(state.clone())).await,
+            stop_performance_sampling(State(state.clone()), None).await,
             StatusCode::NO_CONTENT
         );
         assert!(!state.performance_demand.enabled());
@@ -530,6 +620,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let apply = tokio::spawn(apply_device_condition(
             State(state.clone()),
+            None,
             Json(ApplyDeviceConditionRequest {
                 group_identifier: "Network".into(),
                 profile_identifier: "Lossy LTE".into(),
@@ -549,7 +640,7 @@ mod tests {
         reply.send(Ok(())).unwrap();
         assert_eq!(apply.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let clear = tokio::spawn(clear_device_condition(State(state)));
+        let clear = tokio::spawn(clear_device_condition(State(state), None));
         let InputCmd::DeviceCondition(devicehub_runtime::DeviceConditionCommand::Clear {
             reply,
             ..
@@ -566,6 +657,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let error = apply_device_condition(
             State(state),
+            None,
             Json(ApplyDeviceConditionRequest {
                 group_identifier: "Network\nInjected".into(),
                 profile_identifier: "LTE".into(),
@@ -583,6 +675,7 @@ mod tests {
         let destination = std::env::temp_dir().join("devicehub-mask-http-performance.pcap");
         let invalid = start_network_capture(
             State(state.clone()),
+            None,
             Json(StartNetworkCaptureRequest {
                 destination: destination.clone(),
                 duration_seconds: 0,
@@ -596,6 +689,7 @@ mod tests {
 
         let start = tokio::spawn(start_network_capture(
             State(state.clone()),
+            None,
             Json(StartNetworkCaptureRequest {
                 destination: destination.clone(),
                 duration_seconds: 30,
@@ -618,7 +712,7 @@ mod tests {
         }
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let stop = tokio::spawn(stop_network_capture(State(state)));
+        let stop = tokio::spawn(stop_network_capture(State(state), None));
         match input_rx.recv().await.unwrap() {
             InputCmd::NetworkCapture(devicehub_runtime::NetworkCaptureCommand::Stop { reply }) => {
                 reply.send(Ok(())).unwrap()
@@ -643,6 +737,7 @@ mod tests {
 
         let error = start_network_capture(
             State(state),
+            None,
             Json(StartNetworkCaptureRequest {
                 destination: std::env::temp_dir().join("denied.pcap"),
                 duration_seconds: 30,
@@ -664,6 +759,7 @@ mod tests {
             std::env::temp_dir().join("devicehub-mask-bluetooth-http-performance.pcap");
         let invalid = start_bluetooth_capture(
             State(state.clone()),
+            None,
             Json(StartBluetoothCaptureRequest {
                 destination: destination.clone(),
                 duration_seconds: 0,
@@ -676,6 +772,7 @@ mod tests {
 
         let start = tokio::spawn(start_bluetooth_capture(
             State(state.clone()),
+            None,
             Json(StartBluetoothCaptureRequest {
                 destination: destination.clone(),
                 duration_seconds: 30,
@@ -695,7 +792,7 @@ mod tests {
         }
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let stop = tokio::spawn(stop_bluetooth_capture(State(state)));
+        let stop = tokio::spawn(stop_bluetooth_capture(State(state), None));
         match input_rx.recv().await.unwrap() {
             InputCmd::BluetoothCapture(devicehub_runtime::BluetoothCaptureCommand::Stop {
                 reply,
@@ -712,11 +809,12 @@ mod tests {
             state.device_logs.publish(format!("line {index}"));
         }
         assert_eq!(
-            start_device_logs(State(state.clone())).await,
+            start_device_logs(State(state.clone()), None).await,
             StatusCode::NO_CONTENT
         );
         let view = device_logs(
             State(state.clone()),
+            None,
             Query(DeviceLogQuery {
                 after: Some(1),
                 limit: Some(1),
@@ -731,7 +829,7 @@ mod tests {
         assert!(view.batch.has_more);
 
         assert_eq!(
-            clear_device_logs(State(state.clone())).await,
+            clear_device_logs(State(state.clone()), None).await,
             StatusCode::NO_CONTENT
         );
         assert!(
@@ -742,7 +840,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            stop_device_logs(State(state.clone())).await,
+            stop_device_logs(State(state.clone()), None).await,
             StatusCode::NO_CONTENT
         );
         assert!(!state.device_log_demand.enabled());
@@ -751,7 +849,7 @@ mod tests {
     #[tokio::test]
     async fn running_process_endpoint_dispatches_a_bounded_read_only_query() {
         let (state, mut input_rx) = test_state();
-        let request = tokio::spawn(running_processes(State(state)));
+        let request = tokio::spawn(running_processes(State(state), None));
         let InputCmd::RunningProcess(devicehub_runtime::RunningProcessCommand::List { reply }) =
             input_rx.recv().await.unwrap()
         else {

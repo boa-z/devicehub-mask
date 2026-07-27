@@ -43,11 +43,11 @@ core 还持有合并后的性能观察槽及其有界历史和排序策略。run
 
 ## 所有权
 
-runtime 持有设备专用 16 MiB 线程、Tokio runtime 与 `LocalSet`、发现、传输状态、唯一活动会话、重连策略、全部非 `Send` 设备 client、服务监督、命令队列、按住输入清理、媒体 worker 和 sidecar 生命周期策略。具体 sidecar 进程的解析和启动由宿主适配器在 runtime 端口背后完成。
+runtime 持有设备专用 16 MiB 线程、Tokio runtime 与 `LocalSet`、共享的发现与信任协调、并发设备会话 registry、重连策略、全部非 `Send` 设备 client、服务监督、命令队列、按住输入清理、媒体 worker 和 sidecar 生命周期策略。所有设备 supervisor 都作为 owner 线程上的 local task 运行，并按区分传输的选择 ID 相互隔离。具体 sidecar 进程的解析和启动由宿主适配器在 runtime 端口背后完成。
 
 面向宿主的 facade 只公开类型化命令、观察状态和能力端口。具体输入 dispatcher、服务 reporter 与 supervisor、重试辅助函数、协议 client 和传输 handle 均保持私有，确保宿主不能绕过 session manager 建立第二条执行或恢复路径。
 
-面向宿主的 `RuntimeClient` 具有两个明确的所有权分组。`RuntimeManagerClient` 只暴露发现清单、当前选择和 manager 生命周期控制；`DeviceSessionClient` 暴露与当前选中会话关联的媒体、输入、观察、服务及设备操作接口；根 client 只负责组合二者。内部 `CoreRuntimeState` 通过私有的 manager 与 device-session 状态组镜像相同拆分，避免 manager view 与宿主 client 投影出不同所有权。`runtime` facade 还把 owner 线程执行器与状态图放在独立的私有模块中。这在保持当前单会话行为的同时，为后续由 registry 持有多个隔离设备 runtime 建立边界。
+面向宿主的 `RuntimeClient` 具有两个明确的所有权分组。`RuntimeManagerClient` 只暴露发现清单、前端选择和 manager 生命周期控制；`DeviceSessionRegistry` 根据准确选择 ID 解析 `DeviceSessionClient`，每个 client 只暴露该会话的媒体、输入、观察、服务及设备操作接口。旧的根 `device` view 暂时作为迁移 facade 保留，生产 HTTP、WebSocket、MCP 和音频路径均通过 registry 解析。内部 `CoreRuntimeState` 通过私有的 manager 与逐会话状态组镜像相同拆分，避免 manager view 与宿主 client 把一台设备的状态投影到另一台设备。
 
 宿主持有目录选择、环境变量与命令行解析、设置持久化、操作系统进程解析、Tauri 能力、HTTP 监听、鉴权、TLS 与局域网策略，以及本机或远程音频消费者的选择。宿主解析后的路径、FFmpeg 配置、sidecar 适配器和诊断覆盖通过配置或能力端口传入。边界检查会阻止生产 runtime 重新引入环境变量读取、进程启动或 FFmpeg 路径解析。
 
@@ -81,7 +81,7 @@ impl DeviceRuntime {
 }
 ```
 
-启动 runtime 不会创建 HTTP、MCP、Tauri 或前端任务；启动适配器也不会创建设备会话。关闭时拒绝新命令、释放按住输入、结束活动会话与受监督任务、停止自有 sidecar，最后 join 设备线程。显式关闭、重复关闭和部分启动失败后的清理都必须安全。
+启动 runtime 不会创建 HTTP、MCP、Tauri 或前端任务；启动适配器也不会创建设备会话。关闭时拒绝新命令、释放按住输入、在有界宽限期内结束所有已注册会话及其受监督任务、停止自有 sidecar，最后 join 设备线程。显式关闭、重复关闭和部分启动失败后的清理都必须安全。
 
 ## 迁移顺序
 
@@ -95,11 +95,13 @@ impl DeviceRuntime {
 
 每一步都使用独立 commit。源码迁移阶段保持行为不变，通过 `npm run verify:full`，本地只构建不打包的 Debug 桌面程序，并保持 Windows、macOS 与 Linux 源码兼容。最后在 iPhone 13 Pro Max 上通过 USB 与 Wi-Fi 检查硬件行为。
 
-## 后续宿主目标
+## 多设备运行时
 
-模块提取完成后的下一个仓库级目标是无头 CLI 服务宿主。它组合相同的 `devicehub-runtime` 与 core 服务，但不链接 Tauri、窗口 API、桌面音频输出或前端资源。CLI 配置负责监听地址、鉴权材料、数据目录、配对存储、sidecar 解析、日志、关闭信号，以及显式启用的 HTTP/WebSocket/MCP 适配器。首个版本默认仍只监听回环地址；发布到局域网仍必须满足下述安全边界。
+session manager 会同时保持多台设备连接。发现与信任存储是共享协调服务；每个选择 ID 都拥有相互隔离的结构化阶段与诊断状态、命令、媒体流控、需求计数器、观察值、服务 worker 和重连状态。切换选择只会改变桌面显示目标，不会停止之前的会话。显式断开会移除待执行的重连任务并仅停止目标，同时保留发现条目与信任；重连、配对和撤销信任同样只作用于目标设备，进程退出才停止全部会话。
 
-多设备保持连接安排在无头宿主之后，因为无头宿主能最清楚地验证生命周期边界。当前单 runtime 状态图将演进为宿主持有的 runtime registry，加上每个已选物理设备一个隔离的 `DeviceRuntime`。设备发现与信任存储成为共享协调服务，每台设备则保留独立 owner 线程、会话、监督树、命令、媒体流控、需求计数器和确定性关闭。属于同一物理设备的 USB 与 Wi-Fi 端点必须归并为一个逻辑设备和一条活动传输，同时显式定义全局 CPU、内存、解码器、音频输出和重连限额，不能依赖进程级隐式状态。
+同一 UDID 的 USB 与 Wi-Fi 端点仍是不同的发现选项，但 manager 只允许该物理设备存在一条活动传输。重复连接请求会为对应选择记录有界错误，而不会创建相互竞争的设备服务。失败或断开的 registry 条目会保留状态供检查；显式撤销信任会删除该条目。
+
+设备级私有 HTTP 请求携带 `X-DeviceHub-Device`，WebSocket client 则在查询参数中携带 `device_id`。缺少或无法识别的目标会被拒绝，不会回退到桌面当前显示的设备。连接中心按物理 UDID 归组传输，但仍保留传输级选择与逐行错误。每条 MCP 协议连接拥有独立的选中目标，因此两个 Agent 可以操作不同的已连接设备，而不改变桌面选择。桌面音频只播放选中设备；无头浏览器 registry 按设备发布相互隔离的音频流。每台已连接设备都持有自己的媒体和可选服务 worker，因此 CPU、内存、解码器与带宽成本会随会话数量增加。
 
 ## 边界与验收
 

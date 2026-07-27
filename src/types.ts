@@ -1,7 +1,18 @@
 export type Orientation = "portrait" | "portrait_upside_down" | "landscape_left" | "landscape_right";
 
 export type DevicePairingState = "paired" | "unpaired" | "not_applicable";
-export type Device = { id: string; udid: string; name: string; connection: string; pairing: DevicePairingState };
+export type SessionPhase = "discovered" | "connecting" | "connected" | "recovering" | "disconnecting" | "disconnected" | "failed";
+export type Device = {
+  id: string;
+  udid: string;
+  name: string;
+  connection: string;
+  pairing: DevicePairingState;
+  session_status: string | null;
+  session_phase: SessionPhase | null;
+  session_updated_at_ms: number | null;
+  session_error: string | null;
+};
 export type PairDeviceResult = {
   outcome: "paired" | "denied" | "locked" | "timed_out" | "failed";
   error: string | null;
@@ -18,7 +29,7 @@ export type LocationStatus = {
   longitude: number | null;
   error: string | null;
 };
-export type DeviceStatus = { status: string; active_udid: string | null; active_device_id: string | null; error: string | null; orientation: Orientation; devices: Device[]; location: LocationStatus };
+export type DeviceStatus = { status: string; phase: SessionPhase; updated_at_ms: number; active_udid: string | null; active_device_id: string | null; error: string | null; orientation: Orientation; devices: Device[]; location: LocationStatus };
 export type StreamMetrics = {
   transport_active: boolean;
   source_fps: number;

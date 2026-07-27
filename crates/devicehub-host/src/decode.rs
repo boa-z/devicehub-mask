@@ -40,19 +40,41 @@ pub struct FfmpegAudioPipeline {
 pub struct FfmpegAudioPipelineFactory {
     output: AudioPublisher,
     decoder: AudioDecoderConfig,
+    selected_only: bool,
 }
 
 impl FfmpegAudioPipelineFactory {
     pub fn new(output: AudioPublisher, decoder: AudioDecoderConfig) -> Self {
-        Self { output, decoder }
+        Self {
+            output,
+            decoder,
+            selected_only: true,
+        }
+    }
+
+    /// Publish every device to a device-aware consumer such as the headless
+    /// browser audio registry instead of filtering to the desktop selection.
+    pub fn all_sessions(mut self) -> Self {
+        self.selected_only = false;
+        self
     }
 }
 
 impl devicehub_runtime::DeviceAudioPipelineFactory for FfmpegAudioPipelineFactory {
     type Pipeline = FfmpegAudioPipeline;
 
-    fn create(&self, enabled: bool) -> Self::Pipeline {
-        FfmpegAudioPipeline::new(self.output.clone(), self.decoder.clone(), enabled)
+    fn create(
+        &self,
+        enabled: bool,
+        selection_id: &str,
+        active: devicehub_core::ActiveSlot,
+    ) -> Self::Pipeline {
+        let selected = self.selected_only.then_some(active);
+        FfmpegAudioPipeline::new(
+            self.output.for_device(selection_id, selected),
+            self.decoder.clone(),
+            enabled,
+        )
     }
 }
 

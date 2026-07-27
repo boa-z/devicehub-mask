@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, put};
 use axum::{Json, Router};
@@ -20,6 +20,7 @@ use devicehub_runtime::{
 
 type InputCmd = DeviceSessionCommand<PathBuf>;
 type InputSink = SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 
 const COMMAND_DEADLINE: Duration = Duration::from_secs(20);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
@@ -32,6 +33,13 @@ pub struct ProvisioningHttpState {
 impl ProvisioningHttpState {
     pub fn new(input: InputSink) -> Self {
         Self { input }
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
     }
 }
 
@@ -57,9 +65,10 @@ where
 
 async fn list_profiles(
     State(state): State<ProvisioningHttpState>,
+    session: RequestSession,
 ) -> Result<Json<Vec<ProvisioningProfile>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Provisioning(
+    require_active_session(state.input(&session).try_send(InputCmd::Provisioning(
         ProvisioningCommand::List {
             expires_at: tokio::time::Instant::now() + COMMAND_DEADLINE,
             reply,
@@ -76,10 +85,11 @@ struct InstallProfileRequest {
 
 async fn install_profile(
     State(state): State<ProvisioningHttpState>,
+    session: RequestSession,
     Json(request): Json<InstallProfileRequest>,
 ) -> Result<Json<ProvisioningProfile>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Provisioning(
+    require_active_session(state.input(&session).try_send(InputCmd::Provisioning(
         ProvisioningCommand::Install {
             source: request.path,
             expires_at: tokio::time::Instant::now() + COMMAND_DEADLINE,
@@ -92,11 +102,12 @@ async fn install_profile(
 
 async fn remove_profile(
     State(state): State<ProvisioningHttpState>,
+    session: RequestSession,
     Path(uuid): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_uuid(&uuid)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Provisioning(
+    require_active_session(state.input(&session).try_send(InputCmd::Provisioning(
         ProvisioningCommand::Remove {
             uuid,
             expires_at: tokio::time::Instant::now() + COMMAND_DEADLINE,
@@ -109,11 +120,12 @@ async fn remove_profile(
 
 async fn trust_profile_signer(
     State(state): State<ProvisioningHttpState>,
+    session: RequestSession,
     Path(uuid): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let uuid = normalized_uuid(uuid)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Provisioning(
+    require_active_session(state.input(&session).try_send(InputCmd::Provisioning(
         ProvisioningCommand::TrustSigner {
             uuid,
             expires_at: tokio::time::Instant::now() + COMMAND_DEADLINE,
@@ -220,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_routes_dispatch_typed_commands_and_opaque_sources() {
         let (state, mut commands) = test_state();
-        let list = tokio::spawn(list_profiles(State(state.clone())));
+        let list = tokio::spawn(list_profiles(State(state.clone()), None));
         let InputCmd::Provisioning(ProvisioningCommand::List { reply, .. }) =
             commands.recv().await.unwrap()
         else {
@@ -231,6 +243,7 @@ mod tests {
 
         let install = tokio::spawn(install_profile(
             State(state.clone()),
+            None,
             Json(InstallProfileRequest {
                 path: PathBuf::from("/tmp/Game.mobileprovision"),
             }),
@@ -247,6 +260,7 @@ mod tests {
 
         let remove = tokio::spawn(remove_profile(
             State(state.clone()),
+            None,
             Path("00000000-1111-2222-3333-444444444444".into()),
         ));
         let InputCmd::Provisioning(ProvisioningCommand::Remove { uuid, reply, .. }) =
@@ -260,6 +274,7 @@ mod tests {
 
         let trust = tokio::spawn(trust_profile_signer(
             State(state),
+            None,
             Path("00000000-AAAA-BBBB-CCCC-111111111111".into()),
         ));
         let InputCmd::Provisioning(ProvisioningCommand::TrustSigner { uuid, reply, .. }) =
@@ -276,14 +291,14 @@ mod tests {
     async fn invalid_uuid_is_rejected_before_dispatch() {
         let (state, mut commands) = test_state();
         assert_eq!(
-            remove_profile(State(state.clone()), Path("not-a-uuid".into()))
+            remove_profile(State(state.clone()), None, Path("not-a-uuid".into()))
                 .await
                 .unwrap_err()
                 .0,
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            trust_profile_signer(State(state), Path("still-not-a-uuid".into()))
+            trust_profile_signer(State(state), None, Path("still-not-a-uuid".into()))
                 .await
                 .unwrap_err()
                 .0,
@@ -338,12 +353,13 @@ mod tests {
     async fn routes_require_an_active_session() {
         let state = ProvisioningHttpState::default();
         assert!(matches!(
-            list_profiles(State(state.clone())).await,
+            list_profiles(State(state.clone()), None).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
             trust_profile_signer(
                 State(state),
+                None,
                 Path("00000000-aaaa-bbbb-cccc-111111111111".into()),
             )
             .await,

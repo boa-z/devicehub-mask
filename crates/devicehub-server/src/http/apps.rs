@@ -4,7 +4,7 @@
 //! This adapter validates requests, applies bounded response deadlines, and
 //! exposes the shared progress snapshot without owning background work.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
@@ -17,6 +17,7 @@ use devicehub_core::AppOperationSlot;
 
 type InputCmd = devicehub_runtime::DeviceSessionCommand<std::path::PathBuf>;
 type InputSink = devicehub_runtime::SessionCommandSlot<std::path::PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<std::path::PathBuf>>>;
 
 const DEVICE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -29,6 +30,20 @@ pub struct AppHttpState {
 impl AppHttpState {
     pub fn new(input: InputSink, operation: AppOperationSlot) -> Self {
         Self { input, operation }
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
+    }
+
+    fn operation(&self, session: &RequestSession) -> AppOperationSlot {
+        session
+            .as_ref()
+            .map(|session| session.app_operation.clone())
+            .unwrap_or_else(|| self.operation.clone())
     }
 }
 
@@ -64,10 +79,11 @@ struct DeviceAppsQuery {
 
 async fn device_apps(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Query(query): Query<DeviceAppsQuery>,
 ) -> Result<Json<Vec<devicehub_core::DeviceApp>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Apps(
+    require_active_session(state.input(&session).try_send(InputCmd::Apps(
         devicehub_runtime::AppCommand::List {
             include_system: query.include_system,
             include_app_clips: query.include_app_clips,
@@ -89,13 +105,14 @@ async fn device_apps(
 
 async fn device_app_icon(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     require_active_session(
         state
-            .input
+            .input(&session)
             .try_send(InputCmd::GetAppIcon { bundle_id, reply }),
     )?;
     let icon = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
@@ -119,17 +136,19 @@ async fn device_app_icon(
 
 async fn app_operation(
     State(state): State<AppHttpState>,
+    session: RequestSession,
 ) -> Json<devicehub_core::AppOperationView> {
-    Json(state.operation.get())
+    Json(state.operation(&session).get())
 }
 
 async fn uninstall_app(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Apps(
+    require_active_session(state.input(&session).try_send(InputCmd::Apps(
         devicehub_runtime::AppCommand::Uninstall { bundle_id, reply },
     )))?;
     await_app_operation_acceptance(response, "app uninstall").await?;
@@ -161,11 +180,12 @@ async fn await_app_operation_acceptance(
 
 async fn launch_app(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Apps(
+    require_active_session(state.input(&session).try_send(InputCmd::Apps(
         devicehub_runtime::AppCommand::Launch { bundle_id, reply },
     )))?;
     tokio::time::timeout(devicehub_runtime::APP_CONTROL_REQUEST_TIMEOUT, response)
@@ -190,11 +210,12 @@ struct AppConsoleQuery {
 
 async fn start_app_console(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
 ) -> Result<Json<devicehub_runtime::AppConsoleSnapshot>, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::AppConsole(
+    require_active_session(state.input(&session).try_send(InputCmd::AppConsole(
         devicehub_runtime::AppConsoleCommand::Start { bundle_id, reply },
     )))?;
     let snapshot = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
@@ -212,10 +233,11 @@ async fn start_app_console(
 
 async fn app_console_snapshot(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Query(query): Query<AppConsoleQuery>,
 ) -> Result<Json<devicehub_runtime::AppConsoleSnapshot>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::AppConsole(
+    require_active_session(state.input(&session).try_send(InputCmd::AppConsole(
         devicehub_runtime::AppConsoleCommand::Snapshot {
             after: query.after,
             reply,
@@ -235,10 +257,11 @@ async fn app_console_snapshot(
 
 async fn stop_app_console(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Query(query): Query<AppConsoleQuery>,
 ) -> Result<Json<devicehub_runtime::AppConsoleSnapshot>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::AppConsole(
+    require_active_session(state.input(&session).try_send(InputCmd::AppConsole(
         devicehub_runtime::AppConsoleCommand::Stop {
             clear: query.clear,
             reply,
@@ -258,11 +281,12 @@ async fn stop_app_console(
 
 async fn stop_app(
     State(state): State<AppHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     validate_bundle_identifier(&bundle_id)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::Apps(
+    require_active_session(state.input(&session).try_send(InputCmd::Apps(
         devicehub_runtime::AppCommand::Stop { bundle_id, reply },
     )))?;
     let was_running =
@@ -357,6 +381,7 @@ mod tests {
         let (state, mut input_rx) = test_state();
         let request = tokio::spawn(device_apps(
             State(state),
+            None,
             Query(DeviceAppsQuery {
                 include_system: true,
                 include_app_clips: true,
@@ -381,15 +406,20 @@ mod tests {
         let (state, _input_rx) = test_state();
         state.input.set(None);
         assert!(matches!(
-            device_apps(State(state.clone()), Query(DeviceAppsQuery::default())).await,
+            device_apps(
+                State(state.clone()),
+                None,
+                Query(DeviceAppsQuery::default())
+            )
+            .await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            device_app_icon(State(state.clone()), Path("com.example.game".into())).await,
+            device_app_icon(State(state.clone()), None, Path("com.example.game".into())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
-            uninstall_app(State(state), Path("com.example.game".into())).await,
+            uninstall_app(State(state), None, Path("com.example.game".into())).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }
@@ -399,15 +429,15 @@ mod tests {
         let (state, mut input_rx) = test_state();
         for bundle_id in ["", "no-domain", "com.example.bad value", "com/example/app"] {
             assert!(matches!(
-                launch_app(State(state.clone()), Path(bundle_id.into())).await,
+                launch_app(State(state.clone()), None, Path(bundle_id.into())).await,
                 Err((StatusCode::BAD_REQUEST, _))
             ));
             assert!(matches!(
-                stop_app(State(state.clone()), Path(bundle_id.into())).await,
+                stop_app(State(state.clone()), None, Path(bundle_id.into())).await,
                 Err((StatusCode::BAD_REQUEST, _))
             ));
             assert!(matches!(
-                uninstall_app(State(state.clone()), Path(bundle_id.into())).await,
+                uninstall_app(State(state.clone()), None, Path(bundle_id.into())).await,
                 Err((StatusCode::BAD_REQUEST, _))
             ));
         }
@@ -415,6 +445,7 @@ mod tests {
 
         let launch = tokio::spawn(launch_app(
             State(state.clone()),
+            None,
             Path("com.example.game".into()),
         ));
         match input_rx.recv().await.unwrap() {
@@ -426,7 +457,11 @@ mod tests {
         }
         assert_eq!(launch.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let stop = tokio::spawn(stop_app(State(state), Path("com.example.game".into())));
+        let stop = tokio::spawn(stop_app(
+            State(state),
+            None,
+            Path("com.example.game".into()),
+        ));
         match input_rx.recv().await.unwrap() {
             InputCmd::Apps(devicehub_runtime::AppCommand::Stop { bundle_id, reply }) => {
                 assert_eq!(bundle_id, "com.example.game");
@@ -442,13 +477,14 @@ mod tests {
     async fn app_console_endpoints_validate_and_dispatch_session_commands() {
         let (state, mut input_rx) = test_state();
         assert!(matches!(
-            start_app_console(State(state.clone()), Path("bad value".into())).await,
+            start_app_console(State(state.clone()), None, Path("bad value".into())).await,
             Err((StatusCode::BAD_REQUEST, _))
         ));
         assert!(input_rx.try_recv().is_err());
 
         let start = tokio::spawn(start_app_console(
             State(state.clone()),
+            None,
             Path("com.example.game".into()),
         ));
         match input_rx.recv().await.unwrap() {
@@ -472,6 +508,7 @@ mod tests {
 
         let snapshot = tokio::spawn(app_console_snapshot(
             State(state.clone()),
+            None,
             Query(AppConsoleQuery {
                 after: Some(7),
                 clear: false,
@@ -495,6 +532,7 @@ mod tests {
 
         let stop = tokio::spawn(stop_app_console(
             State(state),
+            None,
             Query(AppConsoleQuery {
                 after: None,
                 clear: true,
@@ -521,12 +559,13 @@ mod tests {
     async fn app_icon_validates_and_dispatches_bundle_identifier() {
         let (state, mut input_rx) = test_state();
         assert!(matches!(
-            device_app_icon(State(state.clone()), Path("bad value".into())).await,
+            device_app_icon(State(state.clone()), None, Path("bad value".into())).await,
             Err((StatusCode::BAD_REQUEST, _))
         ));
         assert!(input_rx.try_recv().is_err());
         let request = tokio::spawn(device_app_icon(
             State(state),
+            None,
             Path("com.example.game".into()),
         ));
         match input_rx.recv().await.unwrap() {
@@ -552,7 +591,7 @@ mod tests {
             )
             .unwrap();
         state.operation.update(id, "uninstalling", Some(42));
-        let view = app_operation(State(state)).await.0;
+        let view = app_operation(State(state), None).await.0;
         assert_eq!(view.id, id);
         assert_eq!(view.progress, Some(42));
     }

@@ -93,7 +93,7 @@ pub use provisioning::ProvisioningProfile;
 pub use service_health::{ServiceHealth, ServicePhase, ServiceRegistry};
 pub use state::{
     ActiveSlot, AppOperationSlot, DeviceListSlot, ErrorSlot, LocationStatusSlot, OrientationSlot,
-    StatusSlot, VideoCounterSnapshot, VideoCounters,
+    SessionPhase, SessionStatus, StatusSlot, VideoCounterSnapshot, VideoCounters,
 };
 pub use storage::{
     APP_DOCUMENT_TRANSFER_CANCELLED, AppDocumentActivityKind, AppDocumentActivitySlot,

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, put};
@@ -28,6 +28,7 @@ use devicehub_core::{
 };
 type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
 type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 type AppDocumentCommand = devicehub_runtime::AppDocumentCommand<PathBuf>;
 type DeviceFileCommand = devicehub_runtime::DeviceFileCommand<PathBuf>;
 
@@ -62,6 +63,27 @@ impl StorageHttpState {
     pub fn with_browser_transfers(mut self, store: impl BrowserTransferStore) -> Self {
         self.browser_transfers = Some(Arc::new(store));
         self
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
+    }
+
+    fn app_document_activity(&self, session: &RequestSession) -> AppDocumentActivitySlot {
+        session
+            .as_ref()
+            .map(|session| session.app_documents.clone())
+            .unwrap_or_else(|| self.app_document_activity.clone())
+    }
+
+    fn device_file_activity(&self, session: &RequestSession) -> DeviceFileActivitySlot {
+        session
+            .as_ref()
+            .map(|session| session.device_files.clone())
+            .unwrap_or_else(|| self.device_file_activity.clone())
     }
 }
 
@@ -199,13 +221,14 @@ struct RenameAppDocumentRequest {
 
 async fn app_documents(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Query(query): Query<AppDocumentQuery>,
 ) -> Result<Json<AppDocumentList>, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::List {
             bundle_id,
             scope: query.scope,
@@ -220,18 +243,20 @@ async fn app_documents(
 
 async fn app_document_activity(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
 ) -> Result<Json<AppDocumentActivityView>, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
-    Ok(Json(state.app_document_activity.get(&bundle_id)))
+    Ok(Json(state.app_document_activity(&session).get(&bundle_id)))
 }
 
 async fn cancel_app_document_activity(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
-    if state.app_document_activity.cancel(&bundle_id) {
+    if state.app_document_activity(&session).cancel(&bundle_id) {
         Ok(StatusCode::ACCEPTED)
     } else {
         Err((
@@ -243,13 +268,14 @@ async fn cancel_app_document_activity(
 
 async fn export_app_document(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Json(request): Json<ExportAppDocumentRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::Export {
             bundle_id,
             scope: request.scope,
@@ -268,13 +294,14 @@ async fn export_app_document(
 
 async fn import_app_document(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Json(request): Json<ImportAppDocumentRequest>,
 ) -> Result<Json<AppDocumentEntry>, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::Import {
             bundle_id,
             scope: request.scope,
@@ -306,6 +333,7 @@ struct BrowserAppDocumentExportQuery {
 
 async fn browser_import_app_document(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Query(query): Query<BrowserAppDocumentQuery>,
     bytes: Bytes,
@@ -320,7 +348,7 @@ async fn browser_import_app_document(
     let cleanup = source.clone();
     let (reply, response) = oneshot::channel();
     let result = dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::Import {
             bundle_id,
             scope: query.scope,
@@ -340,6 +368,7 @@ async fn browser_import_app_document(
 
 async fn browser_export_app_document(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Query(query): Query<BrowserAppDocumentExportQuery>,
 ) -> Result<Response, (StatusCode, String)> {
@@ -353,7 +382,7 @@ async fn browser_export_app_document(
     let cleanup = destination.clone();
     let (reply, response) = oneshot::channel();
     if let Err(error) = dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::Export {
             bundle_id,
             scope: query.scope,
@@ -379,13 +408,14 @@ async fn browser_export_app_document(
 
 async fn create_app_document_directory(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Json(request): Json<CreateAppDocumentDirectoryRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::CreateDirectory {
             bundle_id,
             scope: request.scope,
@@ -400,13 +430,14 @@ async fn create_app_document_directory(
 
 async fn rename_app_document(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Json(request): Json<RenameAppDocumentRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::Rename {
             bundle_id,
             scope: request.scope,
@@ -421,13 +452,14 @@ async fn rename_app_document(
 
 async fn delete_app_document(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Path(bundle_id): Path<String>,
     Query(query): Query<AppDocumentQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_app_document_bundle(&bundle_id)?;
     let (reply, response) = oneshot::channel();
     dispatch_app_document_command(
-        &state,
+        &state.input(&session),
         AppDocumentCommand::Delete {
             bundle_id,
             scope: query.scope,
@@ -446,10 +478,10 @@ fn validate_app_document_bundle(bundle_id: &str) -> Result<(), (StatusCode, Stri
 }
 
 fn dispatch_app_document_command(
-    state: &StorageHttpState,
+    input: &InputSink,
     command: AppDocumentCommand,
 ) -> Result<(), (StatusCode, String)> {
-    if state.input.try_send(InputCmd::AppDocuments(command)) {
+    if input.try_send(InputCmd::AppDocuments(command)) {
         Ok(())
     } else {
         Err((
@@ -538,11 +570,12 @@ struct RenameDeviceFileRequest {
 
 async fn device_files(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Query(query): Query<DeviceFileQuery>,
 ) -> Result<Json<DeviceFileList>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::List {
             path: query.path,
             reply,
@@ -555,14 +588,16 @@ async fn device_files(
 
 async fn device_file_activity(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
 ) -> Json<DeviceFileActivityView> {
-    Json(state.device_file_activity.get())
+    Json(state.device_file_activity(&session).get())
 }
 
 async fn cancel_device_file_activity(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if state.device_file_activity.cancel() {
+    if state.device_file_activity(&session).cancel() {
         Ok(StatusCode::ACCEPTED)
     } else {
         Err((
@@ -574,11 +609,12 @@ async fn cancel_device_file_activity(
 
 async fn export_device_file(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Json(request): Json<ExportDeviceFileRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::Export {
             path: request.path,
             destination: request.destination,
@@ -595,11 +631,12 @@ async fn export_device_file(
 
 async fn import_device_file(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Json(request): Json<ImportDeviceFileRequest>,
 ) -> Result<Json<DeviceFileEntry>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::Import {
             directory: request.directory,
             source: request.source,
@@ -625,6 +662,7 @@ struct BrowserDeviceExportQuery {
 
 async fn browser_import_device_file(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Query(query): Query<BrowserDeviceImportQuery>,
     bytes: Bytes,
 ) -> Result<Json<DeviceFileEntry>, (StatusCode, String)> {
@@ -637,7 +675,7 @@ async fn browser_import_device_file(
     let cleanup = source.clone();
     let (reply, response) = oneshot::channel();
     let result = dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::Import {
             directory: query.directory,
             source,
@@ -655,6 +693,7 @@ async fn browser_import_device_file(
 
 async fn browser_export_device_file(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Query(query): Query<BrowserDeviceExportQuery>,
 ) -> Result<Response, (StatusCode, String)> {
     validate_browser_file_name(&query.name)?;
@@ -666,7 +705,7 @@ async fn browser_export_device_file(
     let cleanup = destination.clone();
     let (reply, response) = oneshot::channel();
     if let Err(error) = dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::Export {
             path: query.path,
             destination,
@@ -706,11 +745,12 @@ fn browser_transfer_error(error: String) -> (StatusCode, String) {
 
 async fn create_device_file_directory(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Json(request): Json<CreateDeviceFileDirectoryRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::CreateDirectory {
             directory: request.directory,
             name: request.name,
@@ -723,11 +763,12 @@ async fn create_device_file_directory(
 
 async fn rename_device_file(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Json(request): Json<RenameDeviceFileRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::Rename {
             path: request.path,
             name: request.name,
@@ -740,11 +781,12 @@ async fn rename_device_file(
 
 async fn delete_device_file(
     State(state): State<StorageHttpState>,
+    session: RequestSession,
     Query(query): Query<DeviceFileQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
     dispatch_device_file_command(
-        &state,
+        &state.input(&session),
         DeviceFileCommand::Delete {
             path: query.path,
             reply,
@@ -755,10 +797,10 @@ async fn delete_device_file(
 }
 
 fn dispatch_device_file_command(
-    state: &StorageHttpState,
+    input: &InputSink,
     command: DeviceFileCommand,
 ) -> Result<(), (StatusCode, String)> {
-    if state.input.try_send(InputCmd::DeviceFiles(command)) {
+    if input.try_send(InputCmd::DeviceFiles(command)) {
         Ok(())
     } else {
         Err((
@@ -833,6 +875,7 @@ mod tests {
         assert!(matches!(
             device_files(
                 State(state.clone()),
+                None,
                 Query(DeviceFileQuery { path: "/".into() }),
             )
             .await,
@@ -841,6 +884,7 @@ mod tests {
         assert!(matches!(
             app_documents(
                 State(state),
+                None,
                 Path("com.example.game".into()),
                 Query(AppDocumentQuery {
                     path: "/".into(),
@@ -864,6 +908,7 @@ mod tests {
         assert_eq!(
             cancel_app_document_activity(
                 State(cancel_state.clone()),
+                None,
                 Path("com.example.game".into()),
             )
             .await
@@ -872,21 +917,23 @@ mod tests {
             StatusCode::CONFLICT
         );
         let (state, mut input_rx) = test_state();
-        let activity = app_document_activity(State(state.clone()), Path("com.example.game".into()))
-            .await
-            .unwrap()
-            .0;
+        let activity =
+            app_document_activity(State(state.clone()), None, Path("com.example.game".into()))
+                .await
+                .unwrap()
+                .0;
         assert_eq!(
             activity.state,
             devicehub_core::AppDocumentActivityState::Idle
         );
         assert!(
-            app_document_activity(State(state.clone()), Path("invalid".into()))
+            app_document_activity(State(state.clone()), None, Path("invalid".into()))
                 .await
                 .is_err()
         );
         let list = tokio::spawn(app_documents(
             State(state.clone()),
+            None,
             Path("com.example.game".into()),
             Query(AppDocumentQuery {
                 path: "/Saves".into(),
@@ -918,6 +965,7 @@ mod tests {
 
         let upload = tokio::spawn(import_app_document(
             State(state.clone()),
+            None,
             Path("com.example.game".into()),
             Json(ImportAppDocumentRequest {
                 directory: "/Saves".into(),
@@ -950,6 +998,7 @@ mod tests {
 
         let create = tokio::spawn(create_app_document_directory(
             State(state.clone()),
+            None,
             Path("com.example.game".into()),
             Json(CreateAppDocumentDirectoryRequest {
                 directory: "/".into(),
@@ -968,6 +1017,7 @@ mod tests {
 
         let rename = tokio::spawn(rename_app_document(
             State(state.clone()),
+            None,
             Path("com.example.game".into()),
             Json(RenameAppDocumentRequest {
                 path: "/Saves/slot.dat".into(),
@@ -986,6 +1036,7 @@ mod tests {
 
         let delete = tokio::spawn(delete_app_document(
             State(state.clone()),
+            None,
             Path("com.example.game".into()),
             Query(AppDocumentQuery {
                 path: "/Saves/slot-2.dat".into(),
@@ -1010,6 +1061,7 @@ mod tests {
 
         let export = tokio::spawn(export_app_document(
             State(state),
+            None,
             Path("com.example.game".into()),
             Json(ExportAppDocumentRequest {
                 path: "/Saves/slot-2.dat".into(),
@@ -1044,7 +1096,7 @@ mod tests {
 
         let (cancel_state, _) = test_state();
         assert_eq!(
-            cancel_device_file_activity(State(cancel_state.clone()))
+            cancel_device_file_activity(State(cancel_state.clone()), None)
                 .await
                 .unwrap_err()
                 .0,
@@ -1052,11 +1104,15 @@ mod tests {
         );
         let (state, mut input_rx) = test_state();
         assert_eq!(
-            device_file_activity(State(state.clone())).await.0.state,
+            device_file_activity(State(state.clone()), None)
+                .await
+                .0
+                .state,
             devicehub_core::DeviceFileActivityState::Idle
         );
         let list = tokio::spawn(device_files(
             State(state.clone()),
+            None,
             Query(DeviceFileQuery {
                 path: "/DCIM".into(),
             }),
@@ -1078,6 +1134,7 @@ mod tests {
 
         let export = tokio::spawn(export_device_file(
             State(state.clone()),
+            None,
             Json(ExportDeviceFileRequest {
                 path: "/DCIM/100APPLE/IMG_0001.HEIC".into(),
                 destination: std::env::temp_dir().join("photo.heic"),
@@ -1108,6 +1165,7 @@ mod tests {
 
         let import = tokio::spawn(import_device_file(
             State(state.clone()),
+            None,
             Json(ImportDeviceFileRequest {
                 directory: "/Downloads".into(),
                 source: PathBuf::from("archive.zip"),
@@ -1137,6 +1195,7 @@ mod tests {
 
         let create = tokio::spawn(create_device_file_directory(
             State(state.clone()),
+            None,
             Json(CreateDeviceFileDirectoryRequest {
                 directory: "/".into(),
                 name: "Shared".into(),
@@ -1158,6 +1217,7 @@ mod tests {
 
         let rename = tokio::spawn(rename_device_file(
             State(state.clone()),
+            None,
             Json(RenameDeviceFileRequest {
                 path: "/Downloads/archive.zip".into(),
                 name: "backup.zip".into(),
@@ -1175,6 +1235,7 @@ mod tests {
 
         let delete = tokio::spawn(delete_device_file(
             State(state),
+            None,
             Query(DeviceFileQuery {
                 path: "/Downloads/backup.zip".into(),
             }),

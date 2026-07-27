@@ -11,7 +11,11 @@ import { logFrontend } from "./diagnostics";
 export { browserBackendConnection, requestPrivateBackend } from "./backendConnection";
 export type { BackendConnection, BackendRequest } from "./backendConnection";
 
-export function usePrivateBackend(onUnavailable: (error: unknown) => void, notReadyMessage: string) {
+export function usePrivateBackend(
+  onUnavailable: (error: unknown) => void,
+  notReadyMessage: string,
+  selectedDeviceId: string | null,
+) {
   const [backend, setBackend] = useState<BackendConnection | null>(null);
   const unavailableRef = useRef(onUnavailable);
   unavailableRef.current = onUnavailable;
@@ -39,8 +43,10 @@ export function usePrivateBackend(onUnavailable: (error: unknown) => void, notRe
 
   const request = useCallback<BackendRequest>((path, init) => {
     if (!backend) return Promise.reject(new Error(notReadyMessage));
-    return requestPrivateBackend(backend, path, init);
-  }, [backend, notReadyMessage]);
+    const headers = new Headers(init?.headers);
+    if (selectedDeviceId) headers.set("x-devicehub-device", selectedDeviceId);
+    return requestPrivateBackend(backend, path, { ...init, headers });
+  }, [backend, notReadyMessage, selectedDeviceId]);
 
   return { backend, request };
 }

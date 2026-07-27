@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
@@ -26,6 +26,7 @@ use devicehub_runtime::{
 
 type InputCmd = DeviceSessionCommand<PathBuf>;
 type InputSink = SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 
 const DEVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SCREENSHOT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
@@ -49,6 +50,27 @@ impl DeviceHttpState {
             location,
             device_control,
         }
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
+    }
+
+    fn location(&self, session: &RequestSession) -> LocationStatusSlot {
+        session
+            .as_ref()
+            .map(|session| session.location.clone())
+            .unwrap_or_else(|| self.location.clone())
+    }
+
+    fn device_control(&self, session: &RequestSession) -> DeviceControlService<PathBuf> {
+        session
+            .as_ref()
+            .map(|session| session.device_control.clone())
+            .unwrap_or_else(|| self.device_control.clone())
     }
 }
 
@@ -93,11 +115,12 @@ struct PasteDeviceTextRequest {
 
 async fn paste_device_text(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
     Json(request): Json<PasteDeviceTextRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_paste_text(&request.text).map_err(|error| (StatusCode::BAD_REQUEST, error.into()))?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::PasteText {
+    require_active_session(state.input(&session).try_send(InputCmd::PasteText {
         text: request.text,
         reply,
     }))?;
@@ -105,17 +128,21 @@ async fn paste_device_text(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn device_location(State(state): State<DeviceHttpState>) -> Json<LocationStatus> {
-    Json(state.location.get())
+async fn device_location(
+    State(state): State<DeviceHttpState>,
+    session: RequestSession,
+) -> Json<LocationStatus> {
+    Json(state.location(&session).get())
 }
 
 async fn set_device_location(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
     Json(request): Json<SetLocationRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     validate_coordinates(request.latitude, request.longitude)?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::SetLocation {
+    require_active_session(state.input(&session).try_send(InputCmd::SetLocation {
         latitude: request.latitude,
         longitude: request.longitude,
         reply,
@@ -126,9 +153,14 @@ async fn set_device_location(
 
 async fn clear_device_location(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::ClearLocation { reply }))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::ClearLocation { reply }),
+    )?;
     await_device_command(response, "clear location").await?;
     Ok(StatusCode::OK)
 }
@@ -162,9 +194,14 @@ async fn await_device_command(
 
 async fn device_details(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<Json<devicehub_core::DeviceDetails>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::GetDeviceDetails(reply)))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::GetDeviceDetails(reply)),
+    )?;
     let details = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -190,12 +227,17 @@ struct RenameDeviceResponse {
 
 async fn rename_device(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
     Json(request): Json<RenameDeviceRequest>,
 ) -> Result<Json<RenameDeviceResponse>, (StatusCode, String)> {
     let name = validate_device_name(&request.name)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::RenameDevice { name, reply }))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::RenameDevice { name, reply }),
+    )?;
     let name = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -211,9 +253,10 @@ async fn rename_device(
 
 async fn reveal_developer_mode(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<Json<devicehub_runtime::DeveloperModePreparation>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::DeveloperMode(
+    require_active_session(state.input(&session).try_send(InputCmd::DeveloperMode(
         DeveloperModeCommand::RevealOption { reply },
     )))?;
     let result = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
@@ -231,9 +274,10 @@ async fn reveal_developer_mode(
 
 async fn device_screenshot(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let png = state
-        .device_control
+        .device_control(&session)
         .capture_screenshot(SCREENSHOT_REQUEST_TIMEOUT)
         .await
         .map_err(map_device_control_error)?;
@@ -263,27 +307,30 @@ enum DevicePowerRequest {
 
 async fn lock_device(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    dispatch_device_power_command(&state, DevicePowerRequest::Lock).await?;
+    dispatch_device_power_command(&state.input(&session), DevicePowerRequest::Lock).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn restart_device(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    dispatch_device_power_command(&state, DevicePowerRequest::Restart).await?;
+    dispatch_device_power_command(&state.input(&session), DevicePowerRequest::Restart).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn shutdown_device(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    dispatch_device_power_command(&state, DevicePowerRequest::Shutdown).await?;
+    dispatch_device_power_command(&state.input(&session), DevicePowerRequest::Shutdown).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn dispatch_device_power_command(
-    state: &DeviceHttpState,
+    input: &InputSink,
     action: DevicePowerRequest,
 ) -> Result<(), (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
@@ -292,7 +339,7 @@ async fn dispatch_device_power_command(
         DevicePowerRequest::Restart => InputCmd::RestartDevice(reply),
         DevicePowerRequest::Shutdown => InputCmd::ShutdownDevice(reply),
     };
-    require_active_session(state.input.try_send(command))?;
+    require_active_session(input.try_send(command))?;
     tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -314,9 +361,14 @@ async fn dispatch_device_power_command(
 
 async fn device_companions(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<Json<Vec<devicehub_core::CompanionDevice>>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::ListCompanionDevices(reply)))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::ListCompanionDevices(reply)),
+    )?;
     let devices = tokio::time::timeout(DEVICE_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -332,9 +384,14 @@ async fn device_companions(
 
 async fn device_home_screen(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
 ) -> Result<Json<devicehub_core::HomeScreenLayout>, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::GetHomeScreenLayout(reply)))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::GetHomeScreenLayout(reply)),
+    )?;
     let layout = tokio::time::timeout(READ_ONLY_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -350,6 +407,7 @@ async fn device_home_screen(
 
 async fn device_wallpaper(
     State(state): State<DeviceHttpState>,
+    session: RequestSession,
     Path(kind): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let kind = devicehub_core::WallpaperKind::parse(&kind).ok_or_else(|| {
@@ -359,7 +417,11 @@ async fn device_wallpaper(
         )
     })?;
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::GetWallpaper { kind, reply }))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::GetWallpaper { kind, reply }),
+    )?;
     let image = tokio::time::timeout(READ_ONLY_REQUEST_TIMEOUT, response)
         .await
         .map_err(|_| {
@@ -438,6 +500,7 @@ mod tests {
         let (state, mut commands) = test_state();
         let set = tokio::spawn(set_device_location(
             State(state.clone()),
+            None,
             Json(SetLocationRequest {
                 latitude: 25.033,
                 longitude: 121.5654,
@@ -455,7 +518,7 @@ mod tests {
         reply.send(Ok(())).unwrap();
         assert_eq!(set.await.unwrap().unwrap(), StatusCode::OK);
 
-        let clear = tokio::spawn(clear_device_location(State(state.clone())));
+        let clear = tokio::spawn(clear_device_location(State(state.clone()), None));
         let InputCmd::ClearLocation { reply } = commands.recv().await.unwrap() else {
             panic!("expected clear location command");
         };
@@ -464,6 +527,7 @@ mod tests {
 
         let paste = tokio::spawn(paste_device_text(
             State(state.clone()),
+            None,
             Json(PasteDeviceTextRequest {
                 text: "hello".into(),
             }),
@@ -478,6 +542,7 @@ mod tests {
         assert!(matches!(
             paste_device_text(
                 State(state),
+                None,
                 Json(PasteDeviceTextRequest {
                     text: "bad\0text".into(),
                 }),
@@ -492,6 +557,7 @@ mod tests {
         let (state, mut commands) = test_state();
         let rename = tokio::spawn(rename_device(
             State(state.clone()),
+            None,
             Json(RenameDeviceRequest {
                 name: "  Test iPhone  ".into(),
             }),
@@ -503,7 +569,7 @@ mod tests {
         reply.send(Ok(name)).unwrap();
         assert_eq!(rename.await.unwrap().unwrap().0.name, "Test iPhone");
 
-        let reveal = tokio::spawn(reveal_developer_mode(State(state)));
+        let reveal = tokio::spawn(reveal_developer_mode(State(state), None));
         let InputCmd::DeveloperMode(DeveloperModeCommand::RevealOption { reply }) =
             commands.recv().await.unwrap()
         else {
@@ -520,14 +586,14 @@ mod tests {
     #[tokio::test]
     async fn read_only_queries_preserve_png_cache_policy() {
         let (state, mut commands) = test_state();
-        let companions = tokio::spawn(device_companions(State(state.clone())));
+        let companions = tokio::spawn(device_companions(State(state.clone()), None));
         let InputCmd::ListCompanionDevices(reply) = commands.recv().await.unwrap() else {
             panic!("expected companion query");
         };
         reply.send(Ok(Vec::new())).unwrap();
         assert!(companions.await.unwrap().unwrap().0.is_empty());
 
-        let home = tokio::spawn(device_home_screen(State(state.clone())));
+        let home = tokio::spawn(device_home_screen(State(state.clone()), None));
         let InputCmd::GetHomeScreenLayout(reply) = commands.recv().await.unwrap() else {
             panic!("expected home screen query");
         };
@@ -541,13 +607,13 @@ mod tests {
             .unwrap();
         assert!(home.await.unwrap().unwrap().0.apps.is_empty());
 
-        let invalid = device_wallpaper(State(state.clone()), Path("desktop".into()))
+        let invalid = device_wallpaper(State(state.clone()), None, Path("desktop".into()))
             .await
             .err()
             .unwrap();
         assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
 
-        let wallpaper = tokio::spawn(device_wallpaper(State(state), Path("lock".into())));
+        let wallpaper = tokio::spawn(device_wallpaper(State(state), None, Path("lock".into())));
         let InputCmd::GetWallpaper { kind, reply } = commands.recv().await.unwrap() else {
             panic!("expected wallpaper query");
         };
@@ -561,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn screenshot_and_power_controls_are_session_scoped() {
         let (state, mut commands) = test_state();
-        let screenshot = tokio::spawn(device_screenshot(State(state.clone())));
+        let screenshot = tokio::spawn(device_screenshot(State(state.clone()), None));
         let InputCmd::TakeScreenshot(reply) = commands.recv().await.unwrap() else {
             panic!("expected screenshot command");
         };
@@ -576,10 +642,9 @@ mod tests {
             DevicePowerRequest::Shutdown,
         ] {
             let request_state = state.clone();
-            let request =
-                tokio::spawn(
-                    async move { dispatch_device_power_command(&request_state, action).await },
-                );
+            let request = tokio::spawn(async move {
+                dispatch_device_power_command(&request_state.input, action).await
+            });
             match commands.recv().await.unwrap() {
                 InputCmd::LockDevice(reply)
                 | InputCmd::RestartDevice(reply)
@@ -589,7 +654,7 @@ mod tests {
             request.await.unwrap().unwrap();
         }
 
-        let conflict = tokio::spawn(restart_device(State(state)));
+        let conflict = tokio::spawn(restart_device(State(state), None));
         let InputCmd::RestartDevice(reply) = commands.recv().await.unwrap() else {
             panic!("expected restart command");
         };
@@ -608,12 +673,13 @@ mod tests {
         state.input.set(None);
 
         assert!(matches!(
-            device_details(State(state.clone())).await,
+            device_details(State(state.clone()), None).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
         assert!(matches!(
             rename_device(
                 State(state.clone()),
+                None,
                 Json(RenameDeviceRequest {
                     name: "Test iPhone".into(),
                 }),
@@ -621,10 +687,14 @@ mod tests {
             .await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
-        assert!(device_screenshot(State(state.clone())).await.is_err());
-        assert!(device_companions(State(state.clone())).await.is_err());
-        assert!(device_home_screen(State(state.clone())).await.is_err());
-        assert!(lock_device(State(state)).await.is_err());
+        assert!(device_screenshot(State(state.clone()), None).await.is_err());
+        assert!(device_companions(State(state.clone()), None).await.is_err());
+        assert!(
+            device_home_screen(State(state.clone()), None)
+                .await
+                .is_err()
+        );
+        assert!(lock_device(State(state), None).await.is_err());
     }
 
     #[test]

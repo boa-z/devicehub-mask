@@ -43,11 +43,11 @@ Adapters depend on core services and cannot directly open CoreDevice, DVT, Lockd
 
 ## Ownership
 
-The runtime owns the dedicated 16 MiB device thread, Tokio runtime and `LocalSet`, discovery, transport state, the single active session, reconnect policy, every non-`Send` device client, service supervision, command queues, held-input cleanup, media workers, and sidecar lifecycle policy. A host adapter performs concrete sidecar process resolution and execution behind the runtime port.
+The runtime owns the dedicated 16 MiB device thread, Tokio runtime and `LocalSet`, shared discovery and trust coordination, the concurrent device-session registry, reconnect policy, every non-`Send` device client, service supervision, command queues, held-input cleanup, media workers, and sidecar lifecycle policy. All device supervisors run as local tasks on the owner thread and remain isolated by transport-aware selection ID. A host adapter performs concrete sidecar process resolution and execution behind the runtime port.
 
 Its host-facing facade exposes typed commands, observations, and capability ports only. Concrete input dispatchers, service reporters and supervisors, retry helpers, protocol clients, and transport handles remain private so a host cannot create a second execution or recovery path around the session manager.
 
-The host-facing `RuntimeClient` has two explicit ownership groups. `RuntimeManagerClient` exposes only discovery inventory, active selection, and manager lifecycle control. `DeviceSessionClient` exposes the media, input, observation, service, and device-operation surface associated with the currently selected session. The root client only combines these groups. The internal `CoreRuntimeState` mirrors the same split through private manager and device-session state groups, so manager views and host clients cannot accidentally project different ownership. The `runtime` facade keeps its owner-thread executor and state graph in separate private modules. This preserves the current single-session behavior while providing the boundary required for a later registry of isolated device runtimes.
+The host-facing `RuntimeClient` has two explicit ownership groups. `RuntimeManagerClient` exposes discovery inventory, frontend selection, and manager lifecycle control. `DeviceSessionRegistry` resolves a `DeviceSessionClient` by exact selection ID; each client exposes only that session's media, input, observations, services, and device operations. The legacy root `device` view remains a migration facade, while production HTTP, WebSocket, MCP, and audio paths resolve through the registry. The internal `CoreRuntimeState` mirrors the same split through private manager and per-session state groups, so manager views and host clients cannot accidentally project one device's state onto another.
 
 The host owns directory selection, environment and command-line parsing, setting persistence, operating-system process resolution, Tauri capabilities, HTTP listeners, authentication, TLS and LAN policy, and the choice of local or remote audio consumers. Host-resolved paths, FFmpeg configuration, sidecar adapters, and diagnostic overrides enter through configuration or capability ports. Boundary checks prevent production runtime code from reintroducing environment reads, process launching, or FFmpeg path resolution.
 
@@ -81,7 +81,7 @@ impl DeviceRuntime {
 }
 ```
 
-Starting runtime creates no HTTP, MCP, Tauri, or frontend task. Starting an adapter creates no device session. Shutdown rejects new commands, releases held input, ends the active session and supervised work, stops owned sidecars, and joins the device thread. Explicit shutdown, repeated shutdown, and cleanup after partial startup must be safe.
+Starting runtime creates no HTTP, MCP, Tauri, or frontend task. Starting an adapter creates no device session. Shutdown rejects new commands, releases held input, ends every registered session and its supervised work with bounded grace, stops owned sidecars, and joins the device thread. Explicit shutdown, repeated shutdown, and cleanup after partial startup must be safe.
 
 ## Migration
 
@@ -95,11 +95,13 @@ Starting runtime creates no HTTP, MCP, Tauri, or frontend task. Starting an adap
 
 Each step is a separate commit. Source-moving steps preserve behavior, pass `npm run verify:full`, build only the unpackaged Debug desktop application locally, and keep Windows, macOS, and Linux source compatibility. Hardware behavior is finally checked on an iPhone 13 Pro Max over USB and Wi-Fi.
 
-## Next Host Milestones
+## Multi-Device Runtime
 
-After the module extraction is complete, the next repository-level target is a headless CLI service host. It will compose the same `devicehub-runtime` and core services without linking Tauri, window APIs, desktop audio output, or frontend assets. CLI configuration will own listener addresses, authentication material, data directories, pairing storage, sidecar resolution, logging, shutdown signals, and explicitly enabled HTTP/WebSocket/MCP adapters. The first version remains loopback-only by default; LAN publication still requires the security boundary below.
+The session manager keeps multiple device sessions connected concurrently. Discovery and trust storage are shared coordination services; each selection ID has isolated structured phase and diagnostic status, commands, media flow control, demand counters, observations, service workers, and reconnect state. Selecting another device changes the desktop presentation target without stopping the previous session. Explicit disconnect removes pending reconnect work and stops only that target while retaining its discovered entry and trust; reconnect, pairing, and trust removal are likewise target-scoped, while process shutdown stops all sessions.
 
-Multi-device connection support follows the headless host because that host provides the clearest lifecycle test. The current single-runtime graph will evolve into a host-owned runtime registry plus one isolated `DeviceRuntime` per selected physical device. Discovery and trust storage become shared coordination services, while each device retains its own owner thread, session, supervisor tree, commands, media flow control, demand counters, and deterministic shutdown. USB and Wi-Fi endpoints for the same physical device must resolve to one logical device and one active transport, and global CPU, memory, decoder, audio-output, and reconnect limits must be explicit rather than hidden in process-wide state.
+USB and Wi-Fi endpoints for one UDID remain distinct discovery choices, but the manager permits only one active transport for that physical device. A duplicate request records a bounded error for that selection instead of creating competing device services. Failed or disconnected registry entries retain their status for inspection; explicit trust removal deletes the entry.
+
+Device-scoped private HTTP calls carry `X-DeviceHub-Device`, and WebSocket clients use `device_id` in the query string. Missing or unknown targets are rejected rather than falling back to whichever device the desktop currently displays. The connection-center projection groups transports by physical UDID but preserves transport-aware selection and per-row errors. Each MCP protocol connection owns an independent selected target, so two agents may operate different connected devices without changing the desktop selection. Desktop audio plays only the selected device; the headless browser registry publishes independent device-keyed audio streams. Every connected device owns its own media and optional service workers, so CPU, memory, decoder, and bandwidth cost grows with the number of sessions.
 
 ## Boundaries And Acceptance
 

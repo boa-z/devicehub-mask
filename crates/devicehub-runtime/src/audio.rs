@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use devicehub_core::ActiveSlot;
 use idevice::tcp::handle::UdpSocketHandle;
 
 pub type DeviceAudioFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -67,25 +68,46 @@ pub trait DeviceAudioPipeline: Clone + Send + Sync + 'static {
 pub trait DeviceAudioPipelineFactory: Clone + Send + Sync + 'static {
     type Pipeline: DeviceAudioPipeline;
 
-    fn create(&self, enabled: bool) -> Self::Pipeline;
+    fn create(&self, enabled: bool, selection_id: &str, active: ActiveSlot) -> Self::Pipeline;
 }
 
 /// Host-provided sink for decoded interleaved PCM bytes.
 pub trait PcmAudioConsumer: Send + Sync + 'static {
-    fn publish(&self, pcm: bytes::Bytes);
+    fn publish(&self, selection_id: &str, pcm: bytes::Bytes);
 }
 
 /// Cloneable runtime handle that hides the concrete host audio implementation.
 #[derive(Clone)]
-pub struct AudioPublisher(Arc<dyn PcmAudioConsumer>);
+pub struct AudioPublisher {
+    consumer: Arc<dyn PcmAudioConsumer>,
+    selection_id: Arc<str>,
+    selected: Option<ActiveSlot>,
+}
 
 impl AudioPublisher {
     pub fn new(consumer: impl PcmAudioConsumer) -> Self {
-        Self(Arc::new(consumer))
+        Self {
+            consumer: Arc::new(consumer),
+            selection_id: Arc::from(""),
+            selected: None,
+        }
+    }
+
+    pub fn for_device(&self, selection_id: &str, selected: Option<ActiveSlot>) -> Self {
+        Self {
+            consumer: self.consumer.clone(),
+            selection_id: Arc::from(selection_id),
+            selected,
+        }
     }
 
     pub fn publish(&self, pcm: bytes::Bytes) {
-        self.0.publish(pcm);
+        if self.selected.as_ref().is_some_and(|active| {
+            active.selection_id().as_deref() != Some(self.selection_id.as_ref())
+        }) {
+            return;
+        }
+        self.consumer.publish(&self.selection_id, pcm);
     }
 }
 
@@ -97,7 +119,7 @@ mod tests {
     struct CountingConsumer(Arc<AtomicUsize>);
 
     impl PcmAudioConsumer for CountingConsumer {
-        fn publish(&self, pcm: bytes::Bytes) {
+        fn publish(&self, _selection_id: &str, pcm: bytes::Bytes) {
             self.0.fetch_add(pcm.len(), Ordering::Relaxed);
         }
     }
@@ -111,5 +133,20 @@ mod tests {
         publisher.publish(bytes::Bytes::from_static(b"data"));
 
         assert_eq!(published.load(Ordering::Relaxed), 7);
+    }
+
+    #[test]
+    fn selected_device_audio_drops_background_session_pcm() {
+        let published = Arc::new(AtomicUsize::new(0));
+        let active = ActiveSlot::default();
+        active.set_selected("phone".into(), "phone::usb".into());
+        let publisher = AudioPublisher::new(CountingConsumer(published.clone()));
+        let phone = publisher.for_device("phone::usb", Some(active.clone()));
+        let tablet = publisher.for_device("tablet::usb", Some(active));
+
+        phone.publish(bytes::Bytes::from_static(b"phone"));
+        tablet.publish(bytes::Bytes::from_static(b"tablet"));
+
+        assert_eq!(published.load(Ordering::Relaxed), 5);
     }
 }

@@ -22,6 +22,7 @@ const emptyMetrics: StreamMetrics = {
 
 type Options = {
   backend: BackendConnection | null;
+  deviceId: string | null;
   orientation: Orientation;
   videoDemand: boolean;
   monitorStall: boolean;
@@ -58,8 +59,9 @@ function createFrontendMetrics(startedAt = performance.now()): FrontendMetrics {
   };
 }
 
-function wsUrl(connection: BackendConnection) {
-  return `${connection.origin.replace(/^http/, "ws")}/api/ws`;
+function wsUrl(connection: BackendConnection, deviceId: string) {
+  const query = new URLSearchParams({ device_id: deviceId });
+  return `${connection.origin.replace(/^http/, "ws")}/api/ws?${query}`;
 }
 
 export function drawVideoFrame(
@@ -95,6 +97,7 @@ export function drawVideoFrame(
 
 export function useDeviceVideoStream({
   backend,
+  deviceId,
   orientation,
   videoDemand,
   monitorStall,
@@ -204,13 +207,15 @@ export function useDeviceVideoStream({
   }, [connected, monitorStall]);
 
   useEffect(() => {
-    if (!backend) return;
+    if (!backend || !deviceId) return;
+    setHasFrame(false);
     let disposed = false;
     let retry: number | undefined;
     let activeSocket: WebSocket | null = null;
     const open = () => {
-      const socket = new WebSocket(wsUrl(backend), ["devicehub-mask", backend.token]);
+      const socket = new WebSocket(wsUrl(backend, deviceId), ["devicehub-mask", backend.token]);
       activeSocket = socket;
+      let transportFailed = false;
       let receivedWebCodecsPacket = false;
       const browserSequence = new BrowserVideoSequenceTracker();
       let metricsTimer: number | undefined;
@@ -334,29 +339,33 @@ export function useDeviceVideoStream({
         socket.send(JSON.stringify({ type: "video_demand", active: videoDemandRef.current }));
         metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
       };
-      socket.onerror = () => logFrontend("warn", "websocket", "transport_error", "WebSocket transport error");
+      socket.onerror = () => { transportFailed = true; };
       socket.onclose = (event) => {
+        const ownsCurrentSocket = socketRef.current === socket;
+        const unexpected = !disposed && (transportFailed || !event.wasClean);
         logFrontend(
-          disposed ? "debug" : "warn",
+          unexpected ? "warn" : "debug",
           "websocket",
-          "closed",
+          unexpected ? "transport_error" : "closed",
           `code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`,
         );
         if (metricsTimer !== undefined) window.clearInterval(metricsTimer);
         browserDecoder.close();
         audioPlayer.close();
         if (audioPlayerRef.current === audioPlayer) audioPlayerRef.current = null;
-        setBrowserAudioState("idle");
-        callbacksRef.current.onDisconnect?.();
-        if (socketRef.current === socket) socketRef.current = null;
-        setConnected(false);
-        lastSourceActivityAtRef.current = 0;
-        lastDecodedActivityAtRef.current = 0;
-        canvasReadyRef.current = false;
-        setCanvasReady(false);
-        setStreamStalled(false);
-        setDecoderError(null);
-        setStreamMetrics(emptyMetrics);
+        if (ownsCurrentSocket) {
+          setBrowserAudioState("idle");
+          callbacksRef.current.onDisconnect?.();
+          socketRef.current = null;
+          setConnected(false);
+          lastSourceActivityAtRef.current = 0;
+          lastDecodedActivityAtRef.current = 0;
+          canvasReadyRef.current = false;
+          setCanvasReady(false);
+          setStreamStalled(false);
+          setDecoderError(null);
+          setStreamMetrics(emptyMetrics);
+        }
         if (!disposed) retry = window.setTimeout(open, 800);
       };
       socket.onmessage = (event) => {
@@ -428,7 +437,7 @@ export function useDeviceVideoStream({
       if (retry !== undefined) window.clearTimeout(retry);
       activeSocket?.close();
     };
-  }, [backend]);
+  }, [backend, deviceId]);
 
   return {
     connected,

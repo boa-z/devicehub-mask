@@ -4,29 +4,34 @@ import type { PerformanceView } from "./types";
 import type { BackendRequest } from "./usePrivateBackend";
 
 type Options = {
-  activeUdid: string | null;
+  activeDeviceId: string | null;
   backendReady: boolean;
   enabled: boolean;
   request: BackendRequest;
 };
 
-export function usePerformanceTelemetry({ activeUdid, backendReady, enabled, request }: Options) {
+export function usePerformanceTelemetry({ activeDeviceId, backendReady, enabled, request }: Options) {
   const [view, setView] = useState<PerformanceView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!backendReady) return;
-    const method = enabled ? "PUT" : "DELETE";
-    void request("/api/performance/sampling", { method }).then((response) => {
+    if (!backendReady || !activeDeviceId || !enabled) return;
+    let disposed = false;
+    void request("/api/performance/sampling", { method: "PUT" }).then((response) => {
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     }).catch((samplingError) => {
+      if (disposed) return;
       logFrontend("warn", "performance", "set_sampling", samplingError);
-      if (enabled) setError(String(samplingError));
+      setError(String(samplingError));
     });
-  }, [backendReady, enabled, request]);
+    return () => {
+      disposed = true;
+      void request("/api/performance/sampling", { method: "DELETE" }).catch(() => undefined);
+    };
+  }, [activeDeviceId, backendReady, enabled, request]);
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !activeDeviceId) {
       setView(null);
       setError(null);
       return;
@@ -66,17 +71,23 @@ export function usePerformanceTelemetry({ activeUdid, backendReady, enabled, req
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [activeUdid, enabled, request]);
+  }, [activeDeviceId, enabled, request]);
 
   return { view, error };
 }
 
-export function useDeviceLogDemand({ backendReady, enabled, request }: Omit<Options, "activeUdid">) {
+export function useDeviceLogDemand({ activeDeviceId, backendReady, enabled, request }: Options) {
   useEffect(() => {
-    if (!backendReady) return;
-    const method = enabled ? "PUT" : "DELETE";
-    void request("/api/device/logs/streaming", { method }).then((response) => {
+    if (!backendReady || !activeDeviceId || !enabled) return;
+    let disposed = false;
+    void request("/api/device/logs/streaming", { method: "PUT" }).then((response) => {
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    }).catch((demandError) => logFrontend("warn", "device_logs", "set_streaming", demandError));
-  }, [backendReady, enabled, request]);
+    }).catch((demandError) => {
+      if (!disposed) logFrontend("warn", "device_logs", "set_streaming", demandError);
+    });
+    return () => {
+      disposed = true;
+      void request("/api/device/logs/streaming", { method: "DELETE" }).catch(() => undefined);
+    };
+  }, [activeDeviceId, backendReady, enabled, request]);
 }

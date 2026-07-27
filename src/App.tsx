@@ -17,11 +17,9 @@ import MinusOutlined from "@ant-design/icons/es/icons/MinusOutlined";
 import PushpinFilled from "@ant-design/icons/es/icons/PushpinFilled";
 import PushpinOutlined from "@ant-design/icons/es/icons/PushpinOutlined";
 import PlusOutlined from "@ant-design/icons/es/icons/PlusOutlined";
-import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
 import RotateLeftOutlined from "@ant-design/icons/es/icons/RotateLeftOutlined";
 import RotateRightOutlined from "@ant-design/icons/es/icons/RotateRightOutlined";
 import SaveOutlined from "@ant-design/icons/es/icons/SaveOutlined";
-import SafetyCertificateOutlined from "@ant-design/icons/es/icons/SafetyCertificateOutlined";
 import SendOutlined from "@ant-design/icons/es/icons/SendOutlined";
 import SoundOutlined from "@ant-design/icons/es/icons/SoundOutlined";
 import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
@@ -33,6 +31,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceFullscreenToolbar } from "./components/DeviceFullscreenToolbar";
+import { DeviceConnectionCenter } from "./components/DeviceConnectionCenter";
 import { ErrorCopyButton } from "./components/ErrorPresentation";
 import { KeyboardIcon } from "./components/KeyboardIcon";
 import type { MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
@@ -52,6 +51,7 @@ import type { AppBindingConflict, AppProfileBinding } from "./types";
 import { bindingForScope, conflictForScope, resolveAppProfileBinding, sameProfileResolution } from "./profileBindings";
 import { useDeviceInput, type ControlMode } from "./useDeviceInput";
 import { useDeviceVideoStream } from "./useDeviceVideoStream";
+import { waitForDeviceSession } from "./deviceSelection";
 import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
 import { usePrivateBackend } from "./usePrivateBackend";
@@ -71,6 +71,8 @@ const SettingsPage = lazy(() => import("./components/SettingsPage").then((module
 
 const emptyStatus: DeviceStatus = {
   status: "",
+  phase: "disconnected",
+  updated_at_ms: 0,
   active_udid: null,
   active_device_id: null,
   error: null,
@@ -117,9 +119,10 @@ export default function App() {
   const [page, setPage] = useState<AppPage>("device");
   const [afcVisited, setAfcVisited] = useState(false);
   const [status, setStatus] = useState<DeviceStatus>(() => ({ ...emptyStatus, status: t("status.starting") }));
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const { backend, request } = usePrivateBackend((error) => {
     setStatus({ ...emptyStatus, status: t("status.backendUnavailable"), error: String(error) });
-  }, t("errors.backendNotReady"));
+  }, t("errors.backendNotReady"), selectedDeviceId);
   const {
     value: profile,
     update: updateProfile,
@@ -147,7 +150,6 @@ export default function App() {
   const [fullscreenToolbarHovered, setFullscreenToolbarHovered] = useState(false);
   const [fullscreenToolbarFocused, setFullscreenToolbarFocused] = useState(false);
   const [fullscreenOverflowOpen, setFullscreenOverflowOpen] = useState(false);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [pairingDeviceId, setPairingDeviceId] = useState<string | null>(null);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [audioPlayback, setAudioPlaybackPreferences] = useState<DeviceAudioPreferences>(defaultDeviceAudioPreferences);
@@ -185,6 +187,27 @@ export default function App() {
     }
     if (status.active_device_id) setSelectedDeviceId(status.active_device_id);
   }, [status.active_device_id, status.devices]);
+
+  useEffect(() => {
+    if (!backend || selectedDeviceId) return;
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const response = await request("/api/status");
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        const next = await response.json() as DeviceStatus;
+        if (!disposed) setStatus(next);
+      } catch (error) {
+        if (!disposed) logFrontend("warn", "backend", "initial_status", error);
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 500);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [backend, request, selectedDeviceId]);
 
   useEffect(() => {
     if (page === "afc") setAfcVisited(true);
@@ -326,6 +349,7 @@ export default function App() {
     send: command,
   } = useDeviceVideoStream({
     backend,
+    deviceId: selectedDeviceId,
     orientation: status.orientation,
     videoDemand,
     monitorStall: Boolean(status.active_udid) && (page === "device" || page === "mappings"),
@@ -416,14 +440,19 @@ export default function App() {
   const performanceSamplingRequired = Boolean(status.active_udid)
     && (page === "performance" || (page === "device" && hudNeedsDeviceSampling));
   const { view: performanceView, error: performanceError } = usePerformanceTelemetry({
-    activeUdid: status.active_udid,
+    activeDeviceId: status.active_device_id === selectedDeviceId ? selectedDeviceId : null,
     backendReady: backend !== null,
     enabled: performanceSamplingRequired,
     request,
   });
 
   const deviceLogStreamingRequired = Boolean(status.active_udid) && page === "logs";
-  useDeviceLogDemand({ backendReady: backend !== null, enabled: deviceLogStreamingRequired, request });
+  useDeviceLogDemand({
+    activeDeviceId: status.active_device_id === selectedDeviceId ? selectedDeviceId : null,
+    backendReady: backend !== null,
+    enabled: deviceLogStreamingRequired,
+    request,
+  });
 
   useEffect(() => {
     Promise.all([appWindow.isAlwaysOnTop(), appWindow.isFullscreen()])
@@ -757,20 +786,23 @@ export default function App() {
   };
   const connectDevice = async (deviceId: string) => {
     selectedDeviceIntentRef.current = deviceId;
-    setSelectedDeviceId(deviceId);
     releaseAllControls();
     try {
       const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "PUT" });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      const next = await waitForDeviceSession(request, deviceId);
+      setStatus(next);
+      setSelectedDeviceId(deviceId);
     } catch (error) {
+      selectedDeviceIntentRef.current = null;
       void showErrorMessage(t("errors.reconnectDevice", { error: String(error) }));
     }
   };
-  const reconnectDevice = async () => {
-    if (!selectedDeviceId) return false;
-    releaseAllControls();
+  const reconnectDevice = async (deviceId = selectedDeviceId) => {
+    if (!deviceId) return false;
+    if (deviceId === selectedDeviceId) releaseAllControls();
     try {
-      const response = await request(`/api/devices/${encodeURIComponent(selectedDeviceId)}/reconnect`, { method: "PUT" });
+      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: "PUT" });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return true;
     } catch (error) {
@@ -779,25 +811,49 @@ export default function App() {
     }
   };
   const selectDevice = async (deviceId: string) => {
-    selectedDeviceIntentRef.current = deviceId;
-    setSelectedDeviceId(deviceId);
     const device = status.devices.find((candidate) => candidate.id === deviceId);
     if (device?.pairing === "unpaired") return;
     await connectDevice(deviceId);
   };
-  const pairSelectedDevice = async () => {
-    if (!selectedDeviceId || pairingDeviceId) return;
-    const device = status.devices.find((candidate) => candidate.id === selectedDeviceId);
+  const disconnectDevice = async (deviceId: string) => {
+    const isSelected = deviceId === selectedDeviceId;
+    if (isSelected) releaseAllControls();
+    try {
+      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "DELETE" });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      if (isSelected) {
+        selectedDeviceIntentRef.current = null;
+        setSelectedDeviceId(null);
+        setStatus((current) => ({
+          ...current,
+          active_udid: null,
+          active_device_id: null,
+          devices: current.devices.map((device) => device.id === deviceId
+            ? { ...device, session_phase: "disconnecting", session_status: "stopping..." }
+            : device),
+        }));
+      }
+    } catch (error) {
+      void showErrorMessage(t("errors.disconnectDevice", { error: String(error) }));
+    }
+  };
+  const pairDevice = async (deviceId: string) => {
+    if (pairingDeviceId) return;
+    const device = status.devices.find((candidate) => candidate.id === deviceId);
     if (!device || device.connection !== "USB" || device.pairing !== "unpaired") return;
     const messageKey = "device-pairing";
-    setPairingDeviceId(selectedDeviceId);
+    setPairingDeviceId(deviceId);
     void message.loading({ key: messageKey, content: t("device.pairingWaiting"), duration: 0 });
     try {
-      const response = await request(`/api/devices/${encodeURIComponent(selectedDeviceId)}/pair`, { method: "PUT" });
+      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/pair`, { method: "PUT" });
       if (!response.ok) throw new Error(await response.text() || `${response.status} ${response.statusText}`);
       const result = await response.json() as PairDeviceResult;
       if (result.outcome === "paired") {
         void message.success({ key: messageKey, content: t("device.pairingSucceeded") });
+        selectedDeviceIntentRef.current = deviceId;
+        const next = await waitForDeviceSession(request, deviceId);
+        setStatus(next);
+        setSelectedDeviceId(deviceId);
       } else {
         const key = result.outcome === "denied"
           ? "device.pairingDenied"
@@ -890,9 +946,6 @@ export default function App() {
     }
   };
   const controlOverlayVisible = deviceViewPreferences.controlOverlayVisible;
-  const selectedDevice = selectedDeviceId ?? undefined;
-  const selectedDeviceInfo = status.devices.find((device) => device.id === selectedDeviceId);
-  const selectedDeviceNeedsPairing = selectedDeviceInfo?.connection === "USB" && selectedDeviceInfo.pairing === "unpaired";
   const displayedMappings = page === "mappings" ? profile.mappings : controlProfile.mappings;
   const displayedFrameSize = page === "mappings" ? mappingFrameSize : frameSize;
   const aspectRatio = useMemo(() => `${displayedFrameSize.width} / ${displayedFrameSize.height}`, [displayedFrameSize]);
@@ -1077,19 +1130,17 @@ export default function App() {
             <Tag color={connected && status.active_udid ? "success" : status.error ? "error" : "default"}>{statusText}</Tag>
             {status.error && <ErrorCopyButton error={status.error} />}
           </span>
-          <Select
-            className="device-select"
-            value={selectedDevice}
-            placeholder={t("device.select")}
-            options={status.devices.map((device) => ({
-              value: device.id,
-              label: `${device.name} · ${device.connection}${device.pairing === "unpaired" ? ` · ${t("device.trustRequired")}` : ""}`,
-            }))}
-            onChange={(deviceId) => void selectDevice(deviceId)}
+          <DeviceConnectionCenter
+            devices={status.devices}
+            selectedDeviceId={selectedDeviceId}
+            backendReady={Boolean(backend)}
+            pairingDeviceId={pairingDeviceId}
+            onConnect={(deviceId) => void selectDevice(deviceId)}
+            onReconnect={(deviceId) => void reconnectDevice(deviceId)}
+            onDisconnect={(deviceId) => void disconnectDevice(deviceId)}
+            onPair={(deviceId) => void pairDevice(deviceId)}
+            onRefresh={() => void request("/api/devices/refresh", { method: "PUT" })}
           />
-          {selectedDeviceNeedsPairing && <Tooltip title={t("device.pairDeviceHint")}><Button type="primary" aria-label={t("device.pairDevice")} loading={pairingDeviceId === selectedDeviceId} icon={<SafetyCertificateOutlined />} onClick={() => void pairSelectedDevice()}>{t("device.pairDevice")}</Button></Tooltip>}
-          <Tooltip title={t("device.refresh")}><Button aria-label={t("device.refresh")} disabled={!backend} icon={<ReloadOutlined />} onClick={() => void request("/api/devices/refresh", { method: "PUT" })} /></Tooltip>
-          <Tooltip title={t("device.reconnect")}><Button aria-label={t("device.reconnect")} disabled={!backend || !selectedDeviceId || selectedDeviceNeedsPairing} icon={<SyncOutlined />} onClick={() => void reconnectDevice()} /></Tooltip>
           {page === "mappings" && <Tooltip title={t("device.saveMappings")}><Button icon={<SaveOutlined />} onClick={() => void save()} /></Tooltip>}
           <Tooltip title={t(alwaysOnTop ? "device.unpin" : "device.pin")}><Button type={alwaysOnTop ? "primary" : "default"} icon={alwaysOnTop ? <PushpinFilled /> : <PushpinOutlined />} onClick={() => void toggleAlwaysOnTop()} /></Tooltip>
           {page === "device" && <Tooltip title={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")}><Button aria-label={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")} icon={deviceViewPreferences.deviceInspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => patchDeviceViewPreferences({ deviceInspectorVisible: !deviceViewPreferences.deviceInspectorVisible })} /></Tooltip>}

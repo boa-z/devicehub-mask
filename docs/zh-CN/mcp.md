@@ -2,11 +2,11 @@
 
 简体中文 | [English](../en/mcp.md) | [文档首页](README.md)
 
-DeviceHub Mask 通过内置 Model Context Protocol (MCP) 服务，将当前 iOS 设备会话提供给 Agent。本指南说明连接配置、可靠控制流程、诊断、WebDriverAgent (WDA)、安全边界，以及有意不向 MCP 开放的操作。
+DeviceHub Mask 通过内置 Model Context Protocol (MCP) 服务，将已连接的 iOS 设备会话提供给 Agent。本指南说明连接配置、可靠控制流程、诊断、WebDriverAgent (WDA)、安全边界，以及有意不向 MCP 开放的操作。
 
 ## 连接前准备
 
-先启动 DeviceHub Mask 桌面应用并连接设备。MCP 服务只在桌面应用运行期间存在，并与界面复用同一 CoreDevice 会话、视频流、输入队列、性能服务和有界日志缓冲，不会再建立一条与手机竞争的连接。
+先启动 DeviceHub Mask 桌面应用并至少连接一台设备。MCP 服务只在桌面应用运行期间存在。每条 MCP 协议连接独立选择目标，并复用该设备的 CoreDevice 会话、视频流、输入队列、性能服务和有界日志缓冲；它不会建立竞争连接，也不会改变桌面 UI 或其他 MCP client 的目标。
 
 默认 Streamable HTTP 端点为：
 
@@ -20,7 +20,7 @@ http://127.0.0.1:8009/mcp
 claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
 ```
 
-注册后先调用 `status`。如果没有活动设备，调用 `list_devices`，再把返回的准确选择 ID 传给 `connect_device`。USB 与 Wi-Fi 条目可能对应同一台物理设备，但其选择 ID 不同。
+注册后先调用 `status`。如果该 MCP 连接尚未选择目标，调用 `list_devices`，再把返回的准确选择 ID 传给 `connect_device`。USB 与 Wi-Fi 条目可能对应同一台物理设备，但其选择 ID 不同；同一 UDID 同时只允许一条传输运行。
 
 MCP 端点没有鉴权，必须保持监听回环地址。`DEVICEHUB_MCP_ADDR` 可以修改监听地址，但对非回环地址开放后，网络客户端将能够访问设备截图、输入、App 控制、进程名称、日志、崩溃报告、虚拟定位和 WDA 输出。应用会对非回环监听输出警告；只有主机位于可信隔离网络时才应这样配置。
 
@@ -81,7 +81,7 @@ DeviceHub Mask 提供三种不同的坐标概念，它们不能互换。
 
 ## 设备与会话流程
 
-使用 `list_devices` 查看当前传输清单，使用 `status` 检查活动会话。`connect_device` 会选择已连接传输，`reconnect_device` 会拆除并重新建立该选择对应的会话。两者都会在有界时间内等待新视频帧，也可能报告连接仍在建立；此时应继续调用 `status` 或 `screenshot`，不要连续反复重连。
+使用 `list_devices` 查看当前传输清单，使用 `status` 检查这条 MCP 连接选中的会话。`connect_device` 会选择或复用准确会话，不会停止其他物理设备的会话；`reconnect_device` 只拆除并重新建立该目标。两者都会在有界时间内等待新视频帧，也可能报告连接仍在建立；此时应继续调用 `status` 或 `screenshot`，不要连续反复重连。
 
 `device_details` 会刷新规范化的产品、系统、硬件、存储、激活、开发者模式、区域设置和有界电池信息。默认有意省略稳定标识符；只有确实需要设备身份时才设置 `include_identifiers=true` 请求 UDID、序列号和 ECID。
 

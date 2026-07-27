@@ -1,6 +1,7 @@
 //! Cloneable runtime client shared by host protocol adapters.
 
 mod control;
+mod registry;
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -13,6 +14,7 @@ use devicehub_core::{
 };
 
 pub use control::{DeviceControlError, DeviceControlService};
+pub use registry::DeviceSessionRegistry;
 
 use crate::runtime::CoreRuntimeState;
 use crate::{
@@ -33,7 +35,6 @@ pub struct RuntimeManagerClient {
 ///
 /// Keeping this surface separate from [`RuntimeManagerClient`] makes device
 /// ownership explicit before a host starts retaining several sessions.
-#[derive(Clone)]
 pub struct DeviceSessionClient<HostPath> {
     pub device_control: DeviceControlService<HostPath>,
     pub orientation: OrientationSlot,
@@ -62,6 +63,73 @@ pub struct DeviceSessionClient<HostPath> {
     pub commands: SessionCommandSlot<HostPath>,
 }
 
+impl<HostPath> Clone for DeviceSessionClient<HostPath> {
+    fn clone(&self) -> Self {
+        Self {
+            device_control: self.device_control.clone(),
+            orientation: self.orientation.clone(),
+            error: self.error.clone(),
+            status: self.status.clone(),
+            location: self.location.clone(),
+            browser_frames: self.browser_frames.clone(),
+            video_counters: self.video_counters.clone(),
+            clipboard: self.clipboard.clone(),
+            device_events: self.device_events.clone(),
+            network_capture: self.network_capture.clone(),
+            bluetooth_capture: self.bluetooth_capture.clone(),
+            device_backup: self.device_backup.clone(),
+            sysdiagnose: self.sysdiagnose.clone(),
+            log_archive: self.log_archive.clone(),
+            developer_image: self.developer_image.clone(),
+            device_conditions: self.device_conditions.clone(),
+            app_operation: self.app_operation.clone(),
+            app_documents: self.app_documents.clone(),
+            device_files: self.device_files.clone(),
+            performance: self.performance.clone(),
+            performance_demand: self.performance_demand.clone(),
+            device_logs: self.device_logs.clone(),
+            device_log_demand: self.device_log_demand.clone(),
+            service_registry: self.service_registry.clone(),
+            commands: self.commands.clone(),
+        }
+    }
+}
+
+impl<HostPath> DeviceSessionClient<HostPath> {
+    pub(crate) fn from_state(state: &crate::runtime::DeviceSessionState<HostPath>) -> Self {
+        Self {
+            device_control: DeviceControlService::new(
+                state.browser_frames.clone(),
+                state.commands.clone(),
+            ),
+            orientation: state.orientation.clone(),
+            error: state.error.clone(),
+            status: state.status.clone(),
+            location: state.location.clone(),
+            browser_frames: state.browser_frames.clone(),
+            video_counters: state.video_counters.clone(),
+            clipboard: state.clipboard.clone(),
+            device_events: state.device_events.clone(),
+            network_capture: state.network_capture.clone(),
+            bluetooth_capture: state.bluetooth_capture.clone(),
+            device_backup: state.device_backup.clone(),
+            sysdiagnose: state.sysdiagnose.clone(),
+            log_archive: state.log_archive.clone(),
+            developer_image: state.developer_image.clone(),
+            device_conditions: state.device_conditions.clone(),
+            app_operation: state.app_operation.clone(),
+            app_documents: state.app_documents.clone(),
+            device_files: state.device_files.clone(),
+            performance: state.performance.clone(),
+            performance_demand: state.performance_demand.clone(),
+            device_logs: state.device_logs.clone(),
+            device_log_demand: state.device_log_demand.clone(),
+            service_registry: state.services.clone(),
+            commands: state.commands.clone(),
+        }
+    }
+}
+
 /// Shared surface consumed by HTTP, WebSocket, MCP, and future headless hosts.
 ///
 /// The runtime creates both views from one state graph. Hosts may clone them,
@@ -69,6 +137,10 @@ pub struct DeviceSessionClient<HostPath> {
 #[derive(Clone)]
 pub struct RuntimeClient<HostPath> {
     pub manager: RuntimeManagerClient,
+    /// All connected or connecting device sessions, keyed by transport-aware
+    /// selection ID. `device` remains the single-session migration view until
+    /// every host adapter resolves a session explicitly.
+    pub sessions: DeviceSessionRegistry<HostPath>,
     pub device: DeviceSessionClient<HostPath>,
 }
 
@@ -83,36 +155,8 @@ impl<HostPath> RuntimeClient<HostPath> {
                 active: state.manager.active.clone(),
                 control,
             },
-            device: DeviceSessionClient {
-                device_control: DeviceControlService::new(
-                    state.device.browser_frames.clone(),
-                    state.device.commands.clone(),
-                ),
-                orientation: state.device.orientation.clone(),
-                error: state.device.error.clone(),
-                status: state.device.status.clone(),
-                location: state.device.location.clone(),
-                browser_frames: state.device.browser_frames.clone(),
-                video_counters: state.device.video_counters.clone(),
-                clipboard: state.device.clipboard.clone(),
-                device_events: state.device.device_events.clone(),
-                network_capture: state.device.network_capture.clone(),
-                bluetooth_capture: state.device.bluetooth_capture.clone(),
-                device_backup: state.device.device_backup.clone(),
-                sysdiagnose: state.device.sysdiagnose.clone(),
-                log_archive: state.device.log_archive.clone(),
-                developer_image: state.device.developer_image.clone(),
-                device_conditions: state.device.device_conditions.clone(),
-                app_operation: state.device.app_operation.clone(),
-                app_documents: state.device.app_documents.clone(),
-                device_files: state.device.device_files.clone(),
-                performance: state.device.performance.clone(),
-                performance_demand: state.device.performance_demand.clone(),
-                device_logs: state.device.device_logs.clone(),
-                device_log_demand: state.device.device_log_demand.clone(),
-                service_registry: state.device.services.clone(),
-                commands: state.device.commands.clone(),
-            },
+            device: DeviceSessionClient::from_state(&state.device),
+            sessions: state.sessions.clone(),
         }
     }
 }
@@ -133,6 +177,15 @@ impl<HostPath> Default for RuntimeClientFixture<HostPath> {
 
 #[cfg(feature = "test-support")]
 impl<HostPath> RuntimeClientFixture<HostPath> {
+    pub fn with_session(
+        self,
+        selection_id: impl Into<String>,
+        session: DeviceSessionClient<HostPath>,
+    ) -> Self {
+        self.state.sessions.insert(selection_id.into(), session);
+        self
+    }
+
     pub fn with_browser_frames(mut self, value: BrowserVideoSlot) -> Self {
         self.state.device.browser_frames = value;
         self

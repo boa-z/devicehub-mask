@@ -589,7 +589,9 @@ const requiredManagerOwnership = [
   "run_connected_session(",
   "pair_device(",
   "forget_device(",
-  "ACTIVE_RESCAN",
+  "DeviceSessionRegistry<",
+  "tokio::task::spawn_local",
+  "pending_reconnect",
   "SWITCH_GRACE",
 ];
 const missingManagerOwnership = requiredManagerOwnership.filter(
@@ -635,7 +637,7 @@ const requiredRuntimeOwner = [
   "mod owner;",
   "mod state;",
   "pub use owner::{CoreRuntime, OWNER_THREAD_STACK_BYTES};",
-  "pub(crate) use state::CoreRuntimeState;",
+  "pub(crate) use state::{CoreRuntimeState, DeviceSessionState};",
   "pub struct CoreRuntime",
   "pub(crate) fn start<State, Build, Task>",
   "std::thread::Builder::new()",

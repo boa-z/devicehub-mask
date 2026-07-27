@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -20,6 +20,7 @@ use devicehub_runtime::{
 
 type InputCmd = DeviceSessionCommand<PathBuf>;
 type InputSink = SessionCommandSlot<PathBuf>;
+type RequestSession = Option<Extension<devicehub_runtime::DeviceSessionClient<PathBuf>>>;
 
 const DEVELOPER_IMAGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -32,6 +33,20 @@ pub struct DeveloperImageHttpState {
 impl DeveloperImageHttpState {
     pub fn new(input: InputSink, status: DeveloperImageMountSlot) -> Self {
         Self { input, status }
+    }
+
+    fn input(&self, session: &RequestSession) -> InputSink {
+        session
+            .as_ref()
+            .map(|session| session.commands.clone())
+            .unwrap_or_else(|| self.input.clone())
+    }
+
+    fn status(&self, session: &RequestSession) -> DeveloperImageMountSlot {
+        session
+            .as_ref()
+            .map(|session| session.developer_image.clone())
+            .unwrap_or_else(|| self.status.clone())
     }
 }
 
@@ -55,40 +70,56 @@ where
 
 async fn developer_image_status(
     State(state): State<DeveloperImageHttpState>,
+    session: RequestSession,
 ) -> Json<DeveloperImageMountStatus> {
-    Json(state.status.get())
+    Json(state.status(&session).get())
 }
 
 async fn start_developer_image_mount(
     State(state): State<DeveloperImageHttpState>,
+    session: RequestSession,
     Json(request): Json<DeveloperImageMountRequest<PathBuf>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::DeveloperImageMount(
-        DeveloperImageMountCommand::Start { request, reply },
-    )))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::DeveloperImageMount(
+                DeveloperImageMountCommand::Start { request, reply },
+            )),
+    )?;
     await_developer_image_command(response, "start developer image mount").await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn stop_developer_image_mount(
     State(state): State<DeveloperImageHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::DeveloperImageMount(
-        DeveloperImageMountCommand::Stop { reply },
-    )))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::DeveloperImageMount(
+                DeveloperImageMountCommand::Stop { reply },
+            )),
+    )?;
     await_developer_image_command(response, "stop developer image mount").await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn unmount_developer_image(
     State(state): State<DeveloperImageHttpState>,
+    session: RequestSession,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (reply, response) = oneshot::channel();
-    require_active_session(state.input.try_send(InputCmd::DeveloperImageMount(
-        DeveloperImageMountCommand::Unmount { reply },
-    )))?;
+    require_active_session(
+        state
+            .input(&session)
+            .try_send(InputCmd::DeveloperImageMount(
+                DeveloperImageMountCommand::Unmount { reply },
+            )),
+    )?;
     await_developer_image_command(response, "unmount developer image").await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -152,7 +183,10 @@ mod tests {
     async fn lifecycle_routes_dispatch_opaque_host_sources() {
         let (state, mut commands) = test_state();
         assert_eq!(
-            developer_image_status(State(state.clone())).await.0.state,
+            developer_image_status(State(state.clone()), None)
+                .await
+                .0
+                .state,
             DeveloperImageMountState::Idle
         );
         let request = DeveloperImageMountRequest {
@@ -164,6 +198,7 @@ mod tests {
 
         let start = tokio::spawn(start_developer_image_mount(
             State(state.clone()),
+            None,
             Json(request),
         ));
         let InputCmd::DeveloperImageMount(DeveloperImageMountCommand::Start { request, reply }) =
@@ -179,7 +214,7 @@ mod tests {
         reply.send(Ok(())).unwrap();
         assert_eq!(start.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let stop = tokio::spawn(stop_developer_image_mount(State(state.clone())));
+        let stop = tokio::spawn(stop_developer_image_mount(State(state.clone()), None));
         let InputCmd::DeveloperImageMount(DeveloperImageMountCommand::Stop { reply }) =
             commands.recv().await.unwrap()
         else {
@@ -188,7 +223,7 @@ mod tests {
         reply.send(Ok(())).unwrap();
         assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let unmount = tokio::spawn(unmount_developer_image(State(state)));
+        let unmount = tokio::spawn(unmount_developer_image(State(state), None));
         let InputCmd::DeveloperImageMount(DeveloperImageMountCommand::Unmount { reply }) =
             commands.recv().await.unwrap()
         else {
@@ -208,7 +243,7 @@ mod tests {
             manifest: None,
         };
         assert!(matches!(
-            start_developer_image_mount(State(state), Json(request)).await,
+            start_developer_image_mount(State(state), None, Json(request)).await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
     }

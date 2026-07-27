@@ -14,8 +14,8 @@ use crate::session::{
     ConnectedSessionViews, RuntimeHostServiceViews, RuntimeServiceViews, SessionManagerViews,
 };
 use crate::{
-    BrowserVideoSlot, ClipboardSlot, DeviceEventSlot, DeviceLogDemand, PerformanceDemand,
-    RuntimeClient, SessionCommandSlot, SessionControlCommand,
+    BrowserVideoSlot, ClipboardSlot, DeviceEventSlot, DeviceLogDemand, DeviceSessionRegistry,
+    PerformanceDemand, RuntimeClient, SessionCommandSlot, SessionControlCommand,
 };
 
 /// Discovery and selection state owned by the outer runtime manager.
@@ -84,6 +84,44 @@ impl<HostPath> Default for DeviceSessionState<HostPath> {
     }
 }
 
+impl<HostPath> DeviceSessionState<HostPath> {
+    pub(crate) fn client(&self) -> crate::DeviceSessionClient<HostPath> {
+        crate::DeviceSessionClient::from_state(self)
+    }
+
+    pub(crate) fn connected_views(&self) -> ConnectedSessionViews {
+        ConnectedSessionViews {
+            status: self.status.clone(),
+            orientation: self.orientation.clone(),
+            error: self.error.clone(),
+            app_operation: self.app_operation.clone(),
+            clipboard: self.clipboard.clone(),
+            video_counters: self.video_counters.clone(),
+            browser_frames: self.browser_frames.clone(),
+            runtime_services: RuntimeServiceViews {
+                performance: self.performance.clone(),
+                performance_demand: self.performance_demand.clone(),
+                device_logs: self.device_logs.clone(),
+                device_log_demand: self.device_log_demand.clone(),
+                services: self.services.clone(),
+                device_events: self.device_events.clone(),
+                location: self.location.clone(),
+                device_conditions: self.device_conditions.clone(),
+            },
+            host_services: RuntimeHostServiceViews {
+                app_documents: self.app_documents.clone(),
+                device_files: self.device_files.clone(),
+                network_capture: self.network_capture.clone(),
+                bluetooth_capture: self.bluetooth_capture.clone(),
+                device_backup: self.device_backup.clone(),
+                sysdiagnose: self.sysdiagnose.clone(),
+                log_archive: self.log_archive.clone(),
+                developer_image: self.developer_image.clone(),
+            },
+        }
+    }
+}
+
 /// Internal state graph owned by one runtime and observed through clients.
 ///
 /// The host path remains opaque to the runtime. Both ownership groups are
@@ -92,6 +130,7 @@ impl<HostPath> Default for DeviceSessionState<HostPath> {
 pub(crate) struct CoreRuntimeState<HostPath> {
     pub(crate) manager: RuntimeManagerState,
     pub(crate) device: DeviceSessionState<HostPath>,
+    pub(crate) sessions: DeviceSessionRegistry<HostPath>,
 }
 
 impl<HostPath> Default for CoreRuntimeState<HostPath> {
@@ -99,6 +138,7 @@ impl<HostPath> Default for CoreRuntimeState<HostPath> {
         Self {
             manager: RuntimeManagerState::default(),
             device: DeviceSessionState::default(),
+            sessions: DeviceSessionRegistry::default(),
         }
     }
 }
@@ -115,38 +155,10 @@ impl<HostPath> CoreRuntimeState<HostPath> {
     /// Build the complete manager view from the sole shared state graph.
     pub(crate) fn manager_views(&self) -> SessionManagerViews<HostPath> {
         SessionManagerViews {
-            connected: ConnectedSessionViews {
-                status: self.device.status.clone(),
-                orientation: self.device.orientation.clone(),
-                error: self.device.error.clone(),
-                app_operation: self.device.app_operation.clone(),
-                clipboard: self.device.clipboard.clone(),
-                video_counters: self.device.video_counters.clone(),
-                browser_frames: self.device.browser_frames.clone(),
-                runtime_services: RuntimeServiceViews {
-                    performance: self.device.performance.clone(),
-                    performance_demand: self.device.performance_demand.clone(),
-                    device_logs: self.device.device_logs.clone(),
-                    device_log_demand: self.device.device_log_demand.clone(),
-                    services: self.device.services.clone(),
-                    device_events: self.device.device_events.clone(),
-                    location: self.device.location.clone(),
-                    device_conditions: self.device.device_conditions.clone(),
-                },
-                host_services: RuntimeHostServiceViews {
-                    app_documents: self.device.app_documents.clone(),
-                    device_files: self.device.device_files.clone(),
-                    network_capture: self.device.network_capture.clone(),
-                    bluetooth_capture: self.device.bluetooth_capture.clone(),
-                    device_backup: self.device.device_backup.clone(),
-                    sysdiagnose: self.device.sysdiagnose.clone(),
-                    log_archive: self.device.log_archive.clone(),
-                    developer_image: self.device.developer_image.clone(),
-                },
-            },
+            connected: self.device.connected_views(),
             devices: self.manager.devices.clone(),
             active: self.manager.active.clone(),
-            commands: self.device.commands.clone(),
+            sessions: self.sessions.clone(),
         }
     }
 }

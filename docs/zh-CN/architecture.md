@@ -56,7 +56,7 @@ App 发现、图标、生命周期控制、卸载与有界控制台抓取使用�
 
 按键映射配置路由组成可复用的 `devicehub-server` 适配器，只持有宿主注入的配置仓储端口。配置名称、映射结构、坐标、App 绑定和硬件按键冲突均通过 `devicehub-core` 校验后才访问仓储。只有 Tauri 宿主持有目录选择和异步文件系统持久化。该适配器无法访问设备会话、视频、MCP 或受监督服务，构造时也不会启动任务或文件监视器。
 
-MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp`。它共享会话管理器的最新帧、输入通道、设备状态和控制通道， 并共享性能快照和有界设备日志缓冲，因此自动化客户端与 WebView 复用同一个 CoreDevice 会话。后端仅保留当前会话最近一条归一化设备元数据事件，用于消除读取事件游标与订阅 下一事件之间的竞态；切换会话会清除保留事件，但不会重用单调递增的序列号。性能与日志 调用使用临时需求租约，与 WebView 的显式需求组合，而不会改写其状态。 坐标工具携带截图尺寸，并通过 与鼠标直接触控相同的方向模型转换。游戏手势通过共享输入队列串行发送一至五触点 HID 帧；截图和动作结果携带帧版本，使 agent 可以跳过画面稳定等待并显式等待下一解码帧。 MCP 崩溃报告工具通过当前会话 provider 分发，报告正文上限为 1 MiB；设备路径使用与桌面 导出相同的防穿越校验。 设备详情调用使用现有会话命令队列，除非调用者显式请求，否则省略稳定硬件标识符。 MCP 没有鉴权；监听非回环地址属于显式部署选择，同时会输出警告。
+MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp`。每条协议连接持有自己的设备选择 ID，并从 registry 解析该会话的最新帧、输入通道、设备状态、控制通道、性能快照和有界日志缓冲。自动化客户端与 WebView 因此可以复用既有 CoreDevice 会话，同时不共享可变目标。切换 MCP 目标只替换该连接的会话能力，不会改变其他 MCP client 或桌面选择。性能与日志调用只为该设备获取临时需求租约；坐标转换、HID 串行化、帧版本、崩溃报告上限和标识符策略也都按会话隔离。MCP 没有鉴权；监听非回环地址属于显式部署选择，同时会输出警告。
 
 ## 会话所有权
 
@@ -66,7 +66,7 @@ MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp
 
 CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
 
-`start_runtime` 现在把共享服务状态、控制通道、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；`SessionManager`、底层 `CoreRuntimeState`、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 明确分离管理视图（设备清单、当前选择和生命周期控制）与设备会话视图（媒体、输入、服务及设备操作）。当前 runtime 仍只持有一个选中会话，但宿主适配器不再消费暗示管理状态属于该设备的扁平 API。可复用的 `devicehub-server` 适配器接收该分组 client：设备管理 HTTP 子路由只接收管理视图，用于刷新、选择、重连、配对和撤销信任；通用设备 HTTP 子路由只接收单个活动 session 的命令、定位和截图能力；WDA HTTP 子路由只通过 session 命令入口持有 runner 生命周期；WebSocket 负责状态、输入校验、WebCodecs 传输、遥测和断连清理；MCP 负责工具目录、handler 与 Streamable HTTP router；App 与崩溃报告 HTTP 子路由持有其有界校验、截止时间和错误映射。Developer Image 与 provisioning HTTP 适配器现在都只接收窄化的会话命令与观察；宿主路径对它们保持不透明，本机文件校验与读取仍由 Tauri 的 `TokioDeveloperImageAssets` 和 `TokioProvisioningProfiles` 承担。因此 Tauri web composition root 不再持有通用设备命令入口，也不再实现设备路由。所有可复用适配器均不读取环境、监听生产端口或启动设备 runtime；桌面宿主在独立 server runtime 上保留地址策略和监听器。构造 runtime 不会监听网络端口或启动适配器；桌面关闭时先停止 server，再 join 设备 owner thread。
+`start_runtime` 会把共享 manager 状态、设备会话 registry、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；会话 supervisor、底层状态、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 明确分离 manager view 与通过 registry 解析的 `DeviceSessionClient`。设备管理 HTTP 路由只使用 manager view；设备级 HTTP middleware 强制要求 `X-DeviceHub-Device`，解析准确会话，并把窄化 client 注入设备、WDA、App、崩溃报告、性能、存储、诊断、Developer Image 和 provisioning 适配器。WebSocket 强制要求 `device_id`，且只订阅该会话的状态、媒体、输入、事件、指标和剪贴板。缺少或未知目标会被拒绝，不会把前端选择当作隐式全局值。桌面 composition root 不再实现设备路由。所有可复用适配器均不读取环境、监听生产端口或启动设备 runtime；桌面关闭时先停止 server，再 join 设备 owner thread。
 
 完整的鉴权私有 API 路由图现在归 `devicehub-server` 所有。它组合状态、WebSocket、manager 与设备子路由，并为所有路由验证相同的精确 bearer 或 WebSocket subprotocol token。Tauri 只提供生成后的 token、注入的适配器状态、桌面 CORS 层、监听地址和关闭生命周期，不再定义路由或鉴权语义。未来无头宿主因此可以直接复用同一私有 API，而无需复制桌面 composition root。
 
@@ -76,13 +76,13 @@ CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服�
 
 App 页面只等待核心应用目录即可进入可交互状态，主屏幕位置和 WDA 状态会独立在后台补全。Apps 功能模块拥有目录缓存、取消、请求代际、范围选择和增量渲染；离开页面会取消在途任务，切换设备或私有后端会重置资源。范围切换在控制器内部串行化，连续 UI 事件不会互相竞争。目录按设备范围短期缓存，并在设备事件或应用变更后强制刷新；图标观察器只拉取接近可视区域的资源，避免为大型目录一次创建完整的 Ant Design 与图标子树。每个应用行只接收稳定命令而不接触父级状态 setter；组件记忆化会隔离备份、诊断、壁纸及其他检查器状态更新。备份、sysdiagnose、开发者镜像和 App 操作状态统一使用“仅活动任务轮询”策略：进入所属 Tab 时读取一次快照，只在操作处于活动状态时轮询，并在终态立即停止；请求代际会阻止旧设备或较早轮询的延迟响应覆盖当前状态。
 
-USB Lockdown 配对属于管理器级操作，而不是活动会话的输入命令。枚举会通过当前选中的 usbmuxd 后端检查电脑配对记录，只向私有 API 暴露 `paired`、`unpaired` 或 `not_applicable`；证书和记录正文不会越过边界。配对只接受已枚举的 USB 选择项，并且仅由桌面端显式操作启动；设备信任对话框最长等待 90 秒，生成凭据后先使用 `StartSession` 验证，只在序列化到电脑记录时补充 UDID，再通过同一个系统 usbmuxd 或内置 netmuxd 地址保存。显式移除信任复用同一管理器边界，并先拆除活动会话；后端读取但不暴露 Host ID，有界尝试设备端 `Unpair`，随后始终删除 usbmuxd 记录并使用一次新连接重试，同时清理内存与磁盘中的 Wi-Fi 发现缓存和独立 RemotePairing 身份。结果会保留两侧各自是否完成，设备响应丢失时不会误报为完整成功。若另一设备会话仍在运行，管理器会先完成拆除，以维持单一服务所有权。拒绝、锁定、超时和普通失败会归一化后交给前端，日志只包含设备指纹。MCP 可以观察配对状态，并会收到区分 USB 与 Wi-Fi 条目的传输选择 ID，但不能触发或撤销需要人工确认的信任关系。
+USB Lockdown 配对属于 manager 级操作，而不是会话输入命令。枚举会通过当前选中的 usbmuxd 后端检查电脑配对记录，只向私有 API 暴露 `paired`、`unpaired` 或 `not_applicable`；证书和记录正文不会越过边界。配对只接受已枚举的 USB 选择项，并且仅由桌面端显式操作启动；设备信任对话框最长等待 90 秒，生成凭据后先使用 `StartSession` 验证，只在序列化到电脑记录时补充 UDID，再通过同一个系统 usbmuxd 或内置 netmuxd 地址保存。显式移除信任复用同一 manager 边界，并且只停止目标物理设备的会话；后端读取但不暴露 Host ID，有界尝试设备端 `Unpair`，随后始终删除 usbmuxd 记录并使用一次新连接重试，同时清理内存与磁盘中的 Wi-Fi 发现缓存和独立 RemotePairing 身份。结果会保留两侧各自是否完成，设备响应丢失时不会误报为完整成功。其他设备会话继续运行。拒绝、锁定、超时和普通失败会归一化后交给前端，日志只包含设备指纹。MCP 可以观察配对状态，并会收到区分 USB 与 Wi-Fi 条目的传输选择 ID，但不能触发或撤销需要人工确认的信任关系。
 
 直接 Wi-Fi 传输只会通过显式 USB 授权流程创建 RemotePairing 凭据，随后通过 Bonjour 执行仅验证握手。任何验证错误都不会启动替代配对或覆盖已保存身份。短读、连接重置、BrokenPipe 和超时会使用全新 socket 重试，然后由父隧道按照一至八秒的有界指数延时重建。明确的 Pair Verify 拒绝会停止自动重试，并要求用户显式移除 USB 信任后重新授权；瞬时断流会保留凭据。结构化日志保留底层错误分类和尝试次数，公开错误则说明应保持设备唤醒还是重建授权。
 
 可选设备服务统一运行在该 runtime 内的 Tokio `LocalSet` 和服务监督器下。这样不可 `Send` 的 DVT channel 始终留在 CoreDevice 所有者线程，而 HTTP、WebSocket 和 MCP 传输仍可使用多线程 runtime。每项服务发布统一的阶段、尝试次数、重启次数、最后错误和 更新时间。虚拟定位、Condition Inducer、Sysmontap、Graphics、NetworkMonitor 与 EnergyMonitor 通道分别使用有上限的指数退避恢复；单个通道断开不会终止视频或 HID。
 
-规范化服务健康记录、状态转换策略和共享注册表位于 `devicehub-core`，桌面、未来无头宿主和多设备宿主因此观察同一契约。只有 runtime 持有 reporter、tracing、重连退避、关闭信号、`LocalSet` 任务和强制终止期限。
+规范化服务健康记录和状态转换策略位于 `devicehub-core`。每个 runtime 会话持有独立的健康 registry，桌面与无头宿主观察同一契约。只有 runtime 持有 reporter、tracing、重连退避、关闭信号、`LocalSet` 任务和强制终止期限。
 
 性能快照、类型化规范观察、部分样本合并语义、有界 App 活动历史、能耗目标选择和分数规范化位于 `devicehub-core`。runtime 将 Sysmontap、DeviceInfo、Graphics、NetworkMonitor、EnergyMonitor 和通知值转换为该契约，同时保留 DVT client、采样节奏、需求订阅和重连监督。宿主适配器直接读取 core 观察槽，不能提交原始 plist 或 DVT 值。
 

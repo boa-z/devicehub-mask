@@ -91,6 +91,7 @@ pub enum DeviceSessionCommand<HostPath> {
 pub enum SessionControlCommand {
     Refresh,
     Connect(String),
+    Disconnect(String),
     Reconnect(String),
     Pair {
         selection_id: String,

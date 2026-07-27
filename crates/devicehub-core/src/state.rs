@@ -2,10 +2,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     AppOperationKind, AppOperationState, AppOperationView, DeviceInfo, LocationStatus, Orientation,
 };
+use serde::Serialize;
 
 #[derive(Debug, Default)]
 struct VideoCountersInner {
@@ -46,18 +48,71 @@ impl VideoCounters {
     }
 }
 
-/// Human-readable connection/stream status surfaced in the UI status bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPhase {
+    Discovered,
+    Connecting,
+    Connected,
+    Recovering,
+    Disconnecting,
+    #[default]
+    Disconnected,
+    Failed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionStatus {
+    pub phase: SessionPhase,
+    pub message: String,
+    pub updated_at_ms: u64,
+}
+
+/// Structured connection state plus a human-readable diagnostic message.
 #[derive(Clone, Default)]
-pub struct StatusSlot(Arc<Mutex<String>>);
+pub struct StatusSlot(Arc<Mutex<SessionStatus>>);
 
 impl StatusSlot {
     pub fn set(&self, s: impl Into<String>) {
-        *self.0.lock().unwrap() = s.into();
+        let message = s.into();
+        self.set_phase(infer_session_phase(&message), message);
+    }
+
+    pub fn set_phase(&self, phase: SessionPhase, message: impl Into<String>) {
+        *self.0.lock().unwrap() = SessionStatus {
+            phase,
+            message: message.into(),
+            updated_at_ms: unix_millis(),
+        };
     }
 
     pub fn get(&self) -> String {
+        self.0.lock().unwrap().message.clone()
+    }
+
+    pub fn snapshot(&self) -> SessionStatus {
         self.0.lock().unwrap().clone()
     }
+}
+
+fn infer_session_phase(message: &str) -> SessionPhase {
+    match message {
+        "connected" | "device management connected" => SessionPhase::Connected,
+        "disconnected" => SessionPhase::Disconnected,
+        "stopping..." | "removing device trust..." => SessionPhase::Disconnecting,
+        value if value.contains("retrying") => SessionPhase::Recovering,
+        value if value.contains("waiting for selected device") || value.contains("No device") => {
+            SessionPhase::Discovered
+        }
+        _ => SessionPhase::Connecting,
+    }
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[derive(Clone, Default)]
@@ -232,6 +287,7 @@ mod tests {
         let status_reader = status.clone();
         status.set("streaming");
         assert_eq!(status_reader.get(), "streaming");
+        assert_eq!(status_reader.snapshot().phase, SessionPhase::Connecting);
 
         let counters = VideoCounters::default();
         let counter_reader = counters.clone();
@@ -242,6 +298,26 @@ mod tests {
         assert_eq!(snapshot.transport_events, 1);
         assert_eq!(snapshot.source_frames, 1);
         assert_eq!(snapshot.decoded_frames, 1);
+    }
+
+    #[test]
+    fn status_slot_exposes_structured_session_phases() {
+        let status = StatusSlot::default();
+
+        status.set("connected");
+        let connected = status.snapshot();
+        assert_eq!(connected.phase, SessionPhase::Connected);
+        assert_eq!(connected.message, "connected");
+        assert!(connected.updated_at_ms > 0);
+
+        status.set("connection lost; retrying in 2s");
+        assert_eq!(status.snapshot().phase, SessionPhase::Recovering);
+
+        status.set_phase(SessionPhase::Failed, "transport failed");
+        let failed = status.snapshot();
+        assert_eq!(failed.phase, SessionPhase::Failed);
+        assert_eq!(failed.message, "transport failed");
+        assert!(failed.updated_at_ms >= connected.updated_at_ms);
     }
 
     #[test]

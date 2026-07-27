@@ -4,8 +4,9 @@
 //! subscriptions, serialization, WebCodecs frame delivery, and connection
 //! cleanup; HTTP handlers and unrelated device services are not reachable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -21,8 +22,9 @@ use super::input::{ClientVideoFeedback, handle_client_message, send_all_up};
 use crate::status;
 use devicehub_core::VideoCounters;
 use devicehub_runtime::{
-    BrowserFrameDecision, BrowserVideoSlot, ClipboardSlot, FrameCredit, FramePacer, RuntimeClient,
-    SessionCommandSlot as InputSink, browser_frame_decision, duration_average_ms, encode_packet,
+    BrowserFrameDecision, BrowserVideoSlot, ClipboardSlot, DeviceSessionClient, FrameCredit,
+    FramePacer, RuntimeClient, SessionCommandSlot as InputSink, browser_frame_decision,
+    duration_average_ms, encode_packet,
 };
 
 const DEFAULT_MAX_IN_FLIGHT_FRAMES: usize = 8;
@@ -31,23 +33,26 @@ const AUDIO_CHANNEL_CAPACITY: usize = 16;
 const AUDIO_PACKET_HEADER_BYTES: usize = 12;
 const AUDIO_PACKET_MAGIC: &[u8; 4] = b"DHA1";
 
-#[derive(Clone)]
-pub struct BrowserAudioSlot(broadcast::Sender<bytes::Bytes>);
-
-impl Default for BrowserAudioSlot {
-    fn default() -> Self {
-        let (sender, _) = broadcast::channel(AUDIO_CHANNEL_CAPACITY);
-        Self(sender)
-    }
-}
+#[derive(Clone, Default)]
+pub struct BrowserAudioSlot(Arc<Mutex<HashMap<String, broadcast::Sender<bytes::Bytes>>>>);
 
 impl BrowserAudioSlot {
-    pub fn publish(&self, pcm: bytes::Bytes) {
-        let _ = self.0.send(pcm);
+    pub fn publish(&self, selection_id: &str, pcm: bytes::Bytes) {
+        let sender = self.sender(selection_id);
+        let _ = sender.send(pcm);
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<bytes::Bytes> {
-        self.0.subscribe()
+    fn subscribe(&self, selection_id: &str) -> broadcast::Receiver<bytes::Bytes> {
+        self.sender(selection_id).subscribe()
+    }
+
+    fn sender(&self, selection_id: &str) -> broadcast::Sender<bytes::Bytes> {
+        self.0
+            .lock()
+            .unwrap()
+            .entry(selection_id.to_string())
+            .or_insert_with(|| broadcast::channel(AUDIO_CHANNEL_CAPACITY).0)
+            .clone()
     }
 }
 
@@ -84,6 +89,8 @@ impl Default for WebSocketConfig {
 #[derive(Clone)]
 pub struct WebSocketState {
     application: RuntimeClient<std::path::PathBuf>,
+    selection_id: Arc<str>,
+    session: DeviceSessionClient<std::path::PathBuf>,
     browser_frames: BrowserVideoSlot,
     clipboard: ClipboardSlot,
     video_counters: VideoCounters,
@@ -95,15 +102,19 @@ pub struct WebSocketState {
 impl WebSocketState {
     pub fn new(
         application: RuntimeClient<std::path::PathBuf>,
+        selection_id: String,
+        session: DeviceSessionClient<std::path::PathBuf>,
         config: WebSocketConfig,
         browser_audio: Option<BrowserAudioSlot>,
     ) -> Self {
-        let browser_frames = application.device.browser_frames.clone();
-        let clipboard = application.device.clipboard.clone();
-        let video_counters = application.device.video_counters.clone();
-        let input = application.device.commands.clone();
+        let browser_frames = session.browser_frames.clone();
+        let clipboard = session.clipboard.clone();
+        let video_counters = session.video_counters.clone();
+        let input = session.commands.clone();
         Self {
             application,
+            selection_id: Arc::from(selection_id),
+            session,
             browser_frames,
             clipboard,
             video_counters,
@@ -166,11 +177,11 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         let mut last_status = String::new();
         let mut browser_frame_rx = send_state.browser_frames.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
-        let mut device_event_rx = send_state.application.device.device_events.subscribe();
+        let mut device_event_rx = send_state.session.device_events.subscribe();
         let mut browser_audio_rx = send_state
             .browser_audio
             .as_ref()
-            .map(BrowserAudioSlot::subscribe);
+            .map(|audio| audio.subscribe(&send_state.selection_id));
         let mut status_tick = tokio::time::interval(Duration::from_millis(250));
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut metrics_tick = tokio::time::interval(Duration::from_secs(1));
@@ -191,7 +202,11 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         loop {
             tokio::select! {
                 _ = status_tick.tick() => {
-                    let snapshot = status::snapshot(&send_state.application);
+                    let snapshot = status::snapshot_for_session(
+                        &send_state.application,
+                        &send_state.selection_id,
+                        &send_state.session,
+                    );
                     if let Ok(text) = serde_json::to_string(
                         &json!({"type": "status", "payload": snapshot}),
                     ) && text != last_status {
@@ -400,7 +415,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
             Message::Text(text) => {
                 match handle_client_message(
                     &state.input,
-                    state.application.device.orientation.get(),
+                    state.session.orientation.get(),
                     &state.browser_frames,
                     &text,
                     &mut pressed_keyboard,
@@ -432,7 +447,9 @@ mod tests {
 
     use devicehub_runtime::{FrameCredit, FramePacer};
 
-    use super::{WebSocketConfig, encode_audio_packet, synchronize_browser_generation};
+    use super::{
+        BrowserAudioSlot, WebSocketConfig, encode_audio_packet, synchronize_browser_generation,
+    };
 
     #[test]
     fn transport_bounds_host_supplied_frame_credits() {
@@ -466,5 +483,20 @@ mod tests {
         assert_eq!(u32::from_be_bytes(packet[4..8].try_into().unwrap()), 48_000);
         assert_eq!(u16::from_be_bytes(packet[8..10].try_into().unwrap()), 2);
         assert_eq!(&packet[12..], &[1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn browser_audio_subscriptions_are_device_scoped() {
+        let audio = BrowserAudioSlot::default();
+        let mut phone = audio.subscribe("phone::usb");
+        let mut tablet = audio.subscribe("tablet::usb");
+
+        audio.publish("phone::usb", bytes::Bytes::from_static(b"phone"));
+
+        assert_eq!(
+            phone.try_recv().unwrap(),
+            bytes::Bytes::from_static(b"phone")
+        );
+        assert!(tablet.try_recv().is_err());
     }
 }
