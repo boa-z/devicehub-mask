@@ -2,6 +2,19 @@
 
 [简体中文](../zh-CN/troubleshooting.md) | [Documentation](README.md)
 
+## macOS Cannot Verify the App Is Free of Malware
+
+Current macOS packages use an ad-hoc signature. A free Apple developer account cannot obtain the Developer ID Application certificate required for distribution outside the App Store or notarize a release package. On first launch, macOS may therefore report: “Apple could not verify ‘DeviceHub Mask’ is free of malware that may harm your Mac or compromise your privacy.” This does not mean macOS detected malware; it means Apple cannot verify the publisher identity or a notarization ticket.
+
+Download only from the project's GitHub Releases and verify the accompanying SHA-256 file first. In Finder, Control-click the app and choose **Open**, or go to **System Settings > Privacy & Security** and select **Open Anyway** beside the blocked-app record. If macOS still prevents launch, remove the quarantine attribute from this DeviceHub Mask bundle only, then open it:
+
+```sh
+sudo xattr -rd com.apple.quarantine "/Applications/DeviceHub Mask.app"
+open "/Applications/DeviceHub Mask.app"
+```
+
+Replace the full path if the app is installed elsewhere. Do not run this command against `/Applications`, `~/Downloads`, or another entire directory, and do not disable Gatekeeper globally. macOS may attach quarantine again after downloading a new version; verify that version's source and checksum before clearing it.
+
 ## A Debug Executable Opens a Blank Window
 
 `tauri dev` compiles a WebView that loads Vite from `127.0.0.1:5173`. Running that development executable after Vite stops produces a blank page.

@@ -2,6 +2,19 @@
 
 简体中文 | [English](../en/troubleshooting.md) | [文档首页](README.md)
 
+## macOS 提示无法验证应用是否包含恶意软件
+
+当前 macOS 发布包使用 ad-hoc 签名。免费的 Apple 开发者账号无法申请面向站外分发的 Developer ID Application 证书，也无法为发布包完成 Apple 公证，因此首次打开时可能出现“Apple could not verify ‘DeviceHub Mask’ is free of malware that may harm your Mac or compromise your privacy.”提示。这不表示 macOS 已检测到恶意软件，而是表示 Apple 无法验证发布者身份和公证票据。
+
+只从项目的 GitHub Releases 下载，并先核对随发布包提供的 SHA-256 文件。可以在 Finder 中右键点击应用并选择“打开”，或进入“系统设置 > 隐私与安全”，在拦截记录旁选择“仍要打开”。如果系统仍然阻止启动，可以只移除 DeviceHub Mask 应用包的隔离属性，然后打开应用：
+
+```sh
+sudo xattr -rd com.apple.quarantine "/Applications/DeviceHub Mask.app"
+open "/Applications/DeviceHub Mask.app"
+```
+
+根据实际安装位置替换完整路径。不要对 `/Applications`、`~/Downloads` 或其他目录整体执行该命令，也不要全局关闭 Gatekeeper。下载新版本后，macOS 可能再次附加隔离属性，需要重新确认该版本的来源和校验值。
+
 ## Debug 可执行文件打开后白屏
 
 `tauri dev` 编译的 WebView 会从 `127.0.0.1:5173` 加载 Vite。Vite 停止后单独运行 这个开发可执行文件会显示白屏。

@@ -82,6 +82,8 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 当前 nightly macOS 应用在 Universal 合并和版本写入后使用结构有效的 ad-hoc 签名。 它能验证 sealed resources 和二进制架构，但不能证明发布者身份，Gatekeeper 仍可能要求 用户手动批准。
 
+免费的 Apple 开发者账号不能申请 Developer ID Application 证书或完成站外分发公证，因此当前发布流程继续保留 ad-hoc 签名。用户端处理方法见[故障排查](troubleshooting.md#macos-提示无法验证应用是否包含恶意软件)。
+
 正式发布应配置 Developer ID Application 证书、对 DMG 公证并 staple ticket。Apple 签名不能替代 Tauri 更新签名。
 
 ## 发布检查清单

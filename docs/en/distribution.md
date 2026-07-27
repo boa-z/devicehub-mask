@@ -82,6 +82,8 @@ At runtime, Settings can select the **Stable** or **Nightly** update channel and
 
 Current nightly macOS apps receive a structurally valid ad-hoc signature after Universal assembly and version stamping. This verifies sealed resources and binary slices but does not establish publisher identity. Gatekeeper may require explicit approval.
 
+A free Apple developer account cannot obtain a Developer ID Application certificate or notarize software for distribution outside the App Store, so the current release flow retains ad-hoc signing. See [Troubleshooting](troubleshooting.md#macos-cannot-verify-the-app-is-free-of-malware) for the user-side procedure.
+
 Production distribution should configure a Developer ID Application certificate, notarize the DMG, and staple the notarization ticket. Apple signing does not replace the Tauri updater signature.
 
 ## Release Checklist
