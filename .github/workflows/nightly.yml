@@ -335,6 +335,7 @@ jobs:
             dist/*.dmg
             dist/*.sha256
             dist/*.app.tar.gz
+            dist/devicehub-mask-headless_*_macos-universal.tar.gz
             dist/*.app.tar.gz.sig
             dist/update-fragment-*.json
           if-no-files-found: error
@@ -728,3 +729,17 @@ jobs:
           if [[ "$RELEASE_CHANNEL" == "stable" && "$RELEASE_DRAFT" != "true" ]]; then
             gh release edit "$RELEASE_TAG" --draft=false --latest
           fi
+
+      - name: Notify Homebrew tap
+        if: env.RELEASE_CHANNEL == 'nightly' || env.RELEASE_DRAFT != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not configured; skipping tap update"
+            exit 0
+          fi
+          gh api --method POST repos/boa-z/homebrew-devicehub-mask/dispatches \
+            -f event_type=devicehub-release \
+            -f "client_payload[tag]=${RELEASE_TAG}"

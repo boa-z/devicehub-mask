@@ -68,6 +68,7 @@ npm run tauri -- signer generate --write-keys .tauri/devicehub-mask.key
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` | 私钥文件完整内容 |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 生成密码，或留空 |
+| `HOMEBREW_TAP_TOKEN` | 对 `boa-z/homebrew-devicehub-mask` 具备 Contents 权限的 fine-grained token |
 
 ```sh
 gh secret set TAURI_SIGNING_PRIVATE_KEY < .tauri/devicehub-mask.key
@@ -85,6 +86,12 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 免费的 Apple 开发者账号不能申请 Developer ID Application 证书或完成站外分发公证，因此当前发布流程继续保留 ad-hoc 签名。用户端处理方法见[故障排查](troubleshooting.md#macos-提示无法验证应用是否包含恶意软件)。
 
 正式发布应配置 Developer ID Application 证书、对 DMG 公证并 staple ticket。Apple 签名不能替代 Tauri 更新签名。
+
+## Homebrew Tap
+
+独立的 `boa-z/homebrew-devicehub-mask` Tap 使用 Formula 发布 `devicehub-mask-headless`，并使用 `devicehub-mask` Cask 发布桌面应用。Formula 使用完整的 macOS headless 归档，而不是从桌面 bundle 中提取单个可执行文件。因此 macOS 打包 job 必须同时上传 `devicehub-mask-headless_<version>+<build>_macos-universal.tar.gz` 及其校验文件。
+
+完整 Nightly 发布或非草稿 Stable 发布完成后，如果配置了 `HOMEBREW_TAP_TOKEN`，上游 workflow 会发送 `devicehub-release` repository dispatch。Tap 在替换任一配方前，会确认 headless 归档、DMG 及两个校验文件属于同一版本和构建编号。Stable 草稿不会更新 Homebrew。
 
 ## 发布检查清单
 

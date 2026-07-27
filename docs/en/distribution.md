@@ -68,6 +68,7 @@ Update `plugins.updater.pubkey`, then configure repository Actions secrets:
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` | Complete private key file contents |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Generation password, or empty |
+| `HOMEBREW_TAP_TOKEN` | Fine-grained token with Contents access to `boa-z/homebrew-devicehub-mask` |
 
 ```sh
 gh secret set TAURI_SIGNING_PRIVATE_KEY < .tauri/devicehub-mask.key
@@ -85,6 +86,12 @@ Current nightly macOS apps receive a structurally valid ad-hoc signature after U
 A free Apple developer account cannot obtain a Developer ID Application certificate or notarize software for distribution outside the App Store, so the current release flow retains ad-hoc signing. See [Troubleshooting](troubleshooting.md#macos-cannot-verify-the-app-is-free-of-malware) for the user-side procedure.
 
 Production distribution should configure a Developer ID Application certificate, notarize the DMG, and staple the notarization ticket. Apple signing does not replace the Tauri updater signature.
+
+## Homebrew Tap
+
+The separate `boa-z/homebrew-devicehub-mask` tap publishes `devicehub-mask-headless` as a Formula and the desktop application as the `devicehub-mask` Cask. The Formula consumes the complete macOS headless archive rather than extracting a binary from the desktop bundle. The macOS package job must therefore upload both `devicehub-mask-headless_<version>+<build>_macos-universal.tar.gz` and its checksum.
+
+After a complete Nightly release, or a non-draft Stable release, the upstream workflow sends a `devicehub-release` repository dispatch when `HOMEBREW_TAP_TOKEN` is configured. The tap validates that the headless archive, DMG, and both checksum files identify one version/build before replacing either definition. Stable draft releases do not update Homebrew.
 
 ## Release Checklist
 
