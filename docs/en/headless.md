@@ -28,4 +28,8 @@ Replace `127.0.0.1` in the printed URL with the server's LAN address before open
 
 Run `./devicehub-headless --help` for data-directory, frontend-directory, device-selection, sidecar, usbmuxd, and optional loopback MCP settings.
 
+## Host Integration
+
+The browser UI reads build information, capabilities, settings, and diagnostics from the authenticated headless API. Headless preferences are stored in `<data-dir>/settings.json`, and browser errors are forwarded to the service log. Browser fullscreen is supported. Desktop-only capabilities such as always-on-top windows, installer updates, native file dialogs, opening server directories, host clipboard synchronization, and device audio are disabled instead of invoking unavailable Tauri commands. Browser-native file transfer and audio transport are tracked as the next parity stages.
+
 DeviceHub Mask does not install, sideload, sign, or upgrade iOS applications. This remains outside the desktop and headless product scope.

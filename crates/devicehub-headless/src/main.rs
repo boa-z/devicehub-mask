@@ -1,5 +1,7 @@
 //! Native headless host for the shared DeviceHub runtime and browser UI.
 
+mod host;
+
 use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -224,7 +226,8 @@ async fn run(config: Config) -> Result<(), String> {
         current_exe.as_deref(),
     );
     let system_usbmuxd = devicehub_runtime::SystemUsbmuxdConfig::from_host(config.system_usbmuxd);
-    let preferences = devicehub_runtime::RuntimePreferences::new(false, false);
+    let host_control = host::HeadlessHostControl::load(config.data_dir.join("settings.json"));
+    let preferences = host_control.runtime_preferences();
     let diagnostics = devicehub_runtime::SessionDiagnostics {
         send_frame_ack: false,
         rtcp: devicehub_runtime::RtcpOptions::default(),
@@ -255,14 +258,17 @@ async fn run(config: Config) -> Result<(), String> {
         diagnostics,
     )?;
     let (runtime, client) = started.into_parts();
-    let api = devicehub_server::private_api::router(
-        devicehub_host::private_api::state(
-            client.clone(),
-            profile_dir,
-            devicehub_server::websocket::WebSocketConfig::default(),
-        ),
-        token.clone(),
+    let mut api_state = devicehub_host::private_api::state(
+        client.clone(),
+        profile_dir,
+        devicehub_server::websocket::WebSocketConfig::default(),
     );
+    api_state.host_http = devicehub_server::http::HostHttpState::new(
+        host::capabilities(),
+        host::build_info(),
+        host_control,
+    );
+    let api = devicehub_server::private_api::router(api_state, token.clone());
     let app = devicehub_server::spa::router(api, config.frontend_dir);
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await

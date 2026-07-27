@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { browserHostJson, browserHostRequest, runningInDesktopHost } from "./hostApi";
 
 export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
 
@@ -43,7 +44,15 @@ export function logFrontend(
   const suffix = recent?.suppressed ? ` (suppressed ${recent.suppressed} repeated events)` : "";
   recentEvents.set(key, { sentAt: now, suppressed: 0 });
   const message = `${describeError(value).replace(/[\r\n]+/g, " ") || "Unknown error"}${suffix}`.slice(0, 2_048);
-  void invoke("frontend_log", { event: { level, component, operation, message } }).catch(() => undefined);
+  const event = { level, component, operation, message };
+  const sent = runningInDesktopHost()
+    ? invoke("frontend_log", { event })
+    : browserHostRequest("/api/host/frontend-log", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(event),
+      });
+  void sent.catch(() => undefined);
 }
 
 export function installGlobalDiagnostics() {
@@ -57,13 +66,23 @@ export function installGlobalDiagnostics() {
 }
 
 export function readDiagnosticsStatus() {
-  return invoke<DiagnosticsStatus>("diagnostics_status");
+  return runningInDesktopHost()
+    ? invoke<DiagnosticsStatus>("diagnostics_status")
+    : browserHostJson<DiagnosticsStatus>("/api/host/diagnostics");
 }
 
 export function setDebugLogging(enabled: boolean) {
-  return invoke<DiagnosticsStatus>("set_debug_logging", { enabled });
+  return runningInDesktopHost()
+    ? invoke<DiagnosticsStatus>("set_debug_logging", { enabled })
+    : browserHostJson<DiagnosticsStatus>("/api/host/diagnostics", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
 }
 
 export function openLogDirectory() {
-  return invoke<void>("open_log_directory");
+  return runningInDesktopHost()
+    ? invoke<void>("open_log_directory")
+    : Promise.reject(new Error("Headless logs are written to the service process output"));
 }

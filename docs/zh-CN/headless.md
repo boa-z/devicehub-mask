@@ -28,4 +28,8 @@ Windows 使用 `devicehub-headless.exe`。打开进程输出的 URL。临时访�
 
 运行 `./devicehub-headless --help` 可查看数据目录、前端目录、设备选择、sidecar、usbmuxd 和可选回环 MCP 配置。
 
+## 宿主集成
+
+浏览器界面通过经过鉴权的 headless API 读取构建信息、能力声明、设置和诊断状态。headless 设置保存在 `<data-dir>/settings.json`，浏览器错误会转发到服务进程日志。浏览器全屏可用；窗口置顶、安装器更新、原生文件选择框、打开服务端目录、宿主剪贴板同步和设备音频等桌面专属能力会被明确禁用，不再错误调用 Tauri 命令。浏览器原生文件传输和音频传输是后续对齐阶段。
+
 DeviceHub Mask 不安装、侧载、签名或升级 iOS 应用。桌面端与无头端都不会加入这些能力。

@@ -30,6 +30,7 @@ pub struct PrivateApiState {
     pub diagnostics_http: http::DiagnosticsHttpState,
     pub apps_http: http::AppHttpState,
     pub crash_reports_http: http::CrashReportHttpState,
+    pub host_http: http::HostHttpState,
     pub websocket_config: websocket::WebSocketConfig,
 }
 
@@ -48,6 +49,7 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
     let diagnostics_routes = http::diagnostics_router(state.diagnostics_http.clone());
     let app_routes = http::apps_router(state.apps_http.clone());
     let crash_report_routes = http::crash_reports_router(state.crash_reports_http.clone());
+    let host_routes = http::host_router(state.host_http.clone());
 
     Router::new()
         .route("/api/status", get(api_status))
@@ -62,6 +64,7 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
         .merge(diagnostics_routes)
         .merge(app_routes)
         .merge(crash_report_routes)
+        .merge(host_routes)
         .route("/api/ws", get(ws_upgrade))
         .layer(from_fn_with_state(
             ApiToken(Arc::from(token)),
@@ -201,6 +204,7 @@ mod tests {
                 application.device.app_operation.clone(),
             ),
             crash_reports_http: http::CrashReportHttpState::new(commands),
+            host_http: http::HostHttpState::unavailable(),
             websocket_config: websocket::WebSocketConfig::default(),
         }
     }

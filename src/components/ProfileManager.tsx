@@ -10,7 +10,7 @@ import RedoOutlined from "@ant-design/icons/es/icons/RedoOutlined";
 import SaveOutlined from "@ant-design/icons/es/icons/SaveOutlined";
 import UndoOutlined from "@ant-design/icons/es/icons/UndoOutlined";
 import UploadOutlined from "@ant-design/icons/es/icons/UploadOutlined";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -197,6 +197,7 @@ export function ProfileManager({
           <Button
             icon={<FolderOpenOutlined />}
             aria-label={t("profile.openDirectory")}
+            disabled={!isTauri()}
             onClick={() => void openProfileDirectory()}
           />
         </Tooltip>

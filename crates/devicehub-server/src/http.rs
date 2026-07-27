@@ -6,6 +6,7 @@ mod developer_image;
 mod device;
 mod devices;
 mod diagnostics;
+mod host;
 mod performance;
 mod profiles;
 mod provisioning;
@@ -20,6 +21,10 @@ pub use devices::{DeviceManagerHttpState, router as devices_router};
 pub use diagnostics::{
     DiagnosticDestinationKind, DiagnosticDestinationPreparer, DiagnosticsHttpState,
     router as diagnostics_router,
+};
+pub use host::{
+    HostBuildInfo, HostCapabilities, HostControl, HostDiagnosticsStatus, HostHttpState,
+    HostSettingsPatch, HostSettingsStatus, router as host_router,
 };
 pub use performance::{
     CaptureDestinationValidator, PerformanceHttpState, router as performance_router,

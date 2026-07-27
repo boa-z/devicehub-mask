@@ -1204,6 +1204,8 @@ dependencies = [
  "devicehub-host",
  "devicehub-runtime",
  "devicehub-server",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

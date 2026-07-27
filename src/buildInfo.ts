@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Update } from "@tauri-apps/plugin-updater";
+import { browserHostJson, runningInDesktopHost, type BrowserHostStatus } from "./hostApi";
 
 export type UpdateChannel = "stable" | "nightly";
 
@@ -20,7 +21,9 @@ type UpdateMetadata = {
 };
 
 export function readBuildInfo() {
-  return invoke<BuildInfo>("build_info");
+  return runningInDesktopHost()
+    ? invoke<BuildInfo>("build_info")
+    : browserHostJson<BrowserHostStatus<BuildInfo>>("/api/host").then((status) => status.build);
 }
 
 export async function checkUpdateChannel(channel: UpdateChannel) {

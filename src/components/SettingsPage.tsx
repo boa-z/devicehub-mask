@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { UpdateChannel } from "../buildInfo";
 import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import { readHostCapabilities, runningInDesktopHost, type HostCapabilities } from "../hostApi";
 import { showErrorMessage } from "../errorMessage";
 import type { DeviceAudioPreferences } from "../deviceAudio";
 import { type DeviceViewPreferences, type DeviceViewScale } from "../deviceViewPreferences";
@@ -56,6 +57,10 @@ export function SettingsPage({
   const [appSettings, setAppSettings] = useState<AppSettingsStatus | null>(null);
   const [appSettingsBusy, setAppSettingsBusy] = useState(false);
   const [audioVolumeDraft, setAudioVolumeDraft] = useState<number | null>(null);
+  const [hostCapabilities, setHostCapabilities] = useState<HostCapabilities | null>(null);
+  useEffect(() => {
+    void readHostCapabilities().then(setHostCapabilities).catch(() => undefined);
+  }, []);
   useEffect(() => {
     void readDiagnosticsStatus()
       .then(setDiagnostics)
@@ -117,7 +122,11 @@ export function SettingsPage({
 
   const openRepository = async () => {
     try {
-      await openUrl("https://github.com/boa-z/devicehub-mask");
+      if (runningInDesktopHost()) {
+        await openUrl("https://github.com/boa-z/devicehub-mask");
+      } else {
+        window.open("https://github.com/boa-z/devicehub-mask", "_blank", "noopener,noreferrer");
+      }
     } catch (error) {
       showErrorMessage(t("settings.openRepositoryFailed", { error: String(error) }));
     }
@@ -145,8 +154,8 @@ export function SettingsPage({
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.window")}</Typography.Title>
-        <label><span>{t("settings.alwaysOnTop")}</span><Switch checked={alwaysOnTop} onChange={onAlwaysOnTopChange} /></label>
-        <label><span>{t("settings.systemFullscreen")}</span><Switch checked={systemFullscreen} onChange={onSystemFullscreenChange} /></label>
+        <label><span>{t("settings.alwaysOnTop")}</span><Switch checked={alwaysOnTop} disabled={hostCapabilities?.always_on_top === false} onChange={onAlwaysOnTopChange} /></label>
+        <label><span>{t("settings.systemFullscreen")}</span><Switch checked={systemFullscreen} disabled={hostCapabilities?.system_fullscreen === false} onChange={onSystemFullscreenChange} /></label>
         <label><span>{t("settings.deviceInspector")}</span><Switch checked={deviceView.deviceInspectorVisible} onChange={(deviceInspectorVisible) => onDeviceViewChange({ ...deviceView, deviceInspectorVisible })} /></label>
         <label><span>{t("settings.mappingInspector")}</span><Switch checked={deviceView.mappingInspectorVisible} onChange={(mappingInspectorVisible) => onDeviceViewChange({ ...deviceView, mappingInspectorVisible })} /></label>
       </div>
@@ -180,19 +189,19 @@ export function SettingsPage({
           <span>{t("settings.deviceAudioEnabled")}</span>
           <Switch
             checked={appSettings?.audio_enabled ?? false}
-            disabled={!appSettings}
+            disabled={!appSettings || hostCapabilities?.device_audio === false}
             loading={appSettingsBusy}
             onChange={(enabled) => void changeAudioEnabled(enabled)}
           />
         </label>
-        <label><span>{t("settings.deviceAudioMuted")}</span><Switch checked={audioPlayback.muted} onChange={(muted) => onAudioPlaybackChange({ ...audioPlayback, muted })} /></label>
+        <label><span>{t("settings.deviceAudioMuted")}</span><Switch checked={audioPlayback.muted} disabled={hostCapabilities?.device_audio === false} onChange={(muted) => onAudioPlaybackChange({ ...audioPlayback, muted })} /></label>
         <label>
           <span>{t("settings.deviceAudioVolume")}</span>
           <Slider
             min={0}
             max={100}
             value={audioVolumeDraft ?? Math.round(audioPlayback.volume * 100)}
-            disabled={audioPlayback.muted}
+            disabled={audioPlayback.muted || hostCapabilities?.device_audio === false}
             onChange={setAudioVolumeDraft}
             onChangeComplete={(volume) => {
               setAudioVolumeDraft(null);
@@ -208,7 +217,7 @@ export function SettingsPage({
           <span>{t("settings.clipboardSyncEnabled")}</span>
           <Switch
             checked={appSettings?.clipboard_sync_enabled ?? false}
-            disabled={!appSettings}
+            disabled={!appSettings || hostCapabilities?.clipboard_sync === false}
             loading={appSettingsBusy}
             onChange={(enabled) => void changeClipboardSyncEnabled(enabled)}
           />
@@ -238,6 +247,7 @@ export function SettingsPage({
         <label>
           <span>{t("update.channel")}</span>
           <Select<UpdateChannel>
+            disabled={hostCapabilities?.app_updates === false}
             value={channel}
             options={[
               { value: "stable", label: t("update.channels.stable") },
@@ -248,7 +258,7 @@ export function SettingsPage({
         </label>
         <label>
           <span>{t("update.automatic")}</span>
-          <Switch checked={automatic} onChange={setAutomatic} />
+          <Switch checked={automatic} disabled={hostCapabilities?.app_updates === false} onChange={setAutomatic} />
         </label>
         <label>
           <span>{t("update.manual")}</span>

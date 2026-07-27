@@ -119,6 +119,7 @@ export function UpdateButton() {
     <Button
       icon={<CloudDownloadOutlined />}
       loading={checking}
+      disabled={!isTauri()}
       onClick={checkNow}
     >
       {t("update.checkNow")}
