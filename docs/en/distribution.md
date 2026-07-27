@@ -13,16 +13,18 @@
 ## Jobs
 
 - **verify** is a fail-independent macOS, Windows, and Linux matrix. Each leg runs frontend lint, tests, and build; Rust format, tests, and Clippy; and a debug Tauri application build.
-- **build-macos** creates a Universal Apple Silicon/Intel DMG and verifies both executable architectures and the complete application signature.
-- **build-windows** creates x64 NSIS and MSI installers.
-- **build-linux** creates x64 AppImage and DEB packages.
-- **publish-nightly** waits for every package, merges updater fragments into one `latest.json`, and atomically replaces the rolling nightly release assets.
+- **build-macos** creates a Universal Apple Silicon/Intel DMG plus a Universal headless tarball, and verifies both executable architectures and the complete application signature.
+- **build-windows** creates x64 NSIS and MSI installers plus an x64 headless zip.
+- **build-linux** creates x64 AppImage and DEB packages plus an x64 headless tarball.
+- **publish-release** waits for every package, merges updater fragments into one `latest.json`, and atomically replaces the rolling nightly release assets.
 
 Workflow artifacts are retained for 14 days. The rolling public release is:
 
 <https://github.com/boa-z/devicehub-mask/releases/tag/nightly>
 
 Both Windows installer formats are produced for every Nightly and Stable release. Nightly NSIS packages use zlib compression to keep CI latency bounded, while Stable NSIS packages use the smaller but slower LZMA output. Tauri's downloaded NSIS and WiX toolchains are cached between runs; CMake and NASM are installed only when absent from the runner image.
+
+Each headless archive contains the native `devicehub-headless` executable, the shared built React `dist/`, FFmpeg, netmuxd, third-party notices, licenses, and bilingual startup documentation. Every archive has an adjacent SHA-256 file and is uploaded to the same rolling release as the desktop packages. See the [Headless Service guide](headless.md).
 
 ## Versions and Artifacts
 
@@ -43,6 +45,9 @@ devicehub-mask_<base-version>+<build>_x64.msi
 devicehub-mask_<base-version>+<build>_amd64.AppImage
 devicehub-mask_<base-version>+<build>_amd64.AppImage.sig
 devicehub-mask_<base-version>+<build>_amd64.deb
+devicehub-mask-headless_<base-version>+<build>_macos-universal.tar.gz
+devicehub-mask-headless_<base-version>+<build>_windows-x64.zip
+devicehub-mask-headless_<base-version>+<build>_linux-x64.tar.gz
 latest.json
 ```
 

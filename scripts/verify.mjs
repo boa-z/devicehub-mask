@@ -7,6 +7,7 @@ const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";
 const full = process.argv.includes("--full");
 
 const checks = [
+  [process.execPath, ["--check", "scripts/package-headless.mjs"], "headless package script syntax"],
   [npm, [...npmPrefix, "run", "docs:check"], "documentation"],
   [npm, [...npmPrefix, "run", "rust:boundaries"], "Rust architecture boundaries"],
   [npm, [...npmPrefix, "run", "lint"], "frontend lint"],

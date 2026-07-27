@@ -3,6 +3,7 @@
 /gen
 /src-tauri/gen
 /dist
+/release-artifacts
 /.tauri/*.key
 /.tauri/*.key.pub
 /node_modules

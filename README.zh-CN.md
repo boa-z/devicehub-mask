@@ -59,6 +59,7 @@ claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
 | 已实现功能清单 | [功能参考](docs/zh-CN/features.md) | [Feature Reference](docs/en/features.md) |
 | 系统设计与协议 | [架构说明](docs/zh-CN/architecture.md) | [Architecture](docs/en/architecture.md) |
 | 开发与本地构建 | [开发与构建](docs/zh-CN/development.md) | [Development](docs/en/development.md) |
+| 无头浏览器服务 | [无头服务](docs/zh-CN/headless.md) | [Headless Service](docs/en/headless.md) |
 | CI、发布与更新 | [发布与更新](docs/zh-CN/distribution.md) | [Distribution](docs/en/distribution.md) |
 | 常见问题 | [故障排查](docs/zh-CN/troubleshooting.md) | [Troubleshooting](docs/en/troubleshooting.md) |
 

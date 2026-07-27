@@ -14,6 +14,7 @@
 - [架构说明](architecture.md)：进程边界、私有传输、CoreDevice 会话、视频管线、HID 校验和数据所有权
 - [Core 与 Runtime 提取](core-runtime.md)：宿主无关库、所有权、依赖规则、迁移顺序和验收标准
 - [开发与构建](development.md)：仓库结构、环境变量、验证、本地生产构建和各平台打包
+- [无头服务](headless.md)：nightly 归档、回环启动、局域网显式开放、鉴权和包结构
 - [真机回归验证](device-regression.md)：只读 USB 检查，以及 USB/Wi-Fi 媒体、输入、App、AFC 和重连人工验证
 - [发布与更新](distribution.md)：GitHub Actions、nightly 产物、更新签名、Apple 签名和版本规则
 - [故障排查](troubleshooting.md)：白屏、设备音频、Windows 设备准备、CoreDevice 错误、触控坐标和更新失败
@@ -26,6 +27,7 @@
 | CoreDevice USB 画面 | 主要开发平台 | 需要完成设备准备 | 取决于主机配对和 usbmuxd 环境 |
 | Universal HID 控制 | 设备开放服务时支持 | 设备开放服务时支持 | 取决于 CoreDevice 服务可用性 |
 | CI 安装包 | Universal DMG | x64 NSIS 和 MSI | x64 AppImage 和 DEB |
+| 无头 nightly 包 | Universal tar.gz | x64 zip | x64 tar.gz |
 | 应用内更新 | 签名 app 压缩包 | 签名 NSIS 安装包 | 签名 AppImage |
 
 CoreDevice 能力由 Apple 控制。USB 配对成功不代表当前硬件和 iOS 组合一定开放远程画面或 Universal HID 服务。

@@ -57,12 +57,13 @@ jobs:
           APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           NPM_VERSION="$(node -p "require('./package.json').version")"
           CARGO_VERSION="$(awk '/^\[package\]/{found=1; next} found && /^version = /{gsub(/[\"[:space:]]/, "", $3); print $3; exit}' src-tauri/Cargo.toml)"
+          HEADLESS_VERSION="$(awk '/^version = /{gsub(/[\"[:space:]]/, "", $3); print $3; exit}' crates/devicehub-headless/Cargo.toml)"
           if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::tauri.conf.json version must be a stable major.minor.patch version"
             exit 1
           fi
-          if [[ "$NPM_VERSION" != "$APP_VERSION" || "$CARGO_VERSION" != "$APP_VERSION" ]]; then
-            echo "::error::package.json, Cargo.toml, and tauri.conf.json versions must match"
+          if [[ "$NPM_VERSION" != "$APP_VERSION" || "$CARGO_VERSION" != "$APP_VERSION" || "$HEADLESS_VERSION" != "$APP_VERSION" ]]; then
+            echo "::error::package.json, desktop/headless Cargo.toml, and tauri.conf.json versions must match"
             exit 1
           fi
           case "$RELEASE_CHANNEL" in
@@ -162,13 +163,16 @@ jobs:
       - name: Verify source
         run: npm run verify
 
+      - name: Build headless executable
+        run: cargo build -p devicehub-headless --locked
+
       - name: Validate release scripts
         if: runner.os != 'Windows'
         shell: bash
         run: bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh
 
-      - name: Validate desktop build scripts
-        run: node --check scripts/build-desktop.mjs && node --check scripts/prepare-netmuxd.mjs && node --check scripts/prepare-ffmpeg.mjs
+      - name: Validate build scripts
+        run: node --check scripts/build-desktop.mjs && node --check scripts/package-headless.mjs && node --check scripts/prepare-netmuxd.mjs && node --check scripts/prepare-ffmpeg.mjs
 
       - name: Build desktop application
         if: github.event_name == 'push' && github.ref != 'refs/heads/main'
@@ -307,6 +311,22 @@ jobs:
             '{platforms: {"darwin-aarch64": {signature: $signature, url: $url}, "darwin-x86_64": {signature: $signature, url: $url}}}' \
             > dist/update-fragment-macos.json
 
+      - name: Package headless macOS universal service
+        shell: bash
+        timeout-minutes: 25
+        env:
+          DEVICEHUB_BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          DEVICEHUB_COMMIT: ${{ github.sha }}
+          DEVICEHUB_UPDATE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: |
+          node scripts/package-headless.mjs \
+            --target universal-apple-darwin \
+            --version "${{ steps.version.outputs.app_version }}" \
+            --build-number "${{ steps.version.outputs.build_number }}" \
+            --output-dir dist \
+            --skip-frontend-build \
+            --skip-sidecars
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -416,6 +436,23 @@ jobs:
         shell: pwsh
         timeout-minutes: 5
         run: ./scripts/verify-windows-package.ps1 -TargetDirectory src-tauri/target/release
+
+      - name: Package headless Windows x64 service
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          DEVICEHUB_BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          DEVICEHUB_COMMIT: ${{ github.sha }}
+          DEVICEHUB_UPDATE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: |
+          & node scripts/package-headless.mjs `
+            --target x86_64-pc-windows-msvc `
+            --version "${{ steps.version.outputs.app_version }}" `
+            --build-number "${{ steps.version.outputs.build_number }}" `
+            --output-dir dist `
+            --skip-frontend-build `
+            --skip-sidecars
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Collect Windows artifacts
         shell: pwsh
@@ -563,6 +600,22 @@ jobs:
               > dist/update-fragment-linux.json
           fi
 
+      - name: Package headless Linux x64 service
+        shell: bash
+        timeout-minutes: 20
+        env:
+          DEVICEHUB_BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          DEVICEHUB_COMMIT: ${{ github.sha }}
+          DEVICEHUB_UPDATE_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+        run: |
+          node scripts/package-headless.mjs \
+            --target x86_64-unknown-linux-gnu \
+            --version "${{ steps.version.outputs.app_version }}" \
+            --build-number "${{ steps.version.outputs.build_number }}" \
+            --output-dir dist \
+            --skip-frontend-build \
+            --skip-sidecars
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -624,7 +677,8 @@ jobs:
 
           - Version: ${UPDATE_VERSION}
           - Build: ${GITHUB_RUN_NUMBER}
-          - Platforms: macOS universal, Windows x64, Linux x64
+          - Desktop: macOS universal, Windows x64, Linux x64
+          - Headless browser service: macOS universal, Windows x64, Linux x64
           - Commit: ${GITHUB_SHA}
           EOF
           )

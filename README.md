@@ -61,6 +61,7 @@ claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
 | Implemented feature inventory | [Feature Reference](docs/en/features.md) | [功能参考](docs/zh-CN/features.md) |
 | System design and protocols | [Architecture](docs/en/architecture.md) | [架构说明](docs/zh-CN/architecture.md) |
 | Development and local builds | [Development](docs/en/development.md) | [开发与构建](docs/zh-CN/development.md) |
+| Headless browser service | [Headless Service](docs/en/headless.md) | [无头服务](docs/zh-CN/headless.md) |
 | CI, releases, and updates | [Distribution](docs/en/distribution.md) | [发布与更新](docs/zh-CN/distribution.md) |
 | Common failures | [Troubleshooting](docs/en/troubleshooting.md) | [故障排查](docs/zh-CN/troubleshooting.md) |
 

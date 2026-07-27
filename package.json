@@ -12,6 +12,7 @@
     "netmuxd:prepare": "node scripts/prepare-netmuxd.mjs",
     "ffmpeg:prepare": "node scripts/prepare-ffmpeg.mjs",
     "headless:dev": "npm run build && cargo run -p devicehub-headless --",
+    "headless:package": "node scripts/package-headless.mjs",
     "sidecars:prepare": "npm run netmuxd:prepare && npm run ffmpeg:prepare",
     "lint": "eslint .",
     "test": "vitest run",
