@@ -22,6 +22,9 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .profile-manager > .ant-space { margin-left: auto; }
 .profile-app-bindings { width: 100%; }
 .profile-app-bindings-hint { margin: 10px 0 0; color: #899493; font-size: 12px; }
+.profile-resolution-binding { margin-top: 14px; padding-top: 12px; border-top: 1px solid #303638; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.profile-resolution-binding > div:first-child { min-width: 0; display: grid; gap: 3px; }
+.profile-resolution-binding .ant-typography-secondary { font-size: 12px; }
 .profile-import-form { padding-top: 4px; display: flex; flex-direction: column; gap: 14px; }
 .profile-import-form label { display: grid; gap: 6px; color: #9ba5a4; font-size: 12px; }
 .profile-import-file { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }

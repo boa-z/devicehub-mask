@@ -3,7 +3,7 @@
 //! Profiles are desktop-local files. This module owns their HTTP validation and
 //! storage rules without access to a device session or other application state.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,7 +16,8 @@ use serde::Serialize;
 use serde_json::json;
 
 use devicehub_core::{
-    KeyMappingProfile as Profile, validate_key_mapping_profile, validate_key_mapping_profile_name,
+    KeyMappingProfile as Profile, KeyMappingResolution, validate_key_mapping_profile,
+    validate_key_mapping_profile_name,
 };
 
 pub type ProfileRepositoryFuture<T> =
@@ -64,11 +65,24 @@ impl ProfileHttpState {
 }
 
 #[derive(Debug, Serialize)]
+struct AppProfileBinding {
+    bundle_id: String,
+    profile: String,
+    target_resolution: Option<KeyMappingResolution>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct AppBindingConflict {
+    bundle_id: String,
+    target_resolution: Option<KeyMappingResolution>,
+}
+
+#[derive(Debug, Serialize)]
 struct ProfileList {
     profiles: Vec<String>,
     active: String,
-    app_bindings: BTreeMap<String, String>,
-    binding_conflicts: Vec<String>,
+    app_bindings: Vec<AppProfileBinding>,
+    binding_conflicts: Vec<AppBindingConflict>,
 }
 
 /// Injects profile-only state before these routes join the private API.
@@ -102,28 +116,29 @@ async fn list_profiles(
         .sort_by(|left, right| left.name.cmp(&right.name));
     let mut profiles = Vec::new();
     let mut app_bindings = BTreeMap::new();
-    let mut binding_conflicts = HashSet::new();
+    let mut binding_conflicts = BTreeSet::new();
     for stored in snapshot.profiles {
         if validate_profile_name(&stored.name).is_err() {
             continue;
         }
-        profiles.push(stored.name.clone());
         let Ok(profile) = serde_json::from_slice::<Profile>(&stored.bytes) else {
             continue;
         };
         if validate_key_mapping_profile(&profile).is_err() {
             continue;
         }
+        profiles.push(stored.name.clone());
         for bundle_id in profile.bundle_identifiers {
-            if binding_conflicts.contains(&bundle_id) {
+            let key = (bundle_id, profile.target_resolution);
+            if binding_conflicts.contains(&key) {
                 continue;
             }
             if app_bindings
-                .insert(bundle_id.clone(), stored.name.clone())
+                .insert(key.clone(), stored.name.clone())
                 .is_some()
             {
-                app_bindings.remove(&bundle_id);
-                binding_conflicts.insert(bundle_id);
+                app_bindings.remove(&key);
+                binding_conflicts.insert(key);
             }
         }
     }
@@ -140,8 +155,23 @@ async fn list_profiles(
             .cloned()
             .unwrap_or_else(|| "default".into())
     };
-    let mut binding_conflicts = binding_conflicts.into_iter().collect::<Vec<_>>();
-    binding_conflicts.sort();
+    let app_bindings = app_bindings
+        .into_iter()
+        .map(
+            |((bundle_id, target_resolution), profile)| AppProfileBinding {
+                bundle_id,
+                profile,
+                target_resolution,
+            },
+        )
+        .collect();
+    let binding_conflicts = binding_conflicts
+        .into_iter()
+        .map(|(bundle_id, target_resolution)| AppBindingConflict {
+            bundle_id,
+            target_resolution,
+        })
+        .collect();
     Ok(Json(ProfileList {
         profiles,
         active,
@@ -316,13 +346,21 @@ mod tests {
 
     fn profile(name: &str) -> Profile {
         Profile {
-            version: 1,
+            version: 2,
             name: name.into(),
             mappings: Vec::new(),
             bundle_identifiers: if name == "game" {
                 vec!["com.example.game".into()]
             } else {
                 Vec::new()
+            },
+            target_resolution: if name == "game" {
+                Some(KeyMappingResolution {
+                    width: 1290,
+                    height: 2796,
+                })
+            } else {
+                None
             },
             hardware_bindings: devicehub_core::default_hardware_bindings(),
         }
@@ -360,16 +398,24 @@ mod tests {
         let list = list_profiles(State(state.clone())).await.unwrap().0;
         assert_eq!(list.profiles, vec!["default", "game"]);
         assert_eq!(list.active, "game");
+        assert_eq!(list.app_bindings.len(), 1);
+        assert_eq!(list.app_bindings[0].bundle_id, "com.example.game");
+        assert_eq!(list.app_bindings[0].profile, "game");
         assert_eq!(
-            list.app_bindings
-                .get("com.example.game")
-                .map(String::as_str),
-            Some("game")
+            list.app_bindings[0].target_resolution,
+            Some(KeyMappingResolution {
+                width: 1290,
+                height: 2796,
+            })
         );
         assert!(list.binding_conflicts.is_empty());
 
         let mut duplicate = profile("duplicate");
         duplicate.bundle_identifiers = vec!["com.example.game".into()];
+        duplicate.target_resolution = Some(KeyMappingResolution {
+            width: 1290,
+            height: 2796,
+        });
         save_profile(
             State(state.clone()),
             Path("duplicate".into()),
@@ -378,8 +424,17 @@ mod tests {
         .await
         .unwrap();
         let conflicted = list_profiles(State(state.clone())).await.unwrap().0;
-        assert!(!conflicted.app_bindings.contains_key("com.example.game"));
-        assert_eq!(conflicted.binding_conflicts, vec!["com.example.game"]);
+        assert!(conflicted.app_bindings.is_empty());
+        assert_eq!(
+            conflicted.binding_conflicts,
+            vec![AppBindingConflict {
+                bundle_id: "com.example.game".into(),
+                target_resolution: Some(KeyMappingResolution {
+                    width: 1290,
+                    height: 2796,
+                }),
+            }]
+        );
         let _ = delete_profile(State(state.clone()), Path("duplicate".into()))
             .await
             .unwrap();
@@ -395,6 +450,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.0["deleted"], "game");
+    }
+
+    #[tokio::test]
+    async fn same_app_can_bind_distinct_device_resolutions() {
+        let state = test_state();
+        for (name, width, height) in [("iphone", 1290, 2796), ("ipad", 1620, 2160)] {
+            let mut value = profile(name);
+            value.bundle_identifiers = vec!["com.example.game".into()];
+            value.target_resolution = Some(KeyMappingResolution { width, height });
+            save_profile(State(state.clone()), Path(name.into()), Json(value))
+                .await
+                .unwrap();
+        }
+
+        let list = list_profiles(State(state)).await.unwrap().0;
+        assert_eq!(list.app_bindings.len(), 2);
+        assert!(list.binding_conflicts.is_empty());
+        assert!(list.app_bindings.iter().any(|binding| {
+            binding.profile == "iphone"
+                && binding.target_resolution
+                    == Some(KeyMappingResolution {
+                        width: 1290,
+                        height: 2796,
+                    })
+        }));
+        assert!(list.app_bindings.iter().any(|binding| {
+            binding.profile == "ipad"
+                && binding.target_resolution
+                    == Some(KeyMappingResolution {
+                        width: 1620,
+                        height: 2160,
+                    })
+        }));
     }
 
     #[derive(Clone, Copy)]

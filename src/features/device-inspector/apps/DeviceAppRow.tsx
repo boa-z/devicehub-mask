@@ -13,7 +13,8 @@ import { Button, Tag, Tooltip, Typography } from "antd";
 import { memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { appProfileBindingState, formatFileSize, isEligibleWdaRunner } from "../../../deviceInspector";
-import type { DeviceApp, HomeScreenAppLocation, WdaRunnerStatus } from "../../../types";
+import { resolveAppProfileBinding } from "../../../profileBindings";
+import type { AppBindingConflict, AppProfileBinding, DeviceApp, HomeScreenAppLocation, ProfileResolution, WdaRunnerStatus } from "../../../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -22,8 +23,9 @@ type Props = {
   request: Request;
   location?: HomeScreenAppLocation;
   activeProfile: string;
-  appProfileBindings: Record<string, string>;
-  bindingConflicts: string[];
+  appProfileBindings: AppProfileBinding[];
+  bindingConflicts: AppBindingConflict[];
+  frameSize: ProfileResolution;
   bindingApp: string | null;
   appProcessAction: { bundleId: string; kind: "launch" | "stop" } | null;
   appMutationRunning: boolean;
@@ -111,6 +113,7 @@ export const DeviceAppRow = memo(function DeviceAppRow({
   activeProfile,
   appProfileBindings,
   bindingConflicts,
+  frameSize,
   bindingApp,
   appProcessAction,
   appMutationRunning,
@@ -148,8 +151,9 @@ export const DeviceAppRow = memo(function DeviceAppRow({
     position: step.position,
   })) ?? [];
   const locationTooltip = location ? [rootPosition, ...folderRoute].join(" > ") : undefined;
-  const bindingState = appProfileBindingState(app.bundle_id, activeProfile, appProfileBindings, bindingConflicts);
-  const boundProfile = appProfileBindings[app.bundle_id];
+  const resolvedBinding = resolveAppProfileBinding(app.bundle_id, frameSize, appProfileBindings, bindingConflicts);
+  const bindingState = appProfileBindingState(app.bundle_id, activeProfile, frameSize, appProfileBindings, bindingConflicts);
+  const boundProfile = resolvedBinding.binding?.profile;
   const eligibleWdaRunner = isEligibleWdaRunner(app);
   const activeWdaRunner = wdaRunnerStatus?.runner_bundle_id === app.bundle_id;
   const bindingTooltip = bindingState === "conflict"

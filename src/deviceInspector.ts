@@ -1,4 +1,5 @@
-import type { AppOperation, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceEvent, DeviceRegionalSettings, ProvisioningProfile, SysdiagnoseStatus } from "./types";
+import type { AppBindingConflict, AppOperation, AppProfileBinding, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceEvent, DeviceRegionalSettings, ProvisioningProfile, SysdiagnoseStatus } from "./types";
+import { resolveAppProfileBinding } from "./profileBindings";
 
 export type ProfileStatusFilter = "all" | "valid" | "expired" | "invalid";
 export type AppProfileBindingState = "unbound" | "active" | "other" | "conflict";
@@ -71,13 +72,14 @@ export function sortDeviceApps(apps: DeviceApp[], sort: DeviceAppSort, locale: s
 export function appProfileBindingState(
   bundleId: string,
   activeProfile: string,
-  bindings: Record<string, string>,
-  conflicts: readonly string[],
+  frameSize: { width: number; height: number },
+  bindings: readonly AppProfileBinding[],
+  conflicts: readonly AppBindingConflict[],
 ): AppProfileBindingState {
-  if (conflicts.includes(bundleId)) return "conflict";
-  const owner = bindings[bundleId];
-  if (!owner) return "unbound";
-  return owner === activeProfile ? "active" : "other";
+  const resolved = resolveAppProfileBinding(bundleId, frameSize, bindings, conflicts);
+  if (resolved.conflict) return "conflict";
+  if (!resolved.binding) return "unbound";
+  return resolved.binding.profile === activeProfile ? "active" : "other";
 }
 
 export function formatCapacity(bytes: number | null): string {

@@ -91,7 +91,7 @@ Up to five typed contacts can be sent in one Universal HID report. Duplicate ide
 
 Profiles are validated JSON files in the Tauri application data directory. You can select, activate, create, duplicate, rename, delete, import, and export them. The active profile cannot be deleted.
 
-A profile can be associated with app bundle IDs. Launching an associated app from the DeviceHub Mask app list activates that saved control profile. The app list shows the current association and can associate an unassigned app with the active profile or remove that association. Conflicting or cross-profile associations must be resolved explicitly in the profile editor.
+A profile associates App bundle IDs with one explicit device frame resolution. Launching an App from the DeviceHub Mask list activates a saved profile only when the Bundle ID and current frame width and height both match, allowing separate iPhone and iPad layouts for the same App. Only duplicate Bundle ID and resolution pairs are conflicts.
 
 The import dialog requires an explicit source format: DeviceHub Mask, scrcpy-mask, or PlayCover. This prevents ambiguous JSON files from being interpreted by the wrong converter. DeviceHub Mask imports and exports scrcpy-mask `0.0.1` JSON. All thirteen controller types are preserved, including nested sequence positions, bindings, release modes, timing, and script fields. Import compatibility does not imply Android transport support.
 

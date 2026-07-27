@@ -203,11 +203,15 @@ describe("device inspector", () => {
   });
 
   it("classifies app profile bindings without hiding conflicts", () => {
-    const bindings = { "com.example.camera": "camera", "com.example.game": "game" };
-    expect(appProfileBindingState("com.example.camera", "camera", bindings, [])).toBe("active");
-    expect(appProfileBindingState("com.example.game", "camera", bindings, [])).toBe("other");
-    expect(appProfileBindingState("com.example.notes", "camera", bindings, [])).toBe("unbound");
-    expect(appProfileBindingState("com.example.game", "game", bindings, ["com.example.game"])).toBe("conflict");
+    const frameSize = { width: 1290, height: 2796 };
+    const bindings = [
+      { bundle_id: "com.example.camera", profile: "camera", target_resolution: frameSize },
+      { bundle_id: "com.example.game", profile: "game", target_resolution: frameSize },
+    ];
+    expect(appProfileBindingState("com.example.camera", "camera", frameSize, bindings, [])).toBe("active");
+    expect(appProfileBindingState("com.example.game", "camera", frameSize, bindings, [])).toBe("other");
+    expect(appProfileBindingState("com.example.notes", "camera", frameSize, bindings, [])).toBe("unbound");
+    expect(appProfileBindingState("com.example.game", "game", frameSize, bindings, [{ bundle_id: "com.example.game", target_resolution: frameSize }])).toBe("conflict");
   });
 
   it("filters provisioning profiles by metadata and status", () => {

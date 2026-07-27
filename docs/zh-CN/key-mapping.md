@@ -113,14 +113,16 @@ Universal HID 每份 report 最多包含五个触点，身份范围是 `0` 到 `
 - 新建配置为空。复制会复制映射和硬件快捷键，但会主动清除 App 关联。
 - 重命名会保留映射和关联；重命名当前配置后仍保持激活。
 - 当前配置不能删除，应先激活另一份已保存配置。
-- 每份配置最多包含 512 个映射和 32 个唯一且合法的 Bundle ID。
+- 每份配置最多包含 512 个映射和 32 个唯一且合法的 Bundle ID。只要存在 App 关联，配置就必须同时保存一个明确的目标画面分辨率。
 - 导入配置会保存并打开供编辑，但不会自动激活。
 
 ## 将配置关联到 App
 
-打开“关联 App”，加入准确的 Bundle ID，例如 `com.example.game`，然后保存配置。也可以在设备检查器的 App 行上使用关联操作。
+打开“关联 App”，加入准确的 Bundle ID，例如 `com.example.game`。编辑器会同时保存当前设备画面的宽高；需要替换时点击“使用当前尺寸”，然后保存配置。也可以在设备检查器的 App 行上使用关联操作，此时会使用当前实时画面尺寸。
 
-从 DeviceHub Mask 启动该 App 时，应用会激活对应的已保存配置。直接在设备上或由其他程序启动 App 不会触发这条桌面工作流。如果同一个 Bundle ID 同时出现在多份配置中，DeviceHub Mask 会报告冲突且不会选择拥有者，直到删除重复关联。设备工作台的配置选择器始终可以手动切换已保存的当前配置。
+从 DeviceHub Mask 启动该 App 时，应用只会激活 Bundle ID 和当前画面宽高都完全匹配的已保存配置。因此同一个 Bundle ID 可以分别关联 iPhone 与 iPad 配置；只有 Bundle ID 与目标分辨率都相同的重复关联才会报告冲突。直接在设备上或由其他程序启动 App 不会触发这条桌面工作流。设备工作台的配置选择器始终可以手动切换已保存的当前配置。
+
+原生配置格式当前为 `version: 2`。项目处于早期开发阶段，不读取 `version: 1` 配置，也不提供自动迁移；旧文件应移出配置目录后重新创建或从受支持来源重新导入。
 
 ## 导入格式
 
@@ -128,9 +130,9 @@ Universal HID 每份 report 最多包含五个触点，身份范围是 `0` 到 `
 
 | 来源 | 接受输入 | 转换行为 |
 | --- | --- | --- |
-| DeviceHub Mask | 最大 4 MiB 的 `version: 1` 配置 JSON | 保留映射、硬件快捷键和 Bundle ID 关联；保存前仍由后端完整校验 |
+| DeviceHub Mask | 最大 4 MiB 的 `version: 2` 配置 JSON | 保留映射、硬件快捷键、Bundle ID 和目标分辨率；保存前仍由后端完整校验 |
 | scrcpy-mask | 最大 4 MiB、带 `original_size` 的 `0.0.1` JSON | 归一化坐标，把 Super 键名转换为 Meta，保留全部 13 类已识别控制器及嵌套字段；硬件快捷键和 App 关联为空 |
-| PlayCover | 最大 1 MiB 的 XML `2.0.0` `.playmap` | 键盘按钮转为 SingleTap，键盘拖拽按钮转为 MouseCastSpell，键盘方向盘转为 DirectionPad，并导入 Bundle ID 关联 |
+| PlayCover | 最大 1 MiB 的 XML `2.0.0` `.playmap` | 键盘按钮转为 SingleTap，键盘拖拽按钮转为 MouseCastSpell，键盘方向盘转为 DirectionPad，并以导入时的当前画面尺寸保存 Bundle ID 关联 |
 
 PlayCover 鼠标区域、不支持或为负数的鼠标/手柄键码、非法坐标和不完整方向盘会被跳过，并计入导入结果。解析器拒绝 XML entity 与非标准文档声明，同时限制嵌套深度、节点数和模型数。
 

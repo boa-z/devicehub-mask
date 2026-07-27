@@ -45,17 +45,24 @@ function object(value: unknown): Record<string, unknown> | undefined {
 
 function nativeProfile(value: unknown, name: string, invalidMessage: string): MappingImportResult {
   const input = object(value);
-  if (input?.version !== 1 || !Array.isArray(input.mappings)) throw new Error(invalidMessage);
+  if (input?.version !== 2 || !Array.isArray(input.mappings)) throw new Error(invalidMessage);
   const hardware = object(input.hardwareBindings) ?? {};
   const bundleIdentifiers = Array.isArray(input.bundleIdentifiers)
     ? input.bundleIdentifiers.filter((item): item is string => typeof item === "string")
     : [];
+  const resolution = object(input.targetResolution);
+  const targetResolution = resolution
+    && Number.isInteger(resolution.width) && Number.isInteger(resolution.height)
+    && Number(resolution.width) > 0 && Number(resolution.height) > 0
+    ? { width: Number(resolution.width), height: Number(resolution.height) }
+    : null;
   const profile: Profile = {
-    version: 1,
+    version: 2,
     name,
     mappings: input.mappings as Profile["mappings"],
     hardwareBindings: { ...defaultHardwareBindings, ...hardware } as HardwareBindings,
     bundleIdentifiers,
+    targetResolution,
   };
   return { profile, imported: profile.mappings.length, skipped: 0 };
 }

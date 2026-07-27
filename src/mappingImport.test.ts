@@ -34,10 +34,11 @@ describe("mapping import", () => {
   it("imports native profiles through the shared result contract", async () => {
     const mapping = createMapping("SingleTap", { x: 0.5, y: 0.5 });
     const result = await importMappingFile("devicehub-mask", file("native.json", {
-      version: 1,
+      version: 2,
       mappings: [mapping],
       hardwareBindings: { home: "KeyH" },
       bundleIdentifiers: ["com.example.game"],
+      targetResolution: { width: 1290, height: 2796 },
     }), context);
     expect(result).toMatchObject({ imported: 1, skipped: 0 });
     expect(result.profile).toMatchObject({ name: "imported", hardwareBindings: { home: "KeyH" }, bundleIdentifiers: ["com.example.game"] });
@@ -47,6 +48,13 @@ describe("mapping import", () => {
     const value = { version: "0.0.1", original_size: { width: 1000, height: 500 }, mappings: [] };
     await expect(importMappingFile("scrcpy-mask", file("game.json", value), context)).resolves.toMatchObject({ imported: 0 });
     await expect(importMappingFile("devicehub-mask", file("game.json", value), context)).rejects.toThrow("invalid native");
+  });
+
+  it("rejects the obsolete native profile format", async () => {
+    await expect(importMappingFile("devicehub-mask", file("legacy.json", {
+      version: 1,
+      mappings: [],
+    }), context)).rejects.toThrow("invalid native");
   });
 
   it("creates bounded, conflict-free profile names", () => {

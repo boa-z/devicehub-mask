@@ -91,7 +91,7 @@ MCP Agent 可以把近期 `list_processes` 快照中的正数 PID 传给 `proces
 
 配置以经过校验的 JSON 文件保存在 Tauri 应用数据目录。支持选择、激活、新建、复制、 重命名、删除、导入和导出；当前激活配置不能删除。
 
-配置可以关联 App Bundle ID。从 DeviceHub Mask 的 App 列表启动已关联 App 时，会自动 激活对应的已保存控制配置。App 列表会显示当前关联，并可将尚未关联的 App 一键关联到 当前配置，或解除当前配置的关联。跨配置关联和冲突需要在配置编辑器中明确处理。
+配置可以把 App Bundle ID 与明确的设备画面分辨率一起关联。从 DeviceHub Mask 的 App 列表启动 App 时，只会自动激活 Bundle ID 和当前画面宽高都匹配的已保存配置，因此同一 App 可以分别使用 iPhone 与 iPad 布局。只有 Bundle ID 和分辨率都重复时才构成冲突。
 
 导入弹窗需要明确选择 DeviceHub Mask、scrcpy-mask 或 PlayCover 来源格式，避免存在歧义 的 JSON 文件被错误转换。DeviceHub Mask 可以导入和导出 scrcpy-mask `0.0.1` JSON。全部十三种控制器类型均会 保留，包括嵌套序列坐标、绑定、释放模式、计时和脚本字段。配置兼容不代表支持 Android 传输。
 

@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{HARDWARE_BUTTON_NAMES, validate_app_bundle_id};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct KeyMappingResolution {
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyMappingProfile {
     pub version: u8,
@@ -14,6 +20,8 @@ pub struct KeyMappingProfile {
     pub mappings: Vec<serde_json::Value>,
     #[serde(default, rename = "bundleIdentifiers")]
     pub bundle_identifiers: Vec<String>,
+    #[serde(default, rename = "targetResolution")]
+    pub target_resolution: Option<KeyMappingResolution>,
     #[serde(default = "default_hardware_bindings", rename = "hardwareBindings")]
     pub hardware_bindings: BTreeMap<String, String>,
 }
@@ -51,11 +59,18 @@ pub fn validate_key_mapping_profile_name(name: &str) -> Result<(), InvalidKeyMap
 pub fn validate_key_mapping_profile(
     profile: &KeyMappingProfile,
 ) -> Result<(), InvalidKeyMappingProfile> {
-    if profile.version != 1
+    if profile.version != 2
         || profile.name.is_empty()
         || profile.mappings.len() > 512
         || profile.hardware_bindings.len() != HARDWARE_BUTTON_NAMES.len()
         || profile.bundle_identifiers.len() > 32
+        || profile.bundle_identifiers.is_empty() != profile.target_resolution.is_none()
+        || profile.target_resolution.is_some_and(|resolution| {
+            resolution.width == 0
+                || resolution.height == 0
+                || resolution.width > 16_384
+                || resolution.height > 16_384
+        })
         || HARDWARE_BUTTON_NAMES
             .iter()
             .any(|name| !profile.hardware_bindings.contains_key(*name))
@@ -194,7 +209,7 @@ mod tests {
 
     fn profile(name: &str) -> KeyMappingProfile {
         KeyMappingProfile {
-            version: 1,
+            version: 2,
             name: name.into(),
             mappings: Vec::new(),
             bundle_identifiers: if name == "game" {
@@ -202,12 +217,20 @@ mod tests {
             } else {
                 Vec::new()
             },
+            target_resolution: if name == "game" {
+                Some(KeyMappingResolution {
+                    width: 1290,
+                    height: 2796,
+                })
+            } else {
+                None
+            },
             hardware_bindings: default_hardware_bindings(),
         }
     }
 
     #[test]
-    fn legacy_profiles_receive_empty_hardware_bindings() {
+    fn version_one_profiles_are_rejected() {
         let profile: KeyMappingProfile = serde_json::from_value(json!({
             "version": 1,
             "name": "legacy",
@@ -215,8 +238,24 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(profile.hardware_bindings, default_hardware_bindings());
-        assert!(validate_key_mapping_profile(&profile).is_ok());
+        assert!(validate_key_mapping_profile(&profile).is_err());
+    }
+
+    #[test]
+    fn app_bindings_require_a_bounded_target_resolution() {
+        let mut value = profile("game");
+        value.target_resolution = None;
+        assert!(validate_key_mapping_profile(&value).is_err());
+
+        value.bundle_identifiers.clear();
+        value.target_resolution = Some(KeyMappingResolution {
+            width: 1290,
+            height: 2796,
+        });
+        assert!(validate_key_mapping_profile(&value).is_err());
+
+        value.target_resolution = None;
+        assert!(validate_key_mapping_profile(&value).is_ok());
     }
 
     #[test]

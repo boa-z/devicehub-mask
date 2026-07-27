@@ -48,6 +48,8 @@ import { logFrontend } from "./diagnostics";
 import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
 import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type PairDeviceResult, type Position, type Profile, type ScrcpyMappingType } from "./types";
+import type { AppBindingConflict, AppProfileBinding } from "./types";
+import { bindingForScope, conflictForScope, resolveAppProfileBinding, sameProfileResolution } from "./profileBindings";
 import { useDeviceInput, type ControlMode } from "./useDeviceInput";
 import { useDeviceVideoStream } from "./useDeviceVideoStream";
 import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
@@ -76,7 +78,7 @@ const emptyStatus: DeviceStatus = {
   devices: [],
   location: { available: false, active: false, backend: null, latitude: null, longitude: null, error: null },
 };
-type ProfileList = { profiles: string[]; active: string; app_bindings: Record<string, string>; binding_conflicts: string[] };
+type ProfileList = { profiles: string[]; active: string; app_bindings: AppProfileBinding[]; binding_conflicts: AppBindingConflict[] };
 
 function containSize(containerWidth: number, containerHeight: number, contentWidth: number, contentHeight: number) {
   if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
@@ -132,8 +134,8 @@ export default function App() {
   const [profiles, setProfiles] = useState<string[]>([]);
   const [activeProfile, setActiveProfile] = useState("default");
   const [profileSwitching, setProfileSwitching] = useState<string | null>(null);
-  const [appProfileBindings, setAppProfileBindings] = useState<Record<string, string>>({});
-  const [appBindingConflicts, setAppBindingConflicts] = useState<string[]>([]);
+  const [appProfileBindings, setAppProfileBindings] = useState<AppProfileBinding[]>([]);
+  const [appBindingConflicts, setAppBindingConflicts] = useState<AppBindingConflict[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>("move");
   const [editing, setEditing] = useState(true);
   const [controlMode, setControlMode] = useState<ControlMode>("mapping");
@@ -490,6 +492,7 @@ export default function App() {
       name,
       hardwareBindings: { ...defaultHardwareBindings, ...loaded.hardwareBindings },
       bundleIdentifiers: Array.isArray(loaded.bundleIdentifiers) ? loaded.bundleIdentifiers : [],
+      targetResolution: loaded.targetResolution,
     } as Profile;
   }, [request]);
 
@@ -505,7 +508,7 @@ export default function App() {
     const list = await response.json() as ProfileList;
     setProfiles(list.profiles);
     setActiveProfile(list.active);
-    setAppProfileBindings(list.app_bindings ?? {});
+    setAppProfileBindings(list.app_bindings ?? []);
     setAppBindingConflicts(list.binding_conflicts ?? []);
     return list;
   }, [request]);
@@ -530,16 +533,16 @@ export default function App() {
   }, [activeProfile, readProfile, releaseAllControls, request]);
 
   const activateProfileForApp = useCallback(async (bundleId: string) => {
-    const target = appProfileBindings[bundleId];
-    if (!target) return;
+    const { binding, conflict } = resolveAppProfileBinding(bundleId, frameSize, appProfileBindings, appBindingConflicts);
+    if (!binding || conflict) return;
     try {
-      if (await activateSavedControlProfile(target)) {
-        void message.success(translateRef.current("profile.autoActivated", { profile: target }));
+      if (await activateSavedControlProfile(binding.profile)) {
+        void message.success(translateRef.current("profile.autoActivated", { profile: binding.profile }));
       }
     } catch (error) {
       void message.warning(translateRef.current("profile.autoActivateFailed", { error: String(error) }));
     }
-  }, [activateSavedControlProfile, appProfileBindings]);
+  }, [activateSavedControlProfile, appBindingConflicts, appProfileBindings, frameSize]);
 
   const switchControlProfile = useCallback(async (target: string) => {
     try {
@@ -561,19 +564,30 @@ export default function App() {
   }, [request]);
 
   const changeAppProfileBinding = useCallback(async (bundleId: string, bind: boolean) => {
-    if (appBindingConflicts.includes(bundleId)) {
+    const scope = frameSize;
+    if (conflictForScope(bundleId, scope, appBindingConflicts)) {
       throw new Error(translateRef.current("profile.appBindingConflict"));
     }
-    const owner = appProfileBindings[bundleId];
+    const owner = bindingForScope(bundleId, scope, appProfileBindings)?.profile;
     const profileName = bind ? activeProfile : owner;
     if (!profileName || (bind && owner && owner !== activeProfile)) {
       throw new Error(translateRef.current("profile.appBindingOwned", { profile: owner ?? "" }));
     }
     const loaded = await readProfile(profileName);
+    if (bind && loaded.targetResolution !== null && !sameProfileResolution(loaded.targetResolution, frameSize)) {
+      throw new Error(translateRef.current("profile.resolutionMismatch", {
+        width: loaded.targetResolution.width,
+        height: loaded.targetResolution.height,
+      }));
+    }
     const bundleIdentifiers = bind
       ? [...new Set([...loaded.bundleIdentifiers, bundleId])]
       : loaded.bundleIdentifiers.filter((candidate) => candidate !== bundleId);
-    const updated = { ...loaded, bundleIdentifiers };
+    const updated = {
+      ...loaded,
+      bundleIdentifiers,
+      targetResolution: bundleIdentifiers.length > 0 ? (loaded.targetResolution ?? { ...frameSize }) : null,
+    };
     await writeProfile(profileName, updated);
     await refreshProfiles();
     const mergeBinding = (current: Profile) => current.name === profileName
@@ -582,11 +596,12 @@ export default function App() {
           bundleIdentifiers: bind
             ? [...new Set([...current.bundleIdentifiers, bundleId])]
             : current.bundleIdentifiers.filter((candidate) => candidate !== bundleId),
+          targetResolution: updated.targetResolution,
         }
       : current;
     resetProfile(mergeBinding(profile));
     setControlProfile(mergeBinding);
-  }, [activeProfile, appBindingConflicts, appProfileBindings, profile, readProfile, refreshProfiles, resetProfile, writeProfile]);
+  }, [activeProfile, appBindingConflicts, appProfileBindings, frameSize, profile, readProfile, refreshProfiles, resetProfile, writeProfile]);
 
   useEffect(() => {
     if (!backend) return;
@@ -679,7 +694,7 @@ export default function App() {
     await loadProfile(name);
   };
   const duplicateProfile = async (name: string) => {
-    await writeProfile(name, { ...profile, name, bundleIdentifiers: [] });
+    await writeProfile(name, { ...profile, name, bundleIdentifiers: [], targetResolution: null });
     await refreshProfiles();
     await loadProfile(name);
   };
@@ -1120,6 +1135,7 @@ export default function App() {
                   onRename={renameProfile}
                   onDelete={deleteCurrentProfile}
                   onBundleIdentifiersChange={(bundleIdentifiers) => updateProfile((current) => ({ ...current, bundleIdentifiers }))}
+                  onTargetResolutionChange={(targetResolution) => updateProfile((current) => ({ ...current, targetResolution }))}
                   onImport={importProfile}
                   canUndo={canUndoProfile}
                   canRedo={canRedoProfile}
@@ -1304,6 +1320,7 @@ export default function App() {
                         activeProfile={activeProfile}
                         appProfileBindings={appProfileBindings}
                         bindingConflicts={appBindingConflicts}
+                        frameSize={frameSize}
                         deviceEvent={deviceEvent}
                         onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
                         onAppProfileBindingChange={changeAppProfileBinding}

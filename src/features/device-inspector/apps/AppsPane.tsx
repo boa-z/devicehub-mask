@@ -17,7 +17,7 @@ import {
   sortDeviceApps,
 } from "../../../deviceInspector";
 import type { DeviceAppSort } from "../../../deviceInspector";
-import type { AppOperation, DeviceApp, HomeScreenLayout, WdaRunnerStatus } from "../../../types";
+import type { AppBindingConflict, AppOperation, AppProfileBinding, DeviceApp, HomeScreenLayout, ProfileResolution, WdaRunnerStatus } from "../../../types";
 import { DeviceAppRow } from "./DeviceAppRow";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
@@ -36,8 +36,9 @@ type Props = {
   homeScreenLoading: boolean;
   homeScreenError: string | null;
   activeProfile: string;
-  appProfileBindings: Record<string, string>;
-  bindingConflicts: string[];
+  appProfileBindings: AppProfileBinding[];
+  bindingConflicts: AppBindingConflict[];
+  frameSize: ProfileResolution;
   bindingApp: string | null;
   appProcessAction: { bundleId: string; kind: "launch" | "stop" } | null;
   appMutationRunning: boolean;
@@ -74,6 +75,7 @@ export const AppsPane = memo(function AppsPane({
   activeProfile,
   appProfileBindings,
   bindingConflicts,
+  frameSize,
   bindingApp,
   appProcessAction,
   appMutationRunning,
@@ -273,6 +275,7 @@ export const AppsPane = memo(function AppsPane({
             activeProfile={activeProfile}
             appProfileBindings={appProfileBindings}
             bindingConflicts={bindingConflicts}
+            frameSize={frameSize}
             bindingApp={bindingApp}
             appProcessAction={appProcessAction}
             appMutationRunning={appMutationRunning}

@@ -113,14 +113,16 @@ Profiles are validated JSON files in the application data directory. The profile
 - A new profile is empty. A duplicate copies mappings and hardware shortcuts but intentionally clears App associations.
 - Renaming preserves mappings and associations. Renaming the active profile keeps it active.
 - The active profile cannot be deleted. Activate another saved profile first.
-- A profile may contain at most 512 mappings and 32 unique valid Bundle IDs.
+- A profile may contain at most 512 mappings and 32 unique valid Bundle IDs. Any profile with App associations must also store one explicit target frame resolution.
 - Imported profiles are saved and opened for editing but are not automatically activated.
 
 ## Associate a Profile with an App
 
-Open **Associate apps** and add exact Bundle IDs such as `com.example.game`, then save the profile. Alternatively, use the association action on an App row in the Device inspector.
+Open **Associate apps** and add exact Bundle IDs such as `com.example.game`. The editor also stores the current device frame width and height; select **Use current size** to replace it, then save. The association action on an App row uses the current live frame size.
 
-Launching that App from DeviceHub Mask activates the associated saved profile. Launches performed directly on the device or by another program do not trigger this desktop workflow. If the same Bundle ID occurs in more than one profile, DeviceHub Mask reports a conflict and does not choose an owner until the duplicate association is removed. The Device workspace profile selector can always switch the saved active profile manually.
+Launching that App from DeviceHub Mask activates a saved profile only when both its Bundle ID and target frame width and height exactly match the current stream. The same Bundle ID can therefore select separate iPhone and iPad profiles. A conflict is reported only when multiple profiles repeat both the Bundle ID and target resolution. Launches performed directly on the device or by another program do not trigger this desktop workflow. The Device workspace profile selector can always switch the saved active profile manually.
+
+The native profile format is now `version: 2`. This early-development project does not load or migrate `version: 1` profiles; move old files out of the profile directory and recreate them or import them again from a supported source.
 
 ## Import Formats
 
@@ -128,9 +130,9 @@ Choose the source explicitly in the import dialog; format guessing is intentiona
 
 | Source | Accepted input | Conversion behavior |
 | --- | --- | --- |
-| DeviceHub Mask | Profile `version: 1` JSON, up to 4 MiB | Preserves mappings, hardware shortcuts, and Bundle ID associations; backend validation runs before saving |
+| DeviceHub Mask | Profile `version: 2` JSON, up to 4 MiB | Preserves mappings, hardware shortcuts, Bundle IDs, and target resolution; backend validation runs before saving |
 | scrcpy-mask | `0.0.1` JSON with `original_size`, up to 4 MiB | Normalizes coordinates, converts Super to Meta key names, preserves all 13 recognized controller records and nested fields; hardware shortcuts and App associations start empty |
-| PlayCover | XML `2.0.0` `.playmap`, up to 1 MiB | Converts keyboard buttons to SingleTap, draggable buttons to MouseCastSpell, and keyboard joysticks to DirectionPad; imports the Bundle ID association |
+| PlayCover | XML `2.0.0` `.playmap`, up to 1 MiB | Converts keyboard buttons to SingleTap, draggable buttons to MouseCastSpell, and keyboard joysticks to DirectionPad; stores its Bundle ID association with the current frame size at import time |
 
 PlayCover mouse areas, unsupported or negative mouse/controller codes, malformed positions, and incomplete joystick bindings are skipped and counted in the result. The parser rejects XML entities and nonstandard document declarations and enforces nesting, node, and model limits.
 

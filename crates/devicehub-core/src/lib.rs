@@ -78,7 +78,7 @@ pub use input::{
     TouchContact, ascii_key_usage, hardware_button, modifier_key_usages, norm, unrotate_norm,
 };
 pub use key_mapping::{
-    InvalidKeyMappingProfile, KeyMappingProfile, default_hardware_bindings,
+    InvalidKeyMappingProfile, KeyMappingProfile, KeyMappingResolution, default_hardware_bindings,
     validate_key_mapping_profile, validate_key_mapping_profile_name,
 };
 pub use location::{LocationBackend, LocationStatus};

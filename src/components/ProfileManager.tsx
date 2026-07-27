@@ -17,7 +17,8 @@ import { useTranslation } from "react-i18next";
 import { importMappingFile, mappingImportSource, mappingImportSources, uniqueImportedProfileName, type MappingImportSourceId } from "../mappingImport";
 import { exportScrcpyMaskConfig } from "../scrcpyCompat";
 import { showErrorMessage } from "../errorMessage";
-import type { Profile } from "../types";
+import type { AppBindingConflict, Profile, ProfileResolution } from "../types";
+import { conflictForScope } from "../profileBindings";
 
 type DialogKind = "create" | "duplicate" | "rename";
 
@@ -25,7 +26,7 @@ type Props = {
   profile: Profile;
   profiles: string[];
   activeProfile: string;
-  bindingConflicts: string[];
+  bindingConflicts: AppBindingConflict[];
   frameSize: { width: number; height: number };
   onLoad: (name: string) => Promise<void>;
   onSave: () => Promise<void>;
@@ -35,6 +36,7 @@ type Props = {
   onRename: (name: string) => Promise<void>;
   onDelete: () => Promise<void>;
   onBundleIdentifiersChange: (bundleIdentifiers: string[]) => void;
+  onTargetResolutionChange: (targetResolution: ProfileResolution | null) => void;
   onImport: (profile: Profile, imported: number, skipped: number) => Promise<void>;
   canUndo: boolean;
   canRedo: boolean;
@@ -71,6 +73,7 @@ export function ProfileManager({
   onRename,
   onDelete,
   onBundleIdentifiersChange,
+  onTargetResolutionChange,
   onImport,
   canUndo,
   canRedo,
@@ -83,11 +86,14 @@ export function ProfileManager({
   const [nextName, setNextName] = useState("");
   const [appDialog, setAppDialog] = useState(false);
   const [nextBundleIdentifiers, setNextBundleIdentifiers] = useState<string[]>([]);
+  const [nextTargetResolution, setNextTargetResolution] = useState<ProfileResolution | null>(null);
   const [importDialog, setImportDialog] = useState(false);
   const [importSource, setImportSource] = useState<MappingImportSourceId>("devicehub-mask");
   const [selectedImportFile, setSelectedImportFile] = useState<File | null>(null);
   const [importBusy, setImportBusy] = useState(false);
-  const hasBindingConflict = profile.bundleIdentifiers.some((bundleId) => bindingConflicts.includes(bundleId));
+  const hasBindingConflict = profile.bundleIdentifiers.some((bundleId) => (
+    conflictForScope(bundleId, profile.targetResolution, bindingConflicts)
+  ));
 
   const openDialog = (kind: DialogKind) => {
     setDialog(kind);
@@ -189,6 +195,7 @@ export function ProfileManager({
             icon={<LinkOutlined />}
             onClick={() => {
               setNextBundleIdentifiers(profile.bundleIdentifiers);
+              setNextTargetResolution(profile.targetResolution);
               setAppDialog(true);
             }}
           />
@@ -244,6 +251,7 @@ export function ProfileManager({
             return;
           }
           onBundleIdentifiersChange(normalized);
+          onTargetResolutionChange(normalized.length > 0 ? (nextTargetResolution ?? { ...frameSize }) : null);
           setAppDialog(false);
         }}
         onCancel={() => setAppDialog(false)}
@@ -254,9 +262,27 @@ export function ProfileManager({
           value={nextBundleIdentifiers}
           tokenSeparators={[",", " "]}
           placeholder={t("profile.appBindingsPlaceholder")}
-          onChange={setNextBundleIdentifiers}
+          onChange={(values) => {
+            setNextBundleIdentifiers(values);
+            if (values.length > 0 && nextTargetResolution === null) setNextTargetResolution({ ...frameSize });
+            if (values.length === 0) setNextTargetResolution(null);
+          }}
         />
         <p className="profile-app-bindings-hint">{t("profile.appBindingsHint")}</p>
+        <div className="profile-resolution-binding">
+          <div>
+            <Typography.Text strong>{t("profile.bindResolution")}</Typography.Text>
+            <Typography.Text type="secondary">{t("profile.bindResolutionHint")}</Typography.Text>
+          </div>
+          <Space size={8}>
+            {nextTargetResolution && <Tag>{nextTargetResolution.width} x {nextTargetResolution.height}</Tag>}
+            <Button
+              size="small"
+              disabled={nextBundleIdentifiers.length === 0}
+              onClick={() => setNextTargetResolution({ ...frameSize })}
+            >{t("profile.useCurrentResolution")}</Button>
+          </Space>
+        </div>
       </Modal>
       <Modal
         open={importDialog}

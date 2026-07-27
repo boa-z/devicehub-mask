@@ -30,7 +30,7 @@ import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
 import { canTrustProvisioningProfileSigner, filterCrashReports, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isSysdiagnoseActive, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppOperation, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
+import type { AppBindingConflict, AppOperation, AppProfileBinding, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProfileResolution, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 import { useActivePolling } from "../hooks/useActivePolling";
 import { useLatestRequestOwner } from "../hooks/latestRequest";
 import { AppsPane } from "../features/device-inspector/apps/AppsPane";
@@ -45,8 +45,9 @@ type Props = {
   canForgetTrust: boolean;
   request: Request;
   activeProfile: string;
-  appProfileBindings: Record<string, string>;
-  bindingConflicts: string[];
+  appProfileBindings: AppProfileBinding[];
+  bindingConflicts: AppBindingConflict[];
+  frameSize: ProfileResolution;
   deviceEvent: DeviceEvent | null;
   onAppLaunched?: (bundleId: string) => void;
   onAppProfileBindingChange: (bundleId: string, bind: boolean) => Promise<void>;
@@ -67,6 +68,7 @@ export function DeviceInspector({
   activeProfile,
   appProfileBindings,
   bindingConflicts,
+  frameSize,
   deviceEvent,
   onAppLaunched,
   onAppProfileBindingChange,
@@ -1443,6 +1445,7 @@ export function DeviceInspector({
           activeProfile={activeProfile}
           appProfileBindings={appProfileBindings}
           bindingConflicts={bindingConflicts}
+          frameSize={frameSize}
           bindingApp={bindingApp}
           appProcessAction={appProcessAction}
           appMutationRunning={appMutationRunning}

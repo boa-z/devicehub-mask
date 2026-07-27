@@ -238,11 +238,12 @@ export function importPlayCoverConfig(
     : undefined;
   return {
     profile: {
-      version: 1,
+      version: 2,
       name: profileName,
       mappings,
       hardwareBindings: { ...defaultHardwareBindings },
       bundleIdentifiers: bundleIdentifier ? [bundleIdentifier] : [],
+      targetResolution: bundleIdentifier ? { ...frame } : null,
     },
     imported: mappings.length,
     skipped,
