@@ -8,8 +8,10 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { downloadBrowserResponse } from "../browserFiles";
 import { filterCrashReports, formatFileSize, formatReportDate } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
+import { runningInDesktopHost } from "../hostApi";
 import type { DeviceCrashReport, DeviceCrashReportList } from "../types";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert } from "./ErrorPresentation";
@@ -82,6 +84,23 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
   const visibleReports = useMemo(() => filterCrashReports(reports, query), [query, reports]);
 
   const exportReport = async (report: DeviceCrashReport) => {
+    if (!runningInDesktopHost()) {
+      setExporting(report.path);
+      try {
+        const name = report.name.replaceAll("/", "_").replaceAll("\\", "_");
+        const query = new URLSearchParams({ device_path: report.path, name });
+        await downloadBrowserResponse(
+          await request(`/api/device/crash-reports/browser-export?${query}`),
+          name,
+        );
+        void message.success(t("afc.crashExported"));
+      } catch (exportError) {
+        void showErrorMessage(t("afc.crashExportFailed", { error: String(exportError) }));
+      } finally {
+        setExporting(null);
+      }
+      return;
+    }
     const destination = await save({ defaultPath: report.name });
     if (!destination) return;
     setExporting(report.path);

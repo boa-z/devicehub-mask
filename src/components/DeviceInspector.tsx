@@ -21,7 +21,9 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Spin, Switch, Tag, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { downloadBrowserResponse } from "../browserFiles";
 import { showErrorMessage } from "../errorMessage";
+import { runningInDesktopHost } from "../hostApi";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
@@ -684,8 +686,25 @@ export function DeviceInspector({
   };
 
   const exportCrashReport = async (report: DeviceCrashReport) => {
+    const name = report.name.replaceAll("/", "_").replaceAll("\\", "_");
+    if (!runningInDesktopHost()) {
+      setExportingReport(report.path);
+      try {
+        const query = new URLSearchParams({ device_path: report.path, name });
+        await downloadBrowserResponse(
+          await request(`/api/device/crash-reports/browser-export?${query}`),
+          name,
+        );
+        void message.success(t("deviceInspector.crashReportExported", { size: formatFileSize(report.size_bytes) }));
+      } catch (exportError) {
+        void showErrorMessage(t("deviceInspector.crashReportExportFailed", { error: String(exportError) }));
+      } finally {
+        setExportingReport(null);
+      }
+      return;
+    }
     const destination = await save({
-      defaultPath: report.name.replaceAll("/", "_").replaceAll("\\", "_"),
+      defaultPath: name,
       filters: [{ name: t("deviceInspector.crashReportFile"), extensions: ["ips", "crash", "panic", "tailspin", "txt"] }],
     });
     if (!destination) return;

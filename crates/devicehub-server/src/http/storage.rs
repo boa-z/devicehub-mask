@@ -3,22 +3,22 @@
 //! The active session owns AFC clients and transfer tasks. This module only
 //! validates HTTP requests, dispatches typed commands, and maps responses.
 
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::Response;
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
+
+use super::browser_transfers::{BrowserTransferStore, binary_download, validate_file_name};
 
 use devicehub_core::{
     AppDocumentActivitySlot, AppDocumentActivityView, AppDocumentEntry, AppDocumentList,
@@ -34,15 +34,6 @@ type DeviceFileCommand = devicehub_runtime::DeviceFileCommand<PathBuf>;
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);
 const BROWSER_UPLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
-
-pub type BrowserTransferFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
-
-pub trait BrowserTransferStore: Send + Sync + 'static {
-    fn stage_upload(&self, name: String, bytes: Bytes) -> BrowserTransferFuture<PathBuf>;
-    fn prepare_download(&self, name: String) -> BrowserTransferFuture<PathBuf>;
-    fn read_and_remove(&self, path: PathBuf) -> BrowserTransferFuture<Bytes>;
-    fn remove(&self, path: PathBuf) -> BrowserTransferFuture<()>;
-}
 
 /// Narrow capability set for storage HTTP routes. Activity cancellation bypasses
 /// the serialized session command queue through the session-owned slots.
@@ -697,15 +688,7 @@ async fn browser_export_device_file(
 }
 
 fn validate_browser_file_name(name: &str) -> Result<(), (StatusCode, String)> {
-    if name.is_empty()
-        || name.len() > 255
-        || name == "."
-        || name == ".."
-        || name.contains(['/', '\\', '\0'])
-    {
-        return Err((StatusCode::BAD_REQUEST, "invalid browser file name".into()));
-    }
-    Ok(())
+    validate_file_name(name).map_err(|error| (StatusCode::BAD_REQUEST, error))
 }
 
 fn browser_transfer_store(
@@ -719,17 +702,6 @@ fn browser_transfer_store(
 
 fn browser_transfer_error(error: String) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error)
-}
-
-fn binary_download(bytes: Bytes) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::CONTENT_DISPOSITION, "attachment"),
-        ],
-        bytes,
-    )
-        .into_response()
 }
 
 async fn create_device_file_directory(
@@ -879,14 +851,6 @@ mod tests {
             .await,
             Err((StatusCode::SERVICE_UNAVAILABLE, _))
         ));
-    }
-
-    #[test]
-    fn browser_file_names_cannot_introduce_paths() {
-        assert!(validate_browser_file_name("save.dat").is_ok());
-        assert!(validate_browser_file_name("../save.dat").is_err());
-        assert!(validate_browser_file_name("folder/save.dat").is_err());
-        assert!(validate_browser_file_name("").is_err());
     }
 
     #[tokio::test]

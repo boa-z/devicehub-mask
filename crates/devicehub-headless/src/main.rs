@@ -274,9 +274,14 @@ async fn run(config: Config) -> Result<(), String> {
         host::build_info(),
         host_control,
     );
-    api_state.storage_http = api_state.storage_http.with_browser_transfers(
-        devicehub_host::browser_transfers::TokioBrowserTransferStore::new(transfer_dir),
-    );
+    let browser_transfers =
+        devicehub_host::browser_transfers::TokioBrowserTransferStore::new(transfer_dir);
+    api_state.storage_http = api_state
+        .storage_http
+        .with_browser_transfers(browser_transfers.clone());
+    api_state.crash_reports_http = api_state
+        .crash_reports_http
+        .with_browser_transfers(browser_transfers);
     api_state.browser_audio = Some(browser_audio);
     let api = devicehub_server::private_api::router(api_state, token.clone());
     let app = devicehub_server::spa::router(api, config.frontend_dir);

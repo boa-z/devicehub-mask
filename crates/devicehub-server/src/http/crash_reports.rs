@@ -4,14 +4,18 @@
 //! module owns only request validation, deadlines, and HTTP response mapping.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use axum::response::Response;
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::oneshot;
+
+use super::browser_transfers::{BrowserTransferStore, binary_download, validate_file_name};
 
 type InputCmd = devicehub_runtime::DeviceSessionCommand<PathBuf>;
 type InputSink = devicehub_runtime::SessionCommandSlot<PathBuf>;
@@ -21,11 +25,20 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone, Default)]
 pub struct CrashReportHttpState {
     input: InputSink,
+    browser_transfers: Option<Arc<dyn BrowserTransferStore>>,
 }
 
 impl CrashReportHttpState {
     pub fn new(input: InputSink) -> Self {
-        Self { input }
+        Self {
+            input,
+            browser_transfers: None,
+        }
+    }
+
+    pub fn with_browser_transfers(mut self, store: impl BrowserTransferStore) -> Self {
+        self.browser_transfers = Some(Arc::new(store));
+        self
     }
 }
 
@@ -43,6 +56,10 @@ where
             get(crash_report_summary),
         )
         .route("/api/device/crash-reports/export", put(export_crash_report))
+        .route(
+            "/api/device/crash-reports/browser-export",
+            get(browser_export_crash_report),
+        )
         .with_state(state)
 }
 
@@ -97,6 +114,48 @@ async fn export_crash_report(
 }
 
 #[derive(Deserialize)]
+struct BrowserExportCrashReportQuery {
+    device_path: String,
+    name: String,
+}
+
+async fn browser_export_crash_report(
+    State(state): State<CrashReportHttpState>,
+    Query(query): Query<BrowserExportCrashReportQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    devicehub_core::validate_crash_report_path(&query.device_path)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    validate_file_name(&query.name).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let store = state.browser_transfers.clone().ok_or((
+        StatusCode::NOT_IMPLEMENTED,
+        "browser file transfer is unavailable in this host".into(),
+    ))?;
+    let destination = store
+        .prepare_download(query.name)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    let cleanup = destination.clone();
+    let (reply, response) = oneshot::channel();
+    if let Err(error) = require_active_session(state.input.try_send(InputCmd::ExportCrashReport {
+        device_path: query.device_path,
+        destination,
+        reply,
+    })) {
+        let _ = store.remove(cleanup).await;
+        return Err(error);
+    }
+    if let Err(error) = await_session_result(response, "browser crash report export").await {
+        let _ = store.remove(cleanup).await;
+        return Err(error);
+    }
+    let bytes = store
+        .read_and_remove(cleanup)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    Ok(binary_download(bytes))
+}
+
+#[derive(Deserialize)]
 struct DeleteCrashReportRequest {
     device_path: String,
 }
@@ -145,7 +204,45 @@ fn require_active_session(sent: bool) -> Result<(), (StatusCode, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::{Bytes, to_bytes};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    #[derive(Clone)]
+    struct TestBrowserTransferStore {
+        removed: Arc<AtomicBool>,
+    }
+
+    impl BrowserTransferStore for TestBrowserTransferStore {
+        fn stage_upload(
+            &self,
+            _name: String,
+            _bytes: Bytes,
+        ) -> crate::http::BrowserTransferFuture<PathBuf> {
+            unreachable!("crash reports never stage browser uploads")
+        }
+
+        fn prepare_download(&self, name: String) -> crate::http::BrowserTransferFuture<PathBuf> {
+            Box::pin(async move { Ok(PathBuf::from("staging").join(name)) })
+        }
+
+        fn read_and_remove(&self, path: PathBuf) -> crate::http::BrowserTransferFuture<Bytes> {
+            let removed = self.removed.clone();
+            Box::pin(async move {
+                assert_eq!(path, PathBuf::from("staging/Report.ips"));
+                removed.store(true, Ordering::Relaxed);
+                Ok(Bytes::from_static(b"report"))
+            })
+        }
+
+        fn remove(&self, _path: PathBuf) -> crate::http::BrowserTransferFuture<()> {
+            let removed = self.removed.clone();
+            Box::pin(async move {
+                removed.store(true, Ordering::Relaxed);
+                Ok(())
+            })
+        }
+    }
 
     fn test_state() -> (CrashReportHttpState, UnboundedReceiver<InputCmd>) {
         let input = InputSink::default();
@@ -217,6 +314,40 @@ mod tests {
             delete_request.await.unwrap().unwrap().0,
             serde_json::json!({ "deleted": true })
         );
+    }
+
+    #[tokio::test]
+    async fn browser_export_returns_the_staged_report_and_removes_it() {
+        let (state, mut input_rx) = test_state();
+        let removed = Arc::new(AtomicBool::new(false));
+        let state = state.with_browser_transfers(TestBrowserTransferStore {
+            removed: removed.clone(),
+        });
+        let export = tokio::spawn(browser_export_crash_report(
+            State(state),
+            Query(BrowserExportCrashReportQuery {
+                device_path: "/Report.ips".into(),
+                name: "Report.ips".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::ExportCrashReport {
+                device_path,
+                destination,
+                reply,
+            } => {
+                assert_eq!(device_path, "/Report.ips");
+                assert_eq!(destination, PathBuf::from("staging/Report.ips"));
+                reply.send(Ok(6)).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let response = export.await.unwrap().unwrap();
+        assert_eq!(
+            to_bytes(response.into_body(), 16).await.unwrap(),
+            Bytes::from_static(b"report")
+        );
+        assert!(removed.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
