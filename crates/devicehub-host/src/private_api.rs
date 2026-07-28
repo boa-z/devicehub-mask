@@ -64,5 +64,6 @@ pub fn state(
         host_http: devicehub_server::http::HostHttpState::unavailable(),
         websocket_config,
         browser_audio: None,
+        browser_control_leases: devicehub_server::websocket::BrowserControlLeases::default(),
     }
 }

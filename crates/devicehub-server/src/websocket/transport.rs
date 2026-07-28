@@ -18,7 +18,10 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use super::input::{ClientMediaDemand, ClientVideoFeedback, handle_client_message, send_all_up};
+use super::control_lease::BrowserControlLeases;
+use super::input::{
+    ClientConnectionState, ClientVideoFeedback, handle_client_message, send_all_up,
+};
 use crate::status;
 use devicehub_core::VideoCounters;
 use devicehub_runtime::{
@@ -97,6 +100,7 @@ pub struct WebSocketState {
     input: InputSink<std::path::PathBuf>,
     config: WebSocketConfig,
     browser_audio: Option<BrowserAudioSlot>,
+    control_leases: BrowserControlLeases,
 }
 
 impl WebSocketState {
@@ -106,6 +110,7 @@ impl WebSocketState {
         session: DeviceSessionClient<std::path::PathBuf>,
         config: WebSocketConfig,
         browser_audio: Option<BrowserAudioSlot>,
+        control_leases: BrowserControlLeases,
     ) -> Self {
         let browser_frames = session.browser_frames.clone();
         let clipboard = session.clipboard.clone();
@@ -121,6 +126,7 @@ impl WebSocketState {
             input,
             config,
             browser_audio,
+            control_leases,
         }
     }
 }
@@ -169,6 +175,10 @@ fn synchronize_demand_lease(active: bool, demand: &Demand, lease: &mut Option<De
 }
 
 async fn run(socket: WebSocket, state: WebSocketState) {
+    let mut control_notifications = state.control_leases.subscribe();
+    let mut control_lease = state.control_leases.try_acquire(&state.selection_id);
+    let control_granted = control_lease.is_some();
+    let (control_tx, mut control_rx) = tokio::sync::watch::channel(control_granted);
     let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
     let max_in_flight_frames = state.config.max_in_flight_frames;
@@ -176,12 +186,23 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     let frame_pacer = Arc::new(FramePacer::new(max_in_flight_frames));
     // A newly connected WebView must opt into video. Control/status messages
     // remain available on pages that do not render the device stream.
-    let media_demand = Arc::new(ClientMediaDemand::default());
+    let connection = Arc::new(ClientConnectionState::new(control_granted));
     let browser_resync = Arc::new(AtomicBool::new(true));
     let send_pacer = frame_pacer.clone();
-    let send_media_demand = media_demand.clone();
+    let send_connection = connection.clone();
     let send_browser_resync = browser_resync.clone();
     let send_task = tokio::spawn(async move {
+        let lease_message = json!({
+            "type": "control_lease",
+            "payload": { "granted": control_granted },
+        });
+        if sender
+            .send(Message::Text(lease_message.to_string().into()))
+            .await
+            .is_err()
+        {
+            return;
+        }
         let mut last_status = String::new();
         let mut browser_frame_rx = send_state.browser_frames.subscribe();
         let mut clipboard_rx = send_state.clipboard.subscribe();
@@ -209,6 +230,18 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         let mut browser_generation = send_state.browser_frames.generation();
         loop {
             tokio::select! {
+                changed = control_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let text = json!({
+                        "type": "control_lease",
+                        "payload": { "granted": *control_rx.borrow_and_update() },
+                    }).to_string();
+                    if sender.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
                 _ = status_tick.tick() => {
                     let snapshot = status::snapshot_for_session(
                         &send_state.application,
@@ -227,7 +260,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                 browser_frame = browser_frame_rx.recv() => {
                     match browser_frame {
                         Ok(frame) => {
-                            if !send_media_demand.video_active() {
+                            if !send_connection.video_active() {
                                 continue;
                             }
                             if synchronize_browser_generation(
@@ -285,7 +318,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                _ = browser_resync_tick.tick(), if send_media_demand.video_active()
+                _ = browser_resync_tick.tick(), if send_connection.video_active()
                     && send_browser_resync.load(Ordering::Acquire) => {
                     tracing::debug!("browser video resync still waiting; requesting another keyframe");
                     send_state.browser_frames.request_keyframe();
@@ -334,7 +367,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                 } => {
                     match audio {
                         Ok(pcm) => {
-                            if !send_media_demand.audio_active() {
+                            if !send_connection.audio_active() {
                                 continue;
                             }
                             if sender.send(Message::Binary(encode_audio_packet(&pcm).into())).await.is_err() {
@@ -423,7 +456,28 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     let mut pressed_keyboard = HashSet::new();
     let mut video_lease = None;
     let mut audio_lease = None;
-    while let Some(Ok(message)) = receiver.next().await {
+    loop {
+        let message = tokio::select! {
+            message = receiver.next() => message,
+            released = control_notifications.recv(), if control_lease.is_none() => {
+                let should_retry = match released {
+                    Ok(selection_id) => selection_id == state.selection_id.as_ref(),
+                    Err(broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(broadcast::error::RecvError::Closed) => false,
+                };
+                if should_retry
+                    && let Some(lease) = state.control_leases.try_acquire(&state.selection_id)
+                {
+                    control_lease = Some(lease);
+                    connection.grant_control();
+                    control_tx.send_replace(true);
+                }
+                continue;
+            }
+        };
+        let Some(Ok(message)) = message else {
+            break;
+        };
         match message {
             Message::Text(text) => {
                 match handle_client_message(
@@ -432,7 +486,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                     &state.browser_frames,
                     &text,
                     &mut pressed_keyboard,
-                    &media_demand,
+                    &connection,
                     &browser_resync,
                 ) {
                     ClientVideoFeedback::None => {}
@@ -446,12 +500,12 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                     ClientVideoFeedback::ResetAll => frame_pacer.clear(),
                 }
                 synchronize_demand_lease(
-                    media_demand.video_active(),
+                    connection.video_active(),
                     &state.session.media_demand.video,
                     &mut video_lease,
                 );
                 synchronize_demand_lease(
-                    media_demand.audio_active(),
+                    connection.audio_active(),
                     &state.session.media_demand.audio,
                     &mut audio_lease,
                 );
@@ -461,7 +515,9 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         }
     }
     send_task.abort();
-    send_all_up(&state.input, &pressed_keyboard);
+    if connection.control_granted() {
+        send_all_up(&state.input, &pressed_keyboard);
+    }
 }
 
 #[cfg(test)]

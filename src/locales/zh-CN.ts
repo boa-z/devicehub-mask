@@ -303,6 +303,7 @@ export const zhCN = {
     starting: "正在启动",
     backendUnavailable: "桌面后端不可用",
     websocketConnected: "WebSocket 已连接",
+    viewOnly: "只读查看",
     reconnecting: "正在重连",
     waitingForDevice: "等待 iOS 设备画面",
   },

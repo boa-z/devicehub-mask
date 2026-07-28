@@ -97,15 +97,31 @@ pub(super) enum ClientVideoFeedback {
     ResetAll,
 }
 
-#[derive(Default)]
-pub(super) struct ClientMediaDemand {
+pub(super) struct ClientConnectionState {
+    control_granted: AtomicBool,
     video: AtomicBool,
     audio: AtomicBool,
 }
 
-impl ClientMediaDemand {
+impl ClientConnectionState {
+    pub(super) fn new(control_granted: bool) -> Self {
+        Self {
+            control_granted: AtomicBool::new(control_granted),
+            video: AtomicBool::new(false),
+            audio: AtomicBool::new(false),
+        }
+    }
+
     pub(super) fn video_active(&self) -> bool {
         self.video.load(Ordering::Acquire)
+    }
+
+    pub(super) fn control_granted(&self) -> bool {
+        self.control_granted.load(Ordering::Acquire)
+    }
+
+    pub(super) fn grant_control(&self) {
+        self.control_granted.store(true, Ordering::Release);
     }
 
     pub(super) fn audio_active(&self) -> bool {
@@ -122,12 +138,27 @@ pub(super) fn handle_client_message<HostPath>(
     browser_frames: &BrowserVideoSlot,
     text: &str,
     pressed_keyboard: &mut HashSet<u64>,
-    media_demand: &ClientMediaDemand,
+    connection: &ClientConnectionState,
     browser_resync: &AtomicBool,
 ) -> ClientVideoFeedback {
     let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
         return ClientVideoFeedback::None;
     };
+    if !connection.control_granted()
+        && matches!(
+            message,
+            ClientMessage::MultiTouch { .. }
+                | ClientMessage::Button { .. }
+                | ClientMessage::ButtonDown { .. }
+                | ClientMessage::ButtonUp { .. }
+                | ClientMessage::KeyboardDown { .. }
+                | ClientMessage::KeyboardUp { .. }
+                | ClientMessage::Text { .. }
+                | ClientMessage::Rotate { .. }
+        )
+    {
+        return ClientVideoFeedback::None;
+    }
     match message {
         ClientMessage::BrowserFrameAccepted { sequence } => {
             return sequence
@@ -142,21 +173,21 @@ pub(super) fn handle_client_message<HostPath>(
                 .unwrap_or(ClientVideoFeedback::None);
         }
         ClientMessage::VideoDemand { active } => {
-            let was_active = media_demand.video.load(Ordering::Relaxed);
+            let was_active = connection.video.load(Ordering::Relaxed);
             if active != was_active {
                 if active {
                     browser_resync.store(true, Ordering::Release);
-                    media_demand.video.store(true, Ordering::Release);
+                    connection.video.store(true, Ordering::Release);
                     browser_frames.request_keyframe();
                 } else {
-                    media_demand.video.store(false, Ordering::Release);
+                    connection.video.store(false, Ordering::Release);
                     return ClientVideoFeedback::ResetAll;
                 }
             }
             tracing::debug!(active, "updated WebView video demand");
         }
         ClientMessage::AudioDemand { active } => {
-            media_demand.audio.store(active, Ordering::Release);
+            connection.audio.store(active, Ordering::Release);
             tracing::debug!(active, "updated WebView audio demand");
         }
         ClientMessage::BrowserVideoKeyframe => {
@@ -374,7 +405,7 @@ mod tests {
             browser_frames,
             text,
             pressed_keyboard,
-            &ClientMediaDemand::default(),
+            &ClientConnectionState::new(true),
             &AtomicBool::new(false),
         )
     }
@@ -403,10 +434,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn view_only_clients_keep_media_messages_but_cannot_dispatch_input() {
+        let (input, browser_frames, mut input_rx) = test_state();
+        let connection = ClientConnectionState::new(false);
+        let resync = AtomicBool::new(false);
+        let mut pressed = HashSet::new();
+
+        handle_client_message(
+            &input,
+            Orientation::Portrait,
+            &browser_frames,
+            r#"{"type":"button","name":"home"}"#,
+            &mut pressed,
+            &connection,
+            &resync,
+        );
+        assert!(input_rx.try_recv().is_err());
+
+        handle_client_message(
+            &input,
+            Orientation::Portrait,
+            &browser_frames,
+            r#"{"type":"video_demand","active":true}"#,
+            &mut pressed,
+            &connection,
+            &resync,
+        );
+        assert!(connection.video_active());
+    }
+
     #[tokio::test]
     async fn video_demand_resumes_with_a_keyframe_request() {
         let (input, browser_frames, _input_rx) = test_state();
-        let demand = ClientMediaDemand::default();
+        let demand = ClientConnectionState::new(true);
         demand.video.store(true, Ordering::Relaxed);
         let resync = AtomicBool::new(false);
         let keyframes = browser_frames.clone();
@@ -447,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn browser_decoder_keyframe_request_enters_resync() {
         let (input, browser_frames, _input_rx) = test_state();
-        let demand = ClientMediaDemand::default();
+        let demand = ClientConnectionState::new(true);
         demand.video.store(true, Ordering::Relaxed);
         let resync = AtomicBool::new(false);
         let keyframes = browser_frames.clone();

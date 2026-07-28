@@ -109,6 +109,6 @@ Connected sessions retain only the transport state required for quick switching.
 
 Neither library installs, sideloads, signs, upgrades, or injects applications. Provisioning-profile management remains a separately authorized device-management capability and cannot become an application installation path.
 
-LAN publication is not implemented by binding the current private server to `0.0.0.0`. A later server boundary requires explicit enablement, TLS, paired clients, scoped roles, control leases, Origin restrictions, rate limits, and revocable sessions. MCP remains loopback-only until it has independent authentication.
+LAN publication requires explicit enablement and a bearer token. Browser input is serialized through per-device WebSocket control leases, while HTTP operations remain explicitly device-scoped. The built-in server still does not supply TLS, paired client identities, scoped roles, Origin restrictions, rate limits, or revocable sessions; Internet exposure therefore remains unsupported. MCP remains loopback-only until it has independent authentication.
 
 Extraction is complete only when Tauri and a headless host can use the same runtime lifecycle, core imports no forbidden implementation dependency, only runtime owns device sessions and non-`Send` clients, core tests require neither Tauri nor a network port, failure paths leave no device task or sidecar, and existing USB/Wi-Fi, WebCodecs, audio, input, App management, AFC, diagnostics, and reconnect behavior remains verified.

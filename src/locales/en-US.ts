@@ -308,6 +308,7 @@ export const enUS = {
     starting: "Starting",
     backendUnavailable: "Desktop backend unavailable",
     websocketConnected: "WebSocket connected",
+    viewOnly: "View only",
     reconnecting: "Reconnecting",
     waitingForDevice: "Waiting for an iOS device stream",
   },

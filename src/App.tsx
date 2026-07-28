@@ -334,6 +334,7 @@ export default function App() {
     && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
   const {
     connected,
+    controlGranted,
     streamMetrics,
     renderFps,
     frameSize,
@@ -375,7 +376,7 @@ export default function App() {
     handlePointerMove,
     handlePointerUp,
   } = useDeviceInput({
-    connected,
+    connected: connected && controlGranted,
     command,
     mappings: controlProfile.mappings,
     hardwareBindings: controlProfile.hardwareBindings,
@@ -941,7 +942,7 @@ export default function App() {
     }
     if (mappingEditing) return;
     event.preventDefault();
-    if (page === "device" && connected && status.active_udid) {
+    if (page === "device" && connected && controlGranted && status.active_udid) {
       command({ type: "button", name: "home" });
     }
   };
@@ -996,7 +997,7 @@ export default function App() {
         const label = t(`hardware.${name}`);
         return (
           <Tooltip key={name} title={`${label}${controlProfile.hardwareBindings[name] ? ` · ${controlProfile.hardwareBindings[name]}` : ""}`}>
-            <Button aria-label={label} icon={icon} onClick={() => command({ type: "button", name })} />
+            <Button disabled={!controlGranted} aria-label={label} icon={icon} onClick={() => command({ type: "button", name })} />
           </Tooltip>
         );
       })}
@@ -1216,7 +1217,7 @@ export default function App() {
                       canReconnect={Boolean(backend && selectedDeviceId)}
                       controlMode={controlMode}
                       controlOverlayVisible={controlOverlayVisible}
-                      rotationControlsLocked={deviceViewPreferences.rotationControlsLocked}
+                      rotationControlsLocked={deviceViewPreferences.rotationControlsLocked || !controlGranted}
                       overflowOpen={fullscreenOverflowOpen}
                       hardwareDock={deviceViewPreferences.fullscreenHardwareToolbarDock}
                       functionDock={deviceViewPreferences.fullscreenFunctionToolbarDock}
@@ -1249,6 +1250,7 @@ export default function App() {
                   ) : <div className="stage-toolbar">
                     <div className="stream-status">
                       <Space><ApiOutlined /><Typography.Text>{t(connected ? "status.websocketConnected" : "status.reconnecting")}</Typography.Text></Space>
+                      {connected && !controlGranted && <Typography.Text type="warning">{t("status.viewOnly")}</Typography.Text>}
                       <Tooltip title={t("device.bandwidth", { value: streamMetrics.megabits_per_second.toFixed(1) })}>
                         <Typography.Text className="stream-metrics">
                           {t("device.metrics", {
@@ -1286,8 +1288,8 @@ export default function App() {
                       )}
                       {page === "device" && deviceDisplayControls}
                       {page === "mappings" && <><span>{t("device.edit")}</span><Switch disabled={controlMode === "keyboard"} checked={mappingEditing} onChange={(value) => { releaseAllControls(); setEditing(value); }} /></>}
-                      <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
-                      <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
+                      <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
+                      <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
                     </Space>
                     {hardwareControls}
                   </div>}

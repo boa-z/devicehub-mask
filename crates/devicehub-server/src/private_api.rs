@@ -36,6 +36,7 @@ pub struct PrivateApiState {
     pub host_http: http::HostHttpState,
     pub websocket_config: websocket::WebSocketConfig,
     pub browser_audio: Option<websocket::BrowserAudioSlot>,
+    pub browser_control_leases: websocket::BrowserControlLeases,
 }
 
 #[derive(Clone)]
@@ -163,6 +164,7 @@ async fn ws_upgrade(
             session,
             state.websocket_config,
             state.browser_audio,
+            state.browser_control_leases,
         ),
     )
     .await
@@ -264,6 +266,7 @@ mod tests {
             host_http: http::HostHttpState::unavailable(),
             websocket_config: websocket::WebSocketConfig::default(),
             browser_audio: None,
+            browser_control_leases: websocket::BrowserControlLeases::default(),
         }
     }
 

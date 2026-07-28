@@ -64,6 +64,12 @@ function wsUrl(connection: BackendConnection, deviceId: string) {
   return `${connection.origin.replace(/^http/, "ws")}/api/ws?${query}`;
 }
 
+export function controlLeaseGrant(message: { type: string; payload?: unknown }): boolean | null {
+  if (message.type !== "control_lease" || typeof message.payload !== "object" || message.payload === null) return null;
+  const granted = (message.payload as { granted?: unknown }).granted;
+  return typeof granted === "boolean" ? granted : null;
+}
+
 export function drawVideoFrame(
   canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
@@ -110,6 +116,7 @@ export function useDeviceVideoStream({
   onDisconnect,
 }: Options) {
   const [connected, setConnected] = useState(false);
+  const [controlGranted, setControlGranted] = useState(false);
   const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(emptyMetrics);
   const [renderFps, setRenderFps] = useState(0);
   const [frameSize, setFrameSize] = useState({ width: 1296, height: 2816 });
@@ -213,6 +220,7 @@ export function useDeviceVideoStream({
   useEffect(() => {
     if (!backend || !deviceId) return;
     setHasFrame(false);
+    setControlGranted(false);
     let disposed = false;
     let retry: number | undefined;
     let activeSocket: WebSocket | null = null;
@@ -364,6 +372,7 @@ export function useDeviceVideoStream({
           callbacksRef.current.onDisconnect?.();
           socketRef.current = null;
           setConnected(false);
+          setControlGranted(false);
           lastSourceActivityAtRef.current = 0;
           lastDecodedActivityAtRef.current = 0;
           canvasReadyRef.current = false;
@@ -376,7 +385,9 @@ export function useDeviceVideoStream({
       };
       socket.onmessage = (event) => {
         if (typeof event.data === "string") {
-          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent | DeviceEvent };
+          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent | DeviceEvent | { granted: boolean } };
+          const leaseGrant = controlLeaseGrant(data);
+          if (leaseGrant !== null) setControlGranted(leaseGrant);
           if (data.type === "status") callbacksRef.current.onStatus(data.payload as DeviceStatus);
           if (data.type === "clipboard") callbacksRef.current.onClipboard(data.payload as ClipboardEvent);
           if (data.type === "device_event") callbacksRef.current.onDeviceEvent(data.payload as DeviceEvent);
@@ -447,6 +458,7 @@ export function useDeviceVideoStream({
 
   return {
     connected,
+    controlGranted,
     streamMetrics,
     renderFps,
     frameSize,
