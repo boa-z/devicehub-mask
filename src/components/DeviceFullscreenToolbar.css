@@ -12,8 +12,11 @@
 .device-fullscreen-function-toolbar.is-vertical .device-fullscreen-function-controls > .ant-segmented,
 .device-fullscreen-function-toolbar.is-vertical .device-fullscreen-function-controls > .control-profile-select { grid-column: 1 / -1; }
 .device-fullscreen-function-toolbar.is-vertical .device-display-controls { display: contents; }
-.device-fullscreen-function-toolbar.is-vertical .device-display-controls > .ant-space-item:first-child { grid-column: 1 / -1; }
-.device-fullscreen-function-toolbar.is-vertical .control-profile-select { width: 104px; }
+.device-fullscreen-function-toolbar.is-vertical .device-display-controls > .ant-space-item:first-child { width: 100%; min-width: 0; grid-column: 1 / -1; }
+.device-fullscreen-function-toolbar.is-vertical .control-profile-select,
+.device-fullscreen-function-toolbar.is-vertical .device-scale-select { width: 100%; min-width: 0; }
+.device-fullscreen-function-toolbar.is-vertical .ant-select-selector { min-width: 0; }
+.device-fullscreen-function-toolbar.is-vertical .ant-select-selection-item { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .device-fullscreen-toolbar.is-hidden { opacity: 0; pointer-events: none; transform: var(--dock-transform, none) translateY(-8px); }
 .device-fullscreen-function-toolbar.is-dragging { z-index: 24; }
 .device-fullscreen-hardware-toolbar.is-dragging { z-index: 26; }

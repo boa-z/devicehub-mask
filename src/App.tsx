@@ -1296,8 +1296,6 @@ export default function App() {
                         </Space>
                       )}
                       hardwareControls={hardwareControls}
-                      order={deviceViewPreferences.windowToolbarOrder}
-                      onOrderChange={(windowToolbarOrder) => patchDeviceViewPreferences({ windowToolbarOrder })}
                     />
                   )}
                   {page === "mappings" && (

@@ -69,10 +69,6 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .stage-toolbar-group { min-width: 0; display: flex; align-items: center; gap: 4px; border-radius: 5px; transition: opacity .14s ease, box-shadow .14s ease; }
 .stage-toolbar-group > .ant-space { min-width: 0; flex-wrap: wrap; }
 .stage-toolbar-group > .hardware-controls { margin-left: 0; }
-.stage-toolbar-group.is-dragging { opacity: .55; }
-.stage-toolbar-group.is-drop-target { box-shadow: 0 0 0 1px #42b883; }
-.stage-toolbar-drag-handle { flex: none; cursor: grab; color: #899493; }
-.stage-toolbar-group.is-dragging .stage-toolbar-drag-handle { cursor: grabbing; color: #edf2f0; }
 .mapping-editor-toolbar { min-height: 44px; padding: 6px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #171b1c; }
 .mapping-resolution { min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mapping-resolution .ant-tag { margin-inline-end: 0; }

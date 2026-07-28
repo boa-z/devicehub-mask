@@ -192,7 +192,6 @@ export function SettingsPage({
               fullscreenHardwareToolbarDock: defaultDeviceViewPreferences.fullscreenHardwareToolbarDock,
               fullscreenFunctionToolbarDock: defaultDeviceViewPreferences.fullscreenFunctionToolbarDock,
               fullscreenToolbarsAttached: defaultDeviceViewPreferences.fullscreenToolbarsAttached,
-              windowToolbarOrder: [...defaultDeviceViewPreferences.windowToolbarOrder],
             })}
           >
             {t("settings.resetToolbarLayout")}
