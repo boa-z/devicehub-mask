@@ -18,13 +18,13 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use super::input::{ClientVideoFeedback, handle_client_message, send_all_up};
+use super::input::{ClientMediaDemand, ClientVideoFeedback, handle_client_message, send_all_up};
 use crate::status;
 use devicehub_core::VideoCounters;
 use devicehub_runtime::{
-    BrowserFrameDecision, BrowserVideoSlot, ClipboardSlot, DeviceSessionClient, FrameCredit,
-    FramePacer, RuntimeClient, SessionCommandSlot as InputSink, browser_frame_decision,
-    duration_average_ms, encode_packet,
+    BrowserFrameDecision, BrowserVideoSlot, ClipboardSlot, Demand, DemandLease,
+    DeviceSessionClient, FrameCredit, FramePacer, RuntimeClient, SessionCommandSlot as InputSink,
+    browser_frame_decision, duration_average_ms, encode_packet,
 };
 
 const DEFAULT_MAX_IN_FLIGHT_FRAMES: usize = 8;
@@ -160,6 +160,14 @@ fn synchronize_browser_generation(
     true
 }
 
+fn synchronize_demand_lease(active: bool, demand: &Demand, lease: &mut Option<DemandLease>) {
+    match (active, lease.is_some()) {
+        (true, false) => *lease = Some(demand.acquire()),
+        (false, true) => *lease = None,
+        _ => {}
+    }
+}
+
 async fn run(socket: WebSocket, state: WebSocketState) {
     let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
@@ -168,10 +176,10 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     let frame_pacer = Arc::new(FramePacer::new(max_in_flight_frames));
     // A newly connected WebView must opt into video. Control/status messages
     // remain available on pages that do not render the device stream.
-    let video_active = Arc::new(AtomicBool::new(false));
+    let media_demand = Arc::new(ClientMediaDemand::default());
     let browser_resync = Arc::new(AtomicBool::new(true));
     let send_pacer = frame_pacer.clone();
-    let send_video_active = video_active.clone();
+    let send_media_demand = media_demand.clone();
     let send_browser_resync = browser_resync.clone();
     let send_task = tokio::spawn(async move {
         let mut last_status = String::new();
@@ -219,7 +227,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                 browser_frame = browser_frame_rx.recv() => {
                     match browser_frame {
                         Ok(frame) => {
-                            if !send_video_active.load(Ordering::Acquire) {
+                            if !send_media_demand.video_active() {
                                 continue;
                             }
                             if synchronize_browser_generation(
@@ -277,7 +285,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                _ = browser_resync_tick.tick(), if send_video_active.load(Ordering::Acquire)
+                _ = browser_resync_tick.tick(), if send_media_demand.video_active()
                     && send_browser_resync.load(Ordering::Acquire) => {
                     tracing::debug!("browser video resync still waiting; requesting another keyframe");
                     send_state.browser_frames.request_keyframe();
@@ -326,6 +334,9 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                 } => {
                     match audio {
                         Ok(pcm) => {
+                            if !send_media_demand.audio_active() {
+                                continue;
+                            }
                             if sender.send(Message::Binary(encode_audio_packet(&pcm).into())).await.is_err() {
                                 break;
                             }
@@ -410,6 +421,8 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     });
 
     let mut pressed_keyboard = HashSet::new();
+    let mut video_lease = None;
+    let mut audio_lease = None;
     while let Some(Ok(message)) = receiver.next().await {
         match message {
             Message::Text(text) => {
@@ -419,7 +432,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                     &state.browser_frames,
                     &text,
                     &mut pressed_keyboard,
-                    &video_active,
+                    &media_demand,
                     &browser_resync,
                 ) {
                     ClientVideoFeedback::None => {}
@@ -432,6 +445,16 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                     ClientVideoFeedback::ResetBrowser => frame_pacer.clear_browser(),
                     ClientVideoFeedback::ResetAll => frame_pacer.clear(),
                 }
+                synchronize_demand_lease(
+                    media_demand.video_active(),
+                    &state.session.media_demand.video,
+                    &mut video_lease,
+                );
+                synchronize_demand_lease(
+                    media_demand.audio_active(),
+                    &state.session.media_demand.audio,
+                    &mut audio_lease,
+                );
             }
             Message::Close(_) => break,
             _ => {}
@@ -449,6 +472,7 @@ mod tests {
 
     use super::{
         BrowserAudioSlot, WebSocketConfig, encode_audio_packet, synchronize_browser_generation,
+        synchronize_demand_lease,
     };
 
     #[test]
@@ -456,6 +480,19 @@ mod tests {
         assert_eq!(WebSocketConfig::new(0).max_in_flight_frames, 1);
         assert_eq!(WebSocketConfig::new(2).max_in_flight_frames, 2);
         assert_eq!(WebSocketConfig::new(usize::MAX).max_in_flight_frames, 8);
+    }
+
+    #[test]
+    fn websocket_demand_lease_tracks_client_state() {
+        let demand = devicehub_runtime::Demand::default();
+        let mut lease = None;
+
+        synchronize_demand_lease(true, &demand, &mut lease);
+        assert!(demand.enabled());
+        synchronize_demand_lease(true, &demand, &mut lease);
+        assert!(demand.enabled());
+        synchronize_demand_lease(false, &demand, &mut lease);
+        assert!(!demand.enabled());
     }
 
     #[test]

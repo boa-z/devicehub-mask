@@ -57,6 +57,18 @@ impl DeviceAudioSource {
             }
         }
     }
+
+    /// Drain one negotiated packet while no host media consumer is active.
+    /// Returns false when the device transport has ended.
+    pub async fn drain_packet(&self) -> bool {
+        match self.udp.recv().await {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(?error, "audio UDP receive failed while media is idle");
+                false
+            }
+        }
+    }
 }
 
 /// Host-selected audio pipeline for a negotiated device RTP stream.
@@ -68,7 +80,13 @@ pub trait DeviceAudioPipeline: Clone + Send + Sync + 'static {
 pub trait DeviceAudioPipelineFactory: Clone + Send + Sync + 'static {
     type Pipeline: DeviceAudioPipeline;
 
-    fn create(&self, enabled: bool, selection_id: &str, active: ActiveSlot) -> Self::Pipeline;
+    fn create(
+        &self,
+        enabled: bool,
+        selection_id: &str,
+        active: ActiveSlot,
+        demand: crate::Demand,
+    ) -> Self::Pipeline;
 }
 
 /// Host-provided sink for decoded interleaved PCM bytes.

@@ -496,7 +496,12 @@ fn spawn_connected_session<
                     diagnostics: diagnostics.clone(),
                 },
                 ConnectedSessionHost {
-                    audio: audio.create(preferences.audio_enabled(), &selection_id, active.clone()),
+                    audio: audio.create(
+                        preferences.audio_enabled(),
+                        &selection_id,
+                        active.clone(),
+                        views.connected.media_demand.audio.clone(),
+                    ),
                     diagnostic_sinks: diagnostic_sinks.clone(),
                     clipboard: clipboard_sync_enabled.then(|| {
                         Box::new(move || clipboard_provider.connect()) as HostClipboardFactory

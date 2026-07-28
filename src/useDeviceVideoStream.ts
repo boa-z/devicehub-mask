@@ -178,6 +178,10 @@ export function useDeviceVideoStream({
   }, [send, videoDemand]);
 
   useEffect(() => {
+    send({ type: "audio_demand", active: audioEnabled && !audioMuted });
+  }, [audioEnabled, audioMuted, send]);
+
+  useEffect(() => {
     let measuredAt = performance.now();
     const timer = window.setInterval(() => {
       const now = performance.now();
@@ -337,6 +341,8 @@ export function useDeviceVideoStream({
         lastDecodedActivityAtRef.current = now;
         setConnected(true);
         socket.send(JSON.stringify({ type: "video_demand", active: videoDemandRef.current }));
+        const audio = audioPreferencesRef.current;
+        socket.send(JSON.stringify({ type: "audio_demand", active: audio.enabled && !audio.muted }));
         metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
       };
       socket.onerror = () => { transportFailed = true; };

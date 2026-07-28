@@ -17,7 +17,7 @@ use crate::transport::CoreTunnelConfig;
 use crate::{
     BrowserVideoSlot, CaptureFileIo, ClipboardSlot, DeveloperImageAssetLoader, DeviceAudioPipeline,
     DeviceBackupDestination, DeviceSessionCommand, HostFileIo, ProvisioningProfileLoader,
-    SessionEndpoint, connect_provider,
+    SessionEndpoint, SessionMediaDemand, connect_provider,
 };
 
 /// Session state published to host-facing adapters without giving the host
@@ -31,6 +31,7 @@ pub(crate) struct ConnectedSessionViews {
     pub(crate) clipboard: ClipboardSlot,
     pub(crate) video_counters: VideoCounters,
     pub(crate) browser_frames: BrowserVideoSlot,
+    pub(crate) media_demand: SessionMediaDemand,
     pub(crate) runtime_services: RuntimeServiceViews,
     pub(crate) host_services: RuntimeHostServiceViews,
 }
@@ -210,6 +211,7 @@ where
             video: VideoRtpOptions {
                 send_frame_ack: media.diagnostics.send_frame_ack,
                 annexb_sink: hevc_dump_sink,
+                demand: views.media_demand.video.clone(),
             },
             rtcp: media.diagnostics.rtcp,
         },

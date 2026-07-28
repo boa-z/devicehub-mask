@@ -187,6 +187,8 @@ Production deployments may use systemd, launchd, a Windows service wrapper, or a
 
 Browser fullscreen, device control, WebCodecs video, device audio, AFC/application-storage single-file transfers, and crash-report downloads are available. Browser autoplay policy may require one page click before audio starts. AFC and application-storage uploads are limited to 64 MiB and downloads to 256 MiB; directory transfer remains desktop-only.
 
+Multiple devices may remain connected at once. Each browser tab selects an exact transport-aware device ID, and its HTTP and WebSocket requests stay scoped to that session. Video work runs only while a page displays that device. Audio decoding runs only while at least one page requests enabled, unmuted audio for it; muting every viewer releases the decoder. Performance sampling and device-log streaming are also independently demand-gated per device. Closing a tab automatically releases its media demand, while the lightweight device session remains available for quick switching.
+
 Desktop-only capabilities such as always-on-top windows, installer updates, native file dialogs, opening server directories, and host clipboard synchronization are disabled. Packet capture, sysdiagnose, log archive, Developer Image, and other workflows that still require host paths have not all received browser transfer adapters yet.
 
 DeviceHub Mask does not install, sideload, sign, or upgrade iOS applications. These capabilities remain outside both desktop and headless product scope.

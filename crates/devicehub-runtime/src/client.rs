@@ -19,7 +19,7 @@ pub use registry::DeviceSessionRegistry;
 use crate::runtime::CoreRuntimeState;
 use crate::{
     BrowserVideoSlot, ClipboardSlot, DeviceEventSlot, DeviceLogDemand, PerformanceDemand,
-    SessionCommandSlot, SessionControlCommand,
+    SessionCommandSlot, SessionControlCommand, SessionMediaDemand,
 };
 
 /// Device inventory, selection, and lifecycle commands owned by the outer
@@ -42,6 +42,7 @@ pub struct DeviceSessionClient<HostPath> {
     pub status: StatusSlot,
     pub location: LocationStatusSlot,
     pub browser_frames: BrowserVideoSlot,
+    pub media_demand: SessionMediaDemand,
     pub video_counters: VideoCounters,
     pub clipboard: ClipboardSlot,
     pub device_events: DeviceEventSlot,
@@ -72,6 +73,7 @@ impl<HostPath> Clone for DeviceSessionClient<HostPath> {
             status: self.status.clone(),
             location: self.location.clone(),
             browser_frames: self.browser_frames.clone(),
+            media_demand: self.media_demand.clone(),
             video_counters: self.video_counters.clone(),
             clipboard: self.clipboard.clone(),
             device_events: self.device_events.clone(),
@@ -107,6 +109,7 @@ impl<HostPath> DeviceSessionClient<HostPath> {
             status: state.status.clone(),
             location: state.location.clone(),
             browser_frames: state.browser_frames.clone(),
+            media_demand: state.media_demand.clone(),
             video_counters: state.video_counters.clone(),
             clipboard: state.clipboard.clone(),
             device_events: state.device_events.clone(),

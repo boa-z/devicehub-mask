@@ -16,6 +16,7 @@ use crate::session::{
 use crate::{
     BrowserVideoSlot, ClipboardSlot, DeviceEventSlot, DeviceLogDemand, DeviceSessionRegistry,
     PerformanceDemand, RuntimeClient, SessionCommandSlot, SessionControlCommand,
+    SessionMediaDemand,
 };
 
 /// Discovery and selection state owned by the outer runtime manager.
@@ -32,6 +33,7 @@ pub(crate) struct DeviceSessionState<HostPath> {
     pub(crate) error: ErrorSlot,
     pub(crate) location: LocationStatusSlot,
     pub(crate) browser_frames: BrowserVideoSlot,
+    pub(crate) media_demand: SessionMediaDemand,
     pub(crate) video_counters: VideoCounters,
     pub(crate) clipboard: ClipboardSlot,
     pub(crate) device_events: DeviceEventSlot,
@@ -61,6 +63,7 @@ impl<HostPath> Default for DeviceSessionState<HostPath> {
             error: ErrorSlot::default(),
             location: LocationStatusSlot::default(),
             browser_frames: BrowserVideoSlot::default(),
+            media_demand: SessionMediaDemand::default(),
             video_counters: VideoCounters::default(),
             clipboard: ClipboardSlot::default(),
             device_events: DeviceEventSlot::default(),
@@ -98,6 +101,7 @@ impl<HostPath> DeviceSessionState<HostPath> {
             clipboard: self.clipboard.clone(),
             video_counters: self.video_counters.clone(),
             browser_frames: self.browser_frames.clone(),
+            media_demand: self.media_demand.clone(),
             runtime_services: RuntimeServiceViews {
                 performance: self.performance.clone(),
                 performance_demand: self.performance_demand.clone(),

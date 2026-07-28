@@ -2,6 +2,12 @@ export type Orientation = "portrait" | "portrait_upside_down" | "landscape_left"
 
 export type DevicePairingState = "paired" | "unpaired" | "not_applicable";
 export type SessionPhase = "discovered" | "connecting" | "connected" | "recovering" | "disconnecting" | "disconnected" | "failed";
+export type SessionResources = {
+  video: boolean;
+  audio: boolean;
+  performance: boolean;
+  device_logs: boolean;
+};
 export type Device = {
   id: string;
   udid: string;
@@ -12,6 +18,7 @@ export type Device = {
   session_phase: SessionPhase | null;
   session_updated_at_ms: number | null;
   session_error: string | null;
+  resources: SessionResources | null;
 };
 export type PairDeviceResult = {
   outcome: "paired" | "denied" | "locked" | "timed_out" | "failed";

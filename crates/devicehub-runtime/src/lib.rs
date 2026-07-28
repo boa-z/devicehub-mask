@@ -45,7 +45,7 @@ pub use client::{
     RuntimeClient, RuntimeManagerClient,
 };
 pub use clipboard::{ClipboardImage, ClipboardSlot, HostClipboard, HostClipboardProvider};
-pub use demand::{Demand, DemandLease};
+pub use demand::{Demand, DemandLease, SessionMediaDemand};
 pub use device::{
     CompanionDeviceCommand, CrashReportExportCommand, DeveloperImageAssetFuture,
     DeveloperImageAssetLoader, DeveloperImageMountCommand, DeveloperImageMountRequest,

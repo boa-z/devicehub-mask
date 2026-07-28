@@ -12,6 +12,7 @@ use super::rtcp::RtcpShared;
 use super::session::{
     AccessUnitAssembler, HEVC_QUEUE_MAX_BYTES, HevcQueue, HevcQueuePush, RunningStats,
 };
+use crate::Demand;
 
 /// How long the selected RTP stream must be quiet before a new SSRC can take over.
 const SSRC_TAKEOVER_GRACE: Duration = Duration::from_millis(250);
@@ -22,6 +23,7 @@ const SSRC_TAKEOVER_GRACE: Duration = Duration::from_millis(250);
 pub(crate) struct VideoRtpOptions {
     pub(crate) send_frame_ack: bool,
     pub(crate) annexb_sink: Option<mpsc::Sender<Vec<u8>>>,
+    pub(crate) demand: Demand,
 }
 
 /// Receives video RTP, depacketizes HEVC, and queues complete Annex-B access
@@ -55,6 +57,7 @@ pub(crate) async fn receive_video_rtp(
     let mut rtp_timestamp_deltas = RunningStats::default();
     let mut source_frame_intervals_ms = RunningStats::default();
     let mut dump_backpressured = false;
+    let mut was_demanded = false;
 
     loop {
         match udp.recv().await {
@@ -73,6 +76,24 @@ pub(crate) async fn receive_video_rtp(
                 let Some(packet) = RtpPacket::parse(&datagram.data) else {
                     continue;
                 };
+                let demanded = options.demand.enabled();
+                if demanded != was_demanded {
+                    depacketizer = HevcDepacketizer::new();
+                    assembler.clear();
+                    prev_marker_seq = None;
+                    au_pkts = 0;
+                    let (dropped_access_units, dropped_bytes) = hevc_queue.force_resync();
+                    tracing::debug!(
+                        demanded,
+                        dropped_access_units,
+                        dropped_bytes,
+                        "updated device video resource demand"
+                    );
+                    if demanded {
+                        corruption.notify_one();
+                    }
+                    was_demanded = demanded;
+                }
                 if starts_irap(packet.payload) {
                     tracing::info!(
                         rtp_ssrc = format_args!("{:#x}", packet.ssrc),
@@ -120,6 +141,13 @@ pub(crate) async fn receive_video_rtp(
                     packet.sequence_number,
                     packet.marker,
                 );
+
+                if !demanded {
+                    if packet.marker {
+                        video_counters.note_source_frame();
+                    }
+                    continue;
+                }
 
                 let belongs_to_current_au = prev_marker_seq.is_none_or(|previous| {
                     let distance = packet.sequence_number.wrapping_sub(previous);

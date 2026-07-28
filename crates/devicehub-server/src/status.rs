@@ -16,6 +16,15 @@ struct DeviceView {
     session_phase: Option<SessionPhase>,
     session_updated_at_ms: Option<u64>,
     session_error: Option<String>,
+    resources: Option<SessionResourcesView>,
+}
+
+#[derive(Serialize)]
+struct SessionResourcesView {
+    video: bool,
+    audio: bool,
+    performance: bool,
+    device_logs: bool,
 }
 
 #[derive(Serialize)]
@@ -93,6 +102,12 @@ fn snapshot_with_session<HostPath>(
                 let session_error = device_session
                     .as_ref()
                     .and_then(|session| session.error.get());
+                let resources = device_session.as_ref().map(|session| SessionResourcesView {
+                    video: session.media_demand.video.enabled(),
+                    audio: session.media_demand.audio.enabled(),
+                    performance: session.performance_demand.enabled(),
+                    device_logs: session.device_log_demand.enabled(),
+                });
                 DeviceView {
                     id: device.id,
                     udid: device.udid,
@@ -109,6 +124,7 @@ fn snapshot_with_session<HostPath>(
                     }),
                     session_updated_at_ms: session_status.map(|status| status.updated_at_ms),
                     session_error,
+                    resources,
                 }
             })
             .collect(),
@@ -169,5 +185,8 @@ mod tests {
             Some("retrying connection")
         );
         assert!(device.session_updated_at_ms.is_some());
+        let resources = device.resources.as_ref().expect("session resources");
+        assert!(!resources.video);
+        assert!(!resources.audio);
     }
 }

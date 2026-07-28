@@ -48,6 +48,9 @@ enum ClientMessage {
     VideoDemand {
         active: bool,
     },
+    AudioDemand {
+        active: bool,
+    },
     BrowserFrameAccepted {
         sequence: String,
     },
@@ -94,6 +97,22 @@ pub(super) enum ClientVideoFeedback {
     ResetAll,
 }
 
+#[derive(Default)]
+pub(super) struct ClientMediaDemand {
+    video: AtomicBool,
+    audio: AtomicBool,
+}
+
+impl ClientMediaDemand {
+    pub(super) fn video_active(&self) -> bool {
+        self.video.load(Ordering::Acquire)
+    }
+
+    pub(super) fn audio_active(&self) -> bool {
+        self.audio.load(Ordering::Acquire)
+    }
+}
+
 /// Separates decoder ingress acknowledgements from presentation telemetry.
 /// A browser credit is released only by the matching sequence, so a late
 /// acknowledgement cannot accidentally admit a newer frame.
@@ -103,7 +122,7 @@ pub(super) fn handle_client_message<HostPath>(
     browser_frames: &BrowserVideoSlot,
     text: &str,
     pressed_keyboard: &mut HashSet<u64>,
-    video_active: &AtomicBool,
+    media_demand: &ClientMediaDemand,
     browser_resync: &AtomicBool,
 ) -> ClientVideoFeedback {
     let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
@@ -123,18 +142,22 @@ pub(super) fn handle_client_message<HostPath>(
                 .unwrap_or(ClientVideoFeedback::None);
         }
         ClientMessage::VideoDemand { active } => {
-            let was_active = video_active.load(Ordering::Relaxed);
+            let was_active = media_demand.video.load(Ordering::Relaxed);
             if active != was_active {
                 if active {
                     browser_resync.store(true, Ordering::Release);
-                    video_active.store(true, Ordering::Release);
+                    media_demand.video.store(true, Ordering::Release);
                     browser_frames.request_keyframe();
                 } else {
-                    video_active.store(false, Ordering::Release);
+                    media_demand.video.store(false, Ordering::Release);
                     return ClientVideoFeedback::ResetAll;
                 }
             }
             tracing::debug!(active, "updated WebView video demand");
+        }
+        ClientMessage::AudioDemand { active } => {
+            media_demand.audio.store(active, Ordering::Release);
+            tracing::debug!(active, "updated WebView audio demand");
         }
         ClientMessage::BrowserVideoKeyframe => {
             browser_resync.store(true, Ordering::Release);
@@ -351,7 +374,7 @@ mod tests {
             browser_frames,
             text,
             pressed_keyboard,
-            &AtomicBool::new(true),
+            &ClientMediaDemand::default(),
             &AtomicBool::new(false),
         )
     }
@@ -383,7 +406,8 @@ mod tests {
     #[tokio::test]
     async fn video_demand_resumes_with_a_keyframe_request() {
         let (input, browser_frames, _input_rx) = test_state();
-        let active = AtomicBool::new(true);
+        let demand = ClientMediaDemand::default();
+        demand.video.store(true, Ordering::Relaxed);
         let resync = AtomicBool::new(false);
         let keyframes = browser_frames.clone();
         let mut pressed = HashSet::new();
@@ -395,12 +419,12 @@ mod tests {
                 &browser_frames,
                 r#"{"type":"video_demand","active":false}"#,
                 &mut pressed,
-                &active,
+                &demand,
                 &resync,
             ),
             ClientVideoFeedback::ResetAll
         );
-        assert!(!active.load(Ordering::Relaxed));
+        assert!(!demand.video_active());
         assert_eq!(
             handle_client_message(
                 &input,
@@ -408,12 +432,12 @@ mod tests {
                 &browser_frames,
                 r#"{"type":"video_demand","active":true}"#,
                 &mut pressed,
-                &active,
+                &demand,
                 &resync,
             ),
             ClientVideoFeedback::None
         );
-        assert!(active.load(Ordering::Relaxed));
+        assert!(demand.video_active());
         assert!(resync.load(Ordering::Relaxed));
         tokio::time::timeout(Duration::from_millis(10), keyframes.keyframe_requested())
             .await
@@ -423,7 +447,8 @@ mod tests {
     #[tokio::test]
     async fn browser_decoder_keyframe_request_enters_resync() {
         let (input, browser_frames, _input_rx) = test_state();
-        let active = AtomicBool::new(true);
+        let demand = ClientMediaDemand::default();
+        demand.video.store(true, Ordering::Relaxed);
         let resync = AtomicBool::new(false);
         let keyframes = browser_frames.clone();
 
@@ -434,7 +459,7 @@ mod tests {
                 &browser_frames,
                 r#"{"type":"browser_video_keyframe"}"#,
                 &mut HashSet::new(),
-                &active,
+                &demand,
                 &resync,
             ),
             ClientVideoFeedback::ResetBrowser

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
-use devicehub_core::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
-use devicehub_runtime::AudioPublisher;
+use devicehub_core::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, ActiveSlot};
+use devicehub_runtime::{AudioPublisher, Demand};
 use devicehub_runtime::{DeviceAudioSource, audio_decoder_restart_backoff};
 
 const AUDIO_CHUNK_MILLIS: usize = 20;
@@ -32,6 +32,46 @@ pub struct FfmpegAudioPipeline {
     output: AudioPublisher,
     decoder: AudioDecoderConfig,
     enabled: bool,
+    activation: AudioActivation,
+}
+
+#[derive(Clone)]
+enum AudioActivation {
+    Selected {
+        active: ActiveSlot,
+        selection_id: Arc<str>,
+    },
+    Demand(Demand),
+}
+
+impl AudioActivation {
+    fn enabled(&self) -> bool {
+        match self {
+            Self::Selected {
+                active,
+                selection_id,
+            } => active.selection_id().as_deref() == Some(selection_id.as_ref()),
+            Self::Demand(demand) => demand.enabled(),
+        }
+    }
+
+    async fn wait_for(&self, enabled: bool) {
+        match self {
+            Self::Demand(demand) => {
+                let mut receiver = demand.subscribe();
+                while *receiver.borrow() != enabled {
+                    if receiver.changed().await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Self::Selected { .. } => {
+                while self.enabled() != enabled {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
 }
 
 /// Reuses host-resolved FFmpeg inputs while creating one pipeline per device
@@ -68,22 +108,37 @@ impl devicehub_runtime::DeviceAudioPipelineFactory for FfmpegAudioPipelineFactor
         enabled: bool,
         selection_id: &str,
         active: devicehub_core::ActiveSlot,
+        demand: Demand,
     ) -> Self::Pipeline {
         let selected = self.selected_only.then_some(active);
+        let activation = match selected.clone() {
+            Some(active) => AudioActivation::Selected {
+                active,
+                selection_id: Arc::from(selection_id),
+            },
+            None => AudioActivation::Demand(demand),
+        };
         FfmpegAudioPipeline::new(
             self.output.for_device(selection_id, selected),
             self.decoder.clone(),
             enabled,
+            activation,
         )
     }
 }
 
 impl FfmpegAudioPipeline {
-    pub fn new(output: AudioPublisher, decoder: AudioDecoderConfig, enabled: bool) -> Self {
+    fn new(
+        output: AudioPublisher,
+        decoder: AudioDecoderConfig,
+        enabled: bool,
+        activation: AudioActivation,
+    ) -> Self {
         Self {
             output,
             decoder,
             enabled,
+            activation,
         }
     }
 }
@@ -95,6 +150,7 @@ impl devicehub_runtime::DeviceAudioPipeline for FfmpegAudioPipeline {
             self.output.clone(),
             self.decoder.clone(),
             self.enabled,
+            self.activation.clone(),
         ))
     }
 }
@@ -255,11 +311,12 @@ async fn read_audio_chunks(mut stdout: ChildStdout, output: AudioPublisher) {
 
 /// Runs the optional host audio pipeline for one negotiated device session.
 /// Disabled audio still drains RTP so the shared DisplayService session remains healthy.
-pub async fn run_audio_pipeline(
+async fn run_audio_pipeline(
     source: DeviceAudioSource,
     output: AudioPublisher,
     decoder: AudioDecoderConfig,
     enabled: bool,
+    activation: AudioActivation,
 ) {
     if !enabled {
         tracing::info!("device audio playback disabled; draining negotiated audio stream");
@@ -269,6 +326,22 @@ pub async fn run_audio_pipeline(
 
     let mut restart_attempt = 0_u32;
     loop {
+        if !activation.enabled() {
+            tracing::debug!("device audio decoder idle without a media consumer");
+            let activated = activation.wait_for(true);
+            tokio::pin!(activated);
+            loop {
+                tokio::select! {
+                    _ = &mut activated => break,
+                    alive = source.drain_packet() => {
+                        if !alive {
+                            return;
+                        }
+                    }
+                }
+            }
+            tracing::debug!("device audio consumer active; starting decoder");
+        }
         let (mut child, stdout, stderr, rtp_address) = match spawn_audio_ffmpeg(&decoder).await {
             Ok(process) => process,
             Err(error) => {
@@ -281,7 +354,8 @@ pub async fn run_audio_pipeline(
         let decoded_output = read_audio_chunks(stdout, output.clone());
         let errors = watch_audio_errors(stderr);
         let receive = source.forward_rtp_to_local_port(rtp_address.port());
-        tokio::pin!(decoded_output, errors, receive);
+        let deactivated = activation.wait_for(false);
+        tokio::pin!(decoded_output, errors, receive, deactivated);
         let exit_reason = tokio::select! {
             _ = &mut decoded_output => "output-ended",
             _ = &mut errors => "stderr-ended",
@@ -293,8 +367,18 @@ pub async fn run_audio_pipeline(
                 tracing::warn!(?status, "device audio decoder stopped");
                 "process-ended"
             },
+            _ = &mut deactivated => "demand-ended",
         };
         let elapsed = decoder_started.elapsed();
+        if exit_reason == "demand-ended" {
+            tracing::debug!(
+                elapsed_ms = elapsed.as_millis() as u64,
+                "stopping idle audio decoder"
+            );
+            drop(child);
+            restart_attempt = 0;
+            continue;
+        }
         restart_attempt = if elapsed >= AUDIO_DECODER_STABLE_RUNTIME {
             1
         } else {

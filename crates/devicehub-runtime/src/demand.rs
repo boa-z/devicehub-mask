@@ -66,6 +66,17 @@ impl Drop for DemandLease {
     }
 }
 
+/// Consumer-driven media resources owned by one device session.
+///
+/// Video and audio are independent because a status/control client may request
+/// neither, either, or both. Leases compose across browser clients and release
+/// automatically when their transport closes.
+#[derive(Clone, Default)]
+pub struct SessionMediaDemand {
+    pub video: Demand,
+    pub audio: Demand,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +94,26 @@ mod tests {
         assert!(demand.enabled());
         demand.set(false);
         assert!(!demand.enabled());
+    }
+
+    #[test]
+    fn session_media_demand_keeps_resources_and_devices_independent() {
+        let phone = SessionMediaDemand::default();
+        let tablet = SessionMediaDemand::default();
+        let first_video = phone.video.acquire();
+        let second_video = phone.video.acquire();
+        let audio = phone.audio.acquire();
+
+        assert!(phone.video.enabled());
+        assert!(phone.audio.enabled());
+        assert!(!tablet.video.enabled());
+        assert!(!tablet.audio.enabled());
+
+        drop(first_video);
+        assert!(phone.video.enabled());
+        drop(second_video);
+        drop(audio);
+        assert!(!phone.video.enabled());
+        assert!(!phone.audio.enabled());
     }
 }

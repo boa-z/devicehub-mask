@@ -21,6 +21,7 @@ function status(activeDeviceId: string | null, sessionStatus: string | null): De
       session_phase: sessionStatus === "connecting" ? "connecting" : null,
       session_updated_at_ms: sessionStatus === null ? null : 0,
       session_error: null,
+      resources: null,
     }],
     location: { available: false, active: false, backend: null, latitude: null, longitude: null, error: null },
   };
