@@ -93,7 +93,15 @@ npm run verify
 npm run verify:full
 ```
 
-完整门禁还会构建独立 Debug 应用，但不会启动、打包或安装它。macOS 与 Linux 可另外使用 `bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh` 检查发布脚本语法。
+完整门禁还会构建独立 Debug 应用，但不会启动、打包或安装它。两条命令都不会运行真机测试；真机验证仍必须显式执行 `npm run verify:device -- --udid <UDID>`。
+
+本地验证默认禁用 Cargo 增量编译，并将构建任务数设为 1，避免反复运行测试、Clippy 以及不同 feature/profile 组合时累积巨大的增量缓存。如需临时覆盖，可以显式设置 `CARGO_INCREMENTAL` 和 `CARGO_BUILD_JOBS`。编译前，`verify` 要求至少有 8 GiB 可用空间，`verify:full` 要求至少有 12 GiB，使空间不足时在开始阶段给出可操作的错误，而不是写入产物途中失败。Rust 生成产物长期累积后，可清理所有工作区 Cargo target：
+
+```sh
+npm run clean:rust
+```
+
+此命令通过 Cargo 官方清理操作同时处理工作区 target 和独立的开发/历史 target，只删除可重新构建的 Cargo 产物，不会删除源文件或应用数据。macOS 与 Linux 可另外使用 `bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh` 检查发布脚本语法。
 
 多点触控生产路径已在 iPhone 13 Pro Max 上使用双触点 report 验证。跨平台 CI 可以验证 编译，但不能替代真机测试。
 

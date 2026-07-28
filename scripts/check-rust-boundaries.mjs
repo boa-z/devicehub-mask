@@ -3,11 +3,25 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";
-const metadata = spawnSync(
-  cargo,
-  ["metadata", "--manifest-path", "Cargo.toml", "--format-version", "1", "--locked"],
-  { cwd: process.cwd(), encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
-);
+const metadataArgs = [
+  "metadata",
+  "--manifest-path",
+  "Cargo.toml",
+  "--format-version",
+  "1",
+  "--locked",
+];
+const metadataOptions = {
+  cwd: process.cwd(),
+  encoding: "utf8",
+  maxBuffer: 32 * 1024 * 1024,
+};
+let metadata = spawnSync(cargo, [...metadataArgs, "--offline"], metadataOptions);
+
+if (!metadata.error && metadata.status !== 0) {
+  console.log("Cached Rust metadata is incomplete; retrying with network access.");
+  metadata = spawnSync(cargo, metadataArgs, metadataOptions);
+}
 
 if (metadata.error) {
   console.error(`Unable to inspect Rust workspace: ${metadata.error.message}`);

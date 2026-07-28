@@ -93,7 +93,15 @@ This is the same cross-platform source gate used by GitHub Actions: documentatio
 npm run verify:full
 ```
 
-The full gate additionally builds the standalone debug application without launching, bundling, or installing it. On macOS and Linux, release-script syntax can be checked separately with `bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh`.
+The full gate additionally builds the standalone debug application without launching, bundling, or installing it. Neither command runs physical-device tests; those remain an explicit `npm run verify:device -- --udid <UDID>` workflow.
+
+Local verification disables Cargo incremental compilation and uses one build job by default. This keeps repeated test, Clippy, feature, and profile combinations from accumulating very large incremental caches. Explicit `CARGO_INCREMENTAL` and `CARGO_BUILD_JOBS` values are respected when temporary overrides are needed. Before compilation, `verify` requires 8 GiB of free space and `verify:full` requires 12 GiB so a build fails with an actionable diagnostic instead of failing midway while writing artifacts. If generated Rust artifacts have accumulated, remove all workspace Cargo targets with:
+
+```sh
+npm run clean:rust
+```
+
+This runs Cargo's official cleanup operation for both the workspace target and the separate development/legacy target. It deletes only rebuildable Cargo output and does not remove source files or application data. On macOS and Linux, release-script syntax can be checked separately with `bash -n scripts/package-dmg.sh scripts/generate-update-manifest.sh`.
 
 The multitouch production path has been tested with a two-contact report on an iPhone 13 Pro Max. Cross-platform CI verifies compilation but cannot replace physical device testing.
 
