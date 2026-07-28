@@ -24,6 +24,9 @@ use crate::{
     ScreenCaptureCommand, SysdiagnoseCommand,
 };
 
+const BOOTSTRAP_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
+const BOOTSTRAP_INSTALLATION_PROXY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Routes management commands while returning HID and clipboard commands that
 /// require capabilities owned by the host session loop. Filesystem operations
 /// cross bounded host-service ports rather than executing in this router.
@@ -51,7 +54,21 @@ impl DeviceManagementBootstrap {
         requested_udid: String,
         app_operation: AppOperationSlot,
     ) -> Self {
-        let details = read_device_details(provider.as_ref(), requested_udid).await;
+        let details = match tokio::time::timeout(
+            BOOTSTRAP_METADATA_TIMEOUT,
+            read_device_details(provider.as_ref(), requested_udid),
+        )
+        .await
+        {
+            Ok(details) => details,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = BOOTSTRAP_METADATA_TIMEOUT.as_millis() as u64,
+                    "initial device metadata timed out; continuing session startup"
+                );
+                None
+            }
+        };
         if let Some(details) = &details {
             tracing::info!(
                 product_type = %details.product_type,
@@ -59,7 +76,21 @@ impl DeviceManagementBootstrap {
                 "connected device identity"
             );
         }
-        let app_clients = AppClientSet::connect_installation_proxy(provider.as_ref()).await;
+        let app_clients = match tokio::time::timeout(
+            BOOTSTRAP_INSTALLATION_PROXY_TIMEOUT,
+            AppClientSet::connect_installation_proxy(provider.as_ref()),
+        )
+        .await
+        {
+            Ok(clients) => clients,
+            Err(_) => {
+                tracing::warn!(
+                    timeout_ms = BOOTSTRAP_INSTALLATION_PROXY_TIMEOUT.as_millis() as u64,
+                    "installation proxy bootstrap timed out; continuing without fallback"
+                );
+                AppClientSet::unavailable()
+            }
+        };
         Self {
             provider,
             app_operation,

@@ -1378,21 +1378,23 @@ export default function App() {
                 )}
                 {page === "device" && !deviceFullscreen && (
                   <div className={`device-inspector-slot${deviceViewPreferences.deviceInspectorVisible ? "" : " is-hidden"}`}>
-                    <Suspense fallback={<WorkspaceLoading inspector />}>
-                      <DeviceInspector
-                        activeUdid={status.active_udid}
-                        activeDeviceId={status.active_device_id}
-                        canForgetTrust={status.devices.some((device) => device.id === status.active_device_id && device.connection === "USB" && device.pairing === "paired")}
-                        request={request}
-                        activeProfile={activeProfile}
-                        appProfileBindings={appProfileBindings}
-                        bindingConflicts={appBindingConflicts}
-                        frameSize={frameSize}
-                        deviceEvent={deviceEvent}
-                        onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
-                        onAppProfileBindingChange={changeAppProfileBinding}
-                      />
-                    </Suspense>
+                    {status.phase !== "connected" ? <WorkspaceLoading inspector /> : (
+                      <Suspense fallback={<WorkspaceLoading inspector />}>
+                        <DeviceInspector
+                          activeUdid={status.active_udid}
+                          activeDeviceId={status.active_device_id}
+                          canForgetTrust={status.devices.some((device) => device.id === status.active_device_id && device.connection === "USB" && device.pairing === "paired")}
+                          request={request}
+                          activeProfile={activeProfile}
+                          appProfileBindings={appProfileBindings}
+                          bindingConflicts={appBindingConflicts}
+                          frameSize={frameSize}
+                          deviceEvent={deviceEvent}
+                          onAppLaunched={(bundleId) => void activateProfileForApp(bundleId)}
+                          onAppProfileBindingChange={changeAppProfileBinding}
+                        />
+                      </Suspense>
+                    )}
                   </div>
                 )}
               </main>

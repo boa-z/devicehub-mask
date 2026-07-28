@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use devicehub_core::{
-    LocationStatus, LocationStatusSlot, validate_device_name, validate_paste_text,
+    LocationStatus, LocationStatusSlot, SessionPhase, validate_device_name, validate_paste_text,
 };
 use devicehub_runtime::{
     DeveloperModeCommand, DeviceControlError, DeviceControlService, DeviceSessionCommand,
@@ -196,6 +196,7 @@ async fn device_details(
     State(state): State<DeviceHttpState>,
     session: RequestSession,
 ) -> Result<Json<devicehub_core::DeviceDetails>, (StatusCode, String)> {
+    require_session_ready(&session)?;
     let (reply, response) = oneshot::channel();
     require_active_session(
         state
@@ -213,6 +214,23 @@ async fn device_details(
         .map_err(|_| session_ended())?
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     Ok(Json(details))
+}
+
+fn require_session_ready(session: &RequestSession) -> Result<(), (StatusCode, String)> {
+    let Some(Extension(session)) = session else {
+        return Ok(());
+    };
+    let status = session.status.snapshot();
+    if matches!(
+        status.phase,
+        SessionPhase::Connecting | SessionPhase::Recovering
+    ) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("device session is not ready: {}", status.message),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -493,6 +511,20 @@ mod tests {
                 StatusCode::BAD_REQUEST
             );
         }
+    }
+
+    #[test]
+    fn metadata_requests_do_not_queue_while_the_session_is_connecting() {
+        let status = devicehub_core::StatusSlot::default();
+        status.set("connecting to device...");
+        let (client, _control) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default()
+            .with_status(status)
+            .build();
+        let session = Some(Extension(client.device));
+
+        let error = require_session_ready(&session).unwrap_err();
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(error.1.contains("connecting to device"));
     }
 
     #[tokio::test]

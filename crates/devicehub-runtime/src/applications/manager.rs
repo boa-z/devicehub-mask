@@ -63,6 +63,13 @@ pub(crate) struct AppClientSet {
 }
 
 impl AppClientSet {
+    pub(crate) fn unavailable() -> Self {
+        Self {
+            app_service: None,
+            installation_proxy: None,
+        }
+    }
+
     pub(crate) async fn connect_installation_proxy(provider: &dyn IdeviceProvider) -> Self {
         let installation_proxy = match InstallationProxyClient::connect(provider).await {
             Ok(client) => Some(client),

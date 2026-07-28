@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use devicehub_core::{
     ActiveSlot, DeviceListSlot, DevicePairingState, ForgetDeviceResult, LocationStatus,
-    PairDeviceOutcome, PairDeviceResult,
+    PairDeviceOutcome, PairDeviceResult, SessionPhase, StatusSlot,
 };
 use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender, oneshot};
 
@@ -32,6 +32,29 @@ use crate::{
 
 const IDLE_RESCAN: Duration = Duration::from_secs(2);
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
+const SESSION_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn wait_for_session_startup_timeout(status: StatusSlot, timeout: Duration) {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut check = tokio::time::interval(Duration::from_millis(100));
+    check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => {
+                if status.snapshot().phase != SessionPhase::Connected {
+                    return;
+                }
+                std::future::pending::<()>().await;
+            }
+            _ = check.tick() => {
+                if status.snapshot().phase == SessionPhase::Connected {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
+}
 
 /// Platform capabilities injected once when starting the device runtime.
 ///
@@ -512,8 +535,20 @@ fn spawn_connected_session<
                 &mut command_rx,
             );
             tokio::pin!(session);
+            let startup_timeout = wait_for_session_startup_timeout(
+                views.connected.status.clone(),
+                SESSION_STARTUP_TIMEOUT,
+            );
+            tokio::pin!(startup_timeout);
             let (result, stop_requested) = tokio::select! {
                 result = &mut session => (result, false),
+                _ = &mut startup_timeout => (
+                    Err(format!(
+                        "device connection timed out after {} seconds",
+                        SESSION_STARTUP_TIMEOUT.as_secs()
+                    )),
+                    false,
+                ),
                 _ = &mut supervisor_rx => {
                     let _ = command_tx.send(DeviceSessionCommand::Shutdown);
                     (session.await, true)
@@ -829,8 +864,9 @@ async fn run_session_manager<
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionManagerViews, ensure_session};
+    use super::{SessionManagerViews, ensure_session, wait_for_session_startup_timeout};
     use crate::runtime::CoreRuntimeState;
+    use std::time::Duration;
 
     #[test]
     fn creating_another_session_preserves_existing_state() {
@@ -849,6 +885,29 @@ mod tests {
         assert_eq!(
             views.sessions.selection_ids(),
             vec!["phone::usb".to_string(), "tablet::usb".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_watchdog_stops_only_sessions_that_never_connect() {
+        let connecting = devicehub_core::StatusSlot::default();
+        connecting.set("connecting to device...");
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_session_startup_timeout(connecting, Duration::from_millis(5)),
+        )
+        .await
+        .expect("connecting session should reach its startup deadline");
+
+        let connected = devicehub_core::StatusSlot::default();
+        connected.set("connected");
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                wait_for_session_startup_timeout(connected, Duration::from_millis(5)),
+            )
+            .await
+            .is_err()
         );
     }
 }
