@@ -3,6 +3,17 @@ import { isFullscreenToolbarDock, type FullscreenToolbarDock } from "./fullscree
 export const deviceViewScales = ["fit", "0.25", "0.5", "0.75", "1", "1.25", "1.5", "2"] as const;
 
 export type DeviceViewScale = (typeof deviceViewScales)[number];
+export const windowToolbarGroups = ["function", "hardware"] as const;
+export type WindowToolbarGroup = (typeof windowToolbarGroups)[number];
+
+export function swapWindowToolbarGroups(
+  order: WindowToolbarGroup[],
+  source: WindowToolbarGroup,
+  target: WindowToolbarGroup,
+): WindowToolbarGroup[] {
+  if (source === target || !order.includes(source) || !order.includes(target)) return [...order];
+  return order.map((item) => item === source ? target : item === target ? source : item);
+}
 
 export type DeviceViewPreferences = {
   scale: DeviceViewScale;
@@ -13,6 +24,8 @@ export type DeviceViewPreferences = {
   mappingInspectorVisible: boolean;
   fullscreenHardwareToolbarDock: FullscreenToolbarDock;
   fullscreenFunctionToolbarDock: FullscreenToolbarDock;
+  fullscreenToolbarsAttached: boolean;
+  windowToolbarOrder: WindowToolbarGroup[];
 };
 
 export const defaultDeviceViewPreferences: DeviceViewPreferences = {
@@ -24,10 +37,22 @@ export const defaultDeviceViewPreferences: DeviceViewPreferences = {
   mappingInspectorVisible: true,
   fullscreenHardwareToolbarDock: "top-center",
   fullscreenFunctionToolbarDock: "bottom-center",
+  fullscreenToolbarsAttached: false,
+  windowToolbarOrder: [...windowToolbarGroups],
 };
 
 const storageKey = "devicehub-mask.device-view";
 const scaleSet = new Set<string>(deviceViewScales);
+
+function parseWindowToolbarOrder(value: unknown): WindowToolbarGroup[] {
+  if (!Array.isArray(value) || value.length !== windowToolbarGroups.length) {
+    return [...defaultDeviceViewPreferences.windowToolbarOrder];
+  }
+  const order = value.filter((item): item is WindowToolbarGroup => item === "function" || item === "hardware");
+  return order.length === windowToolbarGroups.length && new Set(order).size === windowToolbarGroups.length
+    ? order
+    : [...defaultDeviceViewPreferences.windowToolbarOrder];
+}
 
 export function parseDeviceViewPreferences(value: string | null): DeviceViewPreferences {
   if (value === null) return { ...defaultDeviceViewPreferences };
@@ -67,6 +92,10 @@ export function parseDeviceViewPreferences(value: string | null): DeviceViewPref
         : defaultDeviceViewPreferences.mappingInspectorVisible,
       fullscreenHardwareToolbarDock,
       fullscreenFunctionToolbarDock,
+      fullscreenToolbarsAttached: typeof candidate.fullscreenToolbarsAttached === "boolean"
+        ? candidate.fullscreenToolbarsAttached
+        : defaultDeviceViewPreferences.fullscreenToolbarsAttached,
+      windowToolbarOrder: parseWindowToolbarOrder(candidate.windowToolbarOrder),
     };
   } catch {
     return { ...defaultDeviceViewPreferences };

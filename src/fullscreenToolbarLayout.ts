@@ -14,6 +14,7 @@ export type FullscreenToolbarDock = (typeof fullscreenToolbarDocks)[number];
 export type ToolbarSize = { width: number; height: number };
 export type ToolbarPoint = { x: number; y: number };
 type ToolbarRect = ToolbarPoint & ToolbarSize;
+export type FullscreenToolbarPositions = { hardware: ToolbarPoint; function: ToolbarPoint };
 export type FullscreenToolbarKind = "hardware" | "function";
 export type FullscreenToolbarDocks = { hardware: FullscreenToolbarDock; function: FullscreenToolbarDock };
 
@@ -84,6 +85,71 @@ function toolbarOverlapArea(first: ToolbarRect, second: ToolbarRect): number {
   const width = Math.max(0, Math.min(first.x + first.width, second.x + second.width) - Math.max(first.x, second.x));
   const height = Math.max(0, Math.min(first.y + first.height, second.y + second.height) - Math.max(first.y, second.y));
   return width * height;
+}
+
+export function shouldAttachFullscreenToolbars(
+  first: ToolbarRect,
+  second: ToolbarRect,
+  threshold = 32,
+): boolean {
+  const horizontalGap = Math.max(0, first.x - second.x - second.width, second.x - first.x - first.width);
+  const verticalGap = Math.max(0, first.y - second.y - second.height, second.y - first.y - first.height);
+  return Math.hypot(horizontalGap, verticalGap) <= threshold;
+}
+
+export function attachedFullscreenToolbarPositions(
+  dock: FullscreenToolbarDock,
+  container: ToolbarSize,
+  hardware: ToolbarSize,
+  functions: ToolbarSize,
+  gap = 4,
+  margin = 8,
+): FullscreenToolbarPositions {
+  const horizontal = dock === "left-center" || dock === "right-center";
+  const availableWidth = Math.max(0, container.width - margin * 2);
+  const placeSideBySide = horizontal && hardware.width + gap + functions.width <= availableWidth;
+
+  if (placeSideBySide) {
+    const groupWidth = hardware.width + gap + functions.width;
+    const top = Math.max(margin, (container.height - Math.max(hardware.height, functions.height)) / 2);
+    if (dock === "right-center") {
+      const left = Math.max(margin, container.width - groupWidth - margin);
+      return {
+        hardware: { x: left + functions.width + gap, y: top },
+        function: { x: left, y: top },
+      };
+    }
+    return {
+      hardware: { x: margin, y: top },
+      function: { x: margin + hardware.width + gap, y: top },
+    };
+  }
+
+  const groupHeight = hardware.height + gap + functions.height;
+  const alignX = (width: number) => {
+    if (dock.endsWith("-right") || dock === "right-center") {
+      return Math.max(margin, container.width - width - margin);
+    }
+    if (dock.endsWith("-center")) {
+      return Math.max(margin, (container.width - width) / 2);
+    }
+    return margin;
+  };
+  const groupTop = dock.startsWith("bottom-")
+    ? Math.max(margin, container.height - groupHeight - margin)
+    : dock === "left-center" || dock === "right-center"
+      ? Math.max(margin, (container.height - groupHeight) / 2)
+      : margin;
+  if (dock.startsWith("bottom-")) {
+    return {
+      hardware: { x: alignX(hardware.width), y: groupTop + functions.height + gap },
+      function: { x: alignX(functions.width), y: groupTop },
+    };
+  }
+  return {
+    hardware: { x: alignX(hardware.width), y: groupTop },
+    function: { x: alignX(functions.width), y: groupTop + hardware.height + gap },
+  };
 }
 
 export function clampToolbarPosition(

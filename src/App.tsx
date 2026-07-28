@@ -30,7 +30,7 @@ import { Button, Dropdown, Input, Popover, Segmented, Select, Space, Switch, Tag
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
-import { DeviceFullscreenToolbar } from "./components/DeviceFullscreenToolbar";
+import { DeviceWindowToolbar } from "./components/DeviceWindowToolbar";
 import { DeviceConnectionCenter } from "./components/DeviceConnectionCenter";
 import { ErrorCopyButton } from "./components/ErrorPresentation";
 import { KeyboardIcon } from "./components/KeyboardIcon";
@@ -60,6 +60,7 @@ import { useUndoHistory } from "./useUndoHistory";
 import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./appSettings";
 
 const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
+const DeviceFullscreenToolbar = lazy(() => import("./components/DeviceFullscreenToolbar").then((module) => ({ default: module.DeviceFullscreenToolbar })));
 const DeviceInspector = lazy(() => import("./components/DeviceInspector").then((module) => ({ default: module.DeviceInspector })));
 const DeviceLogsPage = lazy(() => import("./components/DeviceLogsPage").then((module) => ({ default: module.DeviceLogsPage })));
 const LocationPage = lazy(() => import("./components/LocationPage").then((module) => ({ default: module.LocationPage })));
@@ -149,7 +150,6 @@ export default function App() {
   const [fullscreenToolbarVisible, setFullscreenToolbarVisible] = useState(true);
   const [fullscreenToolbarHovered, setFullscreenToolbarHovered] = useState(false);
   const [fullscreenToolbarFocused, setFullscreenToolbarFocused] = useState(false);
-  const [fullscreenOverflowOpen, setFullscreenOverflowOpen] = useState(false);
   const [pairingDeviceId, setPairingDeviceId] = useState<string | null>(null);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [audioPlayback, setAudioPlaybackPreferences] = useState<DeviceAudioPreferences>(defaultDeviceAudioPreferences);
@@ -465,7 +465,7 @@ export default function App() {
     if (!deviceFullscreen || !deviceViewPreferences.fullscreenToolbarAutoHide) return;
     setFullscreenToolbarVisible(true);
     if (fullscreenToolbarTimerRef.current !== null) window.clearTimeout(fullscreenToolbarTimerRef.current);
-    if (fullscreenToolbarHovered || fullscreenToolbarFocused || fullscreenOverflowOpen || textInputOpen || displayScaleOpen) {
+    if (fullscreenToolbarHovered || fullscreenToolbarFocused || textInputOpen || displayScaleOpen) {
       fullscreenToolbarTimerRef.current = null;
       return;
     }
@@ -473,7 +473,7 @@ export default function App() {
       fullscreenToolbarTimerRef.current = null;
       setFullscreenToolbarVisible(false);
     }, 2_200);
-  }, [deviceFullscreen, deviceViewPreferences.fullscreenToolbarAutoHide, displayScaleOpen, fullscreenOverflowOpen, fullscreenToolbarFocused, fullscreenToolbarHovered, textInputOpen]);
+  }, [deviceFullscreen, deviceViewPreferences.fullscreenToolbarAutoHide, displayScaleOpen, fullscreenToolbarFocused, fullscreenToolbarHovered, textInputOpen]);
 
   useEffect(() => {
     if (!deviceFullscreen || !deviceViewPreferences.fullscreenToolbarAutoHide) {
@@ -781,7 +781,6 @@ export default function App() {
   const toggleDeviceFullscreen = () => {
     releaseAllControls();
     setFullscreenToolbarVisible(true);
-    setFullscreenOverflowOpen(false);
     setDeviceFullscreen((active) => !active);
     setPage("device");
   };
@@ -1218,9 +1217,9 @@ export default function App() {
                       controlMode={controlMode}
                       controlOverlayVisible={controlOverlayVisible}
                       rotationControlsLocked={deviceViewPreferences.rotationControlsLocked || !controlGranted}
-                      overflowOpen={fullscreenOverflowOpen}
                       hardwareDock={deviceViewPreferences.fullscreenHardwareToolbarDock}
                       functionDock={deviceViewPreferences.fullscreenFunctionToolbarDock}
+                      toolbarsAttached={deviceViewPreferences.fullscreenToolbarsAttached}
                       hardwareControls={hardwareControls}
                       profileSelector={controlProfileSelector}
                       displayControls={deviceDisplayControls}
@@ -1234,11 +1233,11 @@ export default function App() {
                       onControlOverlayChange={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
                       onRotateLeft={() => command({ type: "rotate", direction: "left" })}
                       onRotateRight={() => command({ type: "rotate", direction: "right" })}
-                      onOverflowOpenChange={(open) => {
-                        setFullscreenOverflowOpen(open);
-                        setFullscreenToolbarVisible(true);
-                      }}
-                      onDocksChange={(fullscreenHardwareToolbarDock, fullscreenFunctionToolbarDock) => patchDeviceViewPreferences({ fullscreenHardwareToolbarDock, fullscreenFunctionToolbarDock })}
+                      onLayoutChange={(fullscreenHardwareToolbarDock, fullscreenFunctionToolbarDock, fullscreenToolbarsAttached) => patchDeviceViewPreferences({
+                        fullscreenHardwareToolbarDock,
+                        fullscreenFunctionToolbarDock,
+                        fullscreenToolbarsAttached,
+                      })}
                       onExit={toggleDeviceFullscreen}
                       onPointerEnter={() => setFullscreenToolbarHovered(true)}
                       onPointerLeave={() => setFullscreenToolbarHovered(false)}
@@ -1247,52 +1246,60 @@ export default function App() {
                         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFullscreenToolbarFocused(false);
                       }}
                     />
-                  ) : <div className="stage-toolbar">
-                    <div className="stream-status">
-                      <Space><ApiOutlined /><Typography.Text>{t(connected ? "status.websocketConnected" : "status.reconnecting")}</Typography.Text></Space>
-                      {connected && !controlGranted && <Typography.Text type="warning">{t("status.viewOnly")}</Typography.Text>}
-                      <Tooltip title={t("device.bandwidth", { value: streamMetrics.megabits_per_second.toFixed(1) })}>
-                        <Typography.Text className="stream-metrics">
-                          {t("device.metrics", {
-                            source: streamMetrics.source_fps.toFixed(0),
-                            decoded: streamMetrics.decoded_fps.toFixed(0),
-                            sent: streamMetrics.sent_fps.toFixed(0),
-                            render: renderFps.toFixed(0),
-                            accept: streamMetrics.decoder_accept_ms.toFixed(1),
-                          })}
-                        </Typography.Text>
-                      </Tooltip>
-                    </div>
-                    <Space>
-                      {page === "device" && controlProfileSelector}
-                      <Segmented<ControlMode>
-                        value={controlMode}
-                        options={[
-                          { label: t("device.mappingMode"), value: "mapping", icon: <AimOutlined /> },
-                          { label: t("device.keyboardMode"), value: "keyboard", icon: <KeyboardIcon /> },
-                        ]}
-                        onChange={(mode) => {
-                          releaseAllControls();
-                          setControlMode(mode);
-                          if (mode === "keyboard") setEditing(false);
-                        }}
-                      />
-                      {page === "device" && (
-                        <Tooltip title={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}>
-                          <Button
-                            aria-label={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}
-                            icon={controlOverlayVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                            onClick={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
-                          />
-                        </Tooltip>
+                  ) : (
+                    <DeviceWindowToolbar
+                      status={(
+                        <div className="stream-status">
+                          <Space><ApiOutlined /><Typography.Text>{t(connected ? "status.websocketConnected" : "status.reconnecting")}</Typography.Text></Space>
+                          {connected && !controlGranted && <Typography.Text type="warning">{t("status.viewOnly")}</Typography.Text>}
+                          <Tooltip title={t("device.bandwidth", { value: streamMetrics.megabits_per_second.toFixed(1) })}>
+                            <Typography.Text className="stream-metrics">
+                              {t("device.metrics", {
+                                source: streamMetrics.source_fps.toFixed(0),
+                                decoded: streamMetrics.decoded_fps.toFixed(0),
+                                sent: streamMetrics.sent_fps.toFixed(0),
+                                render: renderFps.toFixed(0),
+                                accept: streamMetrics.decoder_accept_ms.toFixed(1),
+                              })}
+                            </Typography.Text>
+                          </Tooltip>
+                        </div>
                       )}
-                      {page === "device" && deviceDisplayControls}
-                      {page === "mappings" && <><span>{t("device.edit")}</span><Switch disabled={controlMode === "keyboard"} checked={mappingEditing} onChange={(value) => { releaseAllControls(); setEditing(value); }} /></>}
-                      <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
-                      <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
-                    </Space>
-                    {hardwareControls}
-                  </div>}
+                      functionControls={(
+                        <Space>
+                          {page === "device" && controlProfileSelector}
+                          <Segmented<ControlMode>
+                            value={controlMode}
+                            options={[
+                              { label: t("device.mappingMode"), value: "mapping", icon: <AimOutlined /> },
+                              { label: t("device.keyboardMode"), value: "keyboard", icon: <KeyboardIcon /> },
+                            ]}
+                            onChange={(mode) => {
+                              releaseAllControls();
+                              setControlMode(mode);
+                              if (mode === "keyboard") setEditing(false);
+                            }}
+                          />
+                          {page === "device" && (
+                            <Tooltip title={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}>
+                              <Button
+                                aria-label={t(controlOverlayVisible ? "device.hideControlOverlay" : "device.showControlOverlay")}
+                                icon={controlOverlayVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                                onClick={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
+                              />
+                            </Tooltip>
+                          )}
+                          {page === "device" && deviceDisplayControls}
+                          {page === "mappings" && <><span>{t("device.edit")}</span><Switch disabled={controlMode === "keyboard"} checked={mappingEditing} onChange={(value) => { releaseAllControls(); setEditing(value); }} /></>}
+                          <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
+                          <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
+                        </Space>
+                      )}
+                      hardwareControls={hardwareControls}
+                      order={deviceViewPreferences.windowToolbarOrder}
+                      onOrderChange={(windowToolbarOrder) => patchDeviceViewPreferences({ windowToolbarOrder })}
+                    />
+                  )}
                   {page === "mappings" && (
                     <MappingBackgroundToolbar
                       mode={mappingBackgroundMode}

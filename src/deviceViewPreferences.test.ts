@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultDeviceViewPreferences, deviceViewScaleFactor, parseDeviceViewPreferences } from "./deviceViewPreferences";
+import { defaultDeviceViewPreferences, deviceViewScaleFactor, parseDeviceViewPreferences, swapWindowToolbarGroups } from "./deviceViewPreferences";
 
 describe("device view preferences", () => {
   it("uses defaults for missing and invalid preferences", () => {
@@ -17,6 +17,8 @@ describe("device view preferences", () => {
       mappingInspectorVisible: false,
       fullscreenHardwareToolbarDock: "bottom-right",
       fullscreenFunctionToolbarDock: "left-center",
+      fullscreenToolbarsAttached: true,
+      windowToolbarOrder: ["hardware", "function"],
     }))).toEqual({
       scale: "1.5",
       controlOverlayVisible: false,
@@ -26,6 +28,8 @@ describe("device view preferences", () => {
       mappingInspectorVisible: false,
       fullscreenHardwareToolbarDock: "bottom-right",
       fullscreenFunctionToolbarDock: "left-center",
+      fullscreenToolbarsAttached: true,
+      windowToolbarOrder: ["hardware", "function"],
     });
     expect(parseDeviceViewPreferences('{"scale":"3"}')).toEqual(defaultDeviceViewPreferences);
   });
@@ -45,6 +49,8 @@ describe("device view preferences", () => {
       mappingInspectorVisible: true,
       fullscreenHardwareToolbarDock: "top-center",
       fullscreenFunctionToolbarDock: "bottom-center",
+      fullscreenToolbarsAttached: false,
+      windowToolbarOrder: ["function", "hardware"],
     });
   });
 
@@ -70,6 +76,17 @@ describe("device view preferences", () => {
       fullscreenHardwareToolbarDock: "bottom-center",
       fullscreenFunctionToolbarDock: "top-center",
     });
+  });
+
+  it("repairs invalid window toolbar group orders", () => {
+    expect(parseDeviceViewPreferences(JSON.stringify({
+      windowToolbarOrder: ["hardware", "hardware"],
+    })).windowToolbarOrder).toEqual(["function", "hardware"]);
+    expect(parseDeviceViewPreferences(JSON.stringify({
+      windowToolbarOrder: ["hardware", "function"],
+    })).windowToolbarOrder).toEqual(["hardware", "function"]);
+    expect(swapWindowToolbarGroups(["function", "hardware"], "function", "hardware"))
+      .toEqual(["hardware", "function"]);
   });
 
   it("maps fit and fixed scales", () => {

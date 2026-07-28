@@ -1,6 +1,7 @@
 import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
 import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
 import GithubOutlined from "@ant-design/icons/es/icons/GithubOutlined";
+import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Checkbox, Select, Slider, Space, Switch, Typography, message } from "antd";
 import { useEffect, useState } from "react";
@@ -10,7 +11,7 @@ import { normalizeLanguage, type SupportedLanguage } from "../i18n";
 import { readHostCapabilities, runningInDesktopHost, type HostCapabilities } from "../hostApi";
 import { showErrorMessage } from "../errorMessage";
 import type { DeviceAudioPreferences } from "../deviceAudio";
-import { type DeviceViewPreferences, type DeviceViewScale } from "../deviceViewPreferences";
+import { defaultDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "../deviceViewPreferences";
 import { performanceHudItems, type PerformanceHudItem, type PerformanceHudPreferences } from "../performanceHudPreferences";
 import { openLogDirectory, readDiagnosticsStatus, setDebugLogging, type DiagnosticsStatus } from "../diagnostics";
 import { useUpdates } from "../updateContext";
@@ -182,6 +183,21 @@ export function SettingsPage({
         <label><span>{t("settings.showControlOverlay")}</span><Switch checked={deviceView.controlOverlayVisible} onChange={(controlOverlayVisible) => onDeviceViewChange({ ...deviceView, controlOverlayVisible })} /></label>
         <label><span>{t("settings.lockRotationControls")}</span><Switch checked={deviceView.rotationControlsLocked} onChange={(rotationControlsLocked) => onDeviceViewChange({ ...deviceView, rotationControlsLocked })} /></label>
         <label><span>{t("settings.fullscreenToolbarAutoHide")}</span><Switch checked={deviceView.fullscreenToolbarAutoHide} onChange={(fullscreenToolbarAutoHide) => onDeviceViewChange({ ...deviceView, fullscreenToolbarAutoHide })} /></label>
+        <label>
+          <span>{t("settings.toolbarLayout")}</span>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => onDeviceViewChange({
+              ...deviceView,
+              fullscreenHardwareToolbarDock: defaultDeviceViewPreferences.fullscreenHardwareToolbarDock,
+              fullscreenFunctionToolbarDock: defaultDeviceViewPreferences.fullscreenFunctionToolbarDock,
+              fullscreenToolbarsAttached: defaultDeviceViewPreferences.fullscreenToolbarsAttached,
+              windowToolbarOrder: [...defaultDeviceViewPreferences.windowToolbarOrder],
+            })}
+          >
+            {t("settings.resetToolbarLayout")}
+          </Button>
+        </label>
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.audio")}</Typography.Title>

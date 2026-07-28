@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clampToolbarPosition, fullscreenToolbarDockPosition, isFullscreenToolbarDock, nearestFullscreenToolbarDock, reconcileFullscreenToolbarDocks, resolveFullscreenToolbarDrop } from "./fullscreenToolbarLayout";
+import { attachedFullscreenToolbarPositions, clampToolbarPosition, fullscreenToolbarDockPosition, isFullscreenToolbarDock, nearestFullscreenToolbarDock, reconcileFullscreenToolbarDocks, resolveFullscreenToolbarDrop, shouldAttachFullscreenToolbars } from "./fullscreenToolbarLayout";
 
 describe("fullscreen toolbar layout", () => {
   const container = { width: 1000, height: 700 };
@@ -88,5 +88,41 @@ describe("fullscreen toolbar layout", () => {
       { width: 104, height: 44 },
       { width: 104, height: 44 },
     ).hardware).toBe("top-center");
+  });
+
+  it("packs attached toolbars inward from the hardware anchor", () => {
+    expect(attachedFullscreenToolbarPositions(
+      "top-left",
+      container,
+      { width: 260, height: 44 },
+      { width: 340, height: 44 },
+    )).toEqual({
+      hardware: { x: 8, y: 8 },
+      function: { x: 8, y: 56 },
+    });
+    expect(attachedFullscreenToolbarPositions(
+      "bottom-right",
+      container,
+      { width: 260, height: 44 },
+      { width: 340, height: 44 },
+    )).toEqual({
+      hardware: { x: 732, y: 648 },
+      function: { x: 652, y: 600 },
+    });
+    expect(attachedFullscreenToolbarPositions(
+      "left-center",
+      container,
+      { width: 260, height: 44 },
+      { width: 340, height: 44 },
+    )).toEqual({
+      hardware: { x: 8, y: 328 },
+      function: { x: 272, y: 328 },
+    });
+  });
+
+  it("detects overlap and nearby edges for automatic attachment", () => {
+    const first = { x: 8, y: 8, width: 260, height: 44 };
+    expect(shouldAttachFullscreenToolbars(first, { x: 8, y: 60, width: 340, height: 44 })).toBe(true);
+    expect(shouldAttachFullscreenToolbars(first, { x: 8, y: 90, width: 340, height: 44 })).toBe(false);
   });
 });
