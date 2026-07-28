@@ -240,16 +240,16 @@ export function DeviceInspector({
     setError(null);
     try {
       if (tab === "info") {
-        void Promise.allSettled([
-          loadBackupStatus(),
-          loadSysdiagnoseStatus(),
-          loadDeveloperImageStatus(),
-        ]);
         const nextDetails = await readJson<DeviceDetails>(await request("/api/device/details", {
           signal: ticket.signal,
         }));
         if (!ticket.isCurrent()) return;
         setDetails(nextDetails);
+        void Promise.allSettled([
+          loadBackupStatus(),
+          loadSysdiagnoseStatus(),
+          loadDeveloperImageStatus(),
+        ]);
         setCompanions([]);
         setCompanionError(null);
         if (nextDetails.product_type.startsWith("iPhone")) {

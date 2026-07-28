@@ -212,7 +212,7 @@ async fn device_details(
             )
         })?
         .map_err(|_| session_ended())?
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
+        .map_err(|error| (StatusCode::SERVICE_UNAVAILABLE, error))?;
     Ok(Json(details))
 }
 
@@ -525,6 +525,22 @@ mod tests {
         let error = require_session_ready(&session).unwrap_err();
         assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
         assert!(error.1.contains("connecting to device"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_metadata_is_reported_as_retryable() {
+        let (state, mut commands) = test_state();
+        let request = tokio::spawn(device_details(State(state), None));
+        let InputCmd::GetDeviceDetails(reply) = commands.recv().await.unwrap() else {
+            panic!("expected device details command");
+        };
+        reply
+            .send(Err("device metadata is temporarily unavailable".into()))
+            .unwrap();
+
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(error.1.contains("temporarily unavailable"));
     }
 
     #[tokio::test]

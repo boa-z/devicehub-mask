@@ -1,6 +1,6 @@
 //! Routing from host-facing session commands to supervised device services.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use devicehub_core::{AppOperationSlot, DeviceDetails};
@@ -26,6 +26,9 @@ use crate::{
 
 const BOOTSTRAP_METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const BOOTSTRAP_INSTALLATION_PROXY_TIMEOUT: Duration = Duration::from_secs(5);
+const DETAILS_REFRESH_TIMEOUT: Duration = Duration::from_secs(3);
+const DETAILS_RECOVERY_ATTEMPTS: usize = 2;
+const DETAILS_RECOVERY_BACKOFF: Duration = Duration::from_millis(200);
 
 /// Routes management commands while returning HID and clipboard commands that
 /// require capabilities owned by the host session loop. Filesystem operations
@@ -33,7 +36,8 @@ const BOOTSTRAP_INSTALLATION_PROXY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) struct DeviceSessionRouter<HostPath> {
     provider: Arc<dyn IdeviceProvider>,
     power: DevicePowerController,
-    details: Option<DeviceDetails>,
+    requested_udid: String,
+    details: Arc<Mutex<Option<DeviceDetails>>>,
     apps: AppManagement,
     services: DeviceServicePorts<HostPath>,
 }
@@ -44,6 +48,7 @@ pub(crate) struct DeviceSessionRouter<HostPath> {
 pub(crate) struct DeviceManagementBootstrap {
     provider: Arc<dyn IdeviceProvider>,
     app_operation: AppOperationSlot,
+    requested_udid: String,
     details: Option<DeviceDetails>,
     app_clients: AppClientSet,
 }
@@ -56,7 +61,7 @@ impl DeviceManagementBootstrap {
     ) -> Self {
         let details = match tokio::time::timeout(
             BOOTSTRAP_METADATA_TIMEOUT,
-            read_device_details(provider.as_ref(), requested_udid),
+            read_device_details(provider.as_ref(), requested_udid.clone()),
         )
         .await
         {
@@ -94,6 +99,7 @@ impl DeviceManagementBootstrap {
         Self {
             provider,
             app_operation,
+            requested_udid,
             details,
             app_clients,
         }
@@ -107,6 +113,7 @@ impl DeviceManagementBootstrap {
         DeviceManagementSession {
             provider: self.provider,
             app_operation: self.app_operation,
+            requested_udid: self.requested_udid,
             details: self.details,
             app_clients: self.app_clients,
             app_transport: AppServiceTransport::new(adapter, handshake),
@@ -118,6 +125,7 @@ impl DeviceManagementBootstrap {
 pub(crate) struct DeviceManagementSession {
     provider: Arc<dyn IdeviceProvider>,
     app_operation: AppOperationSlot,
+    requested_udid: String,
     details: Option<DeviceDetails>,
     app_clients: AppClientSet,
     app_transport: AppServiceTransport,
@@ -145,6 +153,7 @@ impl DeviceManagementSession {
         DeviceSessionRouter::new(
             self.provider,
             self.app_operation,
+            self.requested_udid,
             self.details,
             self.app_clients,
             self.app_transport,
@@ -157,6 +166,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
     fn new(
         provider: Arc<dyn IdeviceProvider>,
         app_operation: AppOperationSlot,
+        requested_udid: String,
         details: Option<DeviceDetails>,
         app_clients: AppClientSet,
         app_service_transport: AppServiceTransport,
@@ -172,7 +182,8 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
         Self {
             provider,
             power,
-            details,
+            requested_udid,
+            details: Arc::new(Mutex::new(details)),
             apps,
             services,
         }
@@ -498,46 +509,68 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
         &self,
         reply: tokio::sync::oneshot::Sender<Result<DeviceDetails, String>>,
     ) {
-        let Some(mut details) = self.details.clone() else {
-            let _ = reply.send(Err("device metadata is unavailable".into()));
-            return;
-        };
         let provider = self.provider.clone();
+        let requested_udid = self.requested_udid.clone();
+        let details_cache = self.details.clone();
         tokio::spawn(async move {
-            let requested_udid = details.udid.clone();
+            let cached = details_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let attempts = if cached.is_some() {
+                1
+            } else {
+                DETAILS_RECOVERY_ATTEMPTS
+            };
+            let mut refreshed = None;
+            for attempt in 1..=attempts {
+                match tokio::time::timeout(
+                    DETAILS_REFRESH_TIMEOUT,
+                    read_device_details(provider.as_ref(), requested_udid.clone()),
+                )
+                .await
+                {
+                    Ok(Some(details)) => {
+                        refreshed = Some(details);
+                        break;
+                    }
+                    Ok(None) => tracing::warn!(attempt, "device metadata refresh unavailable"),
+                    Err(_) => tracing::warn!(attempt, "device metadata refresh timed out"),
+                }
+                if attempt < attempts {
+                    tokio::time::sleep(DETAILS_RECOVERY_BACKOFF).await;
+                }
+            }
+            let mut details = match select_device_details(refreshed, cached) {
+                Ok(details) => details,
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
+            };
             let (
-                details_result,
                 battery_result,
                 developer_mode_result,
                 developer_image_result,
                 activation_state_result,
             ) = tokio::join!(
                 tokio::time::timeout(
-                    Duration::from_secs(3),
-                    read_device_details(provider.as_ref(), requested_udid),
-                ),
-                tokio::time::timeout(
-                    Duration::from_secs(3),
+                    DETAILS_REFRESH_TIMEOUT,
                     read_device_battery(provider.as_ref()),
                 ),
                 tokio::time::timeout(
-                    Duration::from_secs(3),
+                    DETAILS_REFRESH_TIMEOUT,
                     read_device_developer_mode_status(provider.as_ref()),
                 ),
                 tokio::time::timeout(
-                    Duration::from_secs(3),
+                    DETAILS_REFRESH_TIMEOUT,
                     is_developer_image_mounted(provider.as_ref(), &details.product_version,),
                 ),
                 tokio::time::timeout(
-                    Duration::from_secs(3),
+                    DETAILS_REFRESH_TIMEOUT,
                     read_activation_state(provider.as_ref()),
                 ),
             );
-            match details_result {
-                Ok(Some(refreshed)) => details = refreshed,
-                Ok(None) => tracing::warn!("device metadata refresh unavailable"),
-                Err(_) => tracing::warn!("device metadata refresh timed out"),
-            }
             match battery_result {
                 Ok(Ok(battery)) => {
                     tracing::debug!(
@@ -575,9 +608,21 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
                 Ok(Err(error)) => tracing::warn!(%error, "device activation state unavailable"),
                 Err(_) => tracing::warn!("device activation state timed out"),
             }
+            *details_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(details.clone());
             let _ = reply.send(Ok(details));
         });
     }
+}
+
+fn select_device_details(
+    refreshed: Option<DeviceDetails>,
+    cached: Option<DeviceDetails>,
+) -> Result<DeviceDetails, String> {
+    refreshed
+        .or(cached)
+        .ok_or_else(|| "device metadata is temporarily unavailable; retry the request".to_string())
 }
 
 fn route_location(port: &super::services::LocationServicePort, command: LocationCommand) {
@@ -781,10 +826,10 @@ fn reject_device_file<HostPath>(command: DeviceFileCommand<HostPath>, reason: &s
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use devicehub_core::{LocationStatus, LocationStatusSlot};
+    use devicehub_core::{DeviceDetails, LocationStatus, LocationStatusSlot};
 
     use super::super::services::LocationServicePort;
-    use super::{route, route_location};
+    use super::{route, route_location, select_device_details};
     use crate::LocationCommand;
 
     #[tokio::test]
@@ -855,5 +900,47 @@ mod tests {
         assert_eq!((latitude, longitude), (25.033, 121.5654));
         reply.send(Ok(())).unwrap();
         assert_eq!(result.await.unwrap(), Ok(()));
+    }
+
+    #[test]
+    fn device_details_refresh_recovers_from_missing_bootstrap_metadata() {
+        let cached = test_device_details("cached");
+        let selected = select_device_details(None, Some(cached)).unwrap();
+        assert_eq!(selected.name, "cached");
+
+        let refreshed = test_device_details("refreshed");
+        let selected = select_device_details(Some(refreshed), None).unwrap();
+        assert_eq!(selected.name, "refreshed");
+
+        assert!(
+            select_device_details(None, None)
+                .unwrap_err()
+                .contains("retry")
+        );
+    }
+
+    fn test_device_details(name: &str) -> DeviceDetails {
+        DeviceDetails {
+            udid: "test-udid".into(),
+            name: name.into(),
+            product_type: "iPhone14,3".into(),
+            product_version: "27.0".into(),
+            build_version: None,
+            device_class: None,
+            cpu_architecture: None,
+            model_number: None,
+            hardware_model: None,
+            device_color: None,
+            enclosure_color: None,
+            serial_number: None,
+            ecid: None,
+            total_disk_capacity: None,
+            storage: None,
+            activation_state: None,
+            developer_mode_enabled: None,
+            developer_image_mounted: None,
+            regional_settings: None,
+            battery: None,
+        }
     }
 }
