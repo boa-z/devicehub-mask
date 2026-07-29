@@ -2,6 +2,8 @@
 
 简体中文 | [English](../en/development.md) | [文档首页](README.md)
 
+修改所有权或运行时行为前，应先阅读[架构说明](architecture.md)和 [Core 与 Runtime 边界](core-runtime.md)。本页作为命令与构建参考。
+
 ## 仓库结构
 
 ```text

@@ -1,40 +1,57 @@
 # DeviceHub Mask 文档
 
-简体中文 | [English](../en/README.md) | [项目说明](../../README.zh-CN.md)
+简体中文 | [English](../en/README.md) | [项目 README](../../README.zh-CN.md)
 
-这些文档按任务拆分，不需要按顺序阅读。
+请按目标选择阅读路径。每个详细主题只有一个权威页面，其他页面通过链接引用，不重复维护相同说明。
 
-## 指南
+## 使用 DeviceHub Mask
 
-- [快速开始](getting-started.md)：平台依赖、获取源码、设备准备和首次开发运行
-- [使用指南](user-guide.md)：设备、映射、应用、键盘、硬件按键、截图、语言和更新工作流
-- [按键映射使用指南](key-mapping.md)：配置创建、控制器行为、触点所有权、导入、App 关联和故障排查
-- [MCP 自动化指南](mcp.md)：Agent 配置、截图与语义控制、低延迟游戏流程、诊断、WDA、安全和工具边界
-- [功能参考](features.md)：当前桌面工作区、设备管理操作、idevice 服务覆盖、MCP 工具和功能边界
-- [架构说明](architecture.md)：进程边界、私有传输、CoreDevice 会话、视频管线、HID 校验和数据所有权
-- [Core 与 Runtime 提取](core-runtime.md)：宿主无关库、所有权、依赖规则、迁移顺序和验收标准
-- [开发与构建](development.md)：仓库结构、环境变量、验证、本地生产构建和各平台打包
-- [无头服务](headless.md)：nightly 归档、回环启动、局域网显式开放、鉴权和包结构
-- [真机回归验证](device-regression.md)：只读 USB 检查，以及 USB/Wi-Fi 媒体、输入、App、AFC 和重连人工验证
-- [发布与更新](distribution.md)：GitHub Actions、nightly 产物、更新签名、Apple 签名和版本规则
-- [故障排查](troubleshooting.md)：白屏、设备音频、Windows 设备准备、CoreDevice 错误、触控坐标和更新失败
+| 目标 | 阅读 |
+| --- | --- |
+| 安装依赖并首次连接设备 | [快速开始](getting-started.md) |
+| 使用桌面端各工作区 | [使用指南](user-guide.md) |
+| 创建、导入和绑定按键映射 | [按键映射指南](key-mapping.md) |
+| 确认某项能力是否已经实现 | [功能参考](features.md) |
+| 处理连接、媒体或平台故障 | [故障排查](troubleshooting.md) |
 
-## 支持矩阵
+## 服务与自动化
 
-| 能力 | macOS | Windows | Linux |
+| 目标 | 阅读 |
+| --- | --- |
+| 在本机或局域网运行浏览器界面 | [Headless 服务](headless.md) |
+| 让 agent 控制和检查设备 | [MCP 自动化指南](mcp.md) |
+
+## 开发与发布
+
+| 目标 | 阅读 |
+| --- | --- |
+| 理解进程、crate、运行时和数据流边界 | [架构说明](architecture.md) |
+| 判断代码属于 core、runtime、server、host 还是装配根 | [Core 与 Runtime 边界](core-runtime.md) |
+| 配置仓库、验证修改和本地构建 | [开发与构建](development.md) |
+| 显式执行硬件回归 | [真机回归](device-regression.md) |
+| 构建 CI 产物、发布版本或配置更新 | [CI、发布与更新](distribution.md) |
+
+## 权威信息来源
+
+| 问题 | 权威页面 |
+| --- | --- |
+| 已实现和明确排除哪些能力？ | [功能参考](features.md) |
+| 用户如何完成某项流程？ | [使用指南](user-guide.md)及对应专题指南 |
+| 某项行为由哪一层负责？ | [架构说明](architecture.md) |
+| Rust 依赖边界有哪些强制规则？ | [Core 与 Runtime 边界](core-runtime.md) |
+
+## 支持概览
+
+| 范围 | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Tauri 桌面界面 | 支持 | 支持 | 支持 |
-| CoreDevice USB 画面 | 主要开发平台 | 需要完成设备准备 | 取决于主机配对和 usbmuxd 环境 |
-| Universal HID 控制 | 设备开放服务时支持 | 设备开放服务时支持 | 取决于 CoreDevice 服务可用性 |
-| CI 安装包 | Universal DMG | x64 NSIS 和 MSI | x64 和 ARM64 AppImage、DEB |
-| 无头 nightly 包 | Universal tar.gz | x64 zip | x64 和 ARM64 tar.gz |
-| 应用内更新 | 签名 app 压缩包 | 签名 NSIS 安装包 | 签名 AppImage |
+| Tauri 桌面 UI | 支持 | 支持 | 支持 |
+| CoreDevice USB 画面 | 主要开发平台 | 完成设备准备后支持 | 取决于主机配对/usbmuxd 环境 |
+| Universal HID 控制 | 取决于设备能力 | 取决于设备能力 | 取决于设备与主机能力 |
+| CI 桌面产物 | Universal DMG | x64 NSIS 和 MSI | x64/ARM64 AppImage 和 DEB |
+| Headless 产物 | Universal tar.gz | x64 zip | x64/ARM64 tar.gz |
 
-CoreDevice 能力由 Apple 控制。USB 配对成功不代表当前硬件和 iOS 组合一定开放远程画面或 Universal HID 服务。
+CoreDevice 服务是否可用由 Apple 决定。配对成功不代表远程画面、HID、诊断或全部管理服务一定可用。
 
-## 文档约定
+## 文档规则
 
-- 除非页面另有说明，所有命令都从仓库根目录运行。
-- `nightly` 表示由 `main` 更新产生的滚动发布版本。
-- 路径和服务标识符不翻译。
-- 修改功能行为时，应同时更新 `docs/en` 和 `docs/zh-CN` 中对应的页面。
+除非另有说明，命令都在仓库根目录运行。`nightly` 表示从 `main` 生成的滚动构建。服务名、路径和标识符不翻译。行为修改必须同步更新中英文页面，并通过 `npm run docs:check`。

@@ -1,114 +1,68 @@
-# Core 与 Runtime 提取
+# Core 与 Runtime 边界
 
-简体中文 | [English](../en/core-runtime.md) | [文档首页](README.md)
+[English](../en/core-runtime.md) | [文档首页](README.md)
 
-状态：已接受，按阶段实施。
-
-## 决策
-
-DeviceHub Mask 保持单一仓库，并把 Rust 后端拆分为两个宿主无关库：
-
-- `devicehub-core` 定义稳定的领域数据、校验、错误、事件和类型化服务句柄。
-- `devicehub-runtime` 持有具体 Apple 设备实现，并实现 core 定义的服务。
-
-Tauri、未来的无头进程、HTTP/WebSocket 与 MCP 都是同一 runtime 外围的宿主或适配器。它们不得分别创建设备会话，也不得复制设备策略。提取必须渐进进行：先在现有桌面 crate 内建立内部 `DeviceRuntime` 边界并覆盖生命周期测试，再创建 workspace crate。机械迁移与行为修改不得放在同一个 commit。
+Core/runtime 拆分已经完成。本页定义当前 Rust 边界，不再是迁移计划。`scripts/check-rust-boundaries.mjs` 会强制检查最重要的依赖与源码规则。
 
 ## 依赖方向
 
 ```text
-devicehub-desktop -----> devicehub-runtime -----> devicehub-core
-devicehub-headless ----> devicehub-runtime -----> devicehub-core
-devicehub-desktop -----> devicehub-server -----> devicehub-runtime
-devicehub-headless ----> devicehub-server -----> devicehub-runtime
-devicehub-mcp -----------------------------------> devicehub-core
+devicehub-headless ----+--> devicehub-server ----+
+                      |                          |
+src-tauri -------------+--> devicehub-host ------+--> devicehub-runtime --> devicehub-core
 ```
 
-`devicehub-core` 不得依赖 `idevice`、Tauri、Axum、tower-http、rmcp、FFmpeg、rodio、React 产物、原生对话框、更新器或窗口 API。它持有归一化 DTO、有界校验、业务规则、控制租约、稳定错误、事件和服务契约，并应包含真实策略，而不是空洞的 trait 集合。
+宿主可以依赖其装配的下层能力，server 和 host 适配器可以依赖 runtime/core，runtime 依赖 core，反向依赖一律禁止。
 
-设备存储直接遵循该归属：core 定义公共 AFC 与应用容器 DTO、传输活动策略、取消分类、Bundle ID 校验和设备路径约束规范化。runtime 持有 AFC 与 House Arrest 执行命令和传输，宿主保留不透明的本机路径及文件系统流实现。
+## `devicehub-core`
 
-core 也持有行为不依赖 Apple 传输的有界观察端口，包括抓取与诊断状态、设备条件状态和规范化设备日志环形缓冲。runtime 持有这些端口的生产者；协议转换、需求门控、重试、截止时间和命令 worker 仍是实现细节。
+Core 拥有稳定、规范化、有界的领域行为：设备和 App 值、输入命令、按键映射校验、存储路径策略、诊断/抓包状态、性能观测、服务健康、定位、描述文件元数据和可复用状态槽。
 
-按键映射配置 DTO 与校验也属于 core 策略：配置名约束、支持的映射形式、规范化位置、App 绑定和硬件按键冲突规则必须在桌面与未来无头宿主中保持一致。`devicehub-server` 通过 `ProfileRepository` 端口暴露 HTTP；宿主通过实现该端口继续持有配置目录选择与持久化。
+Core 不能依赖异步/设备/Web/桌面/进程框架，包括 `tokio`、`idevice`、`axum`、`rmcp`、`rodio`、Tauri、`wry` 或 FFmpeg。它不拥有宿主路径、原始 plist/XPC 值、协议 client、重试循环或任务启动。Core 应包含真实的校验和状态转换策略，而不只是 marker trait 或传输形状 DTO。
 
-Developer Image 挂载状态与版本到镜像类型的策略遵循相同规则。core 暴露规范化观察结果；runtime 持有不透明的资源请求、宿主注入加载、个性化、设备传输和操作监督。
+## `devicehub-runtime`
 
-core 持有规范化服务健康注册表和重启计数转换策略。runtime 持有 reporter 及全部可执行监督行为，包括 tracing、重试延迟、关闭信号、任务创建和强制终止。
+Runtime 是唯一 Apple 设备执行层，拥有发现、配对/信任协调、并发会话注册表、非 `Send` client、命令队列、Apple 服务转换、媒体协商/发布、Universal HID、需求租约、监督、重连和确定性会话清理。
 
-core 还持有合并后的性能观察槽及其有界历史和排序策略。runtime 专用转换器接收 Apple DVT 与 plist 样本并产生类型化规范观察；需求信号、采样 worker 和设备 channel 留在 runtime。
+其公共表面只包含类型化 client、命令、有界观测和宿主能力端口。原始协议 client 与传输 handle 保持私有。Runtime 可以使用 `idevice`、Tokio、序列化和平台中立网络，但不能使用 Axum、MCP、Tauri、`rodio`、`wry` 或桌面前端资源。生产 runtime 代码不得读取进程环境、解析可执行文件、启动 FFmpeg/netmuxd 或选择宿主目录。
 
-`devicehub-runtime` 可以依赖 core、`idevice`、Tokio、序列化、媒体辅助模块，以及跨平台文件系统和网络 API。它不得依赖 Tauri、Axum、rmcp、前端资源、HTTP 鉴权或窗口状态，也不得自行读取宿主环境或解析、启动操作系统进程。原始 XPC、plist、CoreDevice client 和设备传输类型不得越过其公共 API。
+关键公共边界为：
 
-适配器依赖 core 服务，不能直接打开 CoreDevice、DVT、Lockdown、AFC、House Arrest、Installation Proxy 或诊断 client。迁移期间可以把现有有界命令入口和状态槽作为兼容 API 重新导出，但新增适配器行为必须使用类型化服务。输入命令以及抓包与诊断状态值由适配器直接从 core 导入，runtime 不再转发这些领域类型。
+- `RuntimeManagerClient`：清单、前端选择、配对/信任和 manager 操作。
+- `DeviceSessionRegistry`：准确会话查找。
+- `DeviceSessionClient`：单一目标的观测、命令、媒体和需求。
+- 宿主端口：剪贴板、文件、抓包目标、Developer Image、描述文件、备份、诊断 sink、音频 pipeline 和 sidecar。
 
-## 所有权
+## `devicehub-server`
 
-runtime 持有设备专用 16 MiB 线程、Tokio runtime 与 `LocalSet`、共享的发现与信任协调、并发设备会话 registry、重连策略、全部非 `Send` 设备 client、服务监督、命令队列、按住输入清理、媒体 worker 和 sidecar 生命周期策略。所有设备 supervisor 都作为 owner 线程上的 local task 运行，并按区分传输的选择 ID 相互隔离。具体 sidecar 进程的解析和启动由宿主适配器在 runtime 端口背后完成。
+Server 拥有有界线上适配：认证私有 HTTP、状态投影、WebSocket 视频/音频/控制、MCP handler、SPA 和 API 错误映射。它接收已有 runtime client、repository 和显式配置。
 
-面向宿主的 facade 只公开类型化命令、观察状态和能力端口。具体输入 dispatcher、服务 reporter 与 supervisor、重试辅助函数、协议 client 和传输 handle 均保持私有，确保宿主不能绕过 session manager 建立第二条执行或恢复路径。
+它不能拥有监听器、解析宿主环境、启动设备 runtime、打开 Apple 服务或使用 Tauri/桌面音频。Manager 路由只接收 manager 能力；设备路由解析目标会话；文件/profile 路由接收窄化宿主 repository。新增 endpoint 不代表可以绕过 runtime 公共边界。
 
-面向宿主的 `RuntimeClient` 具有两个明确的所有权分组。`RuntimeManagerClient` 只暴露发现清单、前端选择和 manager 生命周期控制；`DeviceSessionRegistry` 根据准确选择 ID 解析 `DeviceSessionClient`，每个 client 只暴露该会话的媒体、输入、观察、服务及设备操作接口。旧的根 `device` view 暂时作为迁移 facade 保留，生产 HTTP、WebSocket、MCP 和音频路径均通过 registry 解析。内部 `CoreRuntimeState` 通过私有的 manager 与逐会话状态组镜像相同拆分，避免 manager view 与宿主 client 把一台设备的状态投影到另一台设备。
+## `devicehub-host`
 
-宿主持有目录选择、环境变量与命令行解析、设置持久化、操作系统进程解析、Tauri 能力、HTTP 监听、鉴权、TLS 与局域网策略，以及本机或远程音频消费者的选择。宿主解析后的路径、FFmpeg 配置、sidecar 适配器和诊断覆盖通过配置或能力端口传入。边界检查会阻止生产 runtime 重新引入环境变量读取、进程启动或 FFmpeg 路径解析。
+Host 包含桌面与 headless 共用的原生实现：受限文件系统、profile 持久化、浏览器传输、抓包/诊断目标、Developer Image/描述文件资源、备份、FFmpeg 音频解码、netmuxd 和 Wi-Fi 配对存储。
 
-`devicehub-server` 持有可复用的线路协议适配器，但不持有监听器或 runtime 生命周期。其 WebSocket 适配器统一负责状态发布、输入校验、WebCodecs 数据包发送、流控、遥测和断连清理；MCP 适配器持有完整工具目录、校验、handler 实现与 Streamable HTTP router，同时保持现有 `devicehub_mask` 服务标识。设备管理 HTTP 适配器只接收 `RuntimeManagerClient`，持有发现刷新、设备选择、重连、配对和撤销信任的请求语义，不能访问活动设备会话。独立的活动设备适配器只接收 session 命令入口、位置观察和截图服务，持有详情、重命名、Developer Mode、定位、粘贴、截图、电源、伴随设备、主屏布局和壁纸路由，不能访问 manager 状态或宿主文件。WDA Runner 适配器在相同的窄命令入口上独立持有 runner bundle 校验、生命周期期限和 HTTP 错误映射。其他独立 HTTP 适配器持有 App 发现与生命周期、有界崩溃报告、性能工作台、公共 AFC/App 容器存储、长时间诊断导出、Developer Image 生命周期和 provisioning profile 管理，每个适配器只接收窄化的 runtime 命令与观察句柄。Developer Image 与 provisioning 适配器都以不透明值传递宿主路径，并把校验和文件读取留给宿主资源加载器实现。存储路由同样通过类型化 runtime 命令遵循该规则，runtime 传输仍使用宿主注入的文件系统端口完成校验、流式 I/O 和原子发布；抓包检查与诊断目标规范化通过各自用途明确的异步宿主能力进入适配器。桌面及未来无头 composition root 注入既有 `RuntimeClient` 和有界适配器配置；适配器不能读取进程环境、监听生产端口或启动设备会话。鉴权私有 API 根路由、状态与 WebSocket 路由以及所有子路由组合现在归 `devicehub-server` 所有；Tauri 只叠加桌面 CORS 并持有监听器生命周期。
+它必须兼容 headless，不能依赖 Tauri、`wry`、桌面剪贴板/音频库、监听策略或产品 UI。它实现 runtime/server 端口，但不决定设备策略。
 
-## 目标 API
+## 装配根
 
-core 提供可克隆的类型化能力，不暴露 runtime 实现类型。输入命令和规范化触点属于 core 领域值，runtime 负责将其转换为 Apple HID report：
+`devicehub-headless` 拥有 CLI 解析、数据/前端目录、token 文件、监听地址、显式 LAN 权限、可选 MCP 绑定、信号处理和进程关闭。
 
-```rust
-pub struct DeviceHubServices {
-    pub devices: DeviceService,
-    pub input: InputService,
-    pub applications: ApplicationService,
-    pub storage: StorageService,
-    pub diagnostics: DiagnosticsService,
-    pub media: MediaService,
-}
-```
+`src-tauri` 拥有桌面进程、loopback 监听生命周期、Tauri 状态/权限、窗口/更新器/对话框、原生音频与剪贴板、桌面设置和应用关闭。桌面专用适配器留在这里，不泄漏到共享 crate。
 
-runtime 持有启动与确定性关闭：
+两个装配根都不能创建第二套设备 session manager 或重复 server 路由。
 
-```rust
-pub struct RuntimeConfig;
-pub struct DeviceRuntime;
+## 多设备契约
 
-impl DeviceRuntime {
-    pub fn start(config: RuntimeConfig) -> Result<Self, RuntimeError>;
-    pub fn services(&self) -> DeviceHubServices;
-    pub fn shutdown(self) -> Result<(), RuntimeError>;
-}
-```
+注册表 key 是包含传输信息的 selection ID。操作先解析该 ID，再访问会话。切换 UI 焦点不销毁会话；一个物理 UDID 的重复 USB/Wi-Fi 活动会被拒绝；断开和恢复只影响目标。MCP 连接可以选择不同设备，HTTP/WebSocket 客户端携带明确设备范围。
 
-启动 runtime 不会创建 HTTP、MCP、Tauri 或前端任务；启动适配器也不会创建设备会话。关闭时拒绝新命令、释放按住输入、在有界宽限期内结束所有已注册会话及其受监督任务、停止自有 sidecar，最后 join 设备线程。显式关闭、重复关闭和部分启动失败后的清理都必须安全。
+视频、音频、性能和日志的需求租约按会话隔离，消费者在断开或失败时必须释放。新后台服务必须有明确所有者、有界重启策略、健康报告和确定性关闭。
 
-## 迁移顺序
+## 可见性与模块形状
 
-1. 引入内部 `DeviceRuntime`、配置、服务和关闭边界，不改变桌面行为。
-2. 从宿主注入路径、FFmpeg、netmuxd、偏好、日志和音频发布决策。
-3. 拆分领域 DTO、运行时命令与状态槽及适配器响应类型；适配器可以直接导入所有者 crate 后，移除混合的 `protocol.rs` 与领域通配 facade。
-4. 创建 `devicehub-core`，迁移领域模型、校验、策略和类型化服务契约。
-5. 创建 `devicehub-runtime`，迁移会话编排、设备实现、监督层和媒体发布。
-6. 桌面入口只负责组合 runtime、私有 server、MCP 与 Tauri 平台能力。
-7. 只有桌面行为与库边界稳定后，才加入无头入口和局域网宿主。
+使用 `foo.rs + foo/*.rs` 把领域 facade 与相关实现放在一起。只有其他 crate 确实需要时，才从所有者 crate 的 `lib.rs` 导出公共符号。优先私有，其次 `pub(crate)`，最后才是窄化 `pub` API。不要用 wildcard re-export 或通用共享模块让所有权违规勉强通过编译。
 
-每一步都使用独立 commit。源码迁移阶段保持行为不变，通过 `npm run verify:full`，本地只构建不打包的 Debug 桌面程序，并保持 Windows、macOS 与 Linux 源码兼容。最后在 iPhone 13 Pro Max 上通过 USB 与 Wi-Fi 检查硬件行为。
+## 验收检查
 
-## 多设备运行时
-
-session manager 会同时保持多台设备连接。发现与信任存储是共享协调服务；每个选择 ID 都拥有相互隔离的结构化阶段与诊断状态、命令、媒体流控、需求计数器、观察值、服务 worker 和重连状态。切换选择只会改变桌面显示目标，不会停止之前的会话。显式断开会移除待执行的重连任务并仅停止目标，同时保留发现条目与信任；重连、配对和撤销信任同样只作用于目标设备，进程退出才停止全部会话。
-
-同一 UDID 的 USB 与 Wi-Fi 端点仍是不同的发现选项，但 manager 只允许该物理设备存在一条活动传输。重复连接请求会为对应选择记录有界错误，而不会创建相互竞争的设备服务。失败或断开的 registry 条目会保留状态供检查；显式撤销信任会删除该条目。
-
-设备级私有 HTTP 请求携带 `X-DeviceHub-Device`，WebSocket client 则在查询参数中携带 `device_id`。缺少或无法识别的目标会被拒绝，不会回退到桌面当前显示的设备。连接中心按物理 UDID 归组传输，但仍保留传输级选择与逐行错误。每条 MCP 协议连接拥有独立的选中目标，因此两个 Agent 可以操作不同的已连接设备，而不改变桌面选择。
-
-已连接会话只常驻快速切换所需的传输状态。视频与音频为每个会话维护相互独立且可叠加的消费者租约。没有视频消费者时仍会排空并观察 RTP/RTCP，但 runtime 跳过 HEVC 解包、Access Unit 组装和发布；第一个恢复的消费者会清理陈旧状态并请求关键帧。桌面音频仅为当前选中设备启动 FFmpeg；无头音频仅在至少一个浏览器为准确的选择 ID 请求未静音播放时启动 FFmpeg。性能采样与设备日志仍分别按需启停。状态投影会为每个会话暴露这四项资源状态，无需为了诊断空闲多设备开销而启用被检查的资源。
-
-## 边界与验收
-
-两个库都永远不安装、sideload、签名、升级或注入 App。描述文件管理仍是独立授权的设备管理能力，不能演变为 App 安装路径。
-
-局域网发布要求显式启用并使用 bearer token。浏览器输入通过设备级 WebSocket 控制租约串行化，HTTP 操作则继续显式限定设备。内置 server 仍不提供 TLS、客户端身份配对、分级角色、Origin 限制、速率限制或可撤销会话，因此不支持直接暴露到互联网。MCP 在具备独立鉴权前继续只监听回环地址。
-
-只有当 Tauri 与无头宿主可使用同一 runtime 生命周期、core 不导入禁止的实现依赖、只有 runtime 持有设备会话与非 `Send` client、core 测试不需要 Tauri 或网络端口、失败路径不遗留设备任务或 sidecar，并且 USB/Wi-Fi、WebCodecs、音频、输入、App 管理、AFC、诊断和重连行为继续通过验证时，提取才算完成。
+依赖、import、可见性、环境读取、进程启动、FFmpeg 解析、监听器或 crate 所有权变化时运行 `npm run rust:boundaries`，随后运行针对性测试和常规 `npm run verify`。只有两个宿主仍组合同一套 runtime/server 行为、多设备范围明确、清理有界，并且[架构说明](architecture.md)和[开发与构建](development.md)仍准确时，边界修改才可接受。

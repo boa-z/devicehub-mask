@@ -2,39 +2,56 @@
 
 [简体中文](../zh-CN/README.md) | English | [Project README](../../README.md)
 
-Use this documentation by task rather than reading it in order.
+Choose a path by what you need to do. Each detailed subject has one authoritative page; other pages link to it instead of repeating it.
 
-## Guides
+## Use DeviceHub Mask
 
-- [Getting Started](getting-started.md): platform prerequisites, source setup, device preparation, and the first development run
-- [User Guide](user-guide.md): device, mapping, application, keyboard, hardware button, screenshot, localization, and update workflows
-- [Key Mapping Guide](key-mapping.md): profile creation, controller behavior, contact ownership, imports, app associations, and troubleshooting
-- [MCP Automation Guide](mcp.md): agent setup, screenshot and semantic control, low-latency game workflows, diagnostics, WDA, security, and tool boundaries
-- [Feature Reference](features.md): current desktop workspaces, device-management operations, idevice service coverage, MCP tools, and intentional boundaries
-- [Architecture](architecture.md): process boundaries, private transport, CoreDevice sessions, video pipeline, HID validation, and data ownership
-- [Core and Runtime Extraction](core-runtime.md): host-independent libraries, ownership, dependency rules, migration sequence, and acceptance criteria
-- [Development](development.md): repository layout, environment variables, validation, local production builds, and platform packaging
-- [Headless Service](headless.md): nightly archives, loopback startup, LAN opt-in, authentication, and package layout
-- [Physical Device Regression](device-regression.md): read-only USB checks and manual USB/Wi-Fi media, input, App, AFC, and reconnect validation
-- [Distribution](distribution.md): GitHub Actions, nightly artifacts, updater signing, Apple signing, and release versioning
-- [Troubleshooting](troubleshooting.md): blank windows, device audio, Windows device preparation, CoreDevice errors, touch coordinates, and updater failures
+| Goal | Read |
+| --- | --- |
+| Install prerequisites and connect a first device | [Getting Started](getting-started.md) |
+| Operate the desktop workspaces | [User Guide](user-guide.md) |
+| Create, import, and bind key mappings | [Key Mapping Guide](key-mapping.md) |
+| Check whether a capability exists | [Feature Reference](features.md) |
+| Recover from a connection, media, or platform failure | [Troubleshooting](troubleshooting.md) |
 
-## Support Matrix
+## Run Services and Automation
+
+| Goal | Read |
+| --- | --- |
+| Run the browser UI locally or on a LAN | [Headless Service](headless.md) |
+| Let an agent control and inspect a device | [MCP Automation Guide](mcp.md) |
+
+## Develop and Release
+
+| Goal | Read |
+| --- | --- |
+| Understand process, crate, runtime, and data-flow boundaries | [Architecture](architecture.md) |
+| Decide whether code belongs in core, runtime, server, host, or a composition root | [Core and Runtime Boundaries](core-runtime.md) |
+| Set up the repository, validate changes, and build locally | [Development and Builds](development.md) |
+| Run explicit hardware regression checks | [Physical Device Regression](device-regression.md) |
+| Build CI artifacts, publish releases, or configure updates | [CI, Releases, and Updates](distribution.md) |
+
+## Source of Truth
+
+| Question | Authoritative page |
+| --- | --- |
+| What is implemented and intentionally excluded? | [Feature Reference](features.md) |
+| How should a user complete a workflow? | [User Guide](user-guide.md) and its task-specific guides |
+| Which layer owns behavior? | [Architecture](architecture.md) |
+| What are the enforced Rust dependency rules? | [Core and Runtime Boundaries](core-runtime.md) |
+
+## Support Summary
 
 | Area | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | Tauri desktop UI | Supported | Supported | Supported |
-| CoreDevice USB display | Primary development platform | Supported with device preparation | Depends on host pairing/usbmuxd setup |
-| Universal HID control | Supported when advertised by the device | Supported when advertised by the device | Depends on CoreDevice availability |
-| CI packages | Universal DMG | x64 NSIS and MSI | x64 and ARM64 AppImage and DEB |
-| Headless nightly package | Universal tar.gz | x64 zip | x64 and ARM64 tar.gz |
-| In-app updates | Signed app archive | Signed NSIS installer | Signed AppImage |
+| CoreDevice USB display | Primary development platform | Supported after device preparation | Depends on host pairing/usbmuxd setup |
+| Universal HID control | Device capability dependent | Device capability dependent | Device and host capability dependent |
+| CI desktop packages | Universal DMG | x64 NSIS and MSI | x64 and ARM64 AppImage and DEB |
+| Headless packages | Universal tar.gz | x64 zip | x64 and ARM64 tar.gz |
 
-Apple controls CoreDevice capability availability. A successful USB pairing does not guarantee that a given hardware and iOS combination advertises remote display or Universal HID services.
+Apple controls CoreDevice service availability. Pairing alone does not guarantee remote display, HID, diagnostics, or every management service.
 
-## Documentation Conventions
+## Documentation Rules
 
-- Commands are run from the repository root unless a page says otherwise.
-- `nightly` means the rolling release generated from updates to `main`.
-- Paths and service identifiers are intentionally left untranslated.
-- When changing behavior, update the matching page in both `docs/en` and `docs/zh-CN`.
+Commands run from the repository root unless stated otherwise. `nightly` is the rolling build from `main`. Service names, paths, and identifiers remain untranslated. Behavior changes must update the matching English and Simplified Chinese pages, and `npm run docs:check` must pass.

@@ -2,29 +2,23 @@
 
 简体中文 | [English](README.md)
 
-DeviceHub Mask 是一个基于 Tauri 2 的 iOS 游戏桌面控制应用，支持 macOS、 Windows 和 Linux。项目将 CoreDevice 屏幕串流、Universal HID 控制与参考 [scrcpy-mask](https://github.com/AkiChase/scrcpy-mask) 设计的按键映射编辑器整合在一起。
+DeviceHub Mask 用于在 macOS、Windows 和 Linux 上控制与检查已启用开发者模式的 iOS 设备。同一套 React 应用可以运行在 Tauri 2 桌面宿主或实验性 headless 服务上，并共用支持多设备的 Rust 运行时。项目提供 CoreDevice HEVC/WebCodecs 画面、Universal HID 输入、按键映射、设备/App/文件/诊断工作区和 MCP 自动化。
 
-本项目不使用 iPhone 镜像，也不使用 scrcpy 的 Android 传输层。桌面版内部 Axum 服务只监听回环地址。实验性的独立无头宿主可复用同一套鉴权 API 和 React 界面，监听局域网必须显式启用。
+## 产品形态
 
-## 主要能力
+| 形态 | 用途 |
+| --- | --- |
+| Tauri 桌面端 | 日常原生应用，包含桌面音频、剪贴板、对话框、更新和私有 loopback 服务 |
+| Headless 服务 | 在 loopback 或显式启用的可信 LAN 提供浏览器 UI 与认证 API |
+| MCP | 面向 agent 的 loopback 接口，用于选择目标、截图、HID、App 流程、状态等待和诊断 |
 
-- CoreDevice HEVC 实时画面，最高 60 FPS，并保持横竖屏比例
-- 通过有界的 CoreDevice、screenshotr 和最终 DVT Screenshot 递进回退链获取原生无损截图
-- 最多五个 Universal HID 并发触点、鼠标直接触控、键盘透传和可配置硬件按键快捷键
-- 完整导入和导出 scrcpy-mask `0.0.1` 控制器配置，支持实时画面或截图背景的可视化编辑器
-- 可编辑设备名称、有界的型号/架构/颜色信息、激活就绪状态及有界的电池健康/温度诊断、带真实图标和运行状态的普通/系统/轻 App 浏览、启动、重启与停止、 IPA 安装、安全卸载、App Documents 文件管理、受限的标准 AFC 文件与目录管理、隐私有界的崩溃报告摘要、硬件键锁屏、确认式重启与关机、描述文件检查、校验安装和确认移除，以及可取消的 CoreDevice sysdiagnose 采集
-- 通过 CoreDevice Pasteboard Service 支持单次 Unicode 文本粘贴，并可选启用文本与图片双向同步
-- 按需读取结构化 iPhone 统一日志，支持级别与上下文筛选、受监督 SyslogRelay 回退和有界缓冲
-- 面向开发者 App 与第三方 App 的显式带控制台启动，提供仅限当前会话的有界 stdout/stderr 采集
-- 按需采集归一化 iPhone CPU、有界的核心数与物理内存容量、高负载进程 CPU/内存与相对能耗排行、可搜索的 DVT 运行进程清单、Core Animation FPS、GPU 内存与设备网络速率，并监督 DVT 服务恢复；支持设备级 DVT 网络/热状态模拟，还可有界导出全设备或按进程过滤的网络 PCAP 与蓝牙 HCI PCAP
-- 面向连接诊断的只读、有界 DVT 网络接口目录，不包含 IP 或 MAC 地址
-- 内置 Streamable HTTP MCP 服务，支持截图、低延迟多点触控、受限的 WDA 逻辑设备状态、验证式解锁、前台 App 后台切换、元素检查/等待和语义文本/双击/长按/滚动操作、App 生命周期控制与 Bundle ID 状态等待、帧同步、设备切换、DVT 虚拟定位、有界进程检查与服务端进程状态等待、性能检查、设备日志筛选、崩溃报告诊断、刷新设备详情，以及对 App、存储、区域设置、开发者镜像、名称、激活和锁屏变化的事件等待
-- 原生 Tauri 2 桌面控件、中英文界面和签名 nightly 自动更新
-- 使用 GitHub Actions 验证并打包 macOS、Windows 和 Linux 版本
+运行时可同时保持多台设备连接。UI 选择只切换焦点，不销毁其他会话；API/MCP 客户端会解析明确设备目标。
+
+DeviceHub Mask 明确不安装、侧载、签名、注入或升级 iOS App。该边界同样约束后续功能开发；请先使用专用签名部署工具，再在本项目中管理已有 App。
 
 ## 快速开始
 
-安装 Rust stable、Node.js 22 或更高版本、FFmpeg 以及当前平台所需的原生依赖。 连接 iOS 设备并解锁、信任电脑，同时启用开发者模式。
+安装 Rust stable、Node.js 22 或更高版本、FFmpeg 和平台原生依赖。连接、解锁并信任 iOS 设备，同时开启开发者模式。
 
 ```sh
 git clone https://github.com/boa-z/devicehub-mask.git
@@ -33,54 +27,49 @@ npm ci
 npm run tauri:dev
 ```
 
-Windows 还需要 Apple Mobile Device Service、Visual Studio Build Tools、CMake 和 NASM。首次连接前运行一次设备准备脚本：
+Windows 还需要 Apple Mobile Device Service、Visual Studio Build Tools、CMake 和 NASM，并执行一次：
 
 ```powershell
 .\scripts\prepare-windows-device.ps1
 ```
 
-完整的平台依赖和设备准备流程请查看[快速开始](docs/zh-CN/getting-started.md)。
-
-应用运行时会在 `http://127.0.0.1:8009/mcp` 提供 MCP：
+Headless 开发启动方式：
 
 ```sh
-claude mcp add --transport http devicehub-mask http://127.0.0.1:8009/mcp
+npm run headless:dev -- --listen 127.0.0.1:8080
 ```
+
+平台配置见[快速开始](docs/zh-CN/getting-started.md)，LAN/token 策略见 [Headless 服务](docs/zh-CN/headless.md)。
 
 ## 文档
 
-| 主题 | 简体中文 | English |
-| --- | --- | --- |
-| 文档首页 | [中文文档](docs/zh-CN/README.md) | [English docs](docs/en/README.md) |
-| 安装与首次运行 | [快速开始](docs/zh-CN/getting-started.md) | [Getting Started](docs/en/getting-started.md) |
-| 应用工作流与控制 | [使用指南](docs/zh-CN/user-guide.md) | [User Guide](docs/en/user-guide.md) |
-| 按键映射 | [按键映射使用指南](docs/zh-CN/key-mapping.md) | [Key Mapping Guide](docs/en/key-mapping.md) |
-| Agent 自动化 | [MCP 自动化指南](docs/zh-CN/mcp.md) | [MCP Automation Guide](docs/en/mcp.md) |
-| 已实现功能清单 | [功能参考](docs/zh-CN/features.md) | [Feature Reference](docs/en/features.md) |
-| 系统设计与协议 | [架构说明](docs/zh-CN/architecture.md) | [Architecture](docs/en/architecture.md) |
-| 开发与本地构建 | [开发与构建](docs/zh-CN/development.md) | [Development](docs/en/development.md) |
-| 无头浏览器服务 | [无头服务](docs/zh-CN/headless.md) | [Headless Service](docs/en/headless.md) |
-| CI、发布与更新 | [发布与更新](docs/zh-CN/distribution.md) | [Distribution](docs/en/distribution.md) |
-| 常见问题 | [故障排查](docs/zh-CN/troubleshooting.md) | [Troubleshooting](docs/en/troubleshooting.md) |
+| 读者 | 从这里开始 |
+| --- | --- |
+| 桌面用户 | [文档首页](docs/zh-CN/README.md)，随后阅读[使用指南](docs/zh-CN/user-guide.md) |
+| Headless/LAN 使用者 | [Headless 服务](docs/zh-CN/headless.md) |
+| Agent 使用者 | [MCP 自动化指南](docs/zh-CN/mcp.md) |
+| 开发者 | [架构说明](docs/zh-CN/architecture.md)和[开发与构建](docs/zh-CN/development.md) |
 
-## 项目状态
+完整中英文文档位于[中文文档首页](docs/zh-CN/README.md)和 [English documentation](docs/en/README.md)。
 
-实时画面、HID 控制、按键映射、应用管理和更新流程已经可用。具体设备和 iOS 版本仍取决于 Apple CoreDevice 服务是否开放。当前优先事项包括 Windows 视频管线 性能分析、扩展 Device Hub 设备管理能力，以及补齐 scrcpy-mask 运行时兼容性。
+## 状态与安全
+
+项目仍处于活跃早期开发阶段。CoreDevice 是 Apple 私有能力，会随 iOS、硬件、传输、主机准备和策略变化。配对成功不代表画面、HID、诊断或所有管理服务一定可用。
+
+桌面服务保持 loopback。Headless LAN 模式必须显式启用并使用 token 认证，但没有内置 TLS、账号、角色或互联网安全边界。MCP 没有认证，应保持 loopback。
 
 Nightly 安装包：[GitHub nightly release](https://github.com/boa-z/devicehub-mask/releases/tag/nightly)
 
 ## 验证
 
+提交前运行与 CI 相同的源码门禁：
+
 ```sh
-npm run lint
-npm test
-npm run build
-cargo test --manifest-path src-tauri/Cargo.toml --locked
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+npm run verify
 ```
 
-完整构建和打包检查请查看[开发与构建](docs/zh-CN/development.md)。
+它检查文档、前端 lint/测试/构建、Rust 格式化/测试、Clippy 和 crate 边界，不运行真机测试。针对性、完整、打包和显式真机验证见[开发与构建](docs/zh-CN/development.md)。
 
 ## 致谢
 
-按键映射交互参考了 scrcpy-mask 的实时覆盖层、方向键、按键捕获和配置管理方式。 本项目未使用其 Android 传输代码。
+按键映射交互模型参考 [scrcpy-mask](https://github.com/AkiChase/scrcpy-mask)，未使用 Android 传输代码。

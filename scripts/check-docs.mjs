@@ -19,6 +19,44 @@ if (JSON.stringify(englishPages) !== JSON.stringify(chinesePages)) {
   );
 }
 
+function requireLinks(file, targets, label) {
+  const content = readFileSync(file, "utf8");
+  const missingTargets = targets.filter(
+    (target) => !content.includes(`](${target})`),
+  );
+  if (missingTargets.length > 0) {
+    throw new Error(
+      `${label} is missing navigation links: ${missingTargets.join(", ")}`,
+    );
+  }
+}
+
+const guidePages = englishPages.filter((page) => page !== "README.md");
+requireLinks(
+  join(englishDir, "README.md"),
+  guidePages,
+  "English documentation home",
+);
+requireLinks(
+  join(chineseDir, "README.md"),
+  guidePages,
+  "Chinese documentation home",
+);
+requireLinks(
+  join(root, "README.md"),
+  ["docs/en/README.md", "docs/en/user-guide.md", "docs/en/architecture.md"],
+  "English project README",
+);
+requireLinks(
+  join(root, "README.zh-CN.md"),
+  [
+    "docs/zh-CN/README.md",
+    "docs/zh-CN/user-guide.md",
+    "docs/zh-CN/architecture.md",
+  ],
+  "Chinese project README",
+);
+
 const files = [
   join(root, "README.md"),
   join(root, "README.zh-CN.md"),

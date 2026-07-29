@@ -1,204 +1,110 @@
 # 架构说明
 
-简体中文 | [English](../en/architecture.md) | [文档首页](README.md)
+[English](../en/architecture.md) | [文档首页](README.md)
 
-## 系统概览
+DeviceHub Mask 是一个产品，包含 Tauri 2 桌面端和 headless 浏览器服务两个原生宿主。它们共用 React UI、领域模型、Apple 设备运行时、原生适配器和认证服务端路由。宿主负责装配这些组件，不重新实现它们。
+
+## 系统结构
 
 ```text
-Tauri 2 桌面外壳或 devicehub-headless 浏览器宿主
-        |
-共享 React 19 + Ant Design 工作区
-        |
-Tauri IPC 或同源 URL fragment 启动握手
-        |
-经过鉴权的私有回环 WebSocket 和 HTTP API
-        |
-Rust / Axum 服务
-        |
-idevice：CoreDevice、Lockdown、Installation Proxy、Misagent、Universal HID
+                 React UI (src)
+                  HTTP / WebSocket
+                         |
+              devicehub-server
+           HTTP + WS + MCP + SPA
+                         |
+                 RuntimeClient
+                         |
+              devicehub-runtime
+       发现 + 多设备会话 + Apple 服务
+                 媒体 + HID
+                         |
+                 devicehub-core
+              有界值 + 领域策略
+
+Tauri 宿主 ---------------------------- Headless 宿主
+src-tauri                               devicehub-headless
+桌面策略                               CLI/监听/LAN 策略
+           \                           /
+                  devicehub-host
+        文件 + FFmpeg + netmuxd 适配器
 ```
 
-Vite 从 `src/` 构建唯一一套 React 界面。Tauri 嵌入这些资源并拥有桌面生命周期；`devicehub-headless` 在不链接 Tauri 或 Wry 的前提下提供同一份 `dist/`。`devicehub-host` 保存两个组合根共用的本地文件、配对、FFmpeg 与 netmuxd 适配器。
+依赖方向是强约束。Core 不知道 runtime、传输、网络或 UI 框架；runtime 知道 Apple 设备行为，但不知道 HTTP、Tauri 或宿主进程探测；server 知道线上协议，但不启动 runtime，也不绑定生产监听器；装配根拥有生命周期与暴露策略。
 
-已接受的[Core 与 Runtime 提取](core-runtime.md)会把该结构逐步演进为同一仓库内的宿主无关库。迁移完成前桌面端仍是组合根；新增代码必须提前遵守文档规定的所有权与依赖方向。
+## 分层职责
 
-Rust 传输适配器不应分别实现设备控制规则。第一条迁移到 `application` 应用服务层的纵向链路包含活动会话命令、截图超时、最新原生帧、浏览器画面尺寸和联合帧版本。HTTP 截图与 MCP 截图、输入和帧等待把各自的请求/响应格式映射到同一个 `DeviceControlService`；等待新画面由原生 `watch` 或浏览器帧广播直接唤醒，不在适配器中轮询。后续设备能力应沿用“传输适配器 -> 应用服务 -> 会话能力”的依赖方向。
+| 层 | 职责 |
+| --- | --- |
+| `devicehub-core` | 规范化 DTO、校验、状态槽、有界策略、输入和领域值 |
+| `devicehub-runtime` | 发现、信任、设备会话、Apple 协议、服务监督、媒体/输入、重连与清理 |
+| `devicehub-server` | 认证私有 HTTP、WebSocket 媒体/控制、MCP、SPA 路由和协议校验 |
+| `devicehub-host` | 共用原生文件、传输、FFmpeg、netmuxd、配对存储和资源适配器 |
+| `devicehub-headless` | CLI 配置、数据路径、token 策略、监听和可选 LAN/MCP 暴露 |
+| `src-tauri` | 桌面进程生命周期、私有 loopback 监听、原生音频、剪贴板、窗口、对话框、更新器和权限 |
+| `src` | 共用 React 工作区、浏览器视频/音频、输入调度和宿主能力展示 |
 
-前端的 `useDeviceVideoStream` controller 独占视频 WebSocket、WebCodecs 解码、Canvas 呈现、重连、画面需求、停滞检测和前端性能指标。`useDeviceInput` 独立持有键盘与 Pointer 监听、按住状态、直接触控释放计时器、帧去重和断连清理；它只依赖视频控制器的连接状态与窄化命令 sink，两个控制器不再互相调用生命周期回调。`App` 只负责将这些能力与页面及配置工作流组合。`useDeviceMediaCapture` 独立拥有截图对象 URL、原生截图请求互斥、`MediaRecorder`、捕获轨道和卸载清理；它只接收视频控制器的 Canvas 能力与当前设备上下文，因此捕获工作流既不能参与解码器生命周期，也不能在工作区结束后继续保留资源。
+可执行依赖规则与模块所有权见 [Core 与 Runtime 边界](core-runtime.md)。
 
-前端运行时服务沿用相同的所有权规则。`usePrivateBackend` 独占 Tauri 启动握手和 bearer 鉴权请求构造，`usePerformanceTelemetry` 与 `useDeviceLogDemand` 分别独占受监督服务的需求启停、轮询与清理。设备检查器资源使用相互独立的 latest-request 所有者：发起替代请求或切换活动设备会中止旧 `fetch` 并阻止其提交状态，而备份、sysdiagnose、开发者镜像、壁纸、主屏布局、WDA 与 App 操作请求不会互相取消。非主工作区和大型检查器通过独立 React suspense 边界加载，使设备画面无需等待 AFC、诊断、设置或映射编辑代码完成解析。AFC 只在首次访问时加载，此后保持挂载，因为活动传输与取消操作属于该工作区生命周期。`DeviceWindowToolbar` 以固定顺序显示功能和硬件按钮组，`DeviceFullscreenToolbar` 负责独立的硬件与功能控制面、Pointer Capture、尺寸变化监听和贴合呈现；纯 `fullscreenToolbarLayout` 函数负责边界限制、最近槽位吸合、实际渲染边界冲突、贴合距离与贴合几何，并始终保证硬件控制面优先。`App` 继续持有工作区编排与窗口生命周期状态；持久化的设备视图偏好控制两个全屏工具条槽位、贴合状态以及设备/映射侧栏，设备侧栏通过 CSS 收起以保留检查器组件中的活动状态。
+## 宿主装配
 
-按键映射导入会先经过前端来源适配器注册表，再进入现有配置持久化路径。每个适配器统一声明 ID、接受的文件类型、大小限制、解析器，以及到共用导入结果的转换。界面会明确选择适配器，因此后续新增来源无需继续在配置管理器中堆叠格式猜测。原生格式和 scrcpy-mask 使用 JSON，PlayCover `2.0.0` plist 则由按需加载的结构化 XML 解析器处理。PlayCover 导入会仅允许标准 Apple plist DTD 声明并拒绝实体，同时限制文件大小、嵌套深度、节点数和模型数，再将支持的键盘控件转换为共用的标准化映射模型。持久化配置 DTO 及其名称、映射、App 绑定、位置和硬件快捷键校验位于 `devicehub-core`；在可复用仓储端口注入 `devicehub-server` 前，桌面宿主暂时继续持有目录与文件持久化。
+两个宿主都创建一个 `RuntimeClient`，注入 `devicehub-host` 能力，再把窄化 client 传给 `devicehub-server`。服务端路由可复用且不拥有监听器。
 
-## 桌面端与私有传输
+桌面端绑定随机 loopback 私有 API 供 WebView 使用，并单独暴露 loopback MCP。Tauri 壳层拥有原生音频、剪贴板、文件对话框、窗口状态、更新安装和桌面权限。
 
-Axum 是内部传输层，而不是独立部署的网页服务器。默认监听随机回环端口，没有浏览器入口，不负责提供前端文件，并要求使用通过 Tauri IPC 获取的每次启动独立 bearer token。没有活动会话时，设备管理路由返回 `503`。私有 API 与会话命令不提供 IPA 解析、App 安装、sideloading、签名或升级；这些能力属于架构层面的明确非目标，后续功能完善不得重新加入。锁定、重启和关机命令共享 Diagnostics Relay 单任务租约。锁定映射到单向休眠请求并保留父控制会话；重启和关机则允许设备断开结束当前会话。
+Headless 二进制提供同一份前端构建和 API，默认监听 `127.0.0.1:8080`；非 loopback 地址必须使用 `--allow-lan`。浏览器通过 URL fragment 引导的 access token 认证。Headless 与桌面端不能演变成两套 endpoint 实现。
 
-WebSocket 传输带版本头的 Annex-B HEVC Access Unit 和类型化控制消息。前端发送归一化触点，而不是原始 HID report。Rust 会在分发前验证触点身份、五触点上限、坐标范围和画面方向。Axum 路由只负责构造窄化的 `WebSocketState`；实时传输仅能访问应用状态槽、浏览器画面、剪贴板事件、视频计数器、媒体需求端口、按设备索引的浏览器控制租约 registry 和输入 sink。每条连接持有 RAII 视频与音频需求租约；每个准确选择 ID 最多只有一条连接持有输入权，不同设备仍可分别控制，所有者断开后会提升等待中的观察者。即使传输异常关闭，断连清理也会释放输入与媒体所有权。JSON/HID 校验与有界 WebCodecs 入口流控分别位于独立模块，无法访问 HTTP handler 或设备服务 client。共用状态投影也不属于任一适配器，使 HTTP 与 WebSocket 响应保持一致，同时保留各自独立的生命周期。
+## 多设备运行时
 
-性能工作台 HTTP 路由是有界的 `devicehub-server` 适配层。其专用状态只包含性能与设备日志槽、需求计数器、抓取与设备条件状态、服务健康注册表和活动会话命令入口。子路由会先取得该状态，再合并到私有 API，因此 handler 无法提取宽泛的 HTTP 应用状态，也不能访问文件、应用管理、视频、剪贴板或配置存储。协议层抓包时长校验保留在适配器中，不透明的本机目标则由异步宿主能力按桌面或无头文件系统策略检查。构造适配层只会克隆轻量句柄，不会启动采样或抓取任务；这些资源仍由设备会话所有，并受需求门控。
+`devicehub-runtime` 拥有专用设备线程、Tokio runtime 与 `LocalSet`、共享发现/信任协调以及隔离设备会话注册表。每个 selection ID 都有独立阶段、错误、命令、媒体状态、服务 worker、重连状态和观测值。
 
-有界设备日志缓冲、游标语义、元数据清理规则和设备条件观察槽与其规范化值一并位于 `devicehub-core`。runtime worker 将统一日志、syslog 与 DVT 响应转换到这些端口，但继续持有需求门控、连接监督、设备 client 和条件命令。宿主适配器直接观察 core 端口，不能通过这些端口取得 Apple 协议 client。
+切换设备只改变 UI 焦点，不终止其他已连接会话。断开、重连、配对和撤销信任都只作用于目标。一个物理 UDID 的 USB/Wi-Fi 条目仍是不同发现选项，但 runtime 会阻止同一物理设备出现互相竞争的活动传输。
 
-网络抓包、蓝牙抓包、备份、sysdiagnose 与日志归档的状态槽和对应的规范化 DTO 一并位于 `devicehub-core`。runtime worker 更新这些宿主无关端口，同时继续持有设备 client、命令通道、超时和持久化端口。桌面 HTTP 适配器因此通过 core 观察操作状态，仅在分发具体设备工作时依赖 runtime。
+宿主表面分为管理和会话能力：
 
-Developer Disk Image 状态、进度和基于 iOS 主版本选择镜像类型的策略同样属于 `devicehub-core`。runtime 继续持有不透明的宿主资源请求、加载端口、TSS 个性化、镜像挂载 client、取消和受监督命令 worker。桌面适配器提供经过校验的本机文件且不向 core 暴露路径，未来无头宿主可以实现相同的加载契约。
+- `RuntimeManagerClient` 管理发现清单、选择、配对、信任和 manager 生命周期。
+- `DeviceSessionRegistry` 按准确 selection ID 解析 `DeviceSessionClient`。
+- `DeviceSessionClient` 只暴露一个会话的观测、媒体、输入和操作。
 
-设备备份、sysdiagnose 与统一日志归档路由使用独立的 `devicehub-server` 诊断 HTTP 适配器。其状态仅包含活动会话命令入口、三个只读操作状态槽和宿主注入的目标 preparer。preparer 会区分现有非根备份目录与可替换的 sysdiagnose/日志归档文件，随后只返回规范化的不透明路径。协议校验与有界确认超时属于适配器，文件系统检查、MobileBackup2、DiagnosticsService 和日志流 worker 仍由宿主或设备会话持有。构造或合并该子路由不会启动导出、设备连接、计时器或轮询任务，handler 也无法访问视频、App 管理、性能、剪贴板或配置状态。
+私有 HTTP 使用 `X-DeviceHub-Device`，WebSocket 使用 `device_id`，每个 MCP 连接持有自己的目标。缺失或未知目标在可能误选设备时必须被拒绝。
 
-App 发现、图标、生命周期控制、卸载与有界控制台抓取使用独立的 App HTTP 适配器。其状态仅包含活动会话命令入口和共享的 App 操作进度槽。Bundle ID 校验、响应期限与 HTTP 错误映射保留在该边界；CoreDevice、DVT、InstallationProxy 与控制台资源仍由会话持有。该适配器无法访问视频、文件、性能、诊断、剪贴板或配置状态，构造时也不会启动设备任务。
+## 资源治理
 
-崩溃报告列表、有界摘要、导出与删除使用独立的崩溃报告 HTTP 适配器，状态仅包含活动会话命令入口。设备路径校验、响应期限与仅披露摘要的约束属于该边界，CrashReportCopyMobile worker 与传输仍由会话持有。构造适配器不会启动服务或传输，也不能访问无关应用状态。
+视频、音频、性能采样和设备日志是独立的会话级需求。已连接但未显示的设备应保持可用，同时不承担完整活动设备成本。
 
-设备 AFC 与单 App 存储路由使用另一层有界的 `devicehub-server` HTTP 适配器。其状态只包含活动会话命令入口和两个按范围隔离的传输活动槽，因此文件 handler 无法访问视频、应用管理、性能服务、剪贴板或配置存储。宿主路径对适配器保持不透明；校验、流式 I/O、回滚与原子发布通过 runtime 的宿主注入文件系统端口执行。传输 worker 与 AFC client 继续由活动设备会话所有；构造或合并该适配器不会启动任务、连接或轮询。
+- 没有视频消费者时继续排空并观测 RTP/RTCP，但跳过 access unit 发布；恢复时清除旧状态并请求关键帧。
+- 桌面端只解码当前设备音频；headless 仅在浏览器为该会话请求未静音音频时解码。
+- 性能和设备日志只在工作区或 API 消费者持有需求时启动。
+- 关闭和会话替换以有界方式释放按住的 HID、消费者、sidecar 和监督任务。
 
-公共 AFC 与应用容器的条目、列表、传输计数、活动状态机、取消语义、Bundle ID 校验和设备路径约束规则归 `devicehub-core` 所有。`devicehub-runtime` 只持有类型化执行命令以及 AFC、House Arrest 传输，宿主则提供不透明的本机文件系统路径和流式文件 I/O。桌面适配器直接从 core 导入存储领域值，不再依赖 runtime 的兼容转发。
+## 媒体与输入流
 
-按键映射配置路由组成可复用的 `devicehub-server` 适配器，只持有宿主注入的配置仓储端口。配置名称、映射结构、坐标、App 绑定和硬件按键冲突均通过 `devicehub-core` 校验后才访问仓储。只有 Tauri 宿主持有目录选择和异步文件系统持久化。该适配器无法访问设备会话、视频、MCP 或受监督服务，构造时也不会启动任务或文件监视器。
+视频只有一条路径：runtime 接收 HEVC RTP、组装完整 Annex-B access unit、执行有界展示 credit，再通过 WebSocket 发布。浏览器配置 WebCodecs，在重新同步后等待关键帧，解码并绘制设备画面。当前架构不使用 FFmpeg 解码视频。
 
-MCP 服务是独立的 Streamable HTTP 端点，默认监听 `127.0.0.1:8009/mcp`。每条协议连接持有自己的设备选择 ID，并从 registry 解析该会话的最新帧、输入通道、设备状态、控制通道、性能快照和有界日志缓冲。自动化客户端与 WebView 因此可以复用既有 CoreDevice 会话，同时不共享可变目标。切换 MCP 目标只替换该连接的会话能力，不会改变其他 MCP client 或桌面选择。性能与日志调用只为该设备获取临时需求租约；坐标转换、HID 串行化、帧版本、崩溃报告上限和标识符策略也都按会话隔离。MCP 没有鉴权；监听非回环地址属于显式部署选择，同时会输出警告。
+音频 RTP 携带 AAC-ELD，由宿主提供的 FFmpeg sidecar 解码为 48 kHz 双声道 PCM。Tauri 送入原生输出，headless 向已认证浏览器发送有界音频帧。LAN 浏览器音频受自动播放和 secure context 策略影响。
 
-## 会话所有权
+鼠标、映射、键盘直通和 MCP 输入都规范化为 core 输入值。Runtime 校验边界与 contact 所有权、转换为 Universal HID report，并按设备串行发送。控制租约以及失焦、模式切换、断开和客户端丢失时的清理用于防止触点或按键卡住。
 
-宿主只注入一个可选 `PairingStore`，同时保存鉴权 Bonjour 发现使用的 Lockdown 缓存记录和 CoreDevice Wi-Fi 隧道使用的 RemotePairing 身份。runtime 使用同一个 store 构造私有 tunnel 配置，因此发现刷新、Wi-Fi 授权、重连和显式撤销信任不会读取不同的凭据根。桌面实现负责目录、权限、文件大小限制和有界宿主 I/O；路径与凭据字节均不会进入 `devicehub-core`。存储初始化失败时，USB 发现仍可使用，Wi-Fi 授权和凭据清理则返回已有的有界不可用错误。
+## 服务与故障模型
 
-设备信息会复用刷新后的 Lockdown 快照生成规范化身份与区域上下文。设备类别、CPU 架构、型号编号和设备/机身颜色只允许较短的单行 ASCII token；它们是非唯一描述字段，与 UDID、序列号和 ECID 的标识符策略保持分离。语言、地区格式、时区和 12/24 小时制字符串会经过 trim、长度和字符校验，再组合为一个可空对象；没有任何有效字段时会整体丢弃。原始 Lockdown 字典不会越过私有 API 或 MCP 边界。
+每项设备服务报告规范化健康阶段，能安全恢复时独立监督。定位、日志、诊断或性能通道故障不应拆掉视频和输入。传输终止故障只转换受影响会话并使用有界重连策略。错误投影保留用户或 agent 可操作的目标和操作上下文，不暴露无界原始协议数据。
 
-CoreDevice 会话运行在专用 Tokio runtime 上，因为部分 `idevice` 服务对象无法安全跨越 普通 `tokio::spawn` 边界。会话拥有画面、HID、AppService 和设备状态资源；会话结束 或切换时会取消依赖操作。
+抓包、备份、诊断、文件传输和控制台等长操作都有明确限制，在支持时可取消，并随会话清理。宿主文件只能通过注入能力访问，runtime 不解析或信任本地路径。
 
-`start_runtime` 会把共享 manager 状态、设备会话 registry、专用 CoreDevice 线程和外层 session manager 作为一个由 runtime 持有的生命周期统一创建。宿主只延迟注入一个 `RuntimeHostAdapters` 能力包，并取得仅包含 owner 与可克隆 `RuntimeClient` 的 `StartedRuntime`；会话 supervisor、底层状态、owner future 构造器和 manager 运行循环均只在 `devicehub-runtime` 内可见。因此宿主无法另行实现设备发现、信任状态转换、选择、重连或拆除策略。`RuntimeClient` 明确分离 manager view 与通过 registry 解析的 `DeviceSessionClient`。设备管理 HTTP 路由只使用 manager view；设备级 HTTP middleware 强制要求 `X-DeviceHub-Device`，解析准确会话，并把窄化 client 注入设备、WDA、App、崩溃报告、性能、存储、诊断、Developer Image 和 provisioning 适配器。WebSocket 强制要求 `device_id`，且只订阅该会话的状态、媒体、输入、事件、指标和剪贴板。缺少或未知目标会被拒绝，不会把前端选择当作隐式全局值。桌面 composition root 不再实现设备路由。所有可复用适配器均不读取环境、监听生产端口或启动设备 runtime；桌面关闭时先停止 server，再 join 设备 owner thread。
+## 数据所有权
 
-完整的鉴权私有 API 路由图现在归 `devicehub-server` 所有。它组合状态、WebSocket、manager 与设备子路由，并为所有路由验证相同的精确 bearer 或 WebSocket subprotocol token。Tauri 只提供生成后的 token、注入的适配器状态、桌面 CORS 层、监听地址和关闭生命周期，不再定义路由或鉴权语义。未来无头宿主因此可以直接复用同一私有 API，而无需复制桌面 composition root。
-
-会话媒体算法位于窄化的内部模块边界后。RTP 时间戳节奏、Annex-B access unit 组装、运行统计、解码器重启退避和具备 IRAP 恢复能力的有界 HEVC 队列拥有自己的测试，只向会话循环暴露必要操作。独立的 RTCP 传输模块拥有 peer 探测、接收统计、liveness report、RCTL 实验和带防抖的 PLI/FIR 请求；RTP 接收只能记录 packet、重置已替换媒体源或提交复用 RTCP，不能直接修改 RTCP 计数或构造反馈 packet。两个模块都不持有设备客户端、解码进程或应用命令，因此传输与会话编排可以独立于缓冲及反馈策略演进。
-
-显式的单 App 控制台采集由会话拥有的独立监督任务承载。它建立新的 AppService 与 OpenStdioSocket RSD channel，验证请求的 Bundle ID 确实已安装，把 stdio UUID 绑定到显式的终止后启动操作，并在 CoreDevice `LocalSet` 中读取。带序号缓冲最多保留 1,000 行、总计 1 MiB 的规范化 UTF-8 文本，单行限制 8 KiB；私有 API 增量读取会检测已过期游标并返回重置快照。关闭界面会清空缓冲，会话结束也会无条件中止流并清空。控制台字节不会写入日志、持久化或注册为 MCP 能力。
-
-App 页面只等待核心应用目录即可进入可交互状态，主屏幕位置和 WDA 状态会独立在后台补全。Apps 功能模块拥有目录缓存、取消、请求代际、范围选择和增量渲染；离开页面会取消在途任务，切换设备或私有后端会重置资源。范围切换在控制器内部串行化，连续 UI 事件不会互相竞争。目录按设备范围短期缓存，并在设备事件或应用变更后强制刷新；图标观察器只拉取接近可视区域的资源，避免为大型目录一次创建完整的 Ant Design 与图标子树。每个应用行只接收稳定命令而不接触父级状态 setter；组件记忆化会隔离备份、诊断、壁纸及其他检查器状态更新。备份、sysdiagnose、开发者镜像和 App 操作状态统一使用“仅活动任务轮询”策略：进入所属 Tab 时读取一次快照，只在操作处于活动状态时轮询，并在终态立即停止；请求代际会阻止旧设备或较早轮询的延迟响应覆盖当前状态。
-
-USB Lockdown 配对属于 manager 级操作，而不是会话输入命令。枚举会通过当前选中的 usbmuxd 后端检查电脑配对记录，只向私有 API 暴露 `paired`、`unpaired` 或 `not_applicable`；证书和记录正文不会越过边界。配对只接受已枚举的 USB 选择项，并且仅由桌面端显式操作启动；设备信任对话框最长等待 90 秒，生成凭据后先使用 `StartSession` 验证，只在序列化到电脑记录时补充 UDID，再通过同一个系统 usbmuxd 或内置 netmuxd 地址保存。显式移除信任复用同一 manager 边界，并且只停止目标物理设备的会话；后端读取但不暴露 Host ID，有界尝试设备端 `Unpair`，随后始终删除 usbmuxd 记录并使用一次新连接重试，同时清理内存与磁盘中的 Wi-Fi 发现缓存和独立 RemotePairing 身份。结果会保留两侧各自是否完成，设备响应丢失时不会误报为完整成功。其他设备会话继续运行。拒绝、锁定、超时和普通失败会归一化后交给前端，日志只包含设备指纹。MCP 可以观察配对状态，并会收到区分 USB 与 Wi-Fi 条目的传输选择 ID，但不能触发或撤销需要人工确认的信任关系。
-
-直接 Wi-Fi 传输只会通过显式 USB 授权流程创建 RemotePairing 凭据，随后通过 Bonjour 执行仅验证握手。任何验证错误都不会启动替代配对或覆盖已保存身份。短读、连接重置、BrokenPipe 和超时会使用全新 socket 重试，然后由父隧道按照一至八秒的有界指数延时重建。明确的 Pair Verify 拒绝会停止自动重试，并要求用户显式移除 USB 信任后重新授权；瞬时断流会保留凭据。结构化日志保留底层错误分类和尝试次数，公开错误则说明应保持设备唤醒还是重建授权。
-
-可选设备服务统一运行在该 runtime 内的 Tokio `LocalSet` 和服务监督器下。这样不可 `Send` 的 DVT channel 始终留在 CoreDevice 所有者线程，而 HTTP、WebSocket 和 MCP 传输仍可使用多线程 runtime。每项服务发布统一的阶段、尝试次数、重启次数、最后错误和 更新时间。虚拟定位、Condition Inducer、Sysmontap、Graphics、NetworkMonitor 与 EnergyMonitor 通道分别使用有上限的指数退避恢复；单个通道断开不会终止视频或 HID。
-
-规范化服务健康记录和状态转换策略位于 `devicehub-core`。每个 runtime 会话持有独立的健康 registry，桌面与无头宿主观察同一契约。只有 runtime 持有 reporter、tracing、重连退避、关闭信号、`LocalSet` 任务和强制终止期限。
-
-性能快照、类型化规范观察、部分样本合并语义、有界 App 活动历史、能耗目标选择和分数规范化位于 `devicehub-core`。runtime 将 Sysmontap、DeviceInfo、Graphics、NetworkMonitor、EnergyMonitor 和通知值转换为该契约，同时保留 DVT client、采样节奏、需求订阅和重连监督。宿主适配器直接读取 core 观察槽，不能提交原始 plist 或 DVT 值。
-
-虚拟定位优先使用隔离的 DVT RemoteServer channel。DVT 连接或 channel 在有界时间内失败后，每轮监督尝试只会通过当前 `IdeviceProvider` 回退一次 `com.apple.dt.simulatelocation`，以支持较早的开发者镜像工作流。两个后端共享同一命令队列和归一化的 `dvt`/`legacy` 状态；legacy wire 格式使用有限且不依赖 locale 的坐标文本，后端恢复时保留并重放当前坐标，会话退出时执行有界的清理。两次探测均失败后进入正常指数退避，不会持续轮询任一服务。
-
-受监督的 Notification Proxy 会把厂商通知名称缩减为固定事件枚举。App、磁盘、名称、激活状态、区域设置和开发者磁盘镜像挂载变化只刷新受影响的前端数据。语言和时区通知共用一个 `regional_settings_changed` 事件，并与突发磁盘用量通知分别合并。厂商载荷不会越过边界；挂载事件只报告事件发生，不声称当前状态。SpringBoard 锁屏状态变化会释放所有活动输入，并在不虚构已锁定/已解锁值的前提下转发，因为该通知不包含状态载荷。MCP 使用单调事件序列，避免读取游标与订阅之间的竞态。
-
-设备条件模拟独占一条 DVT Condition Inducer channel 和有界命令队列。后端限制并净化设备 返回的配置目录，只接受目录中实际存在的 group/profile 组合。每次 channel 连接后首先停用 可能残留的条件，以建立已知基线。启用请求失败时仍按“可能已经生效”处理，因为设备可能在 回复失败前已经提交。会话退出时执行有超时的清理；无法确认成功时，共享状态保留 `cleanup_pending`，直到后续连接成功清除。重连后不会自动恢复之前的模拟条件。
-
-性能监控复用活动软件隧道的克隆 handle，并建立相互隔离的 DVT 连接。性能工作台或所选 HUD 指标有需求时才启动 Sysmontap、Graphics、NetworkMonitor 和 EnergyMonitor 采样。现有 Sysmontap 初始化期间会将 DVT DeviceInfo 硬件响应缩减为 1–256 范围内的逻辑/物理 CPU 核心数，以及 16 MiB–1 TiB 范围内的物理内存容量；缺失或异常值保持未知，原始硬件字典不会越过 API。 NetworkMonitor 使用独立 RemoteServer 连接，按连接累计计数器的差值计算每秒收发速率；超过一分钟未更新的连接 会过期，且跟踪表具有固定容量上限。标准化后的最新快照通过带鉴权的私有 API 提供； 短期图表历史只保留在前端，切换设备时清空。 Sysmontap 进程数组依据当前会话协商得到的属性顺序解码，不依赖固定字段下标。单进程 CPU 除以设备报告的逻辑核心数；快照保留 CPU 前十与物理内存前十的并集，最多二十行。 EnergyMonitor 通过另一条 RemoteServer 连接跟踪该有界列表中的前十六个进程，PID 集合 变化时更新设备订阅，需求消失时主动停止，并提供 Apple 的相对总能耗、CPU、GPU、网络、 显示、定位与 App 状态能耗分数。 App 活动监控使用另一条 DVT Notifications 连接，并且只在性能工作台请求采样时存在。 通知类型、App 或进程名称以及状态值在进入私有 API 前会合并空白并限制长度。当前会话最多 保留 100 条带单调序列号的事件，设备会话重置时清空；原始归档通知载荷不会对外暴露。
-
-独立的有界队列 worker 只在显式进程查询时打开 DVT DeviceInfo。清单请求按 PID 去重，最多返回 1,024 项，名称限制为 128 个字符，只通过私有 API 与 MCP 暴露 PID、进程/App 名称及 Apple 的 App 分类。MCP 状态与等待请求只接受近期快照中的正数 PID；它们复用一条隔离的 DeviceInfo channel，每 250 毫秒至多调用一次 `isRunningPid:`，最长等待十秒。PID 仍在运行时可以附带净化后的 `execnameForPid:` 结果；停止状态不会继续查询名称。worker 不调用 DeviceInfo 的目录、UID/GID 或进程控制方法，也绝不公开可执行路径。正常等候超时会通过结果说明条件是否满足，不会被伪装成传输失败。
-
-MCP 的 Bundle 状态查询使用独立的两项队列 worker 与隔离 CoreDevice AppService channel，因此等待不会占用 HID 或会话管理 client。每条命令只接受一个准确且有界的 Bundle ID，解析一次用户可见 App 路径，之后只以不低于 250 毫秒的间隔轮询进程表，最长等待十秒。它与 App 清单及停止控制复用同一条主可执行文件直接父目录匹配规则。只有 Bundle ID 和 installed/running 布尔值会越过边界，App 路径和原始进程记录保持私有。
-
-会话持有的 AppService 与 InstallationProxy 清单 client 可能被设备在没有 TLS `close_notify` 的情况下关闭，Wi-Fi 传输切换后尤其常见。只读 App 清单失败时会丢弃所需 client，在四秒边界内重连，并且只重试一次，之后才使用既有的用户 App 后备路径。启动 App 会先关闭会话持有的 AppService，并优先建立新的 DVT ProcessControl channel，以避开较新 iOS 上 CoreDevice `launchapplication` 响应停滞；仅当 DVT 连接或 channel 在发送启动命令前无法建立时，才回退 CoreDevice AppService。一旦任一后端收到修改命令，失败或超时都不会自动重放，因为设备可能已经执行成功。停止 App 使用唯一的独占 AppService client。两类命令均在本地后台任务中运行，并受连接、channel 与操作截止时间约束，因此失去响应不会阻塞 HID 或设备会话调度器；会话内租约同时拒绝并发启动/停止竞态。
-
-连接时读取 Lockdown 元数据，并在设备信息请求时重新读取，因此存储或设备名称变更通知可以展示当前值。设备详情刷新还会并行通过 MobileActivationd 读取激活状态、通过 DiagnosticsRelay 读取 AppleSmartBattery 信息，并优先通过 AMFI、回退 MobileImageMounter 读取开发者模式。电池解析只允许电量、容量、电气、温度、剩余时间和适配器功率字段；数值会经过范围校验，名称会受长度约束，设备直接报告的最大容量百分比优先于容量比值回退，序列号字段会被忽略。后端将激活厂商状态字符串归一化为固定公开枚举，不请求激活记录、证书或 activation-info 载荷。AMFI App 签名者信任是会话所属 Provisioning worker 中的显式命令：同一个串行请求会重新查询 Misagent，只授权当前仍已安装、可解析、未过期且包含开发 entitlement 的描述文件，再在同一设备会话中建立新的 AMFI 连接；操作受截止时间约束，并且仅在 AMFI 返回肯定状态时报告成功。前端要求确认；DeviceHub Mask 不会安装对应 App，签名者信任也不会通过 MCP 开放。开发者模式准备使用独立的鉴权命令：建立新的已配对 AMFI 服务，重新读取设备状态，并且只在未启用时发送 action 0，让设置中的选项显示。应用不会发送会触发重启的启用 action，也不会发送设备确认 action；设备调用与 API 回复均有有界超时。设备重命名只接受有界、非空且不含控制字符的 Unicode 名称；会话层会再次校验，建立已配对的 Lockdown session，写入 `DeviceName` 并读回确认结果。诊断日志只记录字符数，不记录请求名称；Lockdown 名称变更通知会刷新设备选择器和当前信息标签页。成功执行 `StartSession` 后，无论重命名成功或失败，后端都会有界尝试 `StopSession`。清理错误只进入日志，不会把设备已经接受的新名称误报为失败。应用列表和生命周期控制优先复用同一会话长期持有的 CoreDevice AppService，避免每次操作创建新的 RSD tunnel。只有可执行文件的直接父目录等于目标 App bundle 时才会匹配进程；停止操作会重新读取设备状态并发送固定 SIGTERM，客户端不能指定 PID 或信号。缺少 AppService 时，列表回退到 Installation Proxy，运行状态保持未知。默认范围只请求可移除的用户 App。显式启用系统 App 后，CoreDevice 会额外包含默认 App，隐藏和内部 App 仍会被排除。Installation Proxy `Any` 只补充这些 CoreDevice 已知条目的元数据，绝不会用来构造系统目录。CoreDevice 列表失败时，系统范围会明确报告限制，不返回不可靠的目录。卸载路径仍会按单个 `User` App 重新查询，不会把列表元数据当作授权依据。同一次经过限制的 Installation Proxy 元数据查询会为两种列表路径补充 `StaticDiskUsage` 和 `DynamicDiskUsage`；数值通过校验后才会越过私有 API，总量使用 checked arithmetic 计算。缺失或异常字段保持未知，不会被错误显示为零。App 图标使用独立、按请求工作的 worker，因此不会占用 HID 分发循环。worker 首先建立隔离的 CoreDevice AppService RSD channel，请求 64 像素且不允许占位的图标，校验专有数据中的尺寸与 RGBA 字节范围后在内存中编码 PNG；请求、传输或格式失败时回退到另一条可复用的 SpringBoardServices channel。连接失败或超时会在当前会话停用 CoreDevice 图标源；连续两次响应或格式失败也会停用，一次成功则清零失败计数。随后统一校验 PNG header 与尺寸，限制输入和响应均不超过 4 MiB，并使用 256 项、32 MiB 的 FIFO 缓存；前端只请求接近可视区域的 App 行。主屏幕位置使用另一条按请求工作的 SpringBoardServices channel，布局读取不会延迟图标或 HID。解析器最多接收 32 个列表、每列表 256 项、四层文件夹和 1,024 个唯一 Bundle ID，只返回 App 名称、Bundle ID 以及从 1 开始的 Dock、页面和文件夹顺序路径；另一条独立的 3 秒 channel 可选读取数值图标度量，并限制为布局尺寸、网格数量、Dock 容量和页面上限。Widget、Smart Stack 配置、Web Clip URL 与原始 plist 都不会越过私有 API 或 MCP 边界。布局请求失败后会丢弃主 client 再重试，度量请求失败则保留已有布局结果。原生截图使用独立、有界的 worker，优先使用 CoreDevice ScreenCaptureService，失败时回退到 USB Lockdown 或 RSD remote shim 上的 screenshotr。worker 只接受一条排队请求，只复用健康 client，校验 PNG 与尺寸并把响应限制在 32 MiB；截图不会占用 HID 分发循环。
-
-轻 App (App Clips) 是第二个可独立选择的 CoreDevice AppService 范围。`isAppClip` 标识在经过私有 API 与 MCP 归一化后仍会保留；默认范围及 Installation Proxy 后备路径始终把条目标记为普通 App。停止操作会同时解析轻 App，使列表中正在运行的轻 App 可以被终止；卸载授权会排除轻 App，因为其生命周期由 iOS 管理，不属于传统已安装用户 App 路径。请求轻 App 范围而 AppService 不可用时会明确失败，不会静默返回不完整的后备目录。
-
-App 签名元数据在越过私有 API 或 MCP 边界前会被归一化。系统与开发分类优先使用 CoreDevice 标志，再通过有界的 Installation Proxy 字段区分 TestFlight、App Store、通用分发或未知。通用分发会有意合并企业签名与 Ad Hoc，因为仅凭 signer 文本无法可靠区分。后端只保留规范化类型、最长 32 个字符且经过数字点分校验的最低系统版本和可空的 `get-task-allow` 布尔值；Signer Identity、证书主体、Team ID、描述文件 UUID 与原始 entitlement 字典都会丢弃。
-
-配对 Apple Watch 发现通过活动 iPhone 传输上的独立、按请求工作的 CompanionProxy RSD channel 完成。worker 延迟建立连接，最多接受两条排队命令，返回最多十六条经过净化的 注册项；请求失败后会丢弃 client，使下一次查询重新连接。它只读取选定的展示元数据， 不启动 Watch 服务、不控制 Watch，也不转发端口。空注册表是有效结果，单项元数据可能 缺失，配对设备标识符仍属于敏感信息。
-
-WebDriverAgent 自动化是复用活动 `IdeviceProvider` 的按需可选服务。它不会后台探测，也不 负责安装、签名或静默启动 WDA。显式启动 Runner 时会先通过 MobileImageMounter 查询与 系统版本对应的 `Developer` 镜像；iOS 17 及以后使用 `Personalized` 类型。只有明确返回 未挂载时才会阻止 XCTest 并给出可操作错误，查询不可用时仍保留原有启动尝试以兼容不同 系统。刷新设备信息会以可空就绪状态返回同一结果，不暴露镜像签名或个性化标识符。 MCP 命令进入容量为 4 的队列并携带 12 秒截止时间；只允许六种选择器策略、1,024 bytes 的选择器表达式、20 个匹配结果、1 MiB 的 UI 树响应、1,024 个文本字符/4,096 UTF-8 bytes、100 至 10,000 毫秒长按、四个固定滚动方向，以及可选的 100 至 5,000 毫秒前台 App 恢复延时。设备状态读取会把 WDA 方向规范化为固定枚举，只接受有限、正数且不超过 100,000 逻辑单位的窗口尺寸；锁定状态和窗口尺寸必须有效，非标准 viewport mobile 命令则为可选兼容字段。解锁是独立的显式命令，不接收密码，并且必须在 WDA 返回后确认设备处于解锁状态。后台切换只针对当前前台 App，并使用受限的恢复延时或显式请求不自动恢复。元素检查只读取固定的 `type`、`name`、`label`、`value` 属性和三个布尔状态；每个原始文本值限制为 1,024 字符与 4,096 UTF-8 bytes，数组和对象会被丢弃。元素状态等待会占用一个串行 worker 命令，轮询间隔不低于 250 毫秒，在同一命令截止时间内限制为最长 10 秒，并在解析指定匹配项后每轮至多读取一个固定的可见/可用/选中状态。元素缺失只满足 absent/hidden 状态。语义修改操作共用全局 MCP 手势锁。工作线程持有一个 WDA 会话，在每次检查或操作前即时解析元素标识符，传输失败后删除或丢弃会话，并通过 `device.wda` 报告健康状态，不会拆除画面、HID 或设备管理服务。只有归一化状态、逻辑设备状态、受限 XML 与属性标量、匹配序号、有限数值矩形、布尔元素状态、等待摘要、解锁确认、后台恢复策略和操作摘要会越过 MCP 边界；文本输入正文、WDA 会话、元素标识符与原始几何载荷始终保持私有。
-
-手动挂载开发者磁盘镜像由另一项显式、受监督任务执行。它只接受绝对路径的本地普通文件， 拒绝符号链接，将 DMG 限制为 1.5 GB，并分别限制每个辅助文件。原生文件选择器返回的路径 只通过带 bearer 认证的私有 API，文件内容不会进入 WebView。iOS 16 及以前需要 DMG 与 signature，iOS 17 及以后需要 DMG、trust cache 和包含 非空 `BuildIdentities` 的 `BuildManifest.plist`。个性化挂载使用 idevice 的 TSS 流程，因此 仅在用户确认后向 Apple 服务发送设备相关签名标识符。任务会报告受限的阶段与进度状态， 可由用户取消，设备会话结束时也会中止；应用不会自动查找或下载镜像。 显式卸载在 iOS 17 之前使用 `/Developer`，较新系统使用 `/System/Developer`；挂载、卸载与 取消共用同一单操作队列，不会彼此竞态。
-
-本地设备备份由活动会话持有的显式 MobileBackup2 worker 执行。USB 优先使用 lockdown 服务，并可回退到克隆 RSD tunnel；Wi-Fi 使用 remote RSD shim。宿主适配器只把原生目录选择结果解析并验证为规范本地路径，永远不会接收 MobileBackup2 client、delegate 或设备错误；协议执行、断连处理、进度发布和受限文件系统 delegate 均由 runtime 持有。worker 只会写入所选主机目录及经过校验的设备标识符子目录。每次 delegate 文件系统操作都会验证词法边界并拒绝符号链接祖先，包括复用已有备份执行增量备份时。进度回调只发布有界计数，不会暴露文件路径。取消会立即丢弃 DeviceLink 会话，并保留已传输数据供后续增量备份使用。恢复、擦除、备份密码变更以及自动或后台备份均不属于此边界。
-
-sysdiagnose 导出是另一项显式任务，通过克隆 RSD tunnel 使用 CoreDevice DiagnosticsService。 同目录临时文件预留成功后请求即返回，设备采集与流式传输继续由会话监督器持有。worker 最长 运行 45 分钟、最多接收 8 GiB，拒绝超大数据块或与设备声明长度不一致的数据流，且只发布 有界计数和所选文件名。 取消或会话结束会丢弃服务流并删除部分文件；完成时会先刷新、同步归档，再原子替换所选目标。 诊断内容不会越过私有 API 或 MCP 边界。
-
-设备网络抓包由独立、用户主动启动的 pcapd worker 执行。USB 会话优先打开传统 lockdown pcapd 服务，并保留克隆 RSD tunnel 作为回退；Wi-Fi 会话通过 RSD 使用 CoreDevice remote pcapd shim。可选 PID 来自有界的 DVT 进程清单，并在操作开始时按值固定；worker 会接受 pcapd 主 PID 或 effective PID 匹配的数据包，将其余数据包计为已过滤，绝不会依赖截断的进程名称字段匹配。接受的数据包会作为标准化以太网记录直接写入目标同目录的主机临时文件，单包限制为协商的 256 KiB snapshot，完整抓包限制为 256 MiB，最后原子替换所选 `.pcap` 目标。手动停止、超时、数据流失败和会话关闭都会执行收尾。抓包私有 API 只接收所选临时 PID、有界计数与状态；数据包正文、pcapd 进程名称字段和原始 header 不会进入 WebView 或 MCP 传输。
-
-蓝牙 HCI 抓包沿用同一所有权模型管理 idevice 的 `BTPacketLogger` 数据流。它使用 DLT 201 和四字节方向伪头写入大端 PCAP 记录，将抓包限制为最长五分钟和最大 64 MiB，并原子替换 用户选择的目标文件。设备未安装 Bluetooth Logging 配置描述文件时，静默数据流最终会形成 零数据包的有效抓包，应用不会据此虚构服务可用性结论。
-
-重启与关机是两个固定的私有 API 命令，不接受客户端传入任意 DiagnosticsRelay 操作。每个 命令都在有超时的独立任务中建立 relay 连接，因此等待设备确认不会阻塞 HID 分发；前端 必须显示包含设备名称的二次确认。
-
-App 存储由独立受监督的 House Arrest worker 处理。USB 会先通过已配对的 Lockdown provider 连接 House Arrest，失败时回退到克隆的 RSD tunnel；Wi-Fi 只使用 RSD。每条命令都显式 携带 `documents` 或 `container` 范围，并通过 `VendDocuments` 或 `VendContainer` 建立 新的 AFC 会话；API 未传范围时为兼容旧客户端而默认 Documents。逻辑路径分别绑定到 `/Documents` 或 `/`，并拒绝目录穿越和名称中的路径分隔符；符号链接只显示为不可操作的 特殊条目。文件和目录下载使用可回滚的本地暂存，上传先写入唯一远端临时路径，全部流关闭 成功后才改名。递归传输使用迭代遍历，上限为 64 层和 100,000 个条目，拒绝符号链接与特殊 条目，并校验每个普通文件的字节数。上传不会静默覆盖同名项目，根目录禁止修改。递归删除 必须携带显式 API 标志，先按相同深度、条目类型与符号链接约束完成预扫描，再以后序逐项 删除，并在每次删除前立即复验目标。
-
-worker 会按 App 发布当前设备会话内的传输 activity 快照。每复制一个 64 KiB 数据块便累计 字节数，并最多每 100 ms 发布一次。单文件传输会公开已知总字节数；目录传输不额外执行一次 远端预扫描，而是持续报告已完成的字节、文件与目录数量。前端仅在上传或下载请求进行期间 轮询这个只读快照。 取消请求通过 App 与当前会话共同限定的原子令牌直达活动传输，不会在 worker 队列中等待。 复制循环会在每个 64 KiB 数据块和目录条目之间检查令牌、关闭已打开的 AFC 文件描述符， 并尝试删除主机或设备端暂存路径后再报告 `cancelled`。
-
-设备公共文件由另一条受监督的标准 AFC worker 处理。USB 会先通过已配对的 lockdown provider 打开 `com.apple.afc`，失败时可回退到克隆的 RSD tunnel；Wi-Fi 通过 RSD 使用 `com.apple.afc.shim.remote`，任何路径都不会请求 AFC2。worker 会复用客户端直到操作失败， 私有 API 只开放标准 AFC 容器内的有界操作。路径会拒绝目录穿越、反斜杠、NUL 与不安全 组件，符号链接和特殊条目不会被继续访问。文件传输使用 64 KiB 缓冲并校验字节数；导入先 写入唯一远端临时名称，完成后改名，导出则在所选主机目标旁暂存。递归传输使用迭代遍历， 上限为 64 层和 100,000 个条目。写入拒绝同名覆盖、根目录修改与不支持的本地条目类型， 递归删除必须经过前端明确确认；AFC2 路径和 MCP 修改工具均不在此边界内。
-
-AFC 顶层工作台提供四种范围，但不会合并其服务或授权边界。公共 AFC 使用受监督的标准 AFC worker；App Documents 与 App Container 会先按实际可用范围筛选当前 App 目录，再使用现有的逐 App House Arrest worker；崩溃报告通过隔离的 CrashReportCopyMobile 会话执行有界列表、导出和确认式单文件删除。操作进行期间会锁定范围和 App 选择，避免所属 pane 与动作状态消失。公共浏览器只在被选中时加载目录，并在设备变化时重置。直接路径输入会先按后端一致的 UTF-8 字节数与路径段限制校验，但最终目录约束仍以后端为准。
-
-崩溃报告列表、导出、读取和删除均在独立 Tokio 任务中建立新的 CrashReportCopyMobile/AFC 会话，因此递归枚举与文件 I/O 不会阻塞 HID 分发。列表受目录深度和条目数量限制；导出和读取会重新验证设备绝对路径与普通文件元数据，并分别把内存分配限制在 128 MiB 和 1 MiB。确认式删除在 AFC remove 前执行相同的路径与文件类型校验。桌面摘要请求只会按需读取一份已选择报告并遵守 1 MiB 上限，随后只序列化白名单摘要：识别现代 IPS JSON 和旧版 crash 头部，同时忽略路径、incident ID、crash key、堆栈、镜像与原始终止详情。原始正文只会由显式的有界 MCP 读取返回，并同时附带同一份归一化摘要；MCP 不提供崩溃报告修改工具。
-
-公共 AFC 导入和导出会发布独立的当前会话 activity 快照。整次传输中的所有文件复用一个 64 KiB 缓冲区，并最多每 100 ms 发布字节和条目计数。单文件公开已知总字节数；目录保持 不确定总量，以避免再次遍历设备目录。AFC 标签页仅在传输请求进行期间轮询该快照。 取消请求通过当前会话的原子令牌绕过串行 AFC 命令队列。复制循环会在每个 64 KiB 数据块和 目录条目之间检查令牌，删除主机或设备端暂存路径后再报告 `cancelled`；取消不会使原本健康 的 AFC 客户端失效。
-
-剪贴板同步仅在持久化的显式开关启用并重新连接设备后使用 CoreDevice Pasteboard Service。 设备侧变更优先通过推送接收，电脑侧按有界频率轮询并抑制回环；默认关闭时不会产生 后台剪贴板访问或传输，但显式的单次粘贴仍会写入请求的文本。同步活动通过容量为 8 的 广播通道发送给已鉴权 WebSocket，因此界面提示不会反压设备服务。 单次 Unicode 粘贴通过容量为 4 的命令队列复用同一个 Pasteboard Service 所有者，并且 只在收到 SET 回复后发送 Cmd+V。
-
-应用卸载使用独立 Tokio 任务及新的 Installation Proxy 连接，因此不会阻塞画面、HID 或应用列表。后端会重新查询卸载目标，只允许移除非 Apple 第一方且标记为可卸载的用户应用。会话所属的 single-flight 操作状态只公开卸载阶段和设备上报进度。
-
-设备日志仅在日志工作台打开时建立受监督的 OsTraceRelay 连接，并读取统一日志的级别、 进程、PID、子系统、类别和文件名等结构化字段。若连接或启动统一日志活动失败，同一监督器 会回退到 SyslogRelay；运行中的流失败则触发受监督重连，不会在连接中静默切换来源。正文 会清理控制字符并限制为 16 KiB，元数据单字段限制为 512 bytes，随后进入两种来源共享的 最多 2,000 条内存环形缓冲区；私有 API 每次最多返回 500 条，并报告游标落后造成的缺口。 手机日志不会进入应用自身的 tracing 日志，也不会自动持久化。
-
-离线统一日志导出使用另一条显式 OsTraceRelay RSD worker，不会复用或停止实时日志流。所选 1/6/24 小时范围会转换为 `StartTime`，设备请求上限为 256 MiB，主机侧另行拒绝超过 512 MiB 或持续十分钟以上的输出。由于上游归档 API 会把 socket 关闭当作数据流完成，应用还要求输出非空、按 512 bytes 对齐并以两个全零 tar block 结束，随后才会刷新、同步并原子发布所选 `.tar`。取消和所有失败路径都会丢弃服务 future 并删除目标同目录的临时文件。私有 API 只公开有界状态、字节数、耗时、所选范围和目标文件名；归档内容不会提供给 WebView 或 MCP 客户端。
-
-每个活动设备会话都会运行受监督的 Lockdown 心跳：收到设备的 `Marco` 后回复 `Polo`， 限制设备提供的等待间隔，并在休眠、超时或传输失败后重连。心跳属于可选服务，不会阻止 视频、输入或设备管理启动；其生命周期通过共享服务健康注册表公开。
-
-原生截图回退链现在只会在 CoreDevice ScreenCaptureService 与 screenshotr 均失败后尝试一条短生命周期的 DVT Screenshot 连接，因此新增的 DDI 依赖路径不会延迟任一已有后端。DVT 连接与截图截止时间相互独立，返回字节继续经过相同的格式、尺寸和大小校验；DVT 失败后会直接丢弃连接，不会留在会话 worker 中。
-
-系统性能监督器会在独立 RemoteServer 连接上启动 DVT DeviceInfo 网络接口查询，并在 Sysmontap 循环中并行轮询结果，因此目录缓慢或不可用不会延迟 CPU 采样或 MCP 的首个性能样本。归一化最多检查 256 个字典项，最多保留 64 个经校验的 ASCII 接口名和 96 字符描述，并映射到固定公开类型，同时显式返回可用与截断状态。IP 地址、MAC 地址和原始 plist 值不会进入性能快照；会话重置时会与其他快照字段一起清除。
-
-壁纸预览复用串行、按请求工作的 SpringBoardServices 主屏幕 worker。只有桌面用户显式请求时才读取主屏幕或锁定屏幕 PNG；worker 会校验签名与尺寸，将响应限制为 32 MiB 和单轴 16,384 像素，并返回 `Cache-Control: no-store`。WebView 仅持有临时 Object URL，关闭弹窗或切换设备时即释放。壁纸数据不会持久化或通过 MCP 开放，也不存在修改壁纸的 API。
-
-## 视频管线
-
-CoreDevice displayservice 输出 RTP/HEVC。后端组装完整 HEVC Access Unit 后写入 16 MiB 字节上限队列；溢出时丢弃依赖帧直至 IRAP，并通过 PLI/FIR 请求恢复。Rust 通过已鉴权 WebSocket 发布带版本头的 Annex-B Access Unit。WebView 从 SPS 推导 RFC 6381 HEVC profile、tier、level、compatibility flags 和 constraints，再使用 `VideoDecoder` 解码并将 `VideoFrame` 绘制到 Canvas。实时视频不再包含 FFmpeg、原始帧、JPEG 或原生解码回退路径。
-
-压缩帧广播缓冲用于吸收短时 WebSocket 阻塞。广播落后、序列断点、有界入口拥塞、解码队列积压、输出超时或配置变化时会丢弃依赖帧并进入重同步。只有前端将相同 sequence 的数据包接收到有界解码入口队列后才释放传输 credit；呈现确认仅用于独立的显示延迟指标。重同步期间后端停止发送增量帧并重复 PLI/FIR，直到 IRAP 确实发出。初始化会按真实尺寸和 codec 探测配置，并依次尝试更简化的 `hev1` 和 `hvc1` 配置。WebCodecs 时间戳来自 90 kHz RTP 时钟，可保留真实节奏、可变帧率和更高刷新率。
-
-WebSocket 客户端会显式声明实时画面需求。仅设备控制页和使用实时背景的按键映射页接收视频； 切换到设置、AFC、日志等页面、使用静态映射截图或窗口不可见时，后端仍维持 RTP/RTCP 会话， 但停止向该 WebView 复制和发送画面。恢复显示时主动请求 IRAP，避免用缺少参考帧的 P-frame 恢复。此门控只作用于 UI 显示，MCP 截图继续使用按需 CoreDevice ScreenCaptureService，帧同步 同时观察原生与浏览器帧版本。
-
-平台 WebView 必须通过 WebCodecs 暴露 HEVC。Windows WebView2 通常还需要系统 HEVC Video Extensions；GPU 具备硬件解码能力并不等于 WebCodecs 一定开放 HEVC。平台不支持时应用会报告解码失败，不再重连到原生视频解码器。FFmpeg 仅保留给设备音频，MCP 和 HTTP 的独立按需截图服务不受影响。
-
-Canvas 使用同一个比例 contain-fit 旋转后的源画面。鼠标坐标只在准确显示矩形内归一化， 避免横屏拉伸和触控偏移。
-
-## 音频管线
-
-CoreDevice 协商 48 kHz 双声道 AAC-ELD，每个 RTP 包包含一个 10 ms Access Unit。设备发送 裸 Access Unit，因此后端先补充 RFC 3640 AU header，再将 RTP 转发给 FFmpeg。FFmpeg 解码为交错 S16LE，并把有界的 20 ms PCM 块交给独立原生输出线程。Rodio 将音频转换为 主机默认输出格式；排队超过 240 ms 时清除旧音频，因此输出背压不会阻塞 RTP、视频或输入。 PCM 不再经过 WebSocket 或 WebView。
-
-桌面组合入口根据显式覆盖、打包资源目录、可执行文件位置与宿主 `PATH` 构造不可变 FFmpeg 搜索计划，再通过 `RuntimeConfig` 注入每个设备会话。解码器不再读取环境变量，也不持有全局资源目录状态；候选文件仍在启用音频时才检查，因此关闭音频不会让 FFmpeg 成为启动前置条件。
-
-同一个宿主边界还会解析可选的 netmuxd 可执行文件、日志过滤器和上游 usbmuxd 地址。runtime 的设备发现只接收不可变 sidecar 配置并负责进程监督，不再检查宿主环境变量或可执行文件位置。
-
-设置持久化仍由桌面宿主负责。runtime 只接收包含会话策略的可克隆原子偏好句柄；宿主成功写盘后才更新该句柄，每个新设备会话读取音频与剪贴板启用状态，但不感知设置文件路径或格式。
-
-解码后的 PCM 通过有界 consumer 契约跨越 runtime 边界。桌面宿主提供原生 rodio 输出，并持有播放状态、静音、音量与声卡恢复；runtime 只负责发布固定格式 PCM，使未来无头宿主可以选择远程或空 consumer，而无需修改设备媒体协商。
-
-设备音频默认关闭。静音和音量由后端持久化并直接作用于原生输出，不依赖浏览器自动播放 策略或页面可见性。输出设备故障和解码器运行中退出都会有界重试；若解码器根本无法启动， 则继续静默 drain 协商后的流，不会终止视频或输入。
-
-## 输入管线
-
-专用输入控制器负责合并映射、鼠标和键盘状态，并跳过完全相同的触控帧。需要随时间变化的映射使用按需调度器：第一个映射键按下时启动，最后一个按键释放、窗口失焦、断连或组件卸载时停止，因此空闲输入不再持有 16 ms interval。Rust 将校验后的类型化触点转换成一个固定五槽位 Universal HID 多点触控 report。键盘和硬件命令保留按下与释放状态，断线清理会释放所有按住的 usage。
-
-映射模式和键盘透传互斥，避免一个物理按键同时产生映射触控和键盘 usage。
-
-## 描述文件数据
-
-描述文件由独立监督的有界 Misagent 命令服务管理，因此相关操作不会阻塞 HID 输入循环。 在 plist 元数据进入私有 API 前会先解码 CMS SignedData。原始描述文件和 provisioned device identifiers 不会进入前端；单个损坏文件会被隔离，不会导致整个列表失败。
-
-安装和移除命令携带请求截止时间，避免 HTTP 请求超时后排队操作仍然延迟生效。安装前会 验证本地文件和描述文件元数据，移除前后都会重新读取设备目录。输入错误、不存在、冲突、 传输故障和超时在私有 API 中保持类型化语义；只有传输故障和超时才会让监督器重建 Misagent channel。
-
-如果 displayservice 不可用，但 Lockdown 仍可使用，后端会保留降级管理会话。画面控制 和仅 AppService 支持的操作会明确标记为不可用，而不是隐藏整个设备。
-
-## 依赖固定版本
-
-`idevice` 暂时固定到项目 fork 中已审查的 `87a3e12` revision。该版本包含 iOS 27 CoreDevice 修复、iOS 27 AppService 所需的显式清单与容器路径选项、有界 CoreDevice 错误摘要，以及性能工作台使用的类型化 DVT NetworkMonitor 与 EnergyMonitor 客户端。等价修复合并并正式发布后，应切回上游版本。
+- Runtime 观测是有界内存槽与事件流。
+- 用户偏好和按键映射由宿主通过明确 repository 持久化。
+- Headless 数据位于配置的数据目录；桌面数据使用平台应用目录。
+- 抓包、备份、日志、崩溃报告和容器传输保持在 WebView 外，除非有界 endpoint 明确返回规范化内容。
+- 原始 XPC、plist、CoreDevice client、OS 路径和子进程 handle 不跨越公共领域 API。
 
 ## 安全边界
 
-- 私有 API 始终只监听回环地址并要求令牌。
-- MCP 默认只监听回环地址且没有鉴权，会暴露可能敏感的截图、进程名称、设备日志和崩溃 报告、UI 树，监听非回环地址时会输出警告。
-- 前端应用元数据不会被用作卸载授权。
-- HID report 只在后端验证后构建。
-- 更新产物必须通过 Tauri 签名验证才能安装。
-- Apple Developer ID 签名与应用更新签名彼此独立。
+桌面 API 仅暴露到私有 loopback 并使用单次运行认证。Headless LAN 必须显式启用并用 token 认证，但没有内置 TLS、账号、角色、Origin 策略、限流或可撤销会话，只适合可信 LAN，不能直接发布到互联网。MCP 没有认证，应保持 loopback。
+
+App 安装、侧载、签名、注入和升级不属于产品边界。DeviceHub Mask 可以检查和管理已有 App 与描述文件，但描述文件管理不得成为隐藏安装通道。
+
+## 扩展系统
+
+领域策略加入 core，Apple 执行加入 runtime，线上表示加入 server，OS 能力加入 host，生命周期和暴露决策加入装配根。设备身份必须明确，并考虑所有已连接会话。新的高成本生产者必须按需启用并报告健康状态；新的长操作必须有界且可清理；新 UI 应在两个宿主工作，或清晰声明宿主能力。更新权威文档，并按[开发与构建](development.md)执行验证。

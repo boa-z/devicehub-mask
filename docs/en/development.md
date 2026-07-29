@@ -2,6 +2,8 @@
 
 [简体中文](../zh-CN/development.md) | [Documentation](README.md)
 
+Read [Architecture](architecture.md) and [Core and Runtime Boundaries](core-runtime.md) before changing ownership or runtime behavior. This page is the command and build reference.
+
 ## Repository Layout
 
 ```text
