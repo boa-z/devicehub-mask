@@ -7,7 +7,7 @@ use devicehub_core::{
     process_executable_belongs_to_app,
 };
 
-use super::AppCommand;
+use super::{AppCommand, collect_app_stream};
 use idevice::{
     IdeviceService, ReadWrite, RsdService,
     core_device::AppServiceClient,
@@ -420,7 +420,14 @@ pub(super) async fn list_device_apps(
     if let Some(client) = app_service {
         let app_service_result = tokio::time::timeout(
             APP_SERVICE_LIST_TIMEOUT,
-            client.list_apps(include_app_clips, true, false, false, include_system),
+            collect_app_stream(
+                client,
+                include_app_clips,
+                true,
+                false,
+                false,
+                include_system,
+            ),
         )
         .await
         .map_err(|_| {
@@ -764,8 +771,7 @@ async fn stop_device_app(
     client: &mut AppServiceClient<Box<dyn ReadWrite>>,
     bundle_id: &str,
 ) -> Result<bool, String> {
-    let apps = client
-        .list_apps(true, true, false, false, false)
+    let apps = collect_app_stream(client, true, true, false, false, false)
         .await
         .map_err(|error| format!("unable to resolve app before stopping it: {error:?}"))?;
     let app = apps

@@ -15,6 +15,8 @@ use tokio::task::JoinHandle;
 
 use crate::supervisor::ServiceReporter;
 
+use super::collect_app_stream;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_LINES: usize = 1_000;
 const MAX_BUFFER_BYTES: usize = 1024 * 1024;
@@ -305,8 +307,7 @@ async fn start_stream(
         let mut apps = AppServiceClient::connect_rsd(&mut adapter, &mut handshake)
             .await
             .map_err(|error| format!("CoreDevice AppService unavailable: {error:?}"))?;
-        let installed = apps
-            .list_apps(true, true, false, false, true)
+        let installed = collect_app_stream(&mut apps, true, true, false, false, true)
             .await
             .map_err(|error| format!("unable to verify application: {error:?}"))?
             .into_iter()

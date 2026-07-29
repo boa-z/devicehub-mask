@@ -4,4 +4,4 @@ mod dispatcher;
 mod hid;
 
 pub(crate) use dispatcher::DeviceInputDispatcher;
-pub(crate) use hid::{UniversalHidClient, capture_connected_services};
+pub(crate) use hid::capture_connected_services;

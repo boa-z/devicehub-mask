@@ -16,7 +16,7 @@ devicehub-core = { path = "../devicehub-core" }
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 mdns-sd = "0.19"
-idevice = { git = "https://github.com/boa-z/idevice.git", rev = "87a3e12", features = [
+idevice = { git = "https://github.com/boa-z/idevice.git", rev = "942e397", features = [
   "amfi",
   "afc",
   "bt_packet_logger",

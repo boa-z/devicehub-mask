@@ -1,6 +1,9 @@
 //! Commands accepted by the device application runtime.
 
 use devicehub_core::DeviceApp;
+use futures_util::TryStreamExt;
+use idevice::core_device::{AppListEntry, AppServiceClient};
+use idevice::{IdeviceError, ReadWrite};
 use tokio::sync::oneshot;
 
 mod console;
@@ -25,6 +28,26 @@ pub use wda_automation::WdaAutomationCommand;
 pub(crate) use wda_automation::serve_wda_automation;
 pub use wda_runner::WdaRunnerCommand;
 pub(crate) use wda_runner::serve_wda_runner;
+
+async fn collect_app_stream<R: ReadWrite>(
+    client: &mut AppServiceClient<R>,
+    app_clips: bool,
+    removable_apps: bool,
+    hidden_apps: bool,
+    internal_apps: bool,
+    default_apps: bool,
+) -> Result<Vec<AppListEntry>, IdeviceError> {
+    client
+        .stream_apps(
+            app_clips,
+            removable_apps,
+            hidden_apps,
+            internal_apps,
+            default_apps,
+        )
+        .try_collect()
+        .await
+}
 
 #[derive(Debug)]
 pub enum AppCommand {

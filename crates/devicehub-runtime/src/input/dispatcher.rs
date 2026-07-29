@@ -9,17 +9,17 @@ use idevice::{
     core_device::{
         Orientation as DeviceOrientation, OrientationServiceClient, RotationDirection,
         hid::{
-            ButtonState, DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, IndigoHidClient,
-            TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
+            ButtonState, IndigoHidClient, TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
+            UniversalHidServiceClient,
         },
     },
 };
 
-use super::hid::{UniversalHidClient, build_multitouch_report};
+use super::hid::touchscreen_contacts;
 
 /// Owns the HID services used to execute input for one connected device session.
 pub(crate) struct DeviceInputDispatcher {
-    touch: UniversalHidClient<Box<dyn ReadWrite>>,
+    touch: UniversalHidServiceClient<Box<dyn ReadWrite>>,
     keyboard: IndigoHidClient<Box<dyn ReadWrite>>,
     orientation: Option<OrientationServiceClient<Box<dyn ReadWrite>>>,
     orientation_view: OrientationSlot,
@@ -27,7 +27,7 @@ pub(crate) struct DeviceInputDispatcher {
 
 impl DeviceInputDispatcher {
     pub(crate) fn new(
-        touch: UniversalHidClient<Box<dyn ReadWrite>>,
+        touch: UniversalHidServiceClient<Box<dyn ReadWrite>>,
         keyboard: IndigoHidClient<Box<dyn ReadWrite>>,
         orientation: Option<OrientationServiceClient<Box<dyn ReadWrite>>>,
         orientation_view: OrientationSlot,
@@ -57,16 +57,8 @@ impl DeviceInputDispatcher {
                     .await
             }
             DeviceInputCommand::MultiTouchFrame(contacts) => {
-                let report = match build_multitouch_report(&contacts, None) {
-                    Ok(report) => report,
-                    Err(error) => {
-                        tracing::warn!("dropping invalid multi-touch frame: {error}");
-                        return Ok(());
-                    }
-                };
-                self.touch
-                    .send_report(DIGITIZER_SURFACE_MAIN_TOUCHSCREEN, report)
-                    .await
+                let contacts = touchscreen_contacts(&contacts);
+                self.touch.send_multitouch(&contacts, None).await
             }
             DeviceInputCommand::Text(text) => {
                 for character in text.chars() {

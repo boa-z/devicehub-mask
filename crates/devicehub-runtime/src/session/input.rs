@@ -6,14 +6,17 @@ use std::pin::Pin;
 use devicehub_core::{DeviceInputCommand, KeyMods, OrientationSlot, ascii_key_usage};
 use idevice::{
     RsdService,
-    core_device::{OrientationServiceClient, hid::IndigoHidClient},
+    core_device::{
+        OrientationServiceClient,
+        hid::{IndigoHidClient, UniversalHidServiceClient},
+    },
     rsd::RsdHandshake,
     tcp::handle::AdapterHandle,
 };
 use tokio::sync::mpsc::{Sender, UnboundedReceiver};
 
 use super::{DeviceSessionCommand, DeviceSessionRouter};
-use crate::input::{DeviceInputDispatcher, UniversalHidClient};
+use crate::input::DeviceInputDispatcher;
 
 /// Establish every authenticated HID capability for one active screen session.
 /// DisplayService must already be running because it opens the authorization
@@ -27,7 +30,7 @@ pub(crate) async fn connect_device_input(
     // Give backboardd time to re-match the HID surfaces after media starts.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let mut touch = UniversalHidClient::connect_rsd(adapter, handshake)
+    let mut touch = UniversalHidServiceClient::connect_rsd(adapter, handshake)
         .await
         .map_err(|error| format!("no universalhidservice: {error:?}"))?;
     crate::input::capture_connected_services(&mut touch, hid_diagnostic_sink).await;

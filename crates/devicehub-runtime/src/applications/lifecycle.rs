@@ -13,6 +13,8 @@ use devicehub_core::{
     AppLifecycleStatus, AppLifecycleWaitResult, process_executable_belongs_to_app,
 };
 
+use super::collect_app_stream;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const WAIT_TIMEOUT_MAX: Duration = Duration::from_secs(10);
@@ -157,7 +159,7 @@ async fn resolve_app_path(
 ) -> Result<Option<String>, String> {
     let apps = tokio::time::timeout(
         REQUEST_TIMEOUT,
-        client.list_apps(true, true, false, false, true),
+        collect_app_stream(client, true, true, false, false, true),
     )
     .await
     .map_err(|_| "CoreDevice application lookup timed out".to_string())?
