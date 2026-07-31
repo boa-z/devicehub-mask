@@ -95,9 +95,10 @@ enum RotateRequest {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClientVideoFeedback {
     None,
+    ProtocolError(String),
     BrowserAccepted(u64),
     FramePresented(u64),
     ResetBrowser,
@@ -187,6 +188,19 @@ pub(super) fn handle_client_message<HostPath>(
                 ?capabilities,
                 "mobile client handshake received"
             );
+            if protocol_version != 1 {
+                return ClientVideoFeedback::ProtocolError(format!(
+                    "unsupported client protocol version {protocol_version}"
+                ));
+            }
+            if !matches!(platform.as_str(), "ios" | "android" | "web" | "desktop") {
+                return ClientVideoFeedback::ProtocolError("unsupported client platform".into());
+            }
+            if client_version.is_empty() {
+                return ClientVideoFeedback::ProtocolError(
+                    "client version must not be empty".into(),
+                );
+            }
         }
         ClientMessage::BrowserFrameAccepted { sequence } => {
             return sequence
@@ -460,6 +474,33 @@ mod tests {
             ),
             ClientVideoFeedback::FramePresented(42)
         );
+    }
+
+    #[test]
+    fn client_hello_rejects_unknown_protocol_or_platform() {
+        let (input, browser_frames, _input_rx) = test_state();
+        let mut pressed = HashSet::new();
+        let invalid_version = handle_test_client_message(
+            &input,
+            &browser_frames,
+            r#"{"type":"client_hello","protocol_version":99,"platform":"android","client_version":"test"}"#,
+            &mut pressed,
+        );
+        assert!(matches!(
+            invalid_version,
+            ClientVideoFeedback::ProtocolError(_)
+        ));
+
+        let invalid_platform = handle_test_client_message(
+            &input,
+            &browser_frames,
+            r#"{"type":"client_hello","protocol_version":1,"platform":"android-target","client_version":"test"}"#,
+            &mut pressed,
+        );
+        assert!(matches!(
+            invalid_platform,
+            ClientVideoFeedback::ProtocolError(_)
+        ));
     }
 
     #[test]

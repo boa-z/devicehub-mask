@@ -130,12 +130,33 @@ fn private_api_authorized(headers: &HeaderMap, token: &str) -> bool {
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|value| value == token);
+        .is_some_and(|value| constant_time_token_eq(value.trim(), token));
     let websocket_protocol_matches = headers
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.split(',').any(|protocol| protocol.trim() == token));
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|protocol| constant_time_token_eq(protocol.trim(), token))
+        });
     bearer_matches || websocket_protocol_matches
+}
+
+/// Compare bearer material without returning early on the first mismatching byte.
+/// The token is still a bearer credential, so this does not replace TLS or LAN
+/// isolation, but it avoids making the local verifier's timing behavior depend
+/// on the matching prefix.
+fn constant_time_token_eq(provided: &str, expected: &str) -> bool {
+    let provided = provided.as_bytes();
+    let expected = expected.as_bytes();
+    let mut difference = (provided.len() ^ expected.len()) as u64;
+    let length = provided.len().max(expected.len());
+    for index in 0..length {
+        let left = provided.get(index).copied().unwrap_or_default();
+        let right = expected.get(index).copied().unwrap_or_default();
+        difference |= u64::from(left ^ right);
+    }
+    difference == 0
 }
 
 async fn api_status(State(state): State<PrivateApiState>) -> Json<status::StatusView> {

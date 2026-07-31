@@ -509,6 +509,10 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                     &browser_resync,
                 ) {
                     ClientVideoFeedback::None => {}
+                    ClientVideoFeedback::ProtocolError(message) => {
+                        tracing::warn!(%message, "closing WebSocket after invalid client handshake");
+                        break;
+                    }
                     ClientVideoFeedback::BrowserAccepted(sequence) => {
                         frame_pacer.release(FrameCredit::BrowserAccepted(sequence));
                     }
