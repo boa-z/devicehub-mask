@@ -35,6 +35,7 @@ const MAX_IN_FLIGHT_FRAMES: usize = 8;
 const AUDIO_CHANNEL_CAPACITY: usize = 16;
 const AUDIO_PACKET_HEADER_BYTES: usize = 12;
 const AUDIO_PACKET_MAGIC: &[u8; 4] = b"DHA1";
+const MOBILE_PROTOCOL_VERSION: u16 = 1;
 
 #[derive(Clone, Default)]
 pub struct BrowserAudioSlot(Arc<Mutex<HashMap<String, broadcast::Sender<bytes::Bytes>>>>);
@@ -198,6 +199,24 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         });
         if sender
             .send(Message::Text(lease_message.to_string().into()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let server_hello = json!({
+            "type": "server_hello",
+            "payload": {
+                "protocol_version": MOBILE_PROTOCOL_VERSION,
+                "target_platforms": ["ios"],
+                "video": { "codec": "hevc", "packet": "DHV2" },
+                "audio": { "codec": "pcm_s16le", "packet": "DHA1" },
+                "input": ["multi_touch", "button", "keyboard", "text", "rotate"],
+                "control_lease": true,
+            },
+        });
+        if sender
+            .send(Message::Text(server_hello.to_string().into()))
             .await
             .is_err()
         {

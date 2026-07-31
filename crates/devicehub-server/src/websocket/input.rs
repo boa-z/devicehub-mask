@@ -21,6 +21,13 @@ use devicehub_runtime::{
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
+    ClientHello {
+        protocol_version: u16,
+        platform: String,
+        client_version: String,
+        #[serde(default)]
+        capabilities: Vec<String>,
+    },
     MultiTouch {
         contacts: Vec<WebContact>,
     },
@@ -160,6 +167,27 @@ pub(super) fn handle_client_message<HostPath>(
         return ClientVideoFeedback::None;
     }
     match message {
+        ClientMessage::ClientHello {
+            protocol_version,
+            platform,
+            client_version,
+            capabilities,
+        } => {
+            let platform = platform.chars().take(32).collect::<String>();
+            let client_version = client_version.chars().take(64).collect::<String>();
+            let capabilities = capabilities
+                .into_iter()
+                .take(32)
+                .map(|capability| capability.chars().take(64).collect::<String>())
+                .collect::<Vec<_>>();
+            tracing::info!(
+                protocol_version,
+                %platform,
+                %client_version,
+                ?capabilities,
+                "mobile client handshake received"
+            );
+        }
         ClientMessage::BrowserFrameAccepted { sequence } => {
             return sequence
                 .parse::<u64>()
