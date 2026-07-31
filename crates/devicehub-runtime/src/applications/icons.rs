@@ -202,8 +202,13 @@ async fn fetch_core_device_icon(
         },
         Ok(Err(error)) => {
             let error = format!("{error:?}");
-            source.failed(is_unsupported_core_device_icon_error(&error));
-            Err(format!("unable to read CoreDevice app icon: {error}"))
+            let unsupported = is_unsupported_core_device_icon_error(&error);
+            source.failed(unsupported);
+            if unsupported {
+                Err("CoreDevice app icon action is not supported by this device".into())
+            } else {
+                Err(format!("unable to read CoreDevice app icon: {error}"))
+            }
         }
         Err(_) => {
             source.failed(true);

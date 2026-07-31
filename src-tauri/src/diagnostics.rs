@@ -11,10 +11,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
 const XPC_PARTIAL_FRAME_FILTER: &str = "idevice::xpc::format=error";
-const DEFAULT_FILTER: &str =
-    "devicehub_mask=info,tower_http=warn,idevice=warn,idevice::xpc::format=error";
-const DEBUG_FILTER: &str =
-    "devicehub_mask=debug,tower_http=info,idevice=info,idevice::xpc::format=error";
+const CORE_DEVICE_RAW_ERROR_FILTER: &str = "idevice::services::core_device=error";
+const DEFAULT_FILTER: &str = "devicehub_mask=info,tower_http=warn,idevice=warn,idevice::xpc::format=error,idevice::services::core_device=error";
+const DEBUG_FILTER: &str = "devicehub_mask=debug,tower_http=info,idevice=info,idevice::xpc::format=error,idevice::services::core_device=error";
 
 type FilterHandle = reload::Handle<EnvFilter, Registry>;
 
@@ -71,7 +70,7 @@ impl Diagnostics {
             .ok();
         let (filter_text, mode, rejected_filter) = match configured_filter {
             Some(value) => {
-                let value = suppress_xpc_partial_frame_noise(&value);
+                let value = suppress_dependency_noise(&value);
                 if parse_filter(&value).is_ok() {
                     (value, LogMode::Custom, false)
                 } else {
@@ -227,15 +226,28 @@ fn parse_filter(value: &str) -> Result<EnvFilter, String> {
 }
 
 fn suppress_xpc_partial_frame_noise(value: &str) -> String {
+    append_default_directive(value, "idevice::xpc::format", XPC_PARTIAL_FRAME_FILTER)
+}
+
+fn suppress_dependency_noise(value: &str) -> String {
+    let value = suppress_xpc_partial_frame_noise(value);
+    append_default_directive(
+        &value,
+        "idevice::services::core_device",
+        CORE_DEVICE_RAW_ERROR_FILTER,
+    )
+}
+
+fn append_default_directive(value: &str, target: &str, directive: &str) -> String {
     if value
         .split(',')
-        .any(|directive| directive.trim().starts_with("idevice::xpc::format="))
+        .any(|directive| directive.trim().starts_with(&format!("{target}=")))
     {
         value.to_owned()
     } else if value.trim().is_empty() {
-        XPC_PARTIAL_FRAME_FILTER.to_owned()
+        directive.to_owned()
     } else {
-        format!("{value},{XPC_PARTIAL_FRAME_FILTER}")
+        format!("{value},{directive}")
     }
 }
 
@@ -294,7 +306,7 @@ fn bounded_field(name: &str, value: String, max_chars: usize) -> Result<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_field, suppress_xpc_partial_frame_noise};
+    use super::{bounded_field, suppress_dependency_noise, suppress_xpc_partial_frame_noise};
     use devicehub_core::device_id_fingerprint;
 
     #[test]
@@ -306,6 +318,18 @@ mod tests {
         assert_eq!(
             suppress_xpc_partial_frame_noise("warn,idevice::xpc::format=trace"),
             "warn,idevice::xpc::format=trace"
+        );
+    }
+
+    #[test]
+    fn suppresses_raw_core_device_errors_without_overriding_explicit_filters() {
+        assert_eq!(
+            suppress_dependency_noise("warn"),
+            "warn,idevice::xpc::format=error,idevice::services::core_device=error"
+        );
+        assert_eq!(
+            suppress_dependency_noise("warn,idevice::services::core_device=trace"),
+            "warn,idevice::services::core_device=trace,idevice::xpc::format=error"
         );
     }
 
