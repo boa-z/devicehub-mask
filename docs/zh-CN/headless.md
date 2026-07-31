@@ -144,6 +144,8 @@ MCP Streamable HTTP 端点为 `http://127.0.0.1:8009/mcp`。MCP 当前没有鉴�
 
 内置服务只提供令牌鉴权，不提供 TLS、用户账户、速率限制或公网部署保护。WebCodecs 等浏览器 API 通常还要求安全上下文；`http://localhost` 会被浏览器特殊信任，但 `http://<LAN-IP>` 不一定可用。完整局域网视频访问应在可信反向代理上终止 HTTPS，并同时转发静态页面、`/api/*` 和 WebSocket `/api/ws`。启用 TLS 不会替代访问令牌。
 
+当使用 `--allow-lan` 发布非回环监听地址时，headless 还会通过 Bonjour/mDNS 发布 `_devicehub._tcp.local.` 服务。记录只包含服务端口和 `targets=ios`，不会包含 access token。客户端仍必须使用终端输出 URL 或 `--token-file` 中的 token 完成鉴权。
+
 ## 参数参考
 
 | 参数 | 默认值 | 说明 |

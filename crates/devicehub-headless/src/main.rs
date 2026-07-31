@@ -1,5 +1,6 @@
 //! Native headless host for the shared DeviceHub runtime and browser UI.
 
+mod discovery;
 mod host;
 
 use std::ffi::OsString;
@@ -298,6 +299,17 @@ async fn run(config: Config) -> Result<(), String> {
         address.port()
     );
     tracing::info!(listen = %address, lan = config.allow_lan, "headless server listening");
+    let _service_advertiser = if config.allow_lan && !address.ip().is_loopback() {
+        match discovery::ServiceAdvertiser::start(address.port()) {
+            Ok(advertiser) => Some(advertiser),
+            Err(error) => {
+                tracing::warn!(%error, "LAN discovery advertisement unavailable");
+                None
+            }
+        }
+    } else {
+        None
+    };
     println!("Open {url}");
 
     let mcp = config.mcp_listen.map(|address| {

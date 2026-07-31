@@ -6,6 +6,7 @@ description = "Headless DeviceHub browser host"
 license = "MIT"
 
 [dependencies]
+mdns-sd = "0.19"
 axum = "0.8"
 bytes = "1"
 devicehub-host = { path = "../devicehub-host" }

@@ -1204,6 +1204,7 @@ dependencies = [
  "devicehub-host",
  "devicehub-runtime",
  "devicehub-server",
+ "mdns-sd",
  "serde",
  "serde_json",
  "tokio",
