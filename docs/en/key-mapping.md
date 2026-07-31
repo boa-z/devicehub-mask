@@ -108,13 +108,25 @@ Use `Ctrl+Shift+K` to switch between Mapping and Keyboard passthrough. RawInput 
 
 ## Profile Management
 
-Profiles are validated JSON files in the application data directory. The profile toolbar supports save, activate, create, duplicate, rename, delete, app association, import, and export.
+Profiles are validated JSON files in the application data directory. The profile toolbar supports save, activate, create, duplicate, rename, delete, app association, import, export, and browsing the online catalog.
 
 - A new profile is empty. A duplicate copies mappings and hardware shortcuts but intentionally clears App associations.
 - Renaming preserves mappings and associations. Renaming the active profile keeps it active.
 - The active profile cannot be deleted. Activate another saved profile first.
 - A profile may contain at most 512 mappings and 32 unique valid Bundle IDs. Any profile with App associations must also store one explicit target frame resolution.
 - Imported profiles are saved and opened for editing but are not automatically activated.
+
+## Online Keymap Catalog
+
+Select **Browse online keymaps** in the profile toolbar to view the official catalog. The catalog is a download source, not a profile-sync service: its files never replace an existing local profile, and all editing, saving, activation, and offline use continue to use the local profile directory.
+
+- **Refresh** fetches the current catalog over HTTPS and saves a validated local cache. If refresh fails, the last valid cache is shown when available.
+- Select **Repository** to set a different HTTPS catalog JSON address, or restore the official address. The selected address is stored locally and gets its own cache; it never changes or synchronizes the user's local profiles.
+- Search by keymap name, Bundle ID, or device target. Choose an installed App Bundle ID and a device target from the current device or the catalog's declared targets to narrow results. Choosing a device target requires the catalog item's exact stream width, height, orientation, and optional Apple product type to match; choose **All catalog devices** to browse without a device filter.
+- Selecting **Download** verifies the published byte count and SHA-256, validates the native `version: 2` profile, writes a new local profile name without overwriting an existing one, and opens that profile in the editor.
+- A download is never activated automatically. Review the mappings, save any changes, and select **Set active** when ready.
+
+The built-in source is the public [DeviceHub Mask Keymaps repository](https://github.com/boa-z/devicehub-mask-keymaps). Custom addresses must be direct HTTPS catalog-document URLs without embedded credentials. A live catalog entry is a compatibility suggestion, not a guarantee that a game UI has not changed; verify mappings before use.
 
 ## Associate a Profile with an App
 

@@ -6,9 +6,11 @@ use std::path::PathBuf;
 pub fn state(
     client: devicehub_runtime::RuntimeClient<PathBuf>,
     profile_dir: PathBuf,
+    keymap_catalog_cache_dir: PathBuf,
     websocket_config: devicehub_server::websocket::WebSocketConfig,
 ) -> devicehub_server::private_api::PrivateApiState {
     let commands = client.device.commands.clone();
+    let profiles = crate::profile_files::TokioProfileRepository::new(profile_dir);
     devicehub_server::private_api::PrivateApiState {
         application: client.clone(),
         device_manager_http: devicehub_server::http::DeviceManagerHttpState::new(
@@ -39,8 +41,12 @@ pub fn state(
                 crate::capture_files::validate_http_destination,
             ),
         ),
-        profiles_http: devicehub_server::http::ProfileHttpState::new(
-            crate::profile_files::TokioProfileRepository::new(profile_dir),
+        profiles_http: devicehub_server::http::ProfileHttpState::new(profiles.clone()),
+        keymap_catalog_http: devicehub_server::http::KeyMappingCatalogHttpState::new(
+            crate::keymap_catalog::TokioKeyMappingCatalogRepository::official(
+                keymap_catalog_cache_dir,
+                profiles,
+            ),
         ),
         storage_http: devicehub_server::http::StorageHttpState::new(
             commands.clone(),

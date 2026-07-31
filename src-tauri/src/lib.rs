@@ -129,6 +129,7 @@ impl BackendHandle {
 
 fn spawn_backend(
     profile_dir: PathBuf,
+    keymap_catalog_cache_dir: PathBuf,
     runtime_config: device_runtime::RuntimeConfig,
 ) -> Result<BackendHandle, String> {
     let runtime = device_runtime::DeviceRuntime::start(runtime_config)?;
@@ -157,6 +158,7 @@ fn spawn_backend(
                     devicehub_host::private_api::state(
                         client.clone(),
                         profile_dir,
+                        keymap_catalog_cache_dir,
                         websocket_config,
                     ),
                     server_token,
@@ -296,9 +298,11 @@ pub fn run() {
             let profile_dir = std::env::var_os("DEVICEHUB_PROFILE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| app_data_dir.join("profiles"));
+            let keymap_catalog_cache_dir = app_data_dir.join("keymap-catalog");
             app.manage(ProfileDirectory(profile_dir.clone()));
             let backend = spawn_backend(
                 profile_dir,
+                keymap_catalog_cache_dir,
                 device_runtime::RuntimeConfig {
                     initial_udid,
                     pairing_dir: app_data_dir.join("pairings"),

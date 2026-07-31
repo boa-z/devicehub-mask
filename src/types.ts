@@ -596,6 +596,46 @@ export type ProfileResolution = { width: number; height: number };
 export type AppProfileBinding = { bundle_id: string; profile: string; target_resolution: ProfileResolution | null };
 export type AppBindingConflict = { bundle_id: string; target_resolution: ProfileResolution | null };
 export type Profile = { version: 2; name: string; mappings: Mapping[]; hardwareBindings: HardwareBindings; bundleIdentifiers: string[]; targetResolution: ProfileResolution | null };
+export type KeymapCatalogRepository = { id: string; name: string; generated_at: string };
+export type KeymapCatalogProfile = {
+  format: "devicehub-mask";
+  format_version: 2;
+  url: string;
+  sha256: string;
+  bytes: number;
+};
+export type KeymapCatalogMatch = {
+  bundle_ids: string[];
+  stream_resolution: ProfileResolution;
+  orientation: Orientation;
+  product_types: string[];
+};
+export type KeymapCatalogEntry = {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  author: string;
+  updated_at: string;
+  profile: KeymapCatalogProfile;
+  match: KeymapCatalogMatch;
+};
+export type KeymapCatalog = {
+  schema_version: 1;
+  repository: KeymapCatalogRepository;
+  entries: KeymapCatalogEntry[];
+};
+export type KeymapCatalogSource = {
+  url: string;
+  default_url: string;
+  is_default: boolean;
+};
+export type KeymapCatalogInstall = { entry_id: string; name: string; mappings: number };
+export type KeymapCatalogDeviceContext = {
+  product_type: string | null;
+  frame_size: ProfileResolution;
+  orientation: Orientation;
+};
 export const defaultProfile: Profile = { version: 2, name: "default", hardwareBindings: { ...defaultHardwareBindings }, bundleIdentifiers: [], targetResolution: null, mappings: [
   { id: "move", type: "dpad", label: "Move", contactId: 0, x: 0.23, y: 0.73, radius: 0.1, keys: { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD" } },
   { id: "skill-1", type: "touch", label: "Skill 1", contactId: 1, x: 0.78, y: 0.72, key: "Space" },

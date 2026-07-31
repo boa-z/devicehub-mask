@@ -16,6 +16,7 @@ mod diagnostics;
 mod home_screen;
 mod input;
 mod key_mapping;
+mod key_mapping_catalog;
 mod location;
 mod media;
 mod performance;
@@ -80,6 +81,13 @@ pub use input::{
 pub use key_mapping::{
     InvalidKeyMappingProfile, KeyMappingProfile, KeyMappingResolution, default_hardware_bindings,
     validate_key_mapping_profile, validate_key_mapping_profile_name,
+};
+pub use key_mapping_catalog::{
+    InvalidKeyMappingCatalog, KEY_MAPPING_CATALOG_SCHEMA_VERSION, KeyMappingCatalog,
+    KeyMappingCatalogEntry, KeyMappingCatalogMatch, KeyMappingCatalogOrientation,
+    KeyMappingCatalogProfile, KeyMappingCatalogRepository, MAX_KEY_MAPPING_CATALOG_BYTES,
+    MAX_KEY_MAPPING_CATALOG_ENTRIES, MAX_REMOTE_KEY_MAPPING_PROFILE_BYTES,
+    validate_key_mapping_catalog,
 };
 pub use location::{LocationBackend, LocationStatus};
 pub use media::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};

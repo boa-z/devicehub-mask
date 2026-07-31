@@ -11,6 +11,7 @@ pub mod device_backup;
 pub mod diagnostic_files;
 pub mod diagnostic_sinks;
 pub mod host_files;
+pub mod keymap_catalog;
 pub mod netmuxd;
 pub mod private_api;
 pub mod profile_files;

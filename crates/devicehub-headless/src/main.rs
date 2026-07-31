@@ -269,6 +269,7 @@ async fn run(config: Config) -> Result<(), String> {
     let mut api_state = devicehub_host::private_api::state(
         client.clone(),
         profile_dir,
+        config.data_dir.join("keymap-catalog"),
         devicehub_server::websocket::WebSocketConfig::default(),
     );
     api_state.host_http = devicehub_server::http::HostHttpState::new(

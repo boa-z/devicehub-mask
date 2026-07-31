@@ -1,4 +1,5 @@
 import CheckOutlined from "@ant-design/icons/es/icons/CheckOutlined";
+import CloudDownloadOutlined from "@ant-design/icons/es/icons/CloudDownloadOutlined";
 import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
 import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
 import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
@@ -38,6 +39,7 @@ type Props = {
   onBundleIdentifiersChange: (bundleIdentifiers: string[]) => void;
   onTargetResolutionChange: (targetResolution: ProfileResolution | null) => void;
   onImport: (profile: Profile, imported: number, skipped: number) => Promise<void>;
+  onBrowseCatalog: () => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -75,6 +77,7 @@ export function ProfileManager({
   onBundleIdentifiersChange,
   onTargetResolutionChange,
   onImport,
+  onBrowseCatalog,
   canUndo,
   canRedo,
   onUndo,
@@ -209,6 +212,7 @@ export function ProfileManager({
           />
         </Tooltip>
         <Tooltip title={t("profile.importConfig")}><Button icon={<UploadOutlined />} onClick={() => setImportDialog(true)} /></Tooltip>
+        <Tooltip title={t("profile.browseCatalog")}><Button aria-label={t("profile.browseCatalog")} icon={<CloudDownloadOutlined />} onClick={onBrowseCatalog} /></Tooltip>
         <Dropdown
           menu={{
             items: [

@@ -8,6 +8,7 @@ mod device;
 mod devices;
 mod diagnostics;
 mod host;
+mod keymap_catalog;
 mod performance;
 mod profiles;
 mod provisioning;
@@ -27,6 +28,11 @@ pub use diagnostics::{
 pub use host::{
     HostBuildInfo, HostCapabilities, HostControl, HostDiagnosticsStatus, HostHttpState,
     HostSettingsPatch, HostSettingsStatus, router as host_router,
+};
+pub use keymap_catalog::{
+    KeyMappingCatalogError, KeyMappingCatalogFuture, KeyMappingCatalogHttpState,
+    KeyMappingCatalogInstall, KeyMappingCatalogRepository, KeyMappingCatalogSource,
+    router as keymap_catalog_router,
 };
 pub use performance::{
     CaptureDestinationValidator, PerformanceHttpState, router as performance_router,

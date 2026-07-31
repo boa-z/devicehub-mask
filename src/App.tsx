@@ -66,6 +66,7 @@ const DeviceLogsPage = lazy(() => import("./components/DeviceLogsPage").then((mo
 const LocationPage = lazy(() => import("./components/LocationPage").then((module) => ({ default: module.LocationPage })));
 const MappingBackgroundToolbar = lazy(() => import("./components/MappingBackgroundToolbar").then((module) => ({ default: module.MappingBackgroundToolbar })));
 const MappingInspector = lazy(() => import("./components/MappingInspector").then((module) => ({ default: module.MappingInspector })));
+const KeymapCatalogModal = lazy(() => import("./components/KeymapCatalogModal").then((module) => ({ default: module.KeymapCatalogModal })));
 const PerformancePage = lazy(() => import("./components/PerformancePage").then((module) => ({ default: module.PerformancePage })));
 const ProfileManager = lazy(() => import("./components/ProfileManager").then((module) => ({ default: module.ProfileManager })));
 const SettingsPage = lazy(() => import("./components/SettingsPage").then((module) => ({ default: module.SettingsPage })));
@@ -136,6 +137,7 @@ export default function App() {
   const initialProfileRef = useRef(profile);
   const [controlProfile, setControlProfile] = useState<Profile>(profile);
   const [profiles, setProfiles] = useState<string[]>([]);
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const [activeProfile, setActiveProfile] = useState("default");
   const [profileSwitching, setProfileSwitching] = useState<string | null>(null);
   const [appProfileBindings, setAppProfileBindings] = useState<AppProfileBinding[]>([]);
@@ -759,6 +761,10 @@ export default function App() {
     await loadProfile(next.name);
     void message.success(t(skipped ? "mapping.importedWithSkipped" : "mapping.imported", { imported, skipped }));
   };
+  const installCatalogProfile = async (name: string) => {
+    await refreshProfiles();
+    await loadProfile(name);
+  };
   const toggleAlwaysOnTop = async () => {
     const next = !alwaysOnTop;
     try {
@@ -1202,12 +1208,24 @@ export default function App() {
                   onBundleIdentifiersChange={(bundleIdentifiers) => updateProfile((current) => ({ ...current, bundleIdentifiers }))}
                   onTargetResolutionChange={(targetResolution) => updateProfile((current) => ({ ...current, targetResolution }))}
                   onImport={importProfile}
+                  onBrowseCatalog={() => setCatalogOpen(true)}
                   canUndo={canUndoProfile}
                   canRedo={canRedoProfile}
                   onUndo={undoProfile}
                   onRedo={redoProfile}
                 />
               )}
+              {catalogOpen && <KeymapCatalogModal
+                open={catalogOpen}
+                request={request}
+                profiles={profiles}
+                activeDeviceId={selectedDeviceId}
+                frameSize={frameSize}
+                orientation={status.orientation}
+                hasFrame={hasFrame}
+                onClose={() => setCatalogOpen(false)}
+                onInstalled={installCatalogProfile}
+              />}
               <main className={`workspace ${deviceFullscreen ? "inspector-hidden" : page === "device" && deviceViewPreferences.deviceInspectorVisible ? "device-workspace" : page === "mappings" && deviceViewPreferences.mappingInspectorVisible ? "mapping-workspace" : "inspector-hidden"}`}>
                 <section className="stage-column">
                   {deviceFullscreen ? (

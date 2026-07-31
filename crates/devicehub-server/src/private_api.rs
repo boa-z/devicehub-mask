@@ -29,6 +29,7 @@ pub struct PrivateApiState {
     pub provisioning_http: http::ProvisioningHttpState,
     pub performance_http: http::PerformanceHttpState,
     pub profiles_http: http::ProfileHttpState,
+    pub keymap_catalog_http: http::KeyMappingCatalogHttpState,
     pub storage_http: http::StorageHttpState,
     pub diagnostics_http: http::DiagnosticsHttpState,
     pub apps_http: http::AppHttpState,
@@ -50,6 +51,7 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
     let developer_image_routes = http::developer_image_router(state.developer_image_http.clone());
     let provisioning_routes = http::provisioning_router(state.provisioning_http.clone());
     let profile_routes = http::profiles_router(state.profiles_http.clone());
+    let keymap_catalog_routes = http::keymap_catalog_router(state.keymap_catalog_http.clone());
     let storage_routes = http::storage_router(state.storage_http.clone());
     let diagnostics_routes = http::diagnostics_router(state.diagnostics_http.clone());
     let app_routes = http::apps_router(state.apps_http.clone());
@@ -76,6 +78,7 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
         .merge(device_manager_routes)
         .merge(device_scoped_routes)
         .merge(profile_routes)
+        .merge(keymap_catalog_routes)
         .merge(host_routes)
         .route("/api/ws", get(ws_upgrade))
         .layer(from_fn_with_state(
@@ -233,6 +236,38 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct EmptyKeyMappingCatalogRepository;
+
+    impl http::KeyMappingCatalogRepository for EmptyKeyMappingCatalogRepository {
+        fn source(&self) -> http::KeyMappingCatalogFuture<http::KeyMappingCatalogSource> {
+            Box::pin(async { Err(http::KeyMappingCatalogError::Unavailable) })
+        }
+
+        fn set_source(
+            &self,
+            _url: Option<String>,
+        ) -> http::KeyMappingCatalogFuture<http::KeyMappingCatalogSource> {
+            Box::pin(async { Err(http::KeyMappingCatalogError::Unavailable) })
+        }
+
+        fn catalog(&self) -> http::KeyMappingCatalogFuture<devicehub_core::KeyMappingCatalog> {
+            Box::pin(async { Err(http::KeyMappingCatalogError::NotFound) })
+        }
+
+        fn refresh(&self) -> http::KeyMappingCatalogFuture<devicehub_core::KeyMappingCatalog> {
+            Box::pin(async { Err(http::KeyMappingCatalogError::Unavailable) })
+        }
+
+        fn install(
+            &self,
+            _entry_id: String,
+            _name: String,
+        ) -> http::KeyMappingCatalogFuture<http::KeyMappingCatalogInstall> {
+            Box::pin(async { Err(http::KeyMappingCatalogError::NotFound) })
+        }
+    }
+
     fn test_state() -> PrivateApiState {
         let commands = devicehub_runtime::SessionCommandSlot::default();
         let (application, _control) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default()
@@ -265,6 +300,9 @@ mod tests {
                 http::CaptureDestinationValidator::new(|_, _| async { Ok(()) }),
             ),
             profiles_http: http::ProfileHttpState::new(EmptyProfileRepository),
+            keymap_catalog_http: http::KeyMappingCatalogHttpState::new(
+                EmptyKeyMappingCatalogRepository,
+            ),
             storage_http: http::StorageHttpState::new(
                 commands.clone(),
                 application.device.app_documents.clone(),
