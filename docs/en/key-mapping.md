@@ -68,9 +68,9 @@ The profile toolbar provides Undo and Redo for unsaved editor changes. `Ctrl+Z` 
 
 ## Contact IDs and Simultaneous Input
 
-Universal HID reports contain at most five contacts with identities `0` through `4`. Profiles may store more than five mappings, and mappings that can never overlap may reuse an identity. If two active mappings claim the same identity, only the first one in profile order owns the contact and receives the active highlight. Direct pointer input also consumes an available identity while held. When a newly active mapping conflicts with a direct pointer identity, the runtime assigns the mapping another free identity and keeps that assignment until the mapping is released; the held direct touch never jumps to the mapped button position.
+Universal HID reports contain at most five contacts with identities `0` through `4`. Profiles may store more than five mappings, and mappings that can never overlap may reuse an identity. Stateful camera and cast mappings reserve their configured identities so FPS handoff remains stable; an ordinary mapping that conflicts is assigned another free identity until release. Direct pointer input also consumes an available identity while held and is never displaced by a newly active mapping. A mapping is skipped when no free identity remains.
 
-For reliable combinations such as movement plus two skills, assign different IDs to every action that can be held simultaneously. A dual-contact field imported for an FPS controller is preserved for compatibility but the current FPS runtime emits only its primary contact.
+For reliable combinations such as movement plus two skills, assign different IDs to every action that can be held simultaneously. FPS dual-touch handoff alternates between its primary and secondary IDs, so both must be different from every contact that can remain active with camera control.
 
 ## Controller Reference
 
@@ -82,16 +82,16 @@ For reliable combinations such as movement plus two skills, assign different IDs
 | Multiple tap | Runs the ordered points once, applying each point's wait and duration | It does not loop while held after the sequence ends |
 | Swipe | Interpolates through the ordered points over `duration` | The final point remains held until the binding is released |
 | Direction pad | Converts Button up/down/left/right chords into a normalized diagonal-safe drag | Imported JoyStick axis bindings are preserved but not evaluated |
-| Mouse cast spell | Holds the primary contact and moves it with pointer deltas using horizontal/vertical scale | Advanced release, center, radius, randomization, and script-hook semantics are not fully executed |
-| Pad cast spell | Holds the primary binding and offsets the contact with Button direction bindings | JoyStick axes, release-mode, blocking, randomization, and script hooks are compatibility-only |
-| Cancel cast | Releases currently held MouseCastSpell and PadCastSpell bindings | It emits no contact; use one key because any member of a chord can trigger this special action |
-| Observation | Moves a held contact with pointer deltas using X/Y sensitivity | `max_radius`, randomization, and script hooks are not enforced by the runtime |
-| FPS camera | Moves a held contact with pointer deltas using X/Y sensitivity | Pointer lock, max offsets, interval, and dual-contact strategies are not implemented |
-| Fire | Moves a held contact with pointer deltas using X/Y sensitivity | `preserve_fps_control`, randomization, and script hooks are not implemented |
+| Mouse cast spell | Supports pointer movement within `drag_radius` and `OnPress`, `OnRelease`, and `OnSecondPress` release modes | Cast-center initialization, randomization, and script hooks are not executed |
+| Pad cast spell | Offsets the cast contact with Button directions, supports release modes, and can temporarily block the normal direction pad | Imported JoyStick axes, randomization, and script hooks are not executed |
+| Cancel cast | Animates the active mouse/pad cast contact to the configured cancel point, then releases it | It only affects an active cast and is triggered on the binding's press edge |
+| Observation | Holds while its binding is down, applies X/Y pointer sensitivity, and clamps movement to `max_radius` | Randomization and script hooks are not executed |
+| FPS camera | Press once to enter persistent relative camera control and press again to exit; max offsets recenter using single-touch delay or dual-touch delay/overlap handoff | Escape from pointer lock releases mapped input; assign distinct IDs for dual touch |
+| Fire | Holds a stationary fire contact while preserving FPS control, or takes over pointer movement and restores FPS at center when preservation is disabled | Randomization and script hooks are not executed |
 | Raw input | Releases mapped input and switches the application to Keyboard passthrough | It emits no contact; use one key because any member of a chord can trigger this special action |
 | Script | Stores and round-trips pressed, held, and released script text | Script execution is not implemented; do not use it for active control |
 
-Pointer-driven controllers use ordinary WebView pointer movement and do not currently capture an infinite relative pointer. Movement stops at window boundaries. Imported random offsets, script hooks, and other fields not listed as active above remain data compatibility fields rather than an execution promise.
+Pointer-driven controllers lock the pointer to the focused device viewport while relative movement is required. Leaving pointer lock, losing window focus, disconnecting, or changing control mode releases locally owned input. Imported random offsets, script hooks, and other fields not listed as active above remain stored data rather than executable behavior.
 
 ## Hardware Button Shortcuts
 
