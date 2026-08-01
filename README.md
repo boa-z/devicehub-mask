@@ -73,3 +73,7 @@ It checks documentation, frontend lint/tests/build, Rust formatting/tests, Clipp
 ## Credits
 
 The mapping interaction model is inspired by [scrcpy-mask](https://github.com/AkiChase/scrcpy-mask). Android transport code is not used.
+
+## License
+
+Copyright (c) 2026 boa-z. DeviceHub Mask is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). Modified versions made available over a network must offer their corresponding source code under the same license.

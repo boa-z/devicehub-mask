@@ -3,7 +3,7 @@ name = "devicehub-core"
 version = "0.1.0"
 edition = "2024"
 description = "Host-independent domain models and service contracts for DeviceHub"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

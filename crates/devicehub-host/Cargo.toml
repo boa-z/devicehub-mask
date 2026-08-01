@@ -3,7 +3,7 @@ name = "devicehub-host"
 version = "0.1.0"
 edition = "2024"
 description = "Shared operating-system adapters for DeviceHub hosts"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [dependencies]
 bytes = "1"

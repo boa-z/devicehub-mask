@@ -73,3 +73,7 @@ npm run verify
 ## 致谢
 
 按键映射交互模型参考 [scrcpy-mask](https://github.com/AkiChase/scrcpy-mask)，未使用 Android 传输代码。
+
+## 许可证
+
+Copyright (c) 2026 boa-z。DeviceHub Mask 仅以 [GNU Affero General Public License v3.0](LICENSE) 授权。通过网络提供修改版本时，必须以相同许可证向用户提供对应源代码。
