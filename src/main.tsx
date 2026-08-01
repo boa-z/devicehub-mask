@@ -3,13 +3,18 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { AppProviders } from "./AppProviders";
 import { installGlobalDiagnostics } from "./diagnostics";
-import "./i18n";
+import { i18nReady } from "./i18n";
 import "./styles.css";
 
-installGlobalDiagnostics();
+async function bootstrap() {
+  await i18nReady;
+  installGlobalDiagnostics();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <AppProviders />
-  </StrictMode>,
-);
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <AppProviders />
+    </StrictMode>,
+  );
+}
+
+void bootstrap();

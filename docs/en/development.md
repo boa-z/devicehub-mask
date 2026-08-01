@@ -114,7 +114,29 @@ After runtime or transport changes, run the explicit-UDID read-only checks and c
 
 ## Localization
 
-Translation resources are in `src/locales/en-US.ts` and `src/locales/zh-CN.ts`. Crowdin treats `en-US.ts` as the source file and downloads target locale files through `.github/workflows/crowdin.yml`; do not add Crowdin credentials to the repository. Add each new UI key to the source file and use `useTranslation()` in components. `src/i18n.test.ts` enforces matching resource trees.
+Translation resources are in `src/locales/en-US.json` and `src/locales/zh-CN.json`. Crowdin treats `en-US.json` as the source file and downloads target locale files through `.github/workflows/crowdin.yml`; do not add Crowdin credentials to the repository. Add each new UI key to the source file and use `useTranslation()` in components. `npm run locales:check` and `src/i18n.test.ts` enforce matching resource trees and interpolation tokens.
+
+### Crowdin Setup
+
+This repository uses a Crowdin JSON project. `crowdin.yml` manages exactly one source file, `src/locales/en-US.json`, and maps target languages to `src/locales/%locale%.json`. Keep locale files as plain JSON objects; do not add exports, executable code, or comments to them.
+
+For the initial bootstrap, create the project with English as the source language and add the target languages that the application is ready to ship. Upload `en-US.json` as the source, then use the target language's **Upload Translations** action for each existing locale file. Confirm that the import report has a non-zero `Imported` count and that the Crowdin editor contains the expected keys before downloading translations.
+
+Configure `CROWDIN_PROJECT_ID` and `CROWDIN_PERSONAL_TOKEN` as repository-level GitHub Actions secrets. The token must never appear in `crowdin.yml`, source files, commits, issues, or pull requests. The normal workflow keeps `upload_translations: false`: after bootstrap, Crowdin is the source of truth for translations. It uploads source changes, downloads translated files, and opens a review PR. Do not merge a localization PR whose target files contain source-language text unless the Crowdin import report has been checked.
+
+When adding a source string, add it only to `en-US.json`, preserve every interpolation token such as `{{name}}` or `{{count}}`, and keep protocol identifiers, bundle IDs, file paths, product names, and key codes unchanged. Review the generated target-file diff and run `npm run locales:check`, `npm run lint`, `npm test`, and `npm run build` before merging the PR. The frontend workflow runs these checks automatically for pull requests.
+
+### Adding Languages
+
+Crowdin files are not auto-discovered by the runtime. Adding a target language requires all of the following:
+
+1. Add the target language in Crowdin and verify its locale code maps to `src/locales/<locale>.json`.
+2. Add the locale code and its dynamic loader to `src/i18n.ts`, and update `normalizeLanguage()` when regional aliases need special handling.
+3. Add the language to the selector in `src/components/SettingsPage.tsx`.
+4. Add the corresponding Ant Design locale mapping in `src/AppProviders.tsx`.
+5. Keep `npm run locales:check` and the key parity test passing, verify the language through the Settings UI, and confirm that the new locale is loaded as a separate chunk.
+
+The application currently registers only `zh-CN` and `en-US`; a new file downloaded by Crowdin is not usable until these runtime registration points are updated. English is bundled as the fallback and target locales are loaded on demand. Recheck `npm run build` and the frontend budget after adding languages.
 
 Protocol identifiers, key codes, profile names, and user-authored labels remain untranslated. New default labels are localized only when a profile is created. The shared `--system-font` token is defined in `src/styles.css` and passed to Ant Design by `src/AppProviders.tsx`; do not add remote or bundled fonts.
 

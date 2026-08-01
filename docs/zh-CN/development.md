@@ -114,7 +114,29 @@ npm run clean:rust
 
 ## 本地化
 
-翻译资源位于 `src/locales/en-US.ts` 和 `src/locales/zh-CN.ts`。Crowdin 将 `en-US.ts` 作为源文件，并通过 `.github/workflows/crowdin.yml` 下载目标语言文件；不要将 Crowdin 凭据提交到仓库。新增界面文案时先添加到源文件，并在组件中使用 `useTranslation()`。`src/i18n.test.ts` 会检查两个资源树的 key 是否一致。
+翻译资源位于 `src/locales/en-US.json` 和 `src/locales/zh-CN.json`。Crowdin 将 `en-US.json` 作为源文件，并通过 `.github/workflows/crowdin.yml` 下载目标语言文件；不要将 Crowdin 凭据提交到仓库。新增界面文案时先添加到源文件，并在组件中使用 `useTranslation()`。`npm run locales:check` 和 `src/i18n.test.ts` 会检查资源树和插值 token 是否一致。
+
+### Crowdin 配置
+
+本仓库使用 Crowdin JSON 文件型项目。`crowdin.yml` 只管理一个源文件 `src/locales/en-US.json`，并将目标语言映射到 `src/locales/%locale%.json`。locale 文件必须保持为普通 JSON 对象，不要加入 export、可执行代码或注释。
+
+首次 bootstrap 时，项目源语言选择 English，并只添加应用准备发布的目标语言。先上传 `en-US.json` 作为源文件，再从每个目标语言页面使用 **Upload Translations** 导入已有 locale 文件。确认导入报告中的 `Imported` 大于 0，并在 Crowdin 编辑器中看到预期 key 后，再下载翻译文件。
+
+将 `CROWDIN_PROJECT_ID` 和 `CROWDIN_PERSONAL_TOKEN` 配置为 GitHub Repository-level Actions secrets。token 绝不能出现在 `crowdin.yml`、源代码、commit、issue 或 PR 中。正常同步 workflow 保持 `upload_translations: false`：完成首次导入后，Crowdin 是翻译的唯一来源。workflow 会上传源文件变更、下载翻译，并创建 review PR。如果没有检查 Crowdin 导入报告，不要合并目标文件仍为源语言文本的本地化 PR。
+
+新增源文案时，只修改 `en-US.json`，保留 `{{name}}`、`{{count}}` 等插值 token，并保持协议标识符、Bundle ID、文件路径、产品名和 key code 不变。合并前检查生成的目标文件 diff，并运行 `npm run locales:check`、`npm run lint`、`npm test` 和 `npm run build`。前端 workflow 会在 pull request 中自动运行这些检查。
+
+### 增加语言
+
+Crowdin 下载的文件不会被运行时自动发现。增加目标语言必须同时完成以下修改：
+
+1. 在 Crowdin 中增加目标语言，并确认其 locale code 会映射到 `src/locales/<locale>.json`。
+2. 在 `src/i18n.ts` 中加入 locale code 和动态 loader，并在需要时更新 `normalizeLanguage()` 的地区别名处理。
+3. 在 `src/components/SettingsPage.tsx` 的语言选择器中加入该语言。
+4. 在 `src/AppProviders.tsx` 中加入对应的 Ant Design locale 映射。
+5. 保持 `npm run locales:check` 和 key 对齐测试通过，在 Settings 界面实际切换验证，并确认新 locale 被拆分为独立 chunk。
+
+当前应用只注册了 `zh-CN` 和 `en-US`；Crowdin 下载的新文件在完成这些运行时注册前不能直接使用。英文作为 fallback 打入首包，目标语言按需加载。增加语言后必须重新运行 `npm run build` 和前端性能预算检查。
 
 协议标识符、键码、配置名称和用户标签不翻译。默认映射标签只在新建配置时本地化。 系统字体 token `--system-font` 定义在 `src/styles.css`，并由 `src/AppProviders.tsx` 传给 Ant Design；不要引入远程或捆绑字体。
 

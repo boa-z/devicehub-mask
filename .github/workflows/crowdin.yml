@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - "src/locales/**"
+      - "src/locales/en-US.json"
       - "crowdin.yml"
       - ".github/workflows/crowdin.yml"
   schedule:
@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: crowdin-locales
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   synchronize:
@@ -34,7 +34,7 @@ jobs:
         uses: crowdin/github-action@v2
         with:
           upload_sources: true
-          upload_translations: true
+          upload_translations: false
           download_translations: true
           skip_untranslated_strings: false
           localization_branch_name: l10n_crowdin_translations
@@ -43,7 +43,11 @@ jobs:
           pull_request_body: |
             This PR contains translations downloaded from Crowdin.
 
-            Please review the generated locale files and run the normal frontend checks before merging.
+            Please review the generated locale files. Required checks include:
+            - npm run locales:check
+            - npm run lint
+            - npm test
+            - npm run build
           pull_request_base_branch_name: main
           commit_message: "chore(i18n): sync translations from Crowdin"
         env:

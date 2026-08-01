@@ -38,6 +38,7 @@ const checks = [
   [process.execPath, ["--check", "scripts/clean-rust.mjs"], "Rust cleanup script syntax"],
   [process.execPath, ["--check", "scripts/package-headless.mjs"], "headless package script syntax"],
   [npm, [...npmPrefix, "run", "docs:check"], "documentation"],
+  [npm, [...npmPrefix, "run", "locales:check"], "locale resources"],
   [npm, [...npmPrefix, "run", "rust:boundaries"], "Rust architecture boundaries"],
   [npm, [...npmPrefix, "run", "lint"], "frontend lint"],
   [npm, [...npmPrefix, "run", "test"], "frontend tests"],

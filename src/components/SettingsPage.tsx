@@ -7,7 +7,7 @@ import { Button, Checkbox, Select, Slider, Space, Switch, Typography, message } 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { UpdateChannel } from "../buildInfo";
-import { normalizeLanguage, type SupportedLanguage } from "../i18n";
+import { changeLanguage, normalizeLanguage, type SupportedLanguage } from "../i18n";
 import { readHostCapabilities, runningInDesktopHost, type HostCapabilities } from "../hostApi";
 import { showErrorMessage } from "../errorMessage";
 import type { DeviceAudioPreferences } from "../deviceAudio";
@@ -149,7 +149,7 @@ export function SettingsPage({
               { value: "zh-CN", label: t("settings.languages.zhCN") },
               { value: "en-US", label: t("settings.languages.enUS") },
             ]}
-            onChange={(value) => void i18n.changeLanguage(value)}
+            onChange={(value) => void changeLanguage(value)}
           />
         </label>
       </div>

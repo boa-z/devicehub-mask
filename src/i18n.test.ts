@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { normalizeLanguage, supportedLanguages } from "./i18n";
-import enUS from "./locales/en-US";
-import zhCN from "./locales/zh-CN";
+import i18n, { changeLanguage, i18nReady, normalizeLanguage, supportedLanguages } from "./i18n";
+import enUS from "./locales/en-US.json";
+import zhCN from "./locales/zh-CN.json";
 
 function keys(value: object, prefix = ""): string[] {
   return Object.entries(value).flatMap(([key, child]) => {
@@ -20,5 +20,13 @@ describe("localization", () => {
     expect(normalizeLanguage("en-GB")).toBe("en-US");
     expect(normalizeLanguage(undefined)).toBe("en-US");
     expect(supportedLanguages).toEqual(["zh-CN", "en-US"]);
+  });
+
+  it("loads target locales before switching languages", async () => {
+    await i18nReady;
+    await changeLanguage("zh-CN");
+    expect(i18n.t("common.confirm")).toBe("确认");
+    await changeLanguage("en-US");
+    expect(i18n.t("common.confirm")).toBe("Confirm");
   });
 });
