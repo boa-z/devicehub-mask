@@ -15,6 +15,7 @@ devicehub-mask/
 │   ├── devicehub-core/      # host-independent domain policy and state
 │   ├── devicehub-headless/  # standalone browser host binary
 │   ├── devicehub-host/      # shared filesystem and process adapters
+│   ├── devicehub-keymap/    # shared deterministic mapping and script runtime
 │   ├── devicehub-runtime/   # Apple-device sessions and supervision
 │   └── devicehub-server/    # reusable HTTP/WebSocket protocol adapters
 ├── scripts/                 # device preparation and packaging helpers

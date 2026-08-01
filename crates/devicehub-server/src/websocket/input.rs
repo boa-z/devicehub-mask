@@ -8,14 +8,19 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use devicehub_core::hardware_button;
 use devicehub_core::{
-    DeviceInputCommand, HARDWARE_BUTTON_NAMES, Orientation, RotateDir, TouchContact, norm,
-    unrotate_norm,
+    DeviceInputCommand, HARDWARE_BUTTON_NAMES, KeyMappingProfile, Orientation, RotateDir,
+    TouchContact, norm, unrotate_norm,
 };
 use devicehub_runtime::{
     BrowserVideoSlot, DeviceSessionCommand as InputCmd, SessionCommandSlot as InputSink,
+};
+
+use super::keymap::{
+    BrowserDirectContact, BrowserKeymapPointerDelta, BrowserKeymapResolution, BrowserKeymapSession,
 };
 
 #[derive(Deserialize)]
@@ -49,6 +54,21 @@ enum ClientMessage {
     Text {
         text: String,
     },
+    KeymapConfigure {
+        profile: KeyMappingProfile,
+        frame: BrowserKeymapResolution,
+        #[serde(default)]
+        allow_scripts: bool,
+    },
+    KeymapInput {
+        keys: Vec<String>,
+        #[serde(default)]
+        pointer_deltas: Vec<BrowserKeymapPointerDelta>,
+    },
+    KeymapDirectTouches {
+        contacts: Vec<BrowserDirectContact>,
+    },
+    KeymapStop,
     Rotate {
         direction: RotateRequest,
     },
@@ -103,6 +123,7 @@ pub(super) enum ClientVideoFeedback {
     FramePresented(u64),
     ResetBrowser,
     ResetAll,
+    KeymapEvent(Value),
 }
 
 pub(super) struct ClientConnectionState {
@@ -137,9 +158,19 @@ impl ClientConnectionState {
     }
 }
 
+/// Per-connection adapters used while validating one client message.
+pub(super) struct ClientMessageContext<'a, HostPath> {
+    pub(super) input: &'a InputSink<HostPath>,
+    pub(super) orientation: Orientation,
+    pub(super) browser_frames: &'a BrowserVideoSlot,
+    pub(super) connection: &'a ClientConnectionState,
+    pub(super) browser_resync: &'a AtomicBool,
+}
+
 /// Separates decoder ingress acknowledgements from presentation telemetry.
 /// A browser credit is released only by the matching sequence, so a late
 /// acknowledgement cannot accidentally admit a newer frame.
+#[cfg(test)]
 pub(super) fn handle_client_message<HostPath>(
     input: &InputSink<HostPath>,
     orientation: Orientation,
@@ -149,6 +180,33 @@ pub(super) fn handle_client_message<HostPath>(
     connection: &ClientConnectionState,
     browser_resync: &AtomicBool,
 ) -> ClientVideoFeedback {
+    handle_client_message_with_keymap(
+        ClientMessageContext {
+            input,
+            orientation,
+            browser_frames,
+            connection,
+            browser_resync,
+        },
+        text,
+        pressed_keyboard,
+        &mut BrowserKeymapSession::default(),
+    )
+}
+
+pub(super) fn handle_client_message_with_keymap<HostPath>(
+    context: ClientMessageContext<'_, HostPath>,
+    text: &str,
+    pressed_keyboard: &mut HashSet<u64>,
+    keymap: &mut BrowserKeymapSession,
+) -> ClientVideoFeedback {
+    let ClientMessageContext {
+        input,
+        orientation,
+        browser_frames,
+        connection,
+        browser_resync,
+    } = context;
     let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
         return ClientVideoFeedback::None;
     };
@@ -162,6 +220,10 @@ pub(super) fn handle_client_message<HostPath>(
                 | ClientMessage::KeyboardDown { .. }
                 | ClientMessage::KeyboardUp { .. }
                 | ClientMessage::Text { .. }
+                | ClientMessage::KeymapConfigure { .. }
+                | ClientMessage::KeymapInput { .. }
+                | ClientMessage::KeymapDirectTouches { .. }
+                | ClientMessage::KeymapStop
                 | ClientMessage::Rotate { .. }
         )
     {
@@ -317,6 +379,40 @@ pub(super) fn handle_client_message<HostPath>(
             if !text.is_empty() && text.len() <= 512 && text.chars().count() <= 128 {
                 input.send(InputCmd::DeviceInput(DeviceInputCommand::Text(text)));
             }
+        }
+        ClientMessage::KeymapConfigure {
+            profile,
+            frame,
+            allow_scripts,
+        } => {
+            return ClientVideoFeedback::KeymapEvent(keymap.configure(
+                input,
+                orientation,
+                profile,
+                frame,
+                allow_scripts,
+            ));
+        }
+        ClientMessage::KeymapInput {
+            keys,
+            pointer_deltas,
+        } => {
+            return ClientVideoFeedback::KeymapEvent(keymap.set_input(
+                input,
+                orientation,
+                keys,
+                pointer_deltas,
+            ));
+        }
+        ClientMessage::KeymapDirectTouches { contacts } => {
+            return ClientVideoFeedback::KeymapEvent(keymap.set_direct_contacts(
+                input,
+                orientation,
+                contacts,
+            ));
+        }
+        ClientMessage::KeymapStop => {
+            return ClientVideoFeedback::KeymapEvent(keymap.stop(input, orientation));
         }
         ClientMessage::Rotate { direction } => {
             input.send(InputCmd::DeviceInput(DeviceInputCommand::Rotate(

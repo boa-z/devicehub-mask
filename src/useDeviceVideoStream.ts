@@ -32,7 +32,16 @@ type Options = {
   onStatus: (status: DeviceStatus) => void;
   onClipboard: (event: ClipboardEvent) => void;
   onDeviceEvent: (event: DeviceEvent) => void;
+  onKeymapStatus: (status: KeymapStatus) => void;
   onDisconnect?: () => void;
+};
+
+export type KeymapStatus = {
+  configured: boolean;
+  active_mapping_ids: string[];
+  active_contact_ids?: number[];
+  control_mode?: "mapping" | "keyboard" | null;
+  error?: string;
 };
 
 type FrontendMetrics = {
@@ -113,6 +122,7 @@ export function useDeviceVideoStream({
   onStatus,
   onClipboard,
   onDeviceEvent,
+  onKeymapStatus,
   onDisconnect,
 }: Options) {
   const [connected, setConnected] = useState(false);
@@ -135,12 +145,12 @@ export function useDeviceVideoStream({
   const socketRef = useRef<WebSocket | null>(null);
   const orientationRef = useRef(orientation);
   const videoDemandRef = useRef(videoDemand);
-  const callbacksRef = useRef({ onStatus, onClipboard, onDeviceEvent, onDisconnect });
+  const callbacksRef = useRef({ onStatus, onClipboard, onDeviceEvent, onKeymapStatus, onDisconnect });
   const audioPreferencesRef = useRef({ enabled: audioEnabled, muted: audioMuted, volume: audioVolume });
   const audioPlayerRef = useRef<BrowserPcmPlayer | null>(null);
   orientationRef.current = orientation;
   videoDemandRef.current = videoDemand;
-  callbacksRef.current = { onStatus, onClipboard, onDeviceEvent, onDisconnect };
+  callbacksRef.current = { onStatus, onClipboard, onDeviceEvent, onKeymapStatus, onDisconnect };
   audioPreferencesRef.current = { enabled: audioEnabled, muted: audioMuted, volume: audioVolume };
 
   useEffect(() => {
@@ -385,12 +395,13 @@ export function useDeviceVideoStream({
       };
       socket.onmessage = (event) => {
         if (typeof event.data === "string") {
-          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent | DeviceEvent | { granted: boolean } };
+          const data = JSON.parse(event.data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent | DeviceEvent | KeymapStatus | { granted: boolean } };
           const leaseGrant = controlLeaseGrant(data);
           if (leaseGrant !== null) setControlGranted(leaseGrant);
           if (data.type === "status") callbacksRef.current.onStatus(data.payload as DeviceStatus);
           if (data.type === "clipboard") callbacksRef.current.onClipboard(data.payload as ClipboardEvent);
           if (data.type === "device_event") callbacksRef.current.onDeviceEvent(data.payload as DeviceEvent);
+          if (data.type === "keymap_status") callbacksRef.current.onKeymapStatus(data.payload as KeymapStatus);
           if (data.type === "metrics") {
             const metrics = data.payload as StreamMetrics;
             setStreamMetrics(metrics);

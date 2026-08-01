@@ -60,6 +60,7 @@
 | 剪贴板 | 单次 Unicode 粘贴始终可用；可选文本/图片双向同步需要重新连接 |
 | 触控 | 鼠标直接输入与映射输出合并为经过校验的五触点 Universal HID report |
 | 键盘 | 映射模式与原始 HID 键盘透传互斥；失焦、切页、切模式、全屏变化和断线都会释放按住的输入 |
+| Keymap 脚本 | 有界虚拟时间程序共用 Rust 桌面/MCP 运行时；不提供 shell、文件、环境、进程或网络访问 |
 | 硬件按键 | Home、Lock、音量加减、静音、Siri、Action，以及随配置保存的键盘快捷键 |
 
 ## idevice 服务覆盖
@@ -98,7 +99,7 @@
 桌面应用运行时，Streamable HTTP MCP 端点提供以下工具：
 
 - 画面与输入：`screenshot`、`observe_game`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、 `type_text`、`paste_text`、`press_key`、`press_button`、`rotate`。`observe_game` 为 Agent 循环提供无网格画面和可选的归一化感兴趣区域。
-- Key Mapping：`list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile`、`run_keymap`、`start_game_session`、`set_game_input` 和 `stop_game_session`。Agent 可以创建 native v2 配置，并在自身选中的设备上运行持续的 60Hz 映射回放；续期租约会在 Agent 停止更新时自动释放控制。
+- Key Mapping：`list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile`、`run_keymap`、`start_game_session`、`set_game_input` 和 `stop_game_session`。Agent 可以创建 native v2 配置，并在自身选中的设备上运行持续的 60Hz 映射回放；续期租约会在 Agent 停止更新时自动释放控制。有界脚本需要 MCP 显式选择启用。
 - 设备与会话：`status`、`device_details`、`list_devices`、`connect_device`、 `reconnect_device`、`lock_device`、`wait_for_device_event`、 `list_companion_devices`、`home_screen_layout`。
 - App 与诊断：`list_apps`、`launch_app`、`stop_app`、`app_status`、`wait_for_app`、`list_processes`、`process_status`、`wait_for_process`、`list_crash_reports`、带归一化摘要的 `read_crash_report`、`performance_snapshot`、`recent_device_logs`。
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。

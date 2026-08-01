@@ -49,7 +49,7 @@ import { defaultHardwareBindings, defaultProfile, hardwareButtons, keyMappingTyp
 import type { AppBindingConflict, AppProfileBinding } from "./types";
 import { bindingForScope, conflictForScope, resolveAppProfileBinding, sameProfileResolution } from "./profileBindings";
 import { useDeviceInput, type ControlMode } from "./useDeviceInput";
-import { useDeviceVideoStream } from "./useDeviceVideoStream";
+import { useDeviceVideoStream, type KeymapStatus } from "./useDeviceVideoStream";
 import { waitForDeviceSession } from "./deviceSelection";
 import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
@@ -145,6 +145,11 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>("move");
   const [editing, setEditing] = useState(true);
   const [controlMode, setControlMode] = useState<ControlMode>("mapping");
+  const [keymapStatus, setKeymapStatus] = useState<KeymapStatus>({
+    configured: false,
+    active_mapping_ids: [],
+  });
+  const lastKeymapErrorRef = useRef<string | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [systemFullscreen, setSystemFullscreen] = useState(false);
   const [deviceFullscreen, setDeviceFullscreen] = useState(false);
@@ -383,6 +388,7 @@ export default function App() {
     onStatus: setStatus,
     onClipboard: setClipboardEvent,
     onDeviceEvent: setDeviceEvent,
+    onKeymapStatus: setKeymapStatus,
   });
   const handleControlModeChange = useCallback((mode: ControlMode) => {
     setControlMode(mode);
@@ -391,6 +397,11 @@ export default function App() {
   const handleContactLimit = useCallback(() => {
     void message.warning(translateRef.current("mapping.allContactsUsed"));
   }, []);
+  useEffect(() => {
+    const error = keymapStatus.error ?? null;
+    if (error && error !== lastKeymapErrorRef.current) void message.error(error);
+    lastKeymapErrorRef.current = error;
+  }, [keymapStatus.error]);
   const {
     activeMappingIds,
     directTouches,
@@ -401,8 +412,8 @@ export default function App() {
   } = useDeviceInput({
     connected: connected && controlGranted,
     command,
-    mappings: controlProfile.mappings,
-    hardwareBindings: controlProfile.hardwareBindings,
+    profile: controlProfile,
+    keymapStatus,
     frameSize,
     mappingEditing,
     controlMode,

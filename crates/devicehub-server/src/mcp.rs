@@ -28,9 +28,10 @@ use tokio::time::MissedTickBehavior;
 use crate::http::{ProfileRepository, ProfileRepositoryError};
 #[cfg(test)]
 use crate::http::{ProfileRepositoryFuture, ProfileRepositorySnapshot, StoredProfile};
-use crate::mcp_keymap::{
-    ActiveHardwareButton, CompiledKeymap, KeymapError, KeymapPointerDelta, KeymapRuntimeState,
-    NormalizedTouchContact, normalize_held_keys, normalize_key_state,
+use devicehub_keymap::{
+    ActiveHardwareButton, CompileOptions, CompiledKeymap, KeymapError, KeymapPointerDelta,
+    KeymapRuntimeState, NormalizedTouchContact, ScriptAction, normalize_held_keys,
+    normalize_key_state, validate_profile_scripts,
 };
 
 use devicehub_core::hardware_button;
@@ -252,6 +253,7 @@ struct GameControlState {
     keymap_runtime: KeymapRuntimeState,
     active_contacts: Vec<NormalizedTouchContact>,
     active_buttons: Vec<ActiveHardwareButton>,
+    script_device: ActiveScriptDeviceState,
     lease: Duration,
     lease_deadline: Instant,
 }
@@ -264,6 +266,7 @@ impl GameControlState {
             keymap_runtime: KeymapRuntimeState::default(),
             active_contacts: Vec::new(),
             active_buttons: Vec::new(),
+            script_device: ActiveScriptDeviceState::default(),
             lease,
             lease_deadline: Instant::now() + lease,
         }
@@ -321,6 +324,8 @@ struct RunKeymapParams {
     hold_ms: Option<u64>,
     /// Wait for the screen to become visually stable after playback. Defaults to false for game input.
     wait_for_settle: Option<bool>,
+    /// Execute bounded Script mappings and script hooks from this profile. Defaults to false and should only be enabled for a profile you trust.
+    allow_scripts: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -333,6 +338,8 @@ struct StartGameSessionParams {
     require_resolution_match: Option<bool>,
     /// Automatic-release lease in milliseconds. The agent must refresh it with set_game_input. Defaults to 1500 and is bounded to 250..30000.
     lease_ms: Option<u64>,
+    /// Execute bounded Script mappings and script hooks from this profile. Defaults to false and should only be enabled for a profile you trust.
+    allow_scripts: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -832,6 +839,100 @@ fn send_game_command(
         .map_err(|error| GameControlFailure::Device(error.to_string()))
 }
 
+#[derive(Debug, Clone, Default)]
+struct ActiveScriptDeviceState {
+    keyboard: BTreeSet<u64>,
+    buttons: BTreeSet<String>,
+}
+
+fn dispatch_script_actions(
+    session: &DeviceSessionClient<std::path::PathBuf>,
+    state: &mut ActiveScriptDeviceState,
+    actions: Vec<ScriptAction>,
+) -> Result<(), GameControlFailure> {
+    for action in actions {
+        match action {
+            ScriptAction::KeyboardDown { usage } => {
+                if state.keyboard.insert(usage) {
+                    send_game_command(session, DeviceInputCommand::KeyboardDown(usage))?;
+                }
+            }
+            ScriptAction::KeyboardUp { usage } => {
+                if state.keyboard.remove(&usage) {
+                    send_game_command(session, DeviceInputCommand::KeyboardUp(usage))?;
+                }
+            }
+            ScriptAction::ButtonDown { name } => {
+                let button = hardware_button(&name).ok_or_else(|| {
+                    GameControlFailure::Keymap(KeymapError::Invalid(format!(
+                        "script requested unknown hardware button: {name}"
+                    )))
+                })?;
+                if state.buttons.insert(name) {
+                    send_game_command(session, DeviceInputCommand::ButtonDown(button))?;
+                }
+            }
+            ScriptAction::ButtonUp { name } => {
+                let button = hardware_button(&name).ok_or_else(|| {
+                    GameControlFailure::Keymap(KeymapError::Invalid(format!(
+                        "script requested unknown hardware button: {name}"
+                    )))
+                })?;
+                if state.buttons.remove(&name) {
+                    send_game_command(session, DeviceInputCommand::ButtonUp(button))?;
+                }
+            }
+            ScriptAction::Text { text } => {
+                send_game_command(session, DeviceInputCommand::Text(text))?;
+            }
+            ScriptAction::Log { message } => {
+                tracing::info!(target: "devicehub_mask::keymap_script", %message);
+            }
+            ScriptAction::SetRawInput { .. } => {
+                return Err(GameControlFailure::Keymap(KeymapError::Invalid(
+                    "Raw Input mode is available only to an interactive desktop keymap session"
+                        .into(),
+                )));
+            }
+            ScriptAction::Touch { .. }
+            | ScriptAction::EnterFps { .. }
+            | ScriptAction::ExitFps
+            | ScriptAction::CancelCast { .. }
+            | ScriptAction::ReleaseCast => {
+                return Err(GameControlFailure::Keymap(KeymapError::Invalid(
+                    "internal script action escaped the shared keymap runtime".into(),
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn release_script_device_state(
+    session: &DeviceSessionClient<std::path::PathBuf>,
+    state: &mut ActiveScriptDeviceState,
+) -> Result<(), GameControlFailure> {
+    let mut failure = None;
+    for usage in state.keyboard.iter().rev().copied() {
+        if let Err(error) = send_game_command(session, DeviceInputCommand::KeyboardUp(usage))
+            && failure.is_none()
+        {
+            failure = Some(error);
+        }
+    }
+    for name in state.buttons.iter().rev() {
+        if let Some(button) = hardware_button(name)
+            && let Err(error) = send_game_command(session, DeviceInputCommand::ButtonUp(button))
+            && failure.is_none()
+        {
+            failure = Some(error);
+        }
+    }
+    state.keyboard.clear();
+    state.buttons.clear();
+    failure.map_or(Ok(()), Err)
+}
+
 fn held_durations(state: &GameControlState, now: Instant) -> BTreeMap<String, Duration> {
     state
         .held
@@ -854,6 +955,11 @@ fn render_game_control(
     let held_for = held_durations(state, now);
     let frame =
         keymap.frame_with_runtime(&mut state.keymap_runtime, &state.held, &held_for, now)?;
+    dispatch_script_actions(
+        session,
+        &mut state.script_device,
+        frame.script_actions.clone(),
+    )?;
     let desired_buttons = keymap.active_hardware_buttons(&state.held);
 
     for binding in state.active_buttons.iter().rev() {
@@ -943,6 +1049,7 @@ fn update_game_control(
         keymap_runtime,
         active_contacts: state.active_contacts.clone(),
         active_buttons: state.active_buttons.clone(),
+        script_device: state.script_device.clone(),
         lease: lease.unwrap_or(state.lease),
         lease_deadline: now + lease.unwrap_or(state.lease),
     };
@@ -987,6 +1094,11 @@ fn release_game_control(
         {
             failure = Some(error);
         }
+    }
+    if let Err(error) = release_script_device_state(session, &mut state.script_device)
+        && failure.is_none()
+    {
+        failure = Some(error);
     }
     state.held.clear();
     state.held_since.clear();
@@ -1582,6 +1694,18 @@ impl DeviceHub {
         validate_key_mapping_profile(&profile).map_err(|_| {
             McpError::internal_error("stored keymap profile failed validation", None)
         })?;
+        if profile.name != name {
+            return Err(McpError::internal_error(
+                "stored keymap profile name does not match its file name",
+                None,
+            ));
+        }
+        validate_profile_scripts(&profile).map_err(|error| {
+            McpError::internal_error(
+                format!("stored keymap profile script validation failed: {error}"),
+                None,
+            )
+        })?;
         Ok(profile)
     }
 
@@ -1971,7 +2095,10 @@ impl DeviceHub {
             let Ok(profile) = serde_json::from_slice::<KeyMappingProfile>(&stored.bytes) else {
                 continue;
             };
-            if validate_key_mapping_profile(&profile).is_err() {
+            if profile.name != stored.name
+                || validate_key_mapping_profile(&profile).is_err()
+                || validate_profile_scripts(&profile).is_err()
+            {
                 continue;
             }
             profiles.push(json!({
@@ -2037,6 +2164,12 @@ impl DeviceHub {
         validate_key_mapping_profile(&profile).map_err(|_| {
             McpError::invalid_params("keymap profile failed native v2 validation", None)
         })?;
+        validate_profile_scripts(&profile).map_err(|error| {
+            McpError::invalid_params(
+                format!("keymap profile script validation failed: {error}"),
+                None,
+            )
+        })?;
         let bytes = serde_json::to_vec_pretty(&profile).map_err(|error| {
             McpError::internal_error(
                 format!("keymap profile serialization failed: {error}"),
@@ -2072,7 +2205,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Run one bounded replay of a saved key-mapping profile on this MCP session's selected device. keys are browser KeyboardEvent.code values held together for hold_ms. Use start_game_session and set_game_input for continuous play, lease-based safety, or pointer deltas. RawInput and Script mappings return explicit errors."
+        description = "Run one bounded replay of a saved key-mapping profile on this MCP session's selected device. keys are browser KeyboardEvent.code values held together for hold_ms. Use start_game_session and set_game_input for continuous play, lease-based safety, or pointer deltas. Script execution requires allow_scripts=true and a trusted profile; RawInput remains desktop-only."
     )]
     async fn run_keymap(
         &self,
@@ -2080,8 +2213,14 @@ impl DeviceHub {
     ) -> Result<CallToolResult, McpError> {
         let profile = self.read_keymap_profile(&params.profile_name).await?;
         let held = normalize_held_keys(params.keys).map_err(keymap_execution_error)?;
-        let compiled = CompiledKeymap::from_profile(&profile, self.current_keymap_frame_size())
-            .map_err(keymap_execution_error)?;
+        let compiled = CompiledKeymap::from_profile_with_options(
+            &profile,
+            self.current_keymap_frame_size(),
+            CompileOptions {
+                allow_scripts: params.allow_scripts.unwrap_or(false),
+            },
+        )
+        .map_err(keymap_execution_error)?;
         let started = Instant::now();
         let mut runtime = KeymapRuntimeState::default();
         compiled
@@ -2092,7 +2231,7 @@ impl DeviceHub {
             .map(|key| (key.clone(), Duration::ZERO))
             .collect();
         let initial = compiled
-            .frame_with_runtime(&mut runtime, &held, &initial_hold_times, started)
+            .frame_with_runtime(&mut runtime.clone(), &held, &initial_hold_times, started)
             .map_err(keymap_execution_error)?;
         let hardware_buttons = compiled.active_hardware_buttons(&held);
         if initial.matched_mapping_ids.is_empty() && hardware_buttons.is_empty() {
@@ -2124,6 +2263,8 @@ impl DeviceHub {
 
         let mut active_contacts = Vec::new();
         let mut active_mapping_ids = BTreeSet::new();
+        let mut script_device = ActiveScriptDeviceState::default();
+        let session = self.current_session();
         if failure.is_none() {
             loop {
                 let now = Instant::now();
@@ -2139,6 +2280,12 @@ impl DeviceHub {
                     }
                 };
                 active_mapping_ids.extend(frame.active_mapping_ids);
+                if let Err(error) =
+                    dispatch_script_actions(&session, &mut script_device, frame.script_actions)
+                {
+                    failure = Some(game_control_error(error));
+                    break;
+                }
                 let report = keymap_frame_with_releases(&frame.contacts, &active_contacts);
                 if !report.is_empty() {
                     match self.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
@@ -2158,6 +2305,53 @@ impl DeviceHub {
                     break;
                 }
                 tokio::time::sleep((hold - elapsed).min(Duration::from_millis(16))).await;
+            }
+        }
+
+        if failure.is_none() {
+            let released_at = Instant::now();
+            if let Err(error) = compiled.update_runtime(
+                &mut runtime,
+                &held,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                released_at,
+            ) {
+                failure = Some(keymap_execution_error(error));
+            }
+            while failure.is_none() && compiled.has_pending_script_work(&runtime) {
+                let now = Instant::now();
+                let frame = match compiled.frame_with_runtime(
+                    &mut runtime,
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                    now,
+                ) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        failure = Some(keymap_execution_error(error));
+                        break;
+                    }
+                };
+                active_mapping_ids.extend(frame.active_mapping_ids);
+                if let Err(error) =
+                    dispatch_script_actions(&session, &mut script_device, frame.script_actions)
+                {
+                    failure = Some(game_control_error(error));
+                    break;
+                }
+                let report = keymap_frame_with_releases(&frame.contacts, &active_contacts);
+                if !report.is_empty()
+                    && let Err(error) = self.send(InputCmd::DeviceInput(
+                        DeviceInputCommand::MultiTouchFrame(self.keymap_device_contacts(&report)),
+                    ))
+                {
+                    failure = Some(error);
+                    break;
+                }
+                active_contacts = frame.contacts;
+                tokio::time::sleep(Duration::from_millis(16)).await;
             }
         }
 
@@ -2184,6 +2378,11 @@ impl DeviceHub {
                 failure = Some(error);
             }
         }
+        if let Err(error) = release_script_device_state(&session, &mut script_device)
+            && failure.is_none()
+        {
+            failure = Some(game_control_error(error));
+        }
         if let Some(error) = failure {
             return Err(error);
         }
@@ -2208,7 +2407,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Start an exclusive, persistent game-control session for a saved keymap profile. The session runs mapped input locally at 60Hz and automatically releases all touches and hardware buttons unless set_game_input refreshes its lease. It never changes the desktop active profile."
+        description = "Start an exclusive, persistent game-control session for a saved keymap profile. The session runs mapped input locally at 60Hz and automatically releases all touches, script HID keys, and hardware buttons unless set_game_input refreshes its lease. Script execution requires allow_scripts=true and a trusted profile. It never changes the desktop active profile."
     )]
     async fn start_game_session(
         &self,
@@ -2250,8 +2449,14 @@ impl DeviceHub {
                 None,
             ));
         }
-        let keymap = CompiledKeymap::from_profile(&profile, Some(stream_size))
-            .map_err(keymap_execution_error)?;
+        let keymap = CompiledKeymap::from_profile_with_options(
+            &profile,
+            Some(stream_size),
+            CompileOptions {
+                allow_scripts: params.allow_scripts.unwrap_or(false),
+            },
+        )
+        .map_err(keymap_execution_error)?;
         let lease = game_lease(params.lease_ms)?;
         let session_id = format!(
             "game-{}",
@@ -2300,6 +2505,7 @@ impl DeviceHub {
                 "stream_resolution": stream_size,
                 "lease_ms": lease.as_millis() as u64,
                 "frame_version": self.frame_version(),
+                "scripts_enabled": params.allow_scripts.unwrap_or(false),
             })
             .to_string(),
         )
@@ -4413,6 +4619,27 @@ mod tests {
             .await
             .is_err()
         );
+        assert!(
+            hub.save_keymap_profile(Parameters(SaveKeymapProfileParams {
+                name: "invalid-script".into(),
+                mappings: vec![json!({
+                    "id": "macro",
+                    "type": "Script",
+                    "position": { "x": 0.5, "y": 0.5 },
+                    "bind": ["KeyM"],
+                    "interval": 20,
+                    "pressed_script": "if {",
+                    "held_script": "",
+                    "released_script": ""
+                })],
+                bundle_identifiers: Vec::new(),
+                target_resolution: None,
+                hardware_bindings: None,
+                overwrite: None,
+            }))
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -4443,6 +4670,7 @@ mod tests {
             keys: vec!["Space".into()],
             hold_ms: Some(25),
             wait_for_settle: Some(false),
+            allow_scripts: None,
         }))
         .await
         .unwrap();
@@ -4467,6 +4695,77 @@ mod tests {
         assert_eq!(last.len(), 1);
         assert_eq!(last[0].identity, 1);
         assert!(!last[0].touching);
+    }
+
+    #[tokio::test]
+    async fn run_keymap_requires_opt_in_and_executes_bounded_scripts() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let browser_frames = devicehub_runtime::BrowserVideoSlot::default();
+        browser_frames.publish(0, true, 1000, 500, vec![0, 0, 0, 1, 0x26]);
+        let repository = MemoryProfileRepository::default();
+        let hub = keymap_hub_with_frames(input, repository.clone(), browser_frames);
+        store_profile(
+            &repository,
+            &profile(
+                "script-game",
+                vec![json!({
+                    "id": "macro",
+                    "type": "Script",
+                    "position": { "x": 0.5, "y": 0.5 },
+                    "bind": ["KeyM"],
+                    "interval": 100,
+                    "pressed_script": "tap(2, 750, 125); send_key(\"KeyQ\")",
+                    "held_script": "",
+                    "released_script": ""
+                })],
+                default_hardware_bindings(),
+            ),
+        )
+        .await;
+
+        assert!(
+            hub.run_keymap(Parameters(RunKeymapParams {
+                profile_name: "script-game".into(),
+                keys: vec!["KeyM".into()],
+                hold_ms: Some(50),
+                wait_for_settle: Some(false),
+                allow_scripts: None,
+            }))
+            .await
+            .is_err()
+        );
+
+        hub.run_keymap(Parameters(RunKeymapParams {
+            profile_name: "script-game".into(),
+            keys: vec!["KeyM".into()],
+            hold_ms: Some(50),
+            wait_for_settle: Some(false),
+            allow_scripts: Some(true),
+        }))
+        .await
+        .unwrap();
+
+        let sent = std::iter::from_fn(|| input_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(sent.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::KeyboardDown(0x14))
+        )));
+        assert!(sent.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::KeyboardUp(0x14))
+        )));
+        assert!(sent.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(contacts))
+                if contacts.iter().any(|contact| contact.identity == 2 && contact.touching)
+        )));
+        assert!(sent.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(contacts))
+                if contacts.iter().any(|contact| contact.identity == 2 && !contact.touching)
+        )));
     }
 
     #[tokio::test]
@@ -4501,6 +4800,7 @@ mod tests {
             keys: vec!["KeyW".into(), "KeyD".into()],
             hold_ms: Some(25),
             wait_for_settle: Some(false),
+            allow_scripts: None,
         }))
         .await
         .unwrap();
@@ -4519,6 +4819,7 @@ mod tests {
             keys: vec!["KeyH".into()],
             hold_ms: Some(25),
             wait_for_settle: Some(false),
+            allow_scripts: None,
         }))
         .await
         .unwrap();
@@ -4560,6 +4861,7 @@ mod tests {
                 keys: vec!["KeyR".into()],
                 hold_ms: Some(25),
                 wait_for_settle: Some(false),
+                allow_scripts: None,
             }))
             .await
             .unwrap_err();
@@ -4591,6 +4893,7 @@ mod tests {
                 bundle_id: None,
                 require_resolution_match: None,
                 lease_ms: Some(GAME_LEASE_MIN_MS),
+                allow_scripts: None,
             }))
             .await
             .unwrap();
@@ -4666,6 +4969,7 @@ mod tests {
                 bundle_id: None,
                 require_resolution_match: None,
                 lease_ms: Some(1_000),
+                allow_scripts: None,
             }))
             .await
             .unwrap();

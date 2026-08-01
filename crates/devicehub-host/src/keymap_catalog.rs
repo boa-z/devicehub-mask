@@ -9,6 +9,7 @@ use devicehub_core::{
     MAX_REMOTE_KEY_MAPPING_PROFILE_BYTES, validate_key_mapping_catalog,
     validate_key_mapping_profile,
 };
+use devicehub_keymap::validate_profile_scripts;
 use devicehub_server::http::{
     KeyMappingCatalogError, KeyMappingCatalogFuture, KeyMappingCatalogInstall,
     KeyMappingCatalogRepository, KeyMappingCatalogSource, ProfileRepository,
@@ -208,6 +209,7 @@ impl TokioKeyMappingCatalogRepository {
             serde_json::from_slice(&bytes).map_err(|_| KeyMappingCatalogError::Invalid)?;
         profile.name = name.clone();
         validate_key_mapping_profile(&profile).map_err(|_| KeyMappingCatalogError::Invalid)?;
+        validate_profile_scripts(&profile).map_err(|_| KeyMappingCatalogError::Invalid)?;
         let mappings = profile.mappings.len();
         let persisted =
             serde_json::to_vec_pretty(&profile).map_err(|_| KeyMappingCatalogError::Invalid)?;

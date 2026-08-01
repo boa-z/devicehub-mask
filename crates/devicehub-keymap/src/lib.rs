@@ -1,8 +1,8 @@
-//! Deterministic key-mapping playback shared by the MCP adapter.
+//! Deterministic key-mapping compilation and playback shared by every host adapter.
 //!
-//! The desktop frontend remains the interactive mapping runtime. This module
-//! evaluates the deterministic subset of saved mappings, including agent-supplied
-//! pointer deltas. It intentionally never executes browser script hooks.
+//! This crate owns profile compilation, runtime transitions, touch composition,
+//! and the bounded scripting language. Host adapters only translate runtime
+//! output into transport-specific device commands.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
@@ -10,6 +10,13 @@ use std::time::{Duration, Instant};
 
 use devicehub_core::{HardwareButton, KeyMappingProfile, KeyMappingResolution, hardware_button};
 use serde_json::{Map, Value};
+
+mod script;
+
+pub use script::{
+    ScheduledScriptAction, ScriptAction, ScriptContext, ScriptError, ScriptPlan, ScriptProgram,
+    ScriptState, validate_script,
+};
 
 const MAX_KEY_CODES: usize = 32;
 const MAX_KEY_CODE_LENGTH: usize = 64;
@@ -19,7 +26,7 @@ const MAX_POINTER_SENSITIVITY: f64 = 100.0;
 const MAX_POINTER_DELTA: f32 = 16_384.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct NormalizedTouchContact {
+pub struct NormalizedTouchContact {
     pub identity: u8,
     pub touching: bool,
     pub x: f32,
@@ -27,30 +34,38 @@ pub(crate) struct NormalizedTouchContact {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct KeymapFrame {
+pub struct KeymapFrame {
     pub contacts: Vec<NormalizedTouchContact>,
     pub active_mapping_ids: Vec<String>,
     pub matched_mapping_ids: Vec<String>,
+    pub script_actions: Vec<ScriptAction>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ActiveHardwareButton {
+pub struct ActiveHardwareButton {
     pub name: String,
     pub button: HardwareButton,
 }
 
 /// Relative pointer movement in pixels of the profile's target display.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct KeymapPointerDelta<'a> {
+pub struct KeymapPointerDelta<'a> {
     pub mapping_id: &'a str,
     pub delta_x: f32,
     pub delta_y: f32,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CompiledKeymap {
+pub struct CompiledKeymap {
     mappings: Vec<Mapping>,
     hardware_bindings: Vec<HardwareBinding>,
+    scripts: CompiledScripts,
+    frame: Option<KeyMappingResolution>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CompileOptions {
+    pub allow_scripts: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -210,11 +225,67 @@ enum FpsHandoffStrategy {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct KeymapRuntimeState {
+pub struct KeymapRuntimeState {
     pointer_positions: BTreeMap<String, Point>,
     fps: Option<FpsRuntime>,
     cast: Option<CastRuntime>,
     cancel: Option<CancelRuntime>,
+    scripts: ScriptRuntime,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CompiledScripts {
+    mappings: Vec<CompiledScriptMapping>,
+    hooks: Vec<CompiledScriptHooks>,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledScriptMapping {
+    id: String,
+    bind: Vec<String>,
+    position: Point,
+    pressed: ScriptProgram,
+    held: ScriptProgram,
+    released: ScriptProgram,
+    interval: Duration,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledScriptHooks {
+    id: String,
+    position: Point,
+    before: ScriptProgram,
+    after: ScriptProgram,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScriptRuntime {
+    scopes: BTreeMap<String, ScriptScopeRuntime>,
+    hook_ready_at: BTreeMap<String, Instant>,
+    queued: Vec<QueuedScriptAction>,
+    contacts: BTreeMap<u8, ScriptContact>,
+    pending_output: Vec<ScriptAction>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScriptScopeRuntime {
+    state: ScriptState,
+    active: bool,
+    busy_until: Option<Instant>,
+    next_held_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct QueuedScriptAction {
+    scope: String,
+    at: Instant,
+    action: ScriptAction,
+}
+
+#[derive(Debug, Clone)]
+struct ScriptContact {
+    scope: String,
+    point: Point,
 }
 
 #[derive(Debug, Clone)]
@@ -269,7 +340,7 @@ enum Activation {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum KeymapError {
+pub enum KeymapError {
     Invalid(String),
     Unsupported { id: String, mapping_type: String },
 }
@@ -280,7 +351,7 @@ impl fmt::Display for KeymapError {
             Self::Invalid(message) => formatter.write_str(message),
             Self::Unsupported { id, mapping_type } => write!(
                 formatter,
-                "mapping {id} uses {mapping_type}, which MCP keymap playback does not support"
+                "mapping {id} uses {mapping_type}, which this keymap session does not support"
             ),
         }
     }
@@ -289,16 +360,33 @@ impl fmt::Display for KeymapError {
 impl std::error::Error for KeymapError {}
 
 impl CompiledKeymap {
-    pub(crate) fn from_profile(
+    pub fn from_profile(
         profile: &KeyMappingProfile,
         fallback_frame: Option<KeyMappingResolution>,
+    ) -> Result<Self, KeymapError> {
+        Self::from_profile_with_options(profile, fallback_frame, CompileOptions::default())
+    }
+
+    pub fn from_profile_with_options(
+        profile: &KeyMappingProfile,
+        fallback_frame: Option<KeyMappingResolution>,
+        options: CompileOptions,
     ) -> Result<Self, KeymapError> {
         let frame = profile.target_resolution.or(fallback_frame);
         let mappings = profile
             .mappings
             .iter()
+            .filter(|mapping| {
+                !options.allow_scripts
+                    || mapping.get("type").and_then(Value::as_str) != Some("Script")
+            })
             .map(|mapping| compile_mapping(mapping, frame))
             .collect::<Result<Vec<_>, _>>()?;
+        let scripts = if options.allow_scripts {
+            compile_scripts(profile, frame)?
+        } else {
+            CompiledScripts::default()
+        };
         let hardware_bindings = profile
             .hardware_bindings
             .iter()
@@ -318,11 +406,13 @@ impl CompiledKeymap {
         Ok(Self {
             mappings,
             hardware_bindings,
+            scripts,
+            frame,
         })
     }
 
     #[cfg(test)]
-    pub(crate) fn frame(
+    pub fn frame(
         &self,
         held: &BTreeSet<String>,
         elapsed: Duration,
@@ -383,13 +473,11 @@ impl CompiledKeymap {
             contacts,
             active_mapping_ids,
             matched_mapping_ids,
+            script_actions: Vec::new(),
         })
     }
 
-    pub(crate) fn active_hardware_buttons(
-        &self,
-        held: &BTreeSet<String>,
-    ) -> Vec<ActiveHardwareButton> {
+    pub fn active_hardware_buttons(&self, held: &BTreeSet<String>) -> Vec<ActiveHardwareButton> {
         self.hardware_bindings
             .iter()
             .filter(|binding| held.contains(&binding.key))
@@ -400,10 +488,27 @@ impl CompiledKeymap {
             .collect()
     }
 
-    pub(crate) fn has_matching_mapping(&self, held: &BTreeSet<String>) -> bool {
+    pub fn has_matching_mapping(&self, held: &BTreeSet<String>) -> bool {
         self.mappings
             .iter()
             .any(|mapping| mapping.matches_input(held))
+            || self
+                .scripts
+                .mappings
+                .iter()
+                .any(|mapping| bound(held, &mapping.bind))
+    }
+
+    pub fn has_pending_script_work(&self, runtime: &KeymapRuntimeState) -> bool {
+        !runtime.scripts.queued.is_empty() || !runtime.scripts.pending_output.is_empty()
+    }
+
+    fn hook_ready(&self, runtime: &KeymapRuntimeState, mapping_id: &str, now: Instant) -> bool {
+        runtime
+            .scripts
+            .hook_ready_at
+            .get(mapping_id)
+            .is_none_or(|ready_at| now >= *ready_at)
     }
 
     fn effective_held(&self, held: &BTreeSet<String>) -> BTreeSet<String> {
@@ -424,7 +529,7 @@ impl CompiledKeymap {
         result
     }
 
-    pub(crate) fn update_runtime(
+    pub fn update_runtime(
         &self,
         runtime: &mut KeymapRuntimeState,
         previous: &BTreeSet<String>,
@@ -434,6 +539,8 @@ impl CompiledKeymap {
         now: Instant,
     ) -> Result<(), KeymapError> {
         self.tick_runtime(runtime, now);
+        self.update_script_lifecycles(runtime, previous, held, now)?;
+        self.tick_script_runtime(runtime, now)?;
 
         for mapping in &self.mappings {
             let Some(bind) = mapping.binding() else {
@@ -601,7 +708,7 @@ impl CompiledKeymap {
         Ok(())
     }
 
-    pub(crate) fn frame_with_runtime(
+    pub fn frame_with_runtime(
         &self,
         runtime: &mut KeymapRuntimeState,
         held: &BTreeSet<String>,
@@ -609,10 +716,13 @@ impl CompiledKeymap {
         now: Instant,
     ) -> Result<KeymapFrame, KeymapError> {
         self.tick_runtime(runtime, now);
+        self.schedule_held_scripts(runtime, now)?;
+        self.tick_script_runtime(runtime, now)?;
         let base = self.frame_with_state(held, held_for, Duration::ZERO, &BTreeMap::new())?;
         let blocked_direction_pad = runtime
             .cast
             .as_ref()
+            .filter(|cast| self.hook_ready(runtime, &cast.mapping_id, now))
             .and_then(|cast| self.mapping(&cast.mapping_id))
             .is_some_and(|mapping| {
                 matches!(
@@ -634,6 +744,24 @@ impl CompiledKeymap {
             })
             .collect::<Vec<_>>();
 
+        for mapping in &self.scripts.mappings {
+            if bound(held, &mapping.bind) {
+                matched_mapping_ids.push(mapping.id.clone());
+                active_mapping_ids.push(mapping.id.clone());
+            }
+        }
+
+        for (identity, contact) in &runtime.scripts.contacts {
+            add_runtime_contact(
+                &mut contacts,
+                &mut active_mapping_ids,
+                &contact.scope,
+                *identity,
+                contact.point,
+            );
+            matched_mapping_ids.push(contact.scope.clone());
+        }
+
         let interrupting_fire = self.mappings.iter().any(|mapping| matches!(mapping,
             Mapping::Pointer { id, bind, kind: PointerKind::Fire { preserve_fps_control: false }, .. }
                 if bound(held, bind) && runtime.pointer_positions.contains_key(id)));
@@ -647,7 +775,7 @@ impl CompiledKeymap {
                     bind,
                     kind: PointerKind::Observation { .. },
                     ..
-                } if bound(held, bind) => {
+                } if bound(held, bind) && self.hook_ready(runtime, id, now) => {
                     let point = runtime
                         .pointer_positions
                         .get(id)
@@ -669,7 +797,7 @@ impl CompiledKeymap {
                     bind,
                     kind: PointerKind::Fire { .. },
                     ..
-                } if bound(held, bind) => {
+                } if bound(held, bind) && self.hook_ready(runtime, id, now) => {
                     let point = runtime
                         .pointer_positions
                         .get(id)
@@ -687,7 +815,9 @@ impl CompiledKeymap {
                 _ => {}
             }
         }
-        if let Some(fps) = &runtime.fps {
+        if let Some(fps) = &runtime.fps
+            && self.hook_ready(runtime, &fps.mapping_id, now)
+        {
             matched_mapping_ids.push(fps.mapping_id.clone());
             if !interrupting_fire {
                 if fps.touching {
@@ -714,7 +844,11 @@ impl CompiledKeymap {
                 }
             }
         }
-        if let Some(cast) = &mut runtime.cast
+        if runtime
+            .cast
+            .as_ref()
+            .is_some_and(|cast| self.hook_ready(runtime, &cast.mapping_id, now))
+            && let Some(cast) = &mut runtime.cast
             && let Some(mapping) = self.mapping(&cast.mapping_id)
         {
             let (identity, point) = match mapping {
@@ -745,7 +879,9 @@ impl CompiledKeymap {
             );
             matched_mapping_ids.push(cast.mapping_id.clone());
         }
-        if let Some(cancel) = &runtime.cancel {
+        if let Some(cancel) = &runtime.cancel
+            && self.hook_ready(runtime, &cancel.mapping_id, now)
+        {
             let progress = now
                 .saturating_duration_since(cancel.started_at)
                 .as_secs_f32()
@@ -770,6 +906,7 @@ impl CompiledKeymap {
             };
             if mapping.is_advanced()
                 || (blocked_direction_pad && matches!(mapping, Mapping::DirectionPad { .. }))
+                || !self.hook_ready(runtime, &id, now)
             {
                 continue;
             }
@@ -789,7 +926,320 @@ impl CompiledKeymap {
             contacts,
             active_mapping_ids,
             matched_mapping_ids,
+            script_actions: std::mem::take(&mut runtime.scripts.pending_output),
         })
+    }
+
+    fn update_script_lifecycles(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        previous: &BTreeSet<String>,
+        held: &BTreeSet<String>,
+        now: Instant,
+    ) -> Result<(), KeymapError> {
+        for mapping in &self.scripts.mappings {
+            let was_active = bound(previous, &mapping.bind);
+            let is_active = bound(held, &mapping.bind);
+            if !was_active && is_active {
+                runtime
+                    .scripts
+                    .scopes
+                    .entry(mapping.id.clone())
+                    .or_default()
+                    .active = true;
+                self.schedule_script_program(
+                    runtime,
+                    &mapping.id,
+                    mapping.position,
+                    &mapping.pressed,
+                    now,
+                )?;
+                let scope = runtime
+                    .scripts
+                    .scopes
+                    .entry(mapping.id.clone())
+                    .or_default();
+                scope.next_held_at =
+                    (!mapping.held.is_empty()).then(|| scope.busy_until.unwrap_or(now));
+            } else if was_active && !is_active {
+                let scope = runtime
+                    .scripts
+                    .scopes
+                    .entry(mapping.id.clone())
+                    .or_default();
+                scope.active = false;
+                scope.next_held_at = None;
+                self.schedule_script_program(
+                    runtime,
+                    &mapping.id,
+                    mapping.position,
+                    &mapping.released,
+                    now,
+                )?;
+            }
+        }
+
+        for hooks in &self.scripts.hooks {
+            let Some(mapping) = self.mapping(&hooks.id) else {
+                continue;
+            };
+            let was_active = mapping.matches_input(previous);
+            let is_active = mapping.matches_input(held);
+            if !was_active && is_active {
+                self.schedule_script_program(
+                    runtime,
+                    &hooks.id,
+                    hooks.position,
+                    &hooks.before,
+                    now,
+                )?;
+                let ready_at = if hooks.before.is_empty() {
+                    now
+                } else {
+                    runtime
+                        .scripts
+                        .scopes
+                        .get(&hooks.id)
+                        .and_then(|scope| scope.busy_until)
+                        .unwrap_or(now)
+                };
+                runtime
+                    .scripts
+                    .hook_ready_at
+                    .insert(hooks.id.clone(), ready_at);
+            } else if was_active && !is_active {
+                let cancelled_before_activation = runtime
+                    .scripts
+                    .hook_ready_at
+                    .get(&hooks.id)
+                    .is_some_and(|ready_at| now < *ready_at);
+                runtime.scripts.hook_ready_at.remove(&hooks.id);
+                if cancelled_before_activation {
+                    runtime.pointer_positions.remove(&hooks.id);
+                    if runtime
+                        .fps
+                        .as_ref()
+                        .is_some_and(|state| state.mapping_id == hooks.id)
+                    {
+                        runtime.fps = None;
+                    }
+                    if runtime
+                        .cast
+                        .as_ref()
+                        .is_some_and(|state| state.mapping_id == hooks.id)
+                    {
+                        runtime.cast = None;
+                    }
+                    if runtime
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|state| state.mapping_id == hooks.id)
+                    {
+                        runtime.cancel = None;
+                    }
+                }
+                self.schedule_script_program(
+                    runtime,
+                    &hooks.id,
+                    hooks.position,
+                    &hooks.after,
+                    now,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn schedule_held_scripts(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        now: Instant,
+    ) -> Result<(), KeymapError> {
+        let due = self
+            .scripts
+            .mappings
+            .iter()
+            .filter(|mapping| {
+                !mapping.held.is_empty()
+                    && runtime
+                        .scripts
+                        .scopes
+                        .get(&mapping.id)
+                        .is_some_and(|scope| {
+                            scope.active && scope.next_held_at.is_some_and(|at| now >= at)
+                        })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for mapping in due {
+            self.schedule_script_program(
+                runtime,
+                &mapping.id,
+                mapping.position,
+                &mapping.held,
+                now,
+            )?;
+            let scope = runtime.scripts.scopes.entry(mapping.id).or_default();
+            scope.next_held_at = scope
+                .active
+                .then(|| scope.busy_until.unwrap_or(now) + mapping.interval);
+        }
+        Ok(())
+    }
+
+    fn schedule_script_program(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        scope_id: &str,
+        position: Point,
+        program: &ScriptProgram,
+        requested_at: Instant,
+    ) -> Result<(), KeymapError> {
+        if program.is_empty() {
+            return Ok(());
+        }
+        let frame = self.frame.ok_or_else(|| {
+            KeymapError::Invalid(
+                "Script needs targetResolution or a connected device screen".into(),
+            )
+        })?;
+        let scope = runtime
+            .scripts
+            .scopes
+            .entry(scope_id.to_string())
+            .or_default();
+        let start = scope.busy_until.unwrap_or(requested_at).max(requested_at);
+        let context = ScriptContext {
+            frame,
+            cursor_x: (position.x * frame.width as f32).round() as u32,
+            cursor_y: (position.y * frame.height as f32).round() as u32,
+            raw_input: false,
+            fps_mode: runtime.fps.is_some(),
+        };
+        let plan = program
+            .plan(context, &mut scope.state)
+            .map_err(|error| KeymapError::Invalid(format!("script {scope_id} failed: {error}")))?;
+        scope.busy_until = Some(start + plan.duration);
+        runtime
+            .scripts
+            .queued
+            .extend(plan.actions.into_iter().map(|action| QueuedScriptAction {
+                scope: scope_id.to_string(),
+                at: start + action.at,
+                action: action.action,
+            }));
+        runtime.scripts.queued.sort_by_key(|action| action.at);
+        Ok(())
+    }
+
+    fn tick_script_runtime(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        now: Instant,
+    ) -> Result<(), KeymapError> {
+        let due_count = runtime
+            .scripts
+            .queued
+            .partition_point(|action| action.at <= now);
+        let due = runtime
+            .scripts
+            .queued
+            .drain(..due_count)
+            .collect::<Vec<_>>();
+        for action in due {
+            self.apply_script_action(runtime, action.scope, action.action, now)?;
+        }
+        Ok(())
+    }
+
+    fn apply_script_action(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        scope: String,
+        action: ScriptAction,
+        now: Instant,
+    ) -> Result<(), KeymapError> {
+        match action {
+            ScriptAction::Touch {
+                identity,
+                touching,
+                x,
+                y,
+            } => {
+                if touching {
+                    if let Some(contact) = runtime.scripts.contacts.get_mut(&identity) {
+                        if contact.scope != scope {
+                            return Err(KeymapError::Invalid(format!(
+                                "script contact {identity} is already owned by {}",
+                                contact.scope
+                            )));
+                        }
+                        contact.point = Point { x, y };
+                    } else {
+                        runtime.scripts.contacts.insert(
+                            identity,
+                            ScriptContact {
+                                scope,
+                                point: Point { x, y },
+                            },
+                        );
+                    }
+                } else if runtime
+                    .scripts
+                    .contacts
+                    .get(&identity)
+                    .is_some_and(|contact| contact.scope == scope)
+                {
+                    runtime.scripts.contacts.remove(&identity);
+                }
+            }
+            ScriptAction::EnterFps { mapping_id } => {
+                let Some(Mapping::Pointer {
+                    identity,
+                    position,
+                    kind: PointerKind::Fps { .. },
+                    ..
+                }) = self.mapping(&mapping_id)
+                else {
+                    return Err(KeymapError::Invalid(format!(
+                        "script enter_fps target is not an FPS mapping: {mapping_id}"
+                    )));
+                };
+                runtime.fps = Some(FpsRuntime {
+                    mapping_id,
+                    identity: *identity,
+                    position: *position,
+                    touching: true,
+                    pending: None,
+                });
+            }
+            ScriptAction::ExitFps => runtime.fps = None,
+            ScriptAction::CancelCast { mapping_id } => {
+                let Some(Mapping::CancelCast { position, .. }) = self.mapping(&mapping_id) else {
+                    return Err(KeymapError::Invalid(format!(
+                        "script cancel_cast target is not a CancelCast mapping: {mapping_id}"
+                    )));
+                };
+                if let Some(cast) = runtime.cast.take()
+                    && let Some(identity) = self.mapping_identity(&cast.mapping_id)
+                {
+                    runtime.cancel = Some(CancelRuntime {
+                        mapping_id,
+                        identity,
+                        start: cast.position,
+                        end: *position,
+                        started_at: now,
+                        duration: Duration::from_millis(150),
+                    });
+                }
+            }
+            ScriptAction::ReleaseCast => {
+                runtime.cast = None;
+                runtime.cancel = None;
+            }
+            external => runtime.scripts.pending_output.push(external),
+        }
+        Ok(())
     }
 
     fn tick_runtime(&self, runtime: &mut KeymapRuntimeState, now: Instant) {
@@ -1574,7 +2024,7 @@ impl Activation {
     }
 }
 
-pub(crate) fn normalize_held_keys(keys: Vec<String>) -> Result<BTreeSet<String>, KeymapError> {
+pub fn normalize_held_keys(keys: Vec<String>) -> Result<BTreeSet<String>, KeymapError> {
     if keys.is_empty() {
         return Err(KeymapError::Invalid(format!(
             "keys must contain between one and {MAX_KEY_CODES} browser keyboard codes"
@@ -1585,7 +2035,7 @@ pub(crate) fn normalize_held_keys(keys: Vec<String>) -> Result<BTreeSet<String>,
 
 /// Validate a complete key-state update. An empty state is valid and releases
 /// all mapped controls in a persistent game session.
-pub(crate) fn normalize_key_state(keys: Vec<String>) -> Result<BTreeSet<String>, KeymapError> {
+pub fn normalize_key_state(keys: Vec<String>) -> Result<BTreeSet<String>, KeymapError> {
     if keys.len() > MAX_KEY_CODES {
         return Err(KeymapError::Invalid(format!(
             "keys must contain at most {MAX_KEY_CODES} browser keyboard codes"
@@ -1599,6 +2049,105 @@ pub(crate) fn normalize_key_state(keys: Vec<String>) -> Result<BTreeSet<String>,
         }
     }
     Ok(held)
+}
+
+fn compile_scripts(
+    profile: &KeyMappingProfile,
+    frame: Option<KeyMappingResolution>,
+) -> Result<CompiledScripts, KeymapError> {
+    let mut scripts = CompiledScripts::default();
+    for value in &profile.mappings {
+        let mapping = value
+            .as_object()
+            .ok_or_else(|| KeymapError::Invalid("mapping must be an object".into()))?;
+        let id = string_field(mapping, "id")?;
+        let mapping_type = string_field(mapping, "type")?;
+        if mapping_type == "Script" {
+            let pressed = compile_script_field(mapping, "pressed_script", &id)?;
+            let held = compile_script_field(mapping, "held_script", &id)?;
+            let released = compile_script_field(mapping, "released_script", &id)?;
+            if (!pressed.is_empty() || !held.is_empty() || !released.is_empty()) && frame.is_none()
+            {
+                return Err(KeymapError::Invalid(
+                    "Script needs targetResolution or a connected device screen".into(),
+                ));
+            }
+            let interval = mapping
+                .get("interval")
+                .and_then(Value::as_u64)
+                .filter(|interval| (16..=60_000).contains(interval))
+                .ok_or_else(|| {
+                    KeymapError::Invalid(
+                        "Script interval must be between 16 and 60000 milliseconds".into(),
+                    )
+                })?;
+            scripts.mappings.push(CompiledScriptMapping {
+                id,
+                bind: binding_field(mapping, "bind")?,
+                position: position(mapping, "position")?,
+                pressed,
+                held,
+                released,
+                interval: Duration::from_millis(interval),
+            });
+            continue;
+        }
+
+        let Some(hooks) = mapping.get("script_hooks") else {
+            continue;
+        };
+        let hooks = hooks.as_object().ok_or_else(|| {
+            KeymapError::Invalid(format!("mapping {id} script_hooks must be an object"))
+        })?;
+        let before = compile_script_field(hooks, "before_script", &id)?;
+        let after = compile_script_field(hooks, "after_script", &id)?;
+        if before.is_empty() && after.is_empty() {
+            continue;
+        }
+        if frame.is_none() {
+            return Err(KeymapError::Invalid(
+                "script hooks need targetResolution or a connected device screen".into(),
+            ));
+        }
+        let position = mapping
+            .get("position")
+            .map(|_| position(mapping, "position"))
+            .unwrap_or_else(|| legacy_position(mapping))?;
+        scripts.hooks.push(CompiledScriptHooks {
+            id,
+            position,
+            before,
+            after,
+        });
+    }
+    Ok(scripts)
+}
+
+/// Validates all Script mappings and script hooks without enabling execution.
+///
+/// A concrete connected-device frame is not required at persistence boundaries;
+/// runtime compilation still requires one before any non-empty script can run.
+pub fn validate_profile_scripts(profile: &KeyMappingProfile) -> Result<(), KeymapError> {
+    let validation_frame = profile.target_resolution.or(Some(KeyMappingResolution {
+        width: 16_384,
+        height: 16_384,
+    }));
+    compile_scripts(profile, validation_frame).map(|_| ())
+}
+
+fn compile_script_field(
+    mapping: &Map<String, Value>,
+    field: &str,
+    mapping_id: &str,
+) -> Result<ScriptProgram, KeymapError> {
+    let source = mapping.get(field).and_then(Value::as_str).ok_or_else(|| {
+        KeymapError::Invalid(format!(
+            "mapping {mapping_id} field {field} must be a string"
+        ))
+    })?;
+    ScriptProgram::compile(source).map_err(|error| {
+        KeymapError::Invalid(format!("mapping {mapping_id} field {field}: {error}"))
+    })
 }
 
 fn compile_mapping(
@@ -2470,5 +3019,264 @@ mod tests {
                 y: 0.5
             }]
         );
+    }
+
+    fn script_options() -> CompileOptions {
+        CompileOptions {
+            allow_scripts: true,
+        }
+    }
+
+    fn script_frame() -> KeyMappingResolution {
+        KeyMappingResolution {
+            width: 1000,
+            height: 500,
+        }
+    }
+
+    #[test]
+    fn script_mapping_runs_pressed_held_and_released_without_overlap() {
+        let compiled = CompiledKeymap::from_profile_with_options(
+            &profile(vec![json!({
+                "id": "macro", "type": "Script", "position": { "x": 0.5, "y": 0.5 },
+                "bind": ["KeyM"], "interval": 20,
+                "pressed_script": "state_set(\"pressed\", true)",
+                "held_script": "tap(1, 100, 200)",
+                "released_script": "if state_get(\"pressed\", false) { paste_text(\"done\") }"
+            })]),
+            Some(script_frame()),
+            script_options(),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let held = normalize_key_state(vec!["KeyM".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+
+        let down = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+        assert_eq!(down.contacts.len(), 1);
+        assert_eq!(down.contacts[0].identity, 1);
+
+        let released_touch = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(30),
+            )
+            .unwrap();
+        assert!(released_touch.contacts.is_empty());
+
+        let next_held = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(50),
+            )
+            .unwrap();
+        assert_eq!(next_held.contacts.len(), 1);
+
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &held,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now + Duration::from_millis(51),
+            )
+            .unwrap();
+        let release = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                now + Duration::from_millis(80),
+            )
+            .unwrap();
+        assert!(
+            release
+                .script_actions
+                .iter()
+                .any(|action| matches!(action, ScriptAction::Text { text } if text == "done"))
+        );
+    }
+
+    #[test]
+    fn before_script_waits_before_the_mapping_contact_becomes_active() {
+        let profile = profile(vec![json!({
+            "id": "delayed", "type": "Press", "pointer_id": 1,
+            "position": { "x": 0.25, "y": 0.75 }, "bind": ["KeyT"],
+            "script_hooks": {
+                "before_script": "paste_text(\"ready\"); wait(100)",
+                "after_script": ""
+            }
+        })]);
+        validate_profile_scripts(&profile).unwrap();
+        let compiled = CompiledKeymap::from_profile_with_options(
+            &profile,
+            Some(script_frame()),
+            script_options(),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let held = normalize_key_state(vec!["KeyT".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+
+        let waiting = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+        assert!(waiting.contacts.is_empty());
+        assert!(
+            waiting
+                .script_actions
+                .iter()
+                .any(|action| matches!(action, ScriptAction::Text { text } if text == "ready"))
+        );
+
+        let still_waiting = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(99),
+            )
+            .unwrap();
+        assert!(still_waiting.contacts.is_empty());
+
+        let ready = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(100),
+            )
+            .unwrap();
+        assert_eq!(ready.active_mapping_ids, vec!["delayed"]);
+        assert_eq!(ready.contacts.len(), 1);
+    }
+
+    #[test]
+    fn releasing_during_before_script_cancels_persistent_activation() {
+        let compiled = CompiledKeymap::from_profile_with_options(
+            &profile(vec![json!({
+                "id": "camera", "type": "Fps", "pointer_id": 2,
+                "position": { "x": 0.5, "y": 0.5 }, "bind": ["KeyV"],
+                "sensitivity_x": 1.0, "sensitivity_y": 1.0,
+                "max_offset_x": 200, "max_offset_y": 200,
+                "touch_mode": { "type": "single", "interval": 0 },
+                "script_hooks": {
+                    "before_script": "wait(100)",
+                    "after_script": ""
+                }
+            })]),
+            Some(script_frame()),
+            script_options(),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let held = normalize_key_state(vec!["KeyV".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &held,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now + Duration::from_millis(50),
+            )
+            .unwrap();
+
+        let frame = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                now + Duration::from_millis(100),
+            )
+            .unwrap();
+        assert!(frame.contacts.is_empty());
+        assert!(!frame.active_mapping_ids.iter().any(|id| id == "camera"));
+    }
+
+    #[test]
+    fn profile_script_validation_rejects_invalid_source_without_running_it() {
+        let invalid = profile(vec![json!({
+            "id": "macro", "type": "Script", "position": { "x": 0.5, "y": 0.5 },
+            "bind": ["KeyM"], "interval": 20,
+            "pressed_script": "if {", "held_script": "", "released_script": ""
+        })]);
+
+        assert!(validate_profile_scripts(&invalid).is_err());
+    }
+
+    #[test]
+    fn script_hooks_emit_commands_and_script_modes_share_advanced_runtime() {
+        let compiled = CompiledKeymap::from_profile_with_options(
+            &profile(vec![
+                json!({
+                    "id": "tap", "type": "SingleTap", "pointer_id": 1,
+                    "position": { "x": 0.2, "y": 0.2 }, "bind": ["KeyT"],
+                    "duration": 30, "sync": false,
+                    "script_hooks": {
+                        "before_script": "paste_text(\"before\")",
+                        "after_script": "paste_text(\"after\")"
+                    }
+                }),
+                json!({
+                    "id": "camera", "type": "Fps", "pointer_id": 2,
+                    "position": { "x": 0.5, "y": 0.5 }, "bind": ["KeyV"],
+                    "sensitivity_x": 1.0, "sensitivity_y": 1.0,
+                    "max_offset_x": 200, "max_offset_y": 200,
+                    "touch_mode": { "type": "single", "interval": 0 }
+                }),
+                json!({
+                    "id": "mode", "type": "Script", "position": { "x": 0.5, "y": 0.5 },
+                    "bind": ["KeyF"], "interval": 100,
+                    "pressed_script": "enter_fps(\"camera\")",
+                    "held_script": "", "released_script": ""
+                }),
+            ]),
+            Some(script_frame()),
+            script_options(),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let tap = normalize_key_state(vec!["KeyT".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &tap, &tap, &[], now)
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &tap, &BTreeMap::new(), now)
+            .unwrap();
+        assert!(
+            frame
+                .script_actions
+                .iter()
+                .any(|action| matches!(action, ScriptAction::Text { text } if text == "before"))
+        );
+
+        let mode = normalize_key_state(vec!["KeyF".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &mode, &mode, &[], now)
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &mode, &BTreeMap::new(), now)
+            .unwrap();
+        assert!(frame.contacts.iter().any(|contact| contact.identity == 2));
+        assert!(frame.active_mapping_ids.iter().any(|id| id == "camera"));
     }
 }

@@ -2,7 +2,7 @@
 
 [简体中文](../zh-CN/key-mapping.md) | [Documentation](README.md) | [User Guide](user-guide.md)
 
-DeviceHub Mask translates desktop keyboard and pointer input into Universal HID touch contacts on the connected iPhone or iPad. A saved profile contains touch mappings, iOS hardware-button shortcuts, and optional application associations. This guide describes the behavior implemented by the current runtime, including compatibility fields that can be imported and exported but are not executed yet.
+DeviceHub Mask translates desktop keyboard and pointer input into Universal HID touch contacts on the connected iPhone or iPad. A saved profile contains touch mappings, bounded scripts, iOS hardware-button shortcuts, and optional application associations. Desktop control and MCP playback use the same Rust keymap compiler and state machine.
 
 ## Before You Start
 
@@ -58,7 +58,7 @@ The runtime mapping handler ignores keys while focus is inside buttons, fields, 
 | Sensitivity | Pointer delta multiplier relative to source-frame width or height |
 | Release mode | Imported and editable cast metadata; only ordinary release-on-binding-up behavior is reliable in the current runtime |
 | Sequence | Ordered normalized points; MultipleTap also stores each point's duration and preceding wait |
-| Script fields | Compatibility text retained in the profile and export; never executed by this version |
+| Script fields | Bounded lifecycle programs executed by the shared Rust runtime |
 
 Changing a field edits the in-memory profile. Select **Save** to persist it. The type selector can rebuild a controller as another type after confirmation. The conversion keeps its ID, name, position, and compatible binding and contact fields, while target-specific settings start from valid defaults. Incompatible data such as swipe paths, cast-only options, FPS touch modes, or Script text is discarded. Legacy Button and Direction pad mappings can be upgraded to Single tap and Direction pad through the same selector.
 
@@ -82,16 +82,37 @@ For reliable combinations such as movement plus two skills, assign different IDs
 | Multiple tap | Runs the ordered points once, applying each point's wait and duration | It does not loop while held after the sequence ends |
 | Swipe | Interpolates through the ordered points over `duration` | The final point remains held until the binding is released |
 | Direction pad | Converts Button up/down/left/right chords into a normalized diagonal-safe drag | Imported JoyStick axis bindings are preserved but not evaluated |
-| Mouse cast spell | Supports pointer movement within `drag_radius` and `OnPress`, `OnRelease`, and `OnSecondPress` release modes | Cast-center initialization, randomization, and script hooks are not executed |
-| Pad cast spell | Offsets the cast contact with Button directions, supports release modes, and can temporarily block the normal direction pad | Imported JoyStick axes, randomization, and script hooks are not executed |
+| Mouse cast spell | Supports pointer movement within `drag_radius` and `OnPress`, `OnRelease`, and `OnSecondPress` release modes | Cast-center randomization is not executed |
+| Pad cast spell | Offsets the cast contact with Button directions, supports release modes, and can temporarily block the normal direction pad | Imported JoyStick axes and randomization are not executed |
 | Cancel cast | Animates the active mouse/pad cast contact to the configured cancel point, then releases it | It only affects an active cast and is triggered on the binding's press edge |
-| Observation | Holds while its binding is down, applies X/Y pointer sensitivity, and clamps movement to `max_radius` | Randomization and script hooks are not executed |
+| Observation | Holds while its binding is down, applies X/Y pointer sensitivity, and clamps movement to `max_radius` | Randomization is not executed |
 | FPS camera | Press once to enter persistent relative camera control and press again to exit; max offsets recenter using single-touch delay or dual-touch delay/overlap handoff | Escape from pointer lock releases mapped input; assign distinct IDs for dual touch |
-| Fire | Holds a stationary fire contact while preserving FPS control, or takes over pointer movement and restores FPS at center when preservation is disabled | Randomization and script hooks are not executed |
+| Fire | Holds a stationary fire contact while preserving FPS control, or takes over pointer movement and restores FPS at center when preservation is disabled | Randomization is not executed |
 | Raw input | Releases mapped input and switches the application to Keyboard passthrough | It emits no contact; use one key because any member of a chord can trigger this special action |
-| Script | Stores and round-trips pressed, held, and released script text | Script execution is not implemented; do not use it for active control |
+| Script | Executes `pressed_script` once, serial `held_script` iterations while bound, and `released_script` after release | Each mapping has isolated bounded state and a serialized virtual-time queue |
 
-Pointer-driven controllers lock the pointer to the focused device viewport while relative movement is required. Leaving pointer lock, losing window focus, disconnecting, or changing control mode releases locally owned input. Imported random offsets, script hooks, and other fields not listed as active above remain stored data rather than executable behavior.
+Pointer-driven controllers lock the pointer to the focused device viewport while relative movement is required. Leaving pointer lock, losing window focus, disconnecting, or changing control mode releases locally owned input. Imported random offsets and other fields not listed as active above remain stored data rather than executable behavior. A non-empty `before_script` runs on a mapping's press edge and its complete virtual timeline finishes before the mapping contact activates. `after_script` is queued on release.
+
+## Script Runtime
+
+Scripts use a bounded Rhai-style expression language. They support `let`, assignment, `if`/`else`, `while`, arithmetic, comparisons, booleans, strings, and `print`. Semicolons at simple line endings are optional. User-defined functions, dynamic evaluation, imports, file access, processes, environment access, and networking are unavailable.
+
+The runtime provides `SCREEN_W`, `SCREEN_H`, `ORIGINAL_W`, `ORIGINAL_H`, `CURSOR_X`, `CURSOR_Y`, `RawInputFlag`, and `FpsModeFlag` for each invocation. Coordinates passed to scripts are target-resolution pixels.
+
+| Function | Behavior |
+| --- | --- |
+| `wait(ms)` | Advances the virtual timeline without blocking the input service |
+| `tap(id, x, y[, action])` | Touches with contact `0..4`; action is `default`, `down`, `move`, or `up` |
+| `swipe(id, interval, [[x, y], ...])` | Moves through 2-32 points; a two-point six-argument form is also accepted |
+| `send_key(code[, action])` | Sends a browser `KeyboardEvent.code`, such as `KeyQ` or `Space` |
+| `send_button(name[, action])` | Sends `home`, `lock`, `volume-up`, `volume-down`, `mute`, `siri`, or `action` |
+| `paste_text(text)` | Sends bounded Unicode text through the device text path |
+| `state_set`, `state_get`, `state_has`, `state_delete`, `state_clear` | Stores typed integer, boolean, or string state within one mapping |
+| `enter_fps(id)`, `exit_fps()` | Controls a named FPS mapping through the shared state machine |
+| `cancel_cast(id)`, `release_cast()` | Cancels through a named CancelCast mapping or releases the current cast |
+| `enter_raw_input()`, `exit_raw_input()` | Requests desktop mapping/keyboard mode changes |
+
+A source is limited to 16 KiB, 10,000 operations per invocation, 64 variables, 64 state entries, 256 emitted actions, five contact identities, and a 60-second virtual timeline. Profile save and catalog installation reject invalid script syntax. Runtime-only errors, such as an unknown mapping ID or an out-of-frame coordinate, stop the current keymap session and release its active input.
 
 ## Hardware Button Shortcuts
 

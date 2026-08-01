@@ -3,6 +3,7 @@ members = [
   "crates/devicehub-core",
   "crates/devicehub-headless",
   "crates/devicehub-host",
+  "crates/devicehub-keymap",
   "crates/devicehub-runtime",
   "crates/devicehub-server",
   "src-tauri",

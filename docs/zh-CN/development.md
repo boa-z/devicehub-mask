@@ -15,6 +15,7 @@ devicehub-mask/
 │   ├── devicehub-core/      # 宿主无关领域策略与状态
 │   ├── devicehub-headless/  # 独立浏览器宿主二进制
 │   ├── devicehub-host/      # 共享文件系统与进程适配器
+│   ├── devicehub-keymap/    # 共享确定性映射与脚本运行时
 │   ├── devicehub-runtime/   # Apple 设备会话与监督
 │   └── devicehub-server/    # 可复用 HTTP/WebSocket 协议适配器
 ├── scripts/                 # 设备准备和打包脚本

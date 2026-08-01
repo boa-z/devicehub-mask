@@ -19,6 +19,7 @@ use devicehub_core::{
     KeyMappingProfile as Profile, KeyMappingResolution, validate_key_mapping_profile,
     validate_key_mapping_profile_name,
 };
+use devicehub_keymap::validate_profile_scripts;
 
 pub type ProfileRepositoryFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, ProfileRepositoryError>> + Send + 'static>>;
@@ -124,7 +125,10 @@ async fn list_profiles(
         let Ok(profile) = serde_json::from_slice::<Profile>(&stored.bytes) else {
             continue;
         };
-        if validate_key_mapping_profile(&profile).is_err() {
+        if profile.name != stored.name
+            || validate_key_mapping_profile(&profile).is_err()
+            || validate_profile_scripts(&profile).is_err()
+        {
             continue;
         }
         profiles.push(stored.name.clone());
@@ -187,12 +191,16 @@ async fn load_profile(
     validate_profile_name(&name)?;
     let bytes = state
         .repository
-        .read(name)
+        .read(name.clone())
         .await
         .map_err(repository_status)?;
     let profile: Profile =
         serde_json::from_slice(&bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     validate_key_mapping_profile(&profile).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
+    if profile.name != name {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    validate_profile_scripts(&profile).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
     Ok(Json(profile))
 }
 
@@ -202,7 +210,11 @@ async fn save_profile(
     Json(profile): Json<Profile>,
 ) -> Result<StatusCode, StatusCode> {
     validate_profile_name(&name)?;
+    if profile.name != name {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     validate_key_mapping_profile(&profile).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
+    validate_profile_scripts(&profile).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
     let bytes = serde_json::to_vec_pretty(&profile).map_err(|_| StatusCode::BAD_REQUEST)?;
     state
         .repository
@@ -450,6 +462,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.0["deleted"], "game");
+    }
+
+    #[tokio::test]
+    async fn profile_save_rejects_invalid_script_syntax_and_name_mismatches() {
+        let state = test_state();
+        let mut invalid_script = profile("script");
+        invalid_script.mappings = vec![json!({
+            "id": "macro",
+            "type": "Script",
+            "position": { "x": 0.5, "y": 0.5 },
+            "bind": ["KeyM"],
+            "interval": 20,
+            "pressed_script": "if {",
+            "held_script": "",
+            "released_script": ""
+        })];
+        assert_eq!(
+            save_profile(
+                State(state.clone()),
+                Path("script".into()),
+                Json(invalid_script),
+            )
+            .await,
+            Err(StatusCode::UNPROCESSABLE_ENTITY)
+        );
+        assert_eq!(
+            save_profile(
+                State(state),
+                Path("file-name".into()),
+                Json(profile("embedded-name")),
+            )
+            .await,
+            Err(StatusCode::BAD_REQUEST)
+        );
     }
 
     #[tokio::test]

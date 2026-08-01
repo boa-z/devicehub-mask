@@ -20,8 +20,10 @@ use tokio::sync::broadcast;
 
 use super::control_lease::BrowserControlLeases;
 use super::input::{
-    ClientConnectionState, ClientVideoFeedback, handle_client_message, send_all_up,
+    ClientConnectionState, ClientMessageContext, ClientVideoFeedback,
+    handle_client_message_with_keymap, send_all_up,
 };
+use super::keymap::BrowserKeymapSession;
 use crate::status;
 use devicehub_core::VideoCounters;
 use devicehub_runtime::{
@@ -180,6 +182,8 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     let mut control_lease = state.control_leases.try_acquire(&state.selection_id);
     let control_granted = control_lease.is_some();
     let (control_tx, mut control_rx) = tokio::sync::watch::channel(control_granted);
+    let (keymap_event_tx, mut keymap_event_rx) =
+        tokio::sync::mpsc::channel::<serde_json::Value>(32);
     let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
     let max_in_flight_frames = state.config.max_in_flight_frames;
@@ -378,6 +382,14 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
+                event = keymap_event_rx.recv() => {
+                    let Some(event) = event else {
+                        break;
+                    };
+                    if sender.send(Message::Text(event.to_string().into())).await.is_err() {
+                        break;
+                    }
+                }
                 audio = async {
                     match browser_audio_rx.as_mut() {
                         Some(receiver) => receiver.recv().await,
@@ -473,11 +485,22 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     });
 
     let mut pressed_keyboard = HashSet::new();
+    let mut keymap = BrowserKeymapSession::default();
+    let mut keymap_tick = tokio::time::interval(Duration::from_millis(16));
+    keymap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut video_lease = None;
     let mut audio_lease = None;
     loop {
         let message = tokio::select! {
             message = receiver.next() => message,
+            _ = keymap_tick.tick(), if connection.control_granted() => {
+                if let Some(event) = keymap.tick(&state.input, state.session.orientation.get())
+                    && keymap_event_tx.send(event).await.is_err()
+                {
+                    break;
+                }
+                continue;
+            }
             released = control_notifications.recv(), if control_lease.is_none() => {
                 let should_retry = match released {
                     Ok(selection_id) => selection_id == state.selection_id.as_ref(),
@@ -499,14 +522,17 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         };
         match message {
             Message::Text(text) => {
-                match handle_client_message(
-                    &state.input,
-                    state.session.orientation.get(),
-                    &state.browser_frames,
+                match handle_client_message_with_keymap(
+                    ClientMessageContext {
+                        input: &state.input,
+                        orientation: state.session.orientation.get(),
+                        browser_frames: &state.browser_frames,
+                        connection: &connection,
+                        browser_resync: &browser_resync,
+                    },
                     &text,
                     &mut pressed_keyboard,
-                    &connection,
-                    &browser_resync,
+                    &mut keymap,
                 ) {
                     ClientVideoFeedback::None => {}
                     ClientVideoFeedback::ProtocolError(message) => {
@@ -521,6 +547,11 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                     }
                     ClientVideoFeedback::ResetBrowser => frame_pacer.clear_browser(),
                     ClientVideoFeedback::ResetAll => frame_pacer.clear(),
+                    ClientVideoFeedback::KeymapEvent(event) => {
+                        if keymap_event_tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
                 }
                 synchronize_demand_lease(
                     connection.video_active(),
@@ -539,6 +570,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     }
     send_task.abort();
     if connection.control_granted() {
+        keymap.release(&state.input, state.session.orientation.get());
         send_all_up(&state.input, &pressed_keyboard);
     }
 }

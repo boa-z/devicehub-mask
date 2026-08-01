@@ -1,0 +1,11 @@
+[package]
+name = "devicehub-keymap"
+version = "0.1.0"
+edition = "2024"
+description = "Shared deterministic key-mapping and bounded script runtime for DeviceHub"
+license = "AGPL-3.0-only"
+
+[dependencies]
+devicehub-core = { path = "../devicehub-core" }
+rhai = { version = "1.25.1", features = ["sync"] }
+serde_json = "1"

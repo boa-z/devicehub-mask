@@ -2,6 +2,7 @@
 
 mod control_lease;
 mod input;
+mod keymap;
 mod transport;
 
 pub use control_lease::BrowserControlLeases;
