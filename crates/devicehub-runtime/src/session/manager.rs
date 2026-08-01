@@ -551,7 +551,18 @@ fn spawn_connected_session<
                 ),
                 _ = &mut supervisor_rx => {
                     let _ = command_tx.send(DeviceSessionCommand::Shutdown);
-                    (session.await, true)
+                    let result = match tokio::time::timeout(SWITCH_GRACE, &mut session).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            tracing::warn!(
+                                device_id = %selection_id,
+                                timeout_ms = SWITCH_GRACE.as_millis(),
+                                "device session did not stop in time; cancelling it"
+                            );
+                            Ok(())
+                        }
+                    };
+                    (result, true)
                 }
             };
             if stop_requested {

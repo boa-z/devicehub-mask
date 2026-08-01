@@ -33,9 +33,96 @@ const INITIAL_WIFI_PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
 const REMOTE_PAIRING_VERIFY_TIMEOUT: Duration = Duration::from_secs(8);
 const REMOTE_PAIRING_VERIFY_ATTEMPTS: usize = 3;
 const REMOTE_PAIRING_RETRY_DELAY: Duration = Duration::from_millis(300);
+const PRIVATE_SERVICE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const NOTIFICATION_SERVICE_KEYWORDS: &[&str] = &[
+    "accessory",
+    "alert",
+    "bulletin",
+    "notification",
+    "usernotification",
+];
 pub const WIFI_REAUTHORIZE_REQUIRED: &str = "Wi-Fi control authorization is no longer accepted by the device. Connect it by USB, remove computer trust, then trust it again to create new Wi-Fi credentials.";
 
 type WifiPairingClient = RemotePairingClient<RpPairingSocket<tokio::net::TcpStream>>;
+
+fn is_notification_service_candidate(name: &str, service: &idevice::rsd::RsdService) -> bool {
+    let contains_keyword = |value: &str| {
+        let value = value.to_ascii_lowercase();
+        NOTIFICATION_SERVICE_KEYWORDS
+            .iter()
+            .any(|keyword| value.contains(keyword))
+    };
+
+    contains_keyword(name)
+        || contains_keyword(&service.entitlement)
+        || service
+            .features
+            .as_ref()
+            .is_some_and(|features| features.iter().any(|feature| contains_keyword(feature)))
+}
+
+fn report_notification_service_candidates(handshake: &RsdHandshake) {
+    let mut candidates = handshake
+        .services
+        .iter()
+        .filter(|(name, service)| is_notification_service_candidate(name, service))
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|(name, _)| *name);
+
+    tracing::info!(
+        service_count = handshake.services.len(),
+        candidate_count = candidates.len(),
+        "completed notification-related RSD service probe"
+    );
+    for (name, service) in candidates {
+        tracing::info!(
+            service = %name,
+            entitlement = %service.entitlement,
+            uses_remote_xpc = service.uses_remote_xpc,
+            service_version = ?service.service_version,
+            features = ?service.features,
+            "found notification-related RSD service candidate"
+        );
+    }
+}
+
+async fn probe_notification_remote_xpc_services(adapter: &AdapterHandle, handshake: &RsdHandshake) {
+    let mut candidates = handshake
+        .services
+        .iter()
+        .filter(|(name, service)| {
+            service.uses_remote_xpc && is_notification_service_candidate(name, service)
+        })
+        .map(|(name, service)| (name.clone(), service.port))
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    for (name, port) in candidates {
+        let mut probe_adapter = adapter.clone();
+        let result = tokio::time::timeout(PRIVATE_SERVICE_PROBE_TIMEOUT, async {
+            let stream = probe_adapter.connect(port).await?;
+            let mut client = RemoteXpcClient::new(stream).await?;
+            client.do_handshake().await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => tracing::info!(
+                service = %name,
+                "notification-related private service completed RemoteXPC setup"
+            ),
+            Ok(Err(_)) => tracing::info!(
+                service = %name,
+                "notification-related private service RemoteXPC setup failed"
+            ),
+            Err(_) => tracing::info!(
+                service = %name,
+                timeout_ms = PRIVATE_SERVICE_PROBE_TIMEOUT.as_millis(),
+                "notification-related private service probe timed out"
+            ),
+        }
+    }
+}
 
 pub(crate) use discovery::DeviceDiscovery;
 pub use discovery::{MuxSidecar, MuxSidecarFuture};
@@ -420,6 +507,8 @@ async fn connect_usb_core_tunnel(
     let handshake = RsdHandshake::new(stream)
         .await
         .map_err(|error| format!("RSD handshake failed: {error:?}"))?;
+    report_notification_service_candidates(&handshake);
+    probe_notification_remote_xpc_services(&adapter, &handshake).await;
     Ok((adapter, handshake))
 }
 
@@ -532,6 +621,8 @@ async fn connect_wifi_core_tunnel(
     let handshake = RsdHandshake::new(rsd_stream)
         .await
         .map_err(|error| format!("remote RSD handshake failed: {error:?}"))?;
+    report_notification_service_candidates(&handshake);
+    probe_notification_remote_xpc_services(&adapter, &handshake).await;
     tracing::info!(
         device_id = %device_id_fingerprint(&endpoint.udid),
         "remote pairing CoreDevice tunnel established"
@@ -667,13 +758,17 @@ fn scoped_socket_addr(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    use idevice::rsd::{RsdHandshake, RsdService};
 
     use idevice::usbmuxd::Connection;
 
     use super::{
         CoreTunnelConfig, PairingStore, StoredLockdownPairingRecord, SystemUsbmuxdConfig,
-        WIFI_REAUTHORIZE_REQUIRED, WifiPairingVerificationError, parse_system_usbmuxd_address,
+        WIFI_REAUTHORIZE_REQUIRED, WifiPairingVerificationError, is_notification_service_candidate,
+        parse_system_usbmuxd_address, report_notification_service_candidates,
         resolve_device_selection, uses_usbmuxd_core_proxy,
     };
     use devicehub_core::{ConnKind, DeviceInfo, DevicePairingState, device_selector};
@@ -681,6 +776,48 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct RecordingPairingStore(Arc<Mutex<Vec<String>>>);
+
+    fn rsd_service(entitlement: &str, features: Option<Vec<&str>>) -> RsdService {
+        RsdService {
+            entitlement: entitlement.into(),
+            port: 1234,
+            uses_remote_xpc: true,
+            features: features
+                .map(|features| features.into_iter().map(str::to_string).collect::<Vec<_>>()),
+            service_version: Some(1),
+        }
+    }
+
+    #[test]
+    fn notification_service_probe_matches_name_entitlement_and_features() {
+        assert!(is_notification_service_candidate(
+            "com.apple.mobile.notification_proxy.shim.remote",
+            &rsd_service("com.apple.private.mobile.notification_proxy", None),
+        ));
+        assert!(is_notification_service_candidate(
+            "com.apple.private.service",
+            &rsd_service("com.apple.private.bulletinboard", None),
+        ));
+        assert!(is_notification_service_candidate(
+            "com.apple.private.service",
+            &rsd_service("com.apple.private.service", Some(vec!["UserNotifications"])),
+        ));
+        assert!(!is_notification_service_candidate(
+            "com.apple.coredevice.appservice",
+            &rsd_service("com.apple.private.CoreDevice.appservice", None),
+        ));
+
+        let handshake = RsdHandshake {
+            services: HashMap::from([(
+                "com.apple.mobile.notification_proxy.shim.remote".into(),
+                rsd_service("com.apple.private.mobile.notification_proxy", None),
+            )]),
+            protocol_version: 1,
+            properties: HashMap::new(),
+            uuid: "probe-test".into(),
+        };
+        report_notification_service_candidates(&handshake);
+    }
 
     impl PairingStore for RecordingPairingStore {
         fn load_lockdown_pairings(&self) -> Result<Vec<StoredLockdownPairingRecord>, String> {
