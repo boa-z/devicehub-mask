@@ -68,7 +68,7 @@ The profile toolbar provides Undo and Redo for unsaved editor changes. `Ctrl+Z` 
 
 ## Contact IDs and Simultaneous Input
 
-Universal HID reports contain at most five contacts with identities `0` through `4`. Profiles may store more than five mappings, and mappings that can never overlap may reuse an identity. If two active mappings claim the same identity, only the first one in profile order owns the contact and receives the active highlight. Direct pointer input also consumes an available identity while held.
+Universal HID reports contain at most five contacts with identities `0` through `4`. Profiles may store more than five mappings, and mappings that can never overlap may reuse an identity. If two active mappings claim the same identity, only the first one in profile order owns the contact and receives the active highlight. Direct pointer input also consumes an available identity while held. When a newly active mapping conflicts with a direct pointer identity, the runtime assigns the mapping another free identity and keeps that assignment until the mapping is released; the held direct touch never jumps to the mapped button position.
 
 For reliable combinations such as movement plus two skills, assign different IDs to every action that can be held simultaneously. A dual-contact field imported for an FPS controller is preserved for compatibility but the current FPS runtime emits only its primary contact.
 

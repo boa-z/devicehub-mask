@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildMappingRuntimeFrame, buildTouchFrame, isUiControl, mappingBindings, mergeTouchContacts, pointerButtonCode, remainingTapDuration, singleTapReleaseDelay, touchFramesEqual, transitionTouchContacts } from "./control";
-import { createMapping, type PadCastSpellMapping, type PressMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
+import { createMapping, type Mapping, type PadCastSpellMapping, type PressMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
 
 describe("mapping controller runtime", () => {
   it("keeps Press touching for exactly as long as its binding is held", () => {
@@ -14,6 +14,29 @@ describe("mapping controller runtime", () => {
     expect(active).toEqual([{ identity: 4, touching: true, x: 0.63, y: 0.55 }]);
     expect(transitionTouchContacts(active, buildTouchFrame([mapping], new Set(), undefined, 8001, heldSince)))
       .toEqual([{ identity: 4, touching: false, x: 0.63, y: 0.55 }]);
+  });
+
+  it("keeps direct camera touch stable when a conflicting mapped button starts", () => {
+    const jump = { ...createMapping("Press", { x: 0.87, y: 0.66 }), id: "jump", bind: ["Space"], pointer_id: 0 } as PressMapping;
+    const move = { ...createMapping("DirectionPad", { x: 0.18, y: 0.76 }), id: "move", pointer_id: 1, bind: { type: "Button", up: ["KeyW"], down: ["KeyS"], left: ["KeyA"], right: ["KeyD"] } } as Mapping;
+    const camera = { identity: 0, touching: true, x: 0.5, y: 0.5 };
+    const assignedIdentities = new Map<string, number>();
+    const allocation = { reservedIdentities: new Set([camera.identity]), assignedIdentities };
+    const held = new Set(["KeyW", "Space"]);
+    const started = new Map([["KeyW", 0], ["Space", 10]]);
+
+    const pressed = mergeTouchContacts(buildMappingRuntimeFrame([jump, move], held, undefined, 20, started, new Map(), allocation).contacts, [camera]);
+    expect(pressed).toEqual([
+      { identity: 2, touching: true, x: 0.87, y: 0.66 },
+      expect.objectContaining({ identity: 1, touching: true }),
+      camera,
+    ]);
+
+    const unreserved = { reservedIdentities: new Set<number>(), assignedIdentities };
+    expect(buildMappingRuntimeFrame([jump, move], held, undefined, 30, started, new Map(), unreserved).contacts[0].identity).toBe(2);
+
+    const released = mergeTouchContacts(buildMappingRuntimeFrame([jump, move], new Set(["KeyW"]), undefined, 40, started, new Map(), allocation).contacts, [camera]);
+    expect(transitionTouchContacts(pressed, released)).toContainEqual({ identity: 2, touching: false, x: 0.87, y: 0.66 });
   });
 
   it("pulses repeat taps according to duration and interval", () => {

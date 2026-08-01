@@ -12,6 +12,7 @@ function populatedCollections(): DeviceInputCollections {
     directTouchStartedAt: new Map([[12, 20]]),
     directTouchReleaseTimers: new Map([[12, 99]]),
     mappedReleaseTimers: new Map([["KeyF", 100]]),
+    mappedContactIds: new Map([["jump", 2]]),
     heldPointerBindings: new Map([[7, "MouseRight"]]),
   };
 }

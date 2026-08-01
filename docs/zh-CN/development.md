@@ -89,6 +89,8 @@ npm run verify
 
 生产前端构建还会依据 Vite manifest 检查已提交的性能预算，包括初始 JavaScript、初始 CSS、JavaScript 总量和最大异步 chunk。可运行 `npm run budget:check` 检查现有 `dist/` 产物。不要通过调高预算掩盖回退；应先缩减或拆分依赖图，并记录任何有意的基线变更。
 
+稳定的运行时 HID identity 分配器引入后，JavaScript 总量基线为 1,452,000 字节。初始 JavaScript 和单 chunk 限制保持不变，因此控制热路径的增长不能掩盖启动或懒加载回退。
+
 这与 GitHub Actions 使用同一套跨平台源码门禁，包括文档、前端 lint/测试/构建、Rust 格式/测试，以及将警告视为错误的 Clippy。较大改动在推送前运行完整本地门禁：
 
 ```sh

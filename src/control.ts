@@ -2,6 +2,7 @@ import { mappingPosition, type ButtonBinding, type DirectionBinding, type Mappin
 
 export type TouchContact = { identity: number; touching: boolean; x: number; y: number };
 export type MappingRuntimeFrame = { contacts: TouchContact[]; activeMappingIds: Set<string> };
+export type MappingContactAllocation = { reservedIdentities: ReadonlySet<number>; assignedIdentities: Map<string, number> };
 export const minimumTapDurationMs = 50;
 const uiControlSelector = "input, textarea, select, button, [contenteditable='true'], .ant-segmented";
 const pressed = (held: ReadonlySet<string>, code: string) => code.length > 0 && held.has(code);
@@ -71,7 +72,7 @@ function activeBindingKeys(mapping: Mapping, held: ReadonlySet<string>): string[
   return mapping.bind;
 }
 
-export function buildMappingRuntimeFrame(mappings: Mapping[], held: ReadonlySet<string>, frame = { width: 1296, height: 2816 }, now = performance.now(), heldSince: ReadonlyMap<string, number> = new Map(), offsets: ReadonlyMap<string, { x: number; y: number }> = new Map()): MappingRuntimeFrame {
+export function buildMappingRuntimeFrame(mappings: Mapping[], held: ReadonlySet<string>, frame = { width: 1296, height: 2816 }, now = performance.now(), heldSince: ReadonlyMap<string, number> = new Map(), offsets: ReadonlyMap<string, { x: number; y: number }> = new Map(), allocation?: MappingContactAllocation): MappingRuntimeFrame {
   const evaluated = mappings
     .map((mapping) => ({ mapping, contact: contact(mapping, held, frame, now, heldSince, offsets) }))
     .filter((value): value is { mapping: Mapping; contact: TouchContact } => Boolean(value.contact));
@@ -86,16 +87,36 @@ export function buildMappingRuntimeFrame(mappings: Mapping[], held: ReadonlySet<
     for (const key of keys) claimedKeys.add(key);
     return true;
   });
-  const unique = new Map<number, TouchContact>();
-  const activeMappingIds = new Set<string>();
-  for (const value of active) {
-    if (!unique.has(value.contact.identity) && unique.size < 5) {
-      unique.set(value.contact.identity, value.contact);
-      activeMappingIds.add(value.mapping.id);
+  const preferred = active.filter((value, index, all) => all.findIndex((candidate) => candidate.contact.identity === value.contact.identity) === index);
+  const activeIds = new Set(preferred.map((value) => value.mapping.id));
+  if (allocation) {
+    for (const id of allocation.assignedIdentities.keys()) if (!activeIds.has(id)) allocation.assignedIdentities.delete(id);
+    const occupied = new Set(allocation.reservedIdentities);
+    const preferredIdentities = new Set(preferred.map((value) => value.contact.identity).filter((identity) => !occupied.has(identity)));
+    for (const value of preferred) {
+      const assigned = allocation.assignedIdentities.get(value.mapping.id);
+      const identity = assigned !== undefined && !occupied.has(assigned)
+        ? assigned
+        : !occupied.has(value.contact.identity) && !allocation.reservedIdentities.has(value.contact.identity)
+          ? value.contact.identity
+          : [0, 1, 2, 3, 4].find((candidate) => !occupied.has(candidate) && !preferredIdentities.has(candidate))
+            ?? [0, 1, 2, 3, 4].find((candidate) => !occupied.has(candidate));
+      if (identity === undefined) continue;
+      value.contact = { ...value.contact, identity };
+      allocation.assignedIdentities.set(value.mapping.id, identity);
+      occupied.add(identity);
     }
   }
+  const activeMappingIds = new Set<string>();
+  const contacts = preferred
+    .filter((value, index, all) => all.findIndex((candidate) => candidate.contact.identity === value.contact.identity) === index)
+    .filter((value) => !allocation?.reservedIdentities.has(value.contact.identity))
+    .slice(0, Math.max(0, 5 - (allocation?.reservedIdentities.size ?? 0)));
+  for (const value of contacts) {
+    activeMappingIds.add(value.mapping.id);
+  }
   return {
-    contacts: [...unique.values()],
+    contacts: contacts.map((value) => value.contact),
     activeMappingIds,
   };
 }
