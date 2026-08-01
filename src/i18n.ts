@@ -1,7 +1,7 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
-import { enUS } from "./locales/en-US";
-import { zhCN } from "./locales/zh-CN";
+import enUS from "./locales/en-US";
+import zhCN from "./locales/zh-CN";
 
 export const supportedLanguages = ["zh-CN", "en-US"] as const;
 export type SupportedLanguage = (typeof supportedLanguages)[number];

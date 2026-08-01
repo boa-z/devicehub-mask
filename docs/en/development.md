@@ -113,7 +113,7 @@ After runtime or transport changes, run the explicit-UDID read-only checks and c
 
 ## Localization
 
-Translation resources are in `src/locales/en-US.ts` and `src/locales/zh-CN.ts`. Add each UI key to both files and use `useTranslation()` in components. `src/i18n.test.ts` enforces matching resource trees.
+Translation resources are in `src/locales/en-US.ts` and `src/locales/zh-CN.ts`. Crowdin treats `en-US.ts` as the source file and downloads target locale files through `.github/workflows/crowdin.yml`; do not add Crowdin credentials to the repository. Add each new UI key to the source file and use `useTranslation()` in components. `src/i18n.test.ts` enforces matching resource trees.
 
 Protocol identifiers, key codes, profile names, and user-authored labels remain untranslated. New default labels are localized only when a profile is created. The shared `--system-font` token is defined in `src/styles.css` and passed to Ant Design by `src/AppProviders.tsx`; do not add remote or bundled fonts.
 

@@ -113,7 +113,7 @@ npm run clean:rust
 
 ## 本地化
 
-翻译资源位于 `src/locales/en-US.ts` 和 `src/locales/zh-CN.ts`。新增界面文案时必须同时 添加到两个文件，并在组件中使用 `useTranslation()`。`src/i18n.test.ts` 会检查两个 资源树的 key 是否一致。
+翻译资源位于 `src/locales/en-US.ts` 和 `src/locales/zh-CN.ts`。Crowdin 将 `en-US.ts` 作为源文件，并通过 `.github/workflows/crowdin.yml` 下载目标语言文件；不要将 Crowdin 凭据提交到仓库。新增界面文案时先添加到源文件，并在组件中使用 `useTranslation()`。`src/i18n.test.ts` 会检查两个资源树的 key 是否一致。
 
 协议标识符、键码、配置名称和用户标签不翻译。默认映射标签只在新建配置时本地化。 系统字体 token `--system-font` 定义在 `src/styles.css`，并由 `src/AppProviders.tsx` 传给 Ant Design；不要引入远程或捆绑字体。
 

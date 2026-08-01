@@ -1162,3 +1162,5 @@ export const zhCN = {
     failed: "检查更新失败: {{error}}",
   },
 } satisfies LocaleShape<typeof enUS>;
+
+export default zhCN;
