@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { exportScrcpyMaskConfig, importScrcpyMaskConfig } from "./scrcpyCompat";
-import { scrcpyMappingTypes, type Profile } from "./types";
+import { importScrcpyMaskConfig } from "./scrcpyCompat";
+import { scrcpyMappingTypes } from "./types";
 
 const position = { x: 500, y: 250 };
 const hooks = { before_script: "", after_script: "" };
@@ -38,12 +38,5 @@ describe("scrcpy-mask compatibility", () => {
     const config = { version: "0.0.1", original_size: { width: 1000, height: 500 }, mappings: [{ ...random, id: "multi", type: "MultipleTap", bind: ["SuperLeft"], items: [{ position, duration: 50, wait: 0 }] }] };
     const imported = importScrcpyMaskConfig(config, "game").profile;
     expect(imported.mappings[0]).toMatchObject({ bind: ["MetaLeft"], position: { x: 0.5, y: 0.5 }, items: [{ position: { x: 0.5, y: 0.5 } }] });
-    const exported = exportScrcpyMaskConfig(imported, 1000, 500);
-    expect(exported.mappings[0]).toMatchObject({ bind: ["SuperLeft"], position, items: [{ position }] });
-  });
-
-  it("exports legacy DeviceHub mappings as scrcpy-mask controllers", () => {
-    const profile: Profile = { version: 2, name: "legacy", hardwareBindings: { home: "", lock: "", "volume-up": "", "volume-down": "", mute: "", siri: "", action: "" }, bundleIdentifiers: [], targetResolution: null, mappings: [{ id: "tap", type: "touch", label: "Tap", contactId: 0, x: 0.5, y: 0.5, key: "MetaLeft" }] };
-    expect(exportScrcpyMaskConfig(profile, 1000, 500).mappings[0]).toMatchObject({ type: "SingleTap", bind: ["SuperLeft"], position: { x: 500, y: 250 } });
   });
 });

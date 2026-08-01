@@ -1,4 +1,4 @@
-import { createMapping, defaultHardwareBindings, scrcpyMappingTypes, type DpadMapping, type Mapping, type Profile, type ScrcpyMapping, type ScrcpyMappingType, type TouchMapping } from "./types";
+import { createMapping, defaultHardwareBindings, scrcpyMappingTypes, type Mapping, type Profile, type ScrcpyMapping, type ScrcpyMappingType } from "./types";
 
 type JsonObject = Record<string, unknown>;
 export type ScrcpyImportResult = { profile: Profile; imported: number; skipped: number };
@@ -8,7 +8,6 @@ const object = (value: unknown): JsonObject | undefined => value !== null && typ
 const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
 const keyIn = (key: unknown) => key === "SuperLeft" ? "MetaLeft" : key === "SuperRight" ? "MetaRight" : key;
-const keyOut = (key: unknown) => key === "MetaLeft" ? "SuperLeft" : key === "MetaRight" ? "SuperRight" : key;
 const bindings = (value: unknown, convert: (key: unknown) => unknown): unknown => Array.isArray(value) ? value.map(convert) : value;
 
 function point(value: unknown, width: number, height: number) {
@@ -64,28 +63,4 @@ export function importScrcpyMaskConfig(value: unknown, profileName: string, opti
     if (mapping) mappings.push(mapping); else skipped += 1;
   }
   return { profile: { version: 2, name: profileName, hardwareBindings: { ...defaultHardwareBindings }, bundleIdentifiers: [], targetResolution: null, mappings }, imported: mappings.length, skipped };
-}
-
-function exportTouch(mapping: TouchMapping, width: number, height: number) {
-  return { id: mapping.id, bind: [keyOut(mapping.key)], duration: 50, note: mapping.label, pointer_id: mapping.contactId, position: { x: mapping.x * width, y: mapping.y * height }, random_offset_x: 0, random_offset_y: 0, script_hooks: { before_script: "", after_script: "" }, sync: false, type: "SingleTap" };
-}
-
-function exportDpad(mapping: DpadMapping, width: number, height: number) {
-  const offset = mapping.radius * Math.min(width, height);
-  return { id: mapping.id, bind: { type: "Button", up: mapping.keys.up ? [keyOut(mapping.keys.up)] : [], down: mapping.keys.down ? [keyOut(mapping.keys.down)] : [], left: mapping.keys.left ? [keyOut(mapping.keys.left)] : [], right: mapping.keys.right ? [keyOut(mapping.keys.right)] : [] }, enable_randomization: false, initial_duration: 0, max_offset_x: offset, max_offset_y: offset, note: mapping.label, pointer_id: mapping.contactId, position: { x: mapping.x * width, y: mapping.y * height }, random_distance_max_scale: 1, random_distance_min_scale: 1, random_offset_x: 0, random_offset_y: 0, jitter_offset_x: 0, jitter_offset_y: 0, script_hooks: { before_script: "", after_script: "" }, type: "DirectionPad", up_boost_key: null, up_boost_scale: 2 };
-}
-
-function exportMapping(mapping: ScrcpyMapping, width: number, height: number) {
-  const scale = (position: { x: number; y: number }) => ({ x: position.x * width, y: position.y * height });
-  const value: JsonObject = { ...mapping, position: scale(mapping.position), bind: bindings("bind" in mapping ? mapping.bind : [], keyOut) };
-  if (mapping.type === "MultipleTap") value.items = mapping.items.map((item) => ({ ...item, position: scale(item.position) }));
-  if (mapping.type === "Swipe") value.positions = mapping.positions.map(scale);
-  if (mapping.type === "MouseCastSpell") value.center = scale(mapping.center);
-  if (mapping.type === "DirectionPad") value.bind = directionBinding(mapping.bind, keyOut);
-  if (mapping.type === "PadCastSpell") value.pad_bind = directionBinding(mapping.pad_bind, keyOut);
-  return value;
-}
-
-export function exportScrcpyMaskConfig(profile: Profile, width: number, height: number) {
-  return { version: "0.0.1", original_size: { width, height }, mappings: profile.mappings.map((mapping) => mapping.type === "touch" ? exportTouch(mapping, width, height) : mapping.type === "dpad" ? exportDpad(mapping, width, height) : exportMapping(mapping, width, height)) };
 }

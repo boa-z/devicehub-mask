@@ -112,9 +112,11 @@ MCP 可以创建和回放与桌面“Key Mapping”工作区共用的本地 nati
 
 调用 `run_keymap` 时提供已保存的配置名，以及一个或多个浏览器 `KeyboardEvent.code` 值，例如 `KeyW`、`Space` 或 `KeyJ`。它会同时按住所有指定按键 `hold_ms`（默认 100ms，限制在 25 至 5,000ms），在需要时持续发送多点触控帧，并在返回前确保释放触点和硬件按键。操作只作用于该 MCP 连接显式选择的设备，不会自动激活桌面 UI 的配置。
 
-实时游戏应使用 `start_game_session`，再通过 `set_game_input` 提供完整的按住键集合。设备侧会话以 60Hz 计算映射，因此连点、滑动和按住会在 Agent 调用之间持续执行。每次更新都会续期短租约（默认 1,500ms，范围 250 至 10,000ms）；租约到期、调用 `stop_game_session`、设备输入失败或会话关闭时，系统都会释放全部触点和硬件按键。游戏控制会话只占用其选中的设备；切换设备或交还给其他工作流前必须停止。
+实时游戏应使用 `start_game_session`，再通过 `set_game_input` 提供完整的按住键集合。设备侧会话以 60Hz 计算映射，因此连点、滑动和按住会在 Agent 调用之间持续执行。每次更新都会续期短租约（默认 1,500ms，范围 250 至 30,000ms）；较长租约可覆盖原生截图和视觉推理时间，但应使用满足工作流的最短值。租约到期、调用 `stop_game_session`、设备输入失败或会话关闭时，系统都会释放全部触点和硬件按键。游戏控制会话只占用其选中的设备；切换设备或交还给其他工作流前必须停止。
 
 观察循环使用 `observe_game`。它可以等待比指定 `frame_version` 更新的帧，返回无网格图像，并在传输前裁剪归一化的感兴趣区域。裁剪坐标只用于说明完整截图中的视觉区域，不能作为 `tap` 或 `swipe` 的坐标系。
+
+没有浏览器消费实时流时，`start_game_session` 会从原生截图取得正向屏幕尺寸。CoreDevice 截图可能不包含桌面视频流的少量编码边界填充，因此严格 profile 匹配在保持方向一致的前提下允许每个维度最多 2% 的差异；仓库筛选仍使用 profile 中记录的桌面实时流精确分辨率。
 
 基础回放支持 `touch`、`dpad`、`SingleTap`、`RepeatTap`、`MultipleTap`、`Swipe`、使用键盘 Button 绑定的 `DirectionPad`、`PadCastSpell`、`MouseCastSpell`、`CancelCast`、`Observation`、`Fps`、`Fire` 和 `hardwareBindings`。`DirectionPad`、`PadCastSpell` 及指针驱动映射优先使用 `targetResolution`，没有时使用所选设备当前的正向视频流尺寸。游戏会话中的 `pointer_deltas` 会根据保存的灵敏度移动当前激活的 `MouseCastSpell`、`Observation`、`Fps` 与 `Fire` 触点；`CancelCast` 会取消当前的鼠标/方向施法。浏览器随机化和脚本钩子不会执行。`RawInput` 与 `Script` 仍会明确报错：MCP 绝不执行配置文件提供的代码，也不会从映射配置中推断原始键盘透传。
 

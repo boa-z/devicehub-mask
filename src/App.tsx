@@ -947,6 +947,7 @@ export default function App() {
     }
     if (mappingEditing) return;
     event.preventDefault();
+    if (page === "device" && isBoundKey(controlProfile.mappings, "MouseRight")) return;
     if (page === "device" && connected && controlGranted && status.active_udid) {
       command({ type: "button", name: "home" });
     }

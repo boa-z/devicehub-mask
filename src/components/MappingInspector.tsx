@@ -6,6 +6,7 @@ import { Button, Dropdown, Empty, Input, InputNumber, Modal, Segmented, Select, 
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { convertEditorMappingType } from "../mappingEditor";
+import { pointerButtonCode } from "../control";
 import {
   hardwareButtons,
   keyboardBindingLabel,
@@ -74,6 +75,15 @@ function BindingInput({ value, onChange }: { value: ButtonBinding; onChange: (va
         event.stopPropagation();
         onChange(event.code === "Backspace" || event.code === "Delete" ? [] : modifierBinding(event));
       }}
+      onPointerDown={(event) => {
+        if (event.button === 0) return;
+        const code = pointerButtonCode(event.button);
+        if (!code) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onChange([code]);
+      }}
+      onContextMenu={(event) => event.preventDefault()}
       placeholder={t("mapping.pressKey")}
     />
   );

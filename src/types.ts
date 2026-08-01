@@ -563,6 +563,7 @@ export function keyboardBindingLabel(code: string): string {
     ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
     ControlLeft: "Ctrl", ControlRight: "Ctrl", ShiftLeft: "Shift", ShiftRight: "Shift",
     AltLeft: "Alt", AltRight: "Alt", MetaLeft: "Meta", MetaRight: "Meta",
+    MouseLeft: "Left mouse", MouseMiddle: "Middle mouse", MouseRight: "Right mouse",
   };
   return labels[code] ?? code.replace(/^Numpad/, "Num ");
 }

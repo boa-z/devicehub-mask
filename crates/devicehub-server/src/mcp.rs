@@ -64,7 +64,7 @@ const DEFAULT_TAP_HOLD_MS: u64 = 100;
 const GAME_CONTROL_TICK: Duration = Duration::from_millis(16);
 const GAME_LEASE_DEFAULT: Duration = Duration::from_millis(1_500);
 const GAME_LEASE_MIN_MS: u64 = 250;
-const GAME_LEASE_MAX_MS: u64 = 10_000;
+const GAME_LEASE_MAX_MS: u64 = 30_000;
 const GAME_COMMAND_WAIT: Duration = Duration::from_secs(2);
 const SETTLE_MIN: Duration = Duration::from_millis(200);
 const SETTLE_MAX: Duration = Duration::from_millis(2600);
@@ -329,9 +329,9 @@ struct StartGameSessionParams {
     profile_name: String,
     /// Expected game bundle ID. When the profile declares bundleIdentifiers, this must be one of them.
     bundle_id: Option<String>,
-    /// Require the current upright stream dimensions to exactly match targetResolution. Defaults to true.
+    /// Require the current upright screen dimensions to match targetResolution within 2% per dimension. Defaults to true.
     require_resolution_match: Option<bool>,
-    /// Automatic-release lease in milliseconds. The agent must refresh it with set_game_input. Defaults to 1500 and is bounded to 250..10000.
+    /// Automatic-release lease in milliseconds. The agent must refresh it with set_game_input. Defaults to 1500 and is bounded to 250..30000.
     lease_ms: Option<u64>,
 }
 
@@ -791,6 +791,18 @@ fn optional_game_lease(value: Option<u64>) -> Result<Option<Duration>, McpError>
         .transpose()
 }
 
+fn keymap_resolutions_compatible(
+    expected: KeyMappingResolution,
+    actual: KeyMappingResolution,
+) -> bool {
+    let same_orientation = (expected.width >= expected.height) == (actual.width >= actual.height);
+    let within_tolerance =
+        |left: u32, right: u32| left.abs_diff(right) as f64 / left.max(1) as f64 <= 0.02;
+    same_orientation
+        && within_tolerance(expected.width, actual.width)
+        && within_tolerance(expected.height, actual.height)
+}
+
 fn game_session_contacts(
     session: &DeviceSessionClient<std::path::PathBuf>,
     contacts: &[NormalizedTouchContact],
@@ -1122,6 +1134,24 @@ fn downscale(rgb: Vec<u8>, width: u32, height: u32, max_dim: u32) -> (u32, u32, 
         image::imageops::FilterType::Triangle,
     );
     (output_width, output_height, resized.into_raw())
+}
+
+fn orient_rgb(
+    rgb: Vec<u8>,
+    width: u32,
+    height: u32,
+    orientation: Orientation,
+) -> Result<(u32, u32, Vec<u8>), McpError> {
+    let image = image::RgbImage::from_raw(width, height, rgb)
+        .ok_or_else(|| McpError::internal_error("screen RGB dimensions are invalid", None))?;
+    let image = match orientation.quarter_turns_cw() {
+        0 => image,
+        1 => image::imageops::rotate90(&image),
+        2 => image::imageops::rotate180(&image),
+        _ => image::imageops::rotate270(&image),
+    };
+    let (width, height) = image.dimensions();
+    Ok((width, height, image.into_raw()))
 }
 
 fn signature_diff(left: &[u8], right: &[u8]) -> f32 {
@@ -1590,7 +1620,12 @@ impl DeviceHub {
             })?
             .to_rgb8();
         let (width, height) = image.dimensions();
-        Ok((width, height, image.into_raw()))
+        orient_rgb(
+            image.into_raw(),
+            width,
+            height,
+            self.current_session().orientation.get(),
+        )
     }
 
     async fn settle(&self) {
@@ -2158,12 +2193,12 @@ impl DeviceHub {
         Parameters(params): Parameters<StartGameSessionParams>,
     ) -> Result<CallToolResult, McpError> {
         let profile = self.read_keymap_profile(&params.profile_name).await?;
-        let stream_size = self.current_keymap_frame_size().ok_or_else(|| {
-            McpError::invalid_params(
-                "a connected device with an active screen stream is required for game control",
-                None,
-            )
-        })?;
+        let stream_size = if let Some(size) = self.current_keymap_frame_size() {
+            size
+        } else {
+            let (width, height, _) = self.native_screenshot().await?;
+            KeyMappingResolution { width, height }
+        };
         if let Some(bundle_id) = params.bundle_id.as_deref() {
             if !valid_bundle_identifier(bundle_id) {
                 return Err(McpError::invalid_params("invalid bundle identifier", None));
@@ -2183,11 +2218,11 @@ impl DeviceHub {
         if params.require_resolution_match.unwrap_or(true)
             && profile
                 .target_resolution
-                .is_some_and(|target| target != stream_size)
+                .is_some_and(|target| !keymap_resolutions_compatible(target, stream_size))
         {
             return Err(McpError::invalid_params(
                 format!(
-                    "keymap targetResolution does not match the current upright stream ({}x{})",
+                    "keymap targetResolution is not compatible with the current upright screen ({}x{})",
                     stream_size.width, stream_size.height
                 ),
                 None,
@@ -4218,6 +4253,34 @@ mod tests {
     }
 
     #[test]
+    fn screen_rgb_is_rotated_to_the_reported_orientation() {
+        let rgb = [1_u8, 2, 3, 4, 5, 6]
+            .into_iter()
+            .flat_map(|value| [value, value, value])
+            .collect::<Vec<_>>();
+
+        let (width, height, right) =
+            orient_rgb(rgb.clone(), 2, 3, Orientation::LandscapeRight).unwrap();
+        assert_eq!((width, height), (3, 2));
+        assert_eq!(
+            right
+                .chunks_exact(3)
+                .map(|pixel| pixel[0])
+                .collect::<Vec<_>>(),
+            vec![5, 3, 1, 6, 4, 2]
+        );
+
+        let (width, height, left) = orient_rgb(rgb, 2, 3, Orientation::LandscapeLeft).unwrap();
+        assert_eq!((width, height), (3, 2));
+        assert_eq!(
+            left.chunks_exact(3)
+                .map(|pixel| pixel[0])
+                .collect::<Vec<_>>(),
+            vec![2, 4, 6, 1, 3, 5]
+        );
+    }
+
+    #[test]
     fn game_action_parameters_are_bounded() {
         assert!(validate_touch_count(1).is_ok());
         assert!(validate_touch_count(5).is_ok());
@@ -4226,6 +4289,37 @@ mod tests {
         assert!(valid_bundle_identifier("com.example.game"));
         assert!(!valid_bundle_identifier("com..game"));
         assert!(!valid_bundle_identifier("invalid bundle"));
+        assert!(game_lease(Some(30_000)).is_ok());
+        assert!(game_lease(Some(30_001)).is_err());
+    }
+
+    #[test]
+    fn keymap_resolution_allows_native_and_encoded_frame_padding() {
+        let encoded = KeyMappingResolution {
+            width: 2816,
+            height: 1296,
+        };
+        assert!(keymap_resolutions_compatible(
+            encoded,
+            KeyMappingResolution {
+                width: 2778,
+                height: 1284,
+            }
+        ));
+        assert!(!keymap_resolutions_compatible(
+            encoded,
+            KeyMappingResolution {
+                width: 2532,
+                height: 1170,
+            }
+        ));
+        assert!(!keymap_resolutions_compatible(
+            encoded,
+            KeyMappingResolution {
+                width: 1296,
+                height: 2816,
+            }
+        ));
     }
 
     #[tokio::test]

@@ -7,7 +7,10 @@ import {
   keyboardUsage,
   mappingBindings,
   mergeTouchContacts,
+  pointerButtonCode,
   remainingTapDuration,
+  singleTapReleaseDelay,
+  transitionTouchContacts,
   touchFramesEqual,
   type TouchContact,
 } from "./control";
@@ -46,6 +49,8 @@ export type DeviceInputCollections = {
   directTouches: Map<number, TouchContact>;
   directTouchStartedAt: Map<number, number>;
   directTouchReleaseTimers: Map<number, number>;
+  mappedReleaseTimers: Map<string, number>;
+  heldPointerBindings: Map<number, string>;
 };
 
 export function clearDeviceInputCollections(
@@ -53,9 +58,12 @@ export function clearDeviceInputCollections(
   cancelReleaseTimer: (timer: number) => void,
 ) {
   for (const timer of collections.directTouchReleaseTimers.values()) cancelReleaseTimer(timer);
+  for (const timer of collections.mappedReleaseTimers.values()) cancelReleaseTimer(timer);
   collections.directTouchReleaseTimers.clear();
+  collections.mappedReleaseTimers.clear();
   collections.directTouchStartedAt.clear();
   collections.directTouches.clear();
+  collections.heldPointerBindings.clear();
   collections.held.clear();
   collections.heldSince.clear();
   collections.mappingOffsets.clear();
@@ -87,8 +95,10 @@ export function useDeviceInput(options: Options) {
   const directTouchesRef = useRef(new Map<number, TouchContact>());
   const directTouchStartedAtRef = useRef(new Map<number, number>());
   const directTouchReleaseTimersRef = useRef(new Map<number, number>());
+  const mappedReleaseTimersRef = useRef(new Map<string, number>());
+  const heldPointerBindingsRef = useRef(new Map<number, string>());
   const activeMappingIdsRef = useRef(new Set<string>());
-  const lastSentTouchFrameRef = useRef<TouchContact[] | null>(null);
+  const lastActiveTouchFrameRef = useRef<TouchContact[] | null>(null);
   const schedulerRef = useRef<DemandScheduler | null>(null);
   const sendFrameRef = useRef<(held?: ReadonlySet<string>, released?: TouchContact[]) => void>(() => undefined);
   optionsRef.current = options;
@@ -102,6 +112,8 @@ export function useDeviceInput(options: Options) {
     directTouches: directTouchesRef.current,
     directTouchStartedAt: directTouchStartedAtRef.current,
     directTouchReleaseTimers: directTouchReleaseTimersRef.current,
+    mappedReleaseTimers: mappedReleaseTimersRef.current,
+    heldPointerBindings: heldPointerBindingsRef.current,
   }), []);
 
   const publishActiveMappings = useCallback((next: Set<string>) => {
@@ -120,22 +132,24 @@ export function useDeviceInput(options: Options) {
       heldSinceRef.current,
       mappingOffsetsRef.current,
     );
-    const contacts = mergeTouchContacts(
+    const activeContacts = mergeTouchContacts(
       mappedFrame.contacts,
       [...directTouchesRef.current.values()],
-      released,
     );
     publishActiveMappings(mappedFrame.activeMappingIds);
-    if (!current.connected || touchFramesEqual(lastSentTouchFrameRef.current, contacts)) return;
+    if (!current.connected) return;
+    const previous = lastActiveTouchFrameRef.current ?? [];
+    if (released.length === 0 && touchFramesEqual(lastActiveTouchFrameRef.current, activeContacts)) return;
+    const contacts = transitionTouchContacts(previous, activeContacts, released);
     current.command({ type: "multi_touch", contacts });
-    lastSentTouchFrameRef.current = contacts;
+    lastActiveTouchFrameRef.current = activeContacts;
   }, [publishActiveMappings]);
   sendFrameRef.current = sendFrame;
 
   const clearLocalState = useCallback((publish: boolean) => {
     clearDeviceInputCollections(inputCollections(), (timer) => window.clearTimeout(timer));
     schedulerRef.current?.stop();
-    lastSentTouchFrameRef.current = null;
+    lastActiveTouchFrameRef.current = null;
     activeMappingIdsRef.current = new Set();
     if (publish) {
       setDirectTouches([]);
@@ -175,6 +189,33 @@ export function useDeviceInput(options: Options) {
     if (wasConnectedRef.current && !options.connected) clearLocalState(true);
     wasConnectedRef.current = options.connected;
   }, [clearLocalState, options.connected]);
+
+  const finishMappedRelease = useCallback((code: string) => {
+    mappedReleaseTimersRef.current.delete(code);
+    if (!heldRef.current.delete(code)) return;
+    heldSinceRef.current.delete(code);
+    for (const mapping of optionsRef.current.mappings) {
+      if (mappingBindings(mapping).includes(code)) mappingOffsetsRef.current.delete(mapping.id);
+    }
+    if (heldRef.current.size === 0) schedulerRef.current?.stop();
+    sendFrameRef.current();
+  }, []);
+
+  const releaseMappedKey = useCallback((code: string) => {
+    const pending = mappedReleaseTimersRef.current.get(code);
+    if (pending !== undefined) window.clearTimeout(pending);
+    const delay = singleTapReleaseDelay(
+      optionsRef.current.mappings,
+      code,
+      heldSinceRef.current,
+      performance.now(),
+    );
+    if (delay > 0) {
+      mappedReleaseTimersRef.current.set(code, window.setTimeout(() => finishMappedRelease(code), delay));
+    } else {
+      finishMappedRelease(code);
+    }
+  }, [finishMappedRelease]);
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
@@ -253,6 +294,11 @@ export function useDeviceInput(options: Options) {
           mappingOffsetsRef.current.set(mapping.id, mapping.position);
         }
       }
+      const pendingRelease = mappedReleaseTimersRef.current.get(event.code);
+      if (pendingRelease !== undefined) {
+        window.clearTimeout(pendingRelease);
+        mappedReleaseTimersRef.current.delete(event.code);
+      }
       heldRef.current.add(event.code);
       heldSinceRef.current.set(event.code, performance.now());
       schedulerRef.current?.start();
@@ -275,14 +321,9 @@ export function useDeviceInput(options: Options) {
         current.command({ type: "button_up", name: hardware });
         return;
       }
-      if (!heldRef.current.delete(event.code)) return;
-      heldSinceRef.current.delete(event.code);
-      for (const mapping of current.mappings) {
-        if (mappingBindings(mapping).includes(event.code)) mappingOffsetsRef.current.delete(mapping.id);
-      }
-      if (heldRef.current.size === 0) schedulerRef.current?.stop();
+      if (!heldRef.current.has(event.code)) return;
       event.preventDefault();
-      sendFrameRef.current();
+      releaseMappedKey(event.code);
     };
 
     window.addEventListener("keydown", down);
@@ -293,11 +334,32 @@ export function useDeviceInput(options: Options) {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", releaseAllControls);
     };
-  }, [releaseAllControls]);
+  }, [releaseAllControls, releaseMappedKey]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const current = optionsRef.current;
-    if (!current.connected || current.mappingEditing || event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
+    if (!current.connected || current.mappingEditing) return;
+    const pointerCode = pointerButtonCode(event.button);
+    if (current.controlMode === "mapping" && pointerCode && isBoundKey(current.mappings, pointerCode)) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      for (const mapping of current.mappings) {
+        if (mappingBindings(mapping).includes(pointerCode)) mappingOffsetsRef.current.delete(mapping.id);
+      }
+      const pendingRelease = mappedReleaseTimersRef.current.get(pointerCode);
+      if (pendingRelease !== undefined) {
+        window.clearTimeout(pendingRelease);
+        mappedReleaseTimersRef.current.delete(pointerCode);
+      }
+      heldPointerBindingsRef.current.set(event.pointerId, pointerCode);
+      heldRef.current.add(pointerCode);
+      heldSinceRef.current.set(pointerCode, performance.now());
+      schedulerRef.current?.start();
+      sendFrameRef.current();
+      return;
+    }
+    if (event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
     const used = new Set([
       ...buildTouchFrame(current.mappings, heldRef.current, current.frameSize).filter((contact) => contact.touching).map((contact) => contact.identity),
       ...[...directTouchesRef.current.values()].map((contact) => contact.identity),
@@ -328,6 +390,13 @@ export function useDeviceInput(options: Options) {
   }, []);
 
   const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const pointerCode = heldPointerBindingsRef.current.get(event.pointerId);
+    if (pointerCode) {
+      event.preventDefault();
+      heldPointerBindingsRef.current.delete(event.pointerId);
+      releaseMappedKey(pointerCode);
+      return;
+    }
     const contact = directTouchesRef.current.get(event.pointerId);
     if (!contact || directTouchReleaseTimersRef.current.has(event.pointerId)) return;
     event.preventDefault();
@@ -349,7 +418,7 @@ export function useDeviceInput(options: Options) {
     );
     if (delay > 0) directTouchReleaseTimersRef.current.set(pointerId, window.setTimeout(finish, delay));
     else finish();
-  }, []);
+  }, [releaseMappedKey]);
 
   return {
     activeMappingIds,

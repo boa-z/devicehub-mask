@@ -12,11 +12,10 @@ import SaveOutlined from "@ant-design/icons/es/icons/SaveOutlined";
 import UndoOutlined from "@ant-design/icons/es/icons/UndoOutlined";
 import UploadOutlined from "@ant-design/icons/es/icons/UploadOutlined";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { Button, Dropdown, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
+import { Button, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { importMappingFile, mappingImportSource, mappingImportSources, uniqueImportedProfileName, type MappingImportSourceId } from "../mappingImport";
-import { exportScrcpyMaskConfig } from "../scrcpyCompat";
 import { showErrorMessage } from "../errorMessage";
 import type { AppBindingConflict, Profile, ProfileResolution } from "../types";
 import { conflictForScope } from "../profileBindings";
@@ -213,23 +212,9 @@ export function ProfileManager({
         </Tooltip>
         <Tooltip title={t("profile.importConfig")}><Button icon={<UploadOutlined />} onClick={() => setImportDialog(true)} /></Tooltip>
         <Tooltip title={t("profile.browseCatalog")}><Button aria-label={t("profile.browseCatalog")} icon={<CloudDownloadOutlined />} onClick={onBrowseCatalog} /></Tooltip>
-        <Dropdown
-          menu={{
-            items: [
-              { key: "native", label: "DeviceHub Mask" },
-              { key: "scrcpy", label: "scrcpy-mask" },
-            ],
-            onClick: ({ key }) => {
-              if (key === "native") downloadJson(`${profile.name}.json`, profile);
-              if (key === "scrcpy") downloadJson(
-                `${profile.name}.scrcpy-mask.json`,
-                exportScrcpyMaskConfig(profile, frameSize.width, frameSize.height),
-              );
-            },
-          }}
-        >
-          <Tooltip title={t("profile.exportJson")}><Button icon={<DownloadOutlined />} /></Tooltip>
-        </Dropdown>
+        <Tooltip title={t("profile.exportJson")}>
+          <Button icon={<DownloadOutlined />} onClick={() => downloadJson(`${profile.name}.json`, profile)} />
+        </Tooltip>
       </Space>
       <input ref={fileRef} className="file-input" type="file" accept={mappingImportSource(importSource).accept} onChange={chooseImportFile} />
       <Modal
