@@ -31,7 +31,6 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { useTranslation } from "react-i18next";
 import { AppNavigation, type AppPage } from "./components/AppNavigation";
 import { DeviceWindowToolbar } from "./components/DeviceWindowToolbar";
-import { DeviceConnectionCenter } from "./components/DeviceConnectionCenter";
 import { ErrorCopyButton } from "./components/ErrorPresentation";
 import { KeyboardIcon } from "./components/KeyboardIcon";
 import type { MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
@@ -57,9 +56,10 @@ import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTel
 import { usePrivateBackend } from "./usePrivateBackend";
 import { currentHostWindow } from "./hostWindow";
 import { useUndoHistory } from "./useUndoHistory";
-import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, type AudioOutputStatus } from "./appSettings";
+import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, setStartupDevicePriority, type AudioOutputStatus } from "./appSettings";
 
 const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
+const DeviceConnectionCenter = lazy(() => import("./components/DeviceConnectionCenter").then((module) => ({ default: module.DeviceConnectionCenter })));
 const DeviceFullscreenToolbar = lazy(() => import("./components/DeviceFullscreenToolbar").then((module) => ({ default: module.DeviceFullscreenToolbar })));
 const DeviceInspector = lazy(() => import("./components/DeviceInspector").then((module) => ({ default: module.DeviceInspector })));
 const DeviceLogsPage = lazy(() => import("./components/DeviceLogsPage").then((module) => ({ default: module.DeviceLogsPage })));
@@ -153,6 +153,7 @@ export default function App() {
   const [fullscreenToolbarHovered, setFullscreenToolbarHovered] = useState(false);
   const [fullscreenToolbarFocused, setFullscreenToolbarFocused] = useState(false);
   const [pairingDeviceId, setPairingDeviceId] = useState<string | null>(null);
+  const [startupDevicePriority, setStartupDevicePriorityState] = useState<string[]>([]);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [audioPlayback, setAudioPlaybackPreferences] = useState<DeviceAudioPreferences>(defaultDeviceAudioPreferences);
   const [deviceAudioEnabled, setDeviceAudioEnabled] = useState<boolean | null>(null);
@@ -171,6 +172,7 @@ export default function App() {
   const stageRef = useRef<HTMLDivElement>(null);
   const mappingInsertPositionRef = useRef<Position>({ x: 0.5, y: 0.5 });
   const audioPlaybackGenerationRef = useRef(0);
+  const startupPriorityGenerationRef = useRef(0);
   const fullscreenToolbarTimerRef = useRef<number | null>(null);
   const selectedDeviceIntentRef = useRef<string | null>(null);
   const profileSwitchingRef = useRef(false);
@@ -252,6 +254,7 @@ export default function App() {
           }
         }
         setDeviceAudioEnabled(settings.audio_enabled);
+        setStartupDevicePriorityState(settings.startup_device_priority ?? []);
         setAudioPlaybackPreferences({
           muted: playbackSettings.audio_muted,
           volume: playbackSettings.audio_volume,
@@ -259,6 +262,24 @@ export default function App() {
       })
       .catch((error) => logFrontend("warn", "audio", "read_settings", error));
   }, []);
+
+  const updateStartupDevicePriority = useCallback(async (priority: string[]) => {
+    const previous = startupDevicePriority;
+    const generation = startupPriorityGenerationRef.current + 1;
+    startupPriorityGenerationRef.current = generation;
+    setStartupDevicePriorityState(priority);
+    try {
+      const settings = await setStartupDevicePriority(priority);
+      if (startupPriorityGenerationRef.current === generation) {
+        setStartupDevicePriorityState(settings.startup_device_priority);
+      }
+    } catch (error) {
+      if (startupPriorityGenerationRef.current === generation) {
+        setStartupDevicePriorityState(previous);
+        void showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) }));
+      }
+    }
+  }, [startupDevicePriority, t]);
 
   useEffect(() => {
     if (deviceAudioEnabled !== true) {
@@ -1146,17 +1167,21 @@ export default function App() {
             <Tag color={connected && status.active_udid ? "success" : status.error ? "error" : "default"}>{statusText}</Tag>
             {status.error && <ErrorCopyButton error={status.error} />}
           </span>
-          <DeviceConnectionCenter
-            devices={status.devices}
-            selectedDeviceId={selectedDeviceId}
-            backendReady={Boolean(backend)}
-            pairingDeviceId={pairingDeviceId}
-            onConnect={(deviceId) => void selectDevice(deviceId)}
-            onReconnect={(deviceId) => void reconnectDevice(deviceId)}
-            onDisconnect={(deviceId) => void disconnectDevice(deviceId)}
-            onPair={(deviceId) => void pairDevice(deviceId)}
-            onRefresh={() => void request("/api/devices/refresh", { method: "PUT" })}
-          />
+          <Suspense fallback={<Button disabled>{t("device.select")}</Button>}>
+            <DeviceConnectionCenter
+              devices={status.devices}
+              selectedDeviceId={selectedDeviceId}
+              backendReady={Boolean(backend)}
+              pairingDeviceId={pairingDeviceId}
+              startupDevicePriority={startupDevicePriority}
+              onStartupDevicePriorityChange={(priority) => void updateStartupDevicePriority(priority)}
+              onConnect={(deviceId) => void selectDevice(deviceId)}
+              onReconnect={(deviceId) => void reconnectDevice(deviceId)}
+              onDisconnect={(deviceId) => void disconnectDevice(deviceId)}
+              onPair={(deviceId) => void pairDevice(deviceId)}
+              onRefresh={() => void request("/api/devices/refresh", { method: "PUT" })}
+            />
+          </Suspense>
           {page === "mappings" && <Tooltip title={t("device.saveMappings")}><Button icon={<SaveOutlined />} onClick={() => void save()} /></Tooltip>}
           <Tooltip title={t(alwaysOnTop ? "device.unpin" : "device.pin")}><Button type={alwaysOnTop ? "primary" : "default"} icon={alwaysOnTop ? <PushpinFilled /> : <PushpinOutlined />} onClick={() => void toggleAlwaysOnTop()} /></Tooltip>
           {page === "device" && <Tooltip title={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")}><Button aria-label={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")} icon={deviceViewPreferences.deviceInspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => patchDeviceViewPreferences({ deviceInspectorVisible: !deviceViewPreferences.deviceInspectorVisible })} /></Tooltip>}

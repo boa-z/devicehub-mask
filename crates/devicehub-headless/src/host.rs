@@ -18,6 +18,8 @@ struct PersistedSettings {
     audio_muted: bool,
     #[serde(default = "default_audio_volume")]
     audio_volume: f32,
+    #[serde(default)]
+    startup_device_priority: Vec<String>,
 }
 
 impl Default for PersistedSettings {
@@ -26,6 +28,7 @@ impl Default for PersistedSettings {
             audio_enabled: false,
             audio_muted: false,
             audio_volume: DEFAULT_AUDIO_VOLUME,
+            startup_device_priority: Vec::new(),
         }
     }
 }
@@ -61,11 +64,12 @@ impl HeadlessHostControl {
             }
         };
         let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
-        let audio_enabled = settings.audio_enabled;
+        let runtime_preferences = RuntimePreferences::new(settings.audio_enabled, false);
+        runtime_preferences.set_startup_device_priority(settings.startup_device_priority.clone());
         Self(Arc::new(HeadlessHostInner {
             settings_path,
             settings: RwLock::new(settings),
-            runtime_preferences: RuntimePreferences::new(audio_enabled, false),
+            runtime_preferences,
             log_filter,
             run_id: uuid::Uuid::new_v4().simple().to_string(),
         }))
@@ -103,6 +107,7 @@ impl HostControl for HeadlessHostControl {
             audio_muted: settings.audio_muted,
             audio_volume: settings.audio_volume,
             clipboard_sync_enabled: false,
+            startup_device_priority: settings.startup_device_priority.clone(),
         }
     }
 
@@ -119,11 +124,17 @@ impl HostControl for HeadlessHostControl {
             audio_enabled: patch.audio_enabled.unwrap_or(settings.audio_enabled),
             audio_muted: patch.audio_muted.unwrap_or(settings.audio_muted),
             audio_volume: patch.audio_volume.unwrap_or(settings.audio_volume),
+            startup_device_priority: patch
+                .startup_device_priority
+                .unwrap_or_else(|| settings.startup_device_priority.clone()),
         };
         self.save(&next)?;
         self.0
             .runtime_preferences
             .set_audio_enabled(next.audio_enabled);
+        self.0
+            .runtime_preferences
+            .set_startup_device_priority(next.startup_device_priority.clone());
         *settings = next;
         drop(settings);
         Ok(self.settings())
@@ -176,10 +187,15 @@ mod tests {
         control
             .update_settings(HostSettingsPatch {
                 audio_enabled: Some(true),
+                startup_device_priority: Some(vec!["phone".into(), "tablet".into()]),
                 ..HostSettingsPatch::default()
             })
             .unwrap();
         assert!(control.runtime_preferences().audio_enabled());
+        assert_eq!(
+            control.runtime_preferences().startup_device_priority(),
+            ["phone", "tablet"]
+        );
         let _ = std::fs::remove_file(path);
     }
 }

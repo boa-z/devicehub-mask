@@ -115,6 +115,14 @@ fn set_clipboard_sync_enabled(
     state.set_clipboard_sync_enabled(enabled)
 }
 
+#[tauri::command]
+fn set_startup_device_priority(
+    priority: Vec<String>,
+    state: tauri::State<'_, Arc<settings::AppSettings>>,
+) -> Result<settings::SettingsStatus, String> {
+    state.set_startup_device_priority(priority)
+}
+
 impl BackendHandle {
     fn stop(&self) {
         if let Some(shutdown) = self.shutdown.lock().unwrap().take() {
@@ -250,7 +258,8 @@ pub fn run() {
             set_audio_enabled,
             set_audio_playback,
             audio_output_status,
-            set_clipboard_sync_enabled
+            set_clipboard_sync_enabled,
+            set_startup_device_priority
         ])
         .setup(move |app| {
             let log_directory = app.path().app_log_dir()?;

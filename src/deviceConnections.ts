@@ -28,7 +28,7 @@ export function isActiveSession(device: Device) {
     || device.session_phase === "disconnecting";
 }
 
-export function groupDevices(devices: Device[]): DeviceGroup[] {
+export function groupDevices(devices: Device[], startupPriority: readonly string[] = []): DeviceGroup[] {
   const groups = new Map<string, DeviceGroup>();
   for (const device of devices) {
     const group = groups.get(device.udid) ?? {
@@ -47,8 +47,14 @@ export function groupDevices(devices: Device[]): DeviceGroup[] {
       devices: group.devices.sort((left, right) => devicePriority(left) - devicePriority(right)
         || left.connection.localeCompare(right.connection)),
     }))
-    .sort((left, right) => devicePriority(left.devices[0]) - devicePriority(right.devices[0])
+    .sort((left, right) => preferredDevicePriority(left.udid, startupPriority) - preferredDevicePriority(right.udid, startupPriority)
+      || devicePriority(left.devices[0]) - devicePriority(right.devices[0])
       || left.name.localeCompare(right.name));
+}
+
+function preferredDevicePriority(udid: string, priority: readonly string[]) {
+  const index = priority.indexOf(udid);
+  return index < 0 ? Number.MAX_SAFE_INTEGER : index;
 }
 
 export function connectedPhysicalDeviceCount(devices: Device[]) {

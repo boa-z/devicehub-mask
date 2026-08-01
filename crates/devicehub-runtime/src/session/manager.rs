@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devicehub_core::{
-    ActiveSlot, DeviceListSlot, DevicePairingState, ForgetDeviceResult, LocationStatus,
+    ActiveSlot, DeviceInfo, DeviceListSlot, DevicePairingState, ForgetDeviceResult, LocationStatus,
     PairDeviceOutcome, PairDeviceResult, SessionPhase, StatusSlot,
 };
 use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender, oneshot};
@@ -33,6 +33,22 @@ use crate::{
 const IDLE_RESCAN: Duration = Duration::from_secs(2);
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
 const SESSION_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn startup_device_id(devices: &[DeviceInfo], priority: &[String]) -> Option<String> {
+    priority
+        .iter()
+        .find_map(|udid| {
+            devices.iter().find(|device| {
+                device.udid == *udid && device.pairing != DevicePairingState::Unpaired
+            })
+        })
+        .or_else(|| {
+            devices
+                .iter()
+                .find(|device| device.pairing != DevicePairingState::Unpaired)
+        })
+        .map(|device| device.id.clone())
+}
 
 async fn wait_for_session_startup_timeout(status: StatusSlot, timeout: Duration) {
     let deadline = tokio::time::sleep(timeout);
@@ -807,10 +823,12 @@ async fn run_session_manager<
                 endpoints = discovered_endpoints;
                 if auto_pick
                     && pending_connect.is_empty()
-                    && let Some(first) = views.devices.get().into_iter()
-                        .find(|device| device.pairing != DevicePairingState::Unpaired)
+                    && let Some(selection_id) = startup_device_id(
+                        &views.devices.get(),
+                        &preferences.startup_device_priority(),
+                    )
                 {
-                    pending_connect.insert(first.id);
+                    pending_connect.insert(selection_id);
                     auto_pick = false;
                 }
 
@@ -864,9 +882,47 @@ async fn run_session_manager<
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionManagerViews, ensure_session, wait_for_session_startup_timeout};
+    use super::{
+        SessionManagerViews, ensure_session, startup_device_id, wait_for_session_startup_timeout,
+    };
     use crate::runtime::CoreRuntimeState;
+    use devicehub_core::{ConnKind, DeviceInfo, DevicePairingState};
     use std::time::Duration;
+
+    fn device(id: &str, udid: &str, pairing: DevicePairingState) -> DeviceInfo {
+        DeviceInfo {
+            id: id.into(),
+            udid: udid.into(),
+            name: udid.into(),
+            connection: ConnKind::Usb,
+            pairing,
+        }
+    }
+
+    #[test]
+    fn startup_selection_uses_first_available_preferred_device() {
+        let devices = vec![
+            device("tablet::usb", "tablet", DevicePairingState::Paired),
+            device("phone::usb", "phone", DevicePairingState::Paired),
+        ];
+        let priority = vec!["offline".into(), "phone".into(), "tablet".into()];
+        assert_eq!(
+            startup_device_id(&devices, &priority).unwrap(),
+            "phone::usb"
+        );
+    }
+
+    #[test]
+    fn startup_selection_skips_unpaired_priority_and_falls_back() {
+        let devices = vec![
+            device("phone::usb", "phone", DevicePairingState::Unpaired),
+            device("tablet::usb", "tablet", DevicePairingState::Paired),
+        ];
+        assert_eq!(
+            startup_device_id(&devices, &["phone".into()]).unwrap(),
+            "tablet::usb"
+        );
+    }
 
     #[test]
     fn creating_another_session_preserves_existing_state() {

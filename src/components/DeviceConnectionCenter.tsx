@@ -15,6 +15,8 @@ type DeviceConnectionCenterProps = {
   selectedDeviceId: string | null;
   backendReady: boolean;
   pairingDeviceId: string | null;
+  startupDevicePriority: string[];
+  onStartupDevicePriorityChange: (priority: string[]) => void;
   onConnect: (deviceId: string) => void;
   onReconnect: (deviceId: string) => void;
   onDisconnect: (deviceId: string) => void;
@@ -27,6 +29,8 @@ export function DeviceConnectionCenter({
   selectedDeviceId,
   backendReady,
   pairingDeviceId,
+  startupDevicePriority,
+  onStartupDevicePriorityChange,
   onConnect,
   onReconnect,
   onDisconnect,
@@ -35,7 +39,7 @@ export function DeviceConnectionCenter({
 }: DeviceConnectionCenterProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const groups = useMemo(() => groupDevices(devices), [devices]);
+  const groups = useMemo(() => groupDevices(devices, startupDevicePriority), [devices, startupDevicePriority]);
   const connectedCount = connectedPhysicalDeviceCount(devices);
   const selected = devices.find((device) => device.id === selectedDeviceId);
 
@@ -46,9 +50,16 @@ export function DeviceConnectionCenter({
           <Typography.Text strong>{t("device.devices")}</Typography.Text>
           <Typography.Text type="secondary">{t("device.connectedCount", { count: connectedCount })}</Typography.Text>
         </div>
-        <Tooltip title={t("device.refresh")}>
-          <Button size="small" aria-label={t("device.refresh")} disabled={!backendReady} icon={<ReloadOutlined />} onClick={onRefresh} />
-        </Tooltip>
+        <div className="device-center-header-actions">
+          {startupDevicePriority.length > 0 && (
+            <Tooltip title={t("device.priorityClear")}>
+              <Button size="small" type="text" aria-label={t("device.priorityClear")} icon={<span aria-hidden>×</span>} onClick={() => onStartupDevicePriorityChange([])} />
+            </Tooltip>
+          )}
+          <Tooltip title={t("device.refresh")}>
+            <Button size="small" aria-label={t("device.refresh")} disabled={!backendReady} icon={<ReloadOutlined />} onClick={onRefresh} />
+          </Tooltip>
+        </div>
       </div>
       {groups.length === 0 ? (
         <div className="device-center-empty">{t("device.noDevices")}</div>
@@ -60,7 +71,23 @@ export function DeviceConnectionCenter({
             <div className="device-center-section-title">{t(active ? "device.connectedDevices" : "device.availableDevices")}</div>
             {section.map((group) => (
               <div className="device-group" key={group.udid}>
-                <div className="device-group-title"><span>{group.name}</span></div>
+                <div className="device-group-title">
+                  <span>{group.name}</span>
+                  {startupDevicePriority.includes(group.udid) && (
+                    <Tag color="gold">#{startupDevicePriority.indexOf(group.udid) + 1}</Tag>
+                  )}
+                  <div className="device-priority-actions">
+                    {startupDevicePriority.includes(group.udid) ? (
+                      <>
+                        <Tooltip title={t("device.priorityUp")}><Button size="small" type="text" aria-label={t("device.priorityUp")} disabled={startupDevicePriority[0] === group.udid} icon={<span aria-hidden>↑</span>} onClick={() => onStartupDevicePriorityChange(movePriority(startupDevicePriority, group.udid, -1))} /></Tooltip>
+                        <Tooltip title={t("device.priorityDown")}><Button size="small" type="text" aria-label={t("device.priorityDown")} disabled={startupDevicePriority.at(-1) === group.udid} icon={<span aria-hidden>↓</span>} onClick={() => onStartupDevicePriorityChange(movePriority(startupDevicePriority, group.udid, 1))} /></Tooltip>
+                        <Tooltip title={t("device.priorityRemove")}><Button className="is-priority-toggle" size="small" type="text" aria-label={t("device.priorityRemove")} icon={<span aria-hidden>★</span>} onClick={() => onStartupDevicePriorityChange(startupDevicePriority.filter((udid) => udid !== group.udid))} /></Tooltip>
+                      </>
+                    ) : (
+                      <Tooltip title={t("device.priorityAdd")}><Button className="is-priority-toggle" size="small" type="text" aria-label={t("device.priorityAdd")} icon={<span aria-hidden>☆</span>} onClick={() => onStartupDevicePriorityChange([...startupDevicePriority, group.udid])} /></Tooltip>
+                    )}
+                  </div>
+                </div>
                 {group.devices.map((device) => {
                   const phase = device.session_phase ?? "discovered";
                   const selectedTarget = device.id === selectedDeviceId;
@@ -117,4 +144,13 @@ export function DeviceConnectionCenter({
       </Button>
     </Popover>
   );
+}
+
+function movePriority(priority: string[], udid: string, offset: -1 | 1) {
+  const from = priority.indexOf(udid);
+  const to = from + offset;
+  if (from < 0 || to < 0 || to >= priority.length) return priority;
+  const next = [...priority];
+  [next[from], next[to]] = [next[to], next[from]];
+  return next;
 }
