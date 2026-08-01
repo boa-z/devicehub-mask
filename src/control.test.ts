@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMappingRuntimeFrame, buildTouchFrame, isUiControl, mappingBindings, mergeTouchContacts, remainingTapDuration, touchFramesEqual } from "./control";
+import { buildMappingRuntimeFrame, buildTouchFrame, isUiControl, mappingBindings, mergeTouchContacts, pointerButtonCode, remainingTapDuration, singleTapReleaseDelay, touchFramesEqual, transitionTouchContacts } from "./control";
 import { createMapping, type PadCastSpellMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
 
 describe("mapping controller runtime", () => {
@@ -8,7 +8,7 @@ describe("mapping controller runtime", () => {
     const held = new Set(["Space"]);
     const started = new Map([["Space", 1000]]);
     expect(buildTouchFrame([mapping], held, undefined, 1020, started)[0].touching).toBe(true);
-    expect(buildTouchFrame([mapping], held, undefined, 1080, started)[0].touching).toBe(false);
+    expect(buildTouchFrame([mapping], held, undefined, 1080, started)).toEqual([]);
     expect(buildTouchFrame([mapping], held, undefined, 1160, started)[0].touching).toBe(true);
   });
 
@@ -20,8 +20,9 @@ describe("mapping controller runtime", () => {
   });
 
   it("allows many saved mappings while limiting each HID frame to five contacts", () => {
-    const mappings = Array.from({ length: 8 }, (_, identity) => ({ ...createMapping("SingleTap", { x: 0.5, y: 0.5 }), id: String(identity), bind: ["Space"], pointer_id: identity % 5 } as SingleTapMapping));
-    expect(buildTouchFrame(mappings, new Set(["Space"]), undefined, 10, new Map([["Space", 0]]))).toHaveLength(5);
+    const keys = Array.from({ length: 8 }, (_, index) => `Key${String.fromCharCode(65 + index)}`);
+    const mappings = keys.map((key, identity) => ({ ...createMapping("SingleTap", { x: 0.5, y: 0.5 }), id: String(identity), bind: [key], pointer_id: identity % 5 } as SingleTapMapping));
+    expect(buildTouchFrame(mappings, new Set(keys), undefined, 10, new Map(keys.map((key) => [key, 0])))).toHaveLength(5);
   });
 
   it("highlights only the mapping that owns a reused contact identity", () => {
@@ -41,7 +42,6 @@ describe("mapping controller runtime", () => {
     expect(frame.activeMappingIds).toEqual(new Set(["first"]));
     expect(frame.contacts).toEqual([
       { identity: 0, touching: true, x: 0.2, y: 0.3 },
-      { identity: 1, touching: false, x: 0.7, y: 0.8 },
     ]);
   });
 
@@ -67,10 +67,30 @@ describe("mapping controller runtime", () => {
     )).toEqual([{ identity: 0, touching: false, x: 0.8, y: 0.7 }]);
   });
 
+  it("releases a reused contact identity at the active mapping coordinate", () => {
+    const inactiveFirst = { ...createMapping("SingleTap", { x: 0.65, y: 0.05 }), id: "menu", bind: ["KeyU"], pointer_id: 4 } as SingleTapMapping;
+    const pickup = { ...createMapping("SingleTap", { x: 0.63, y: 0.55 }), id: "pickup", bind: ["KeyF"], pointer_id: 4, duration: 100 } as SingleTapMapping;
+    const pressed = buildTouchFrame([inactiveFirst, pickup], new Set(["KeyF"]), undefined, 10, new Map([["KeyF", 0]]));
+    const expired = buildTouchFrame([inactiveFirst, pickup], new Set(["KeyF"]), undefined, 100, new Map([["KeyF", 0]]));
+
+    expect(transitionTouchContacts(pressed, expired)).toEqual([
+      { identity: 4, touching: false, x: 0.63, y: 0.55 },
+    ]);
+  });
+
   it("holds short direct taps for at least fifty milliseconds", () => {
     expect(remainingTapDuration(100, 105)).toBe(45);
     expect(remainingTapDuration(100, 150)).toBe(0);
     expect(remainingTapDuration(100, 180)).toBe(0);
+  });
+
+  it("keeps a SingleTap active for its configured duration after a quick key release", () => {
+    const mapping = { ...createMapping("SingleTap", { x: 0.5, y: 0.5 }), bind: ["KeyF"], duration: 100 } as SingleTapMapping;
+    const started = new Map([["KeyF", 1000]]);
+
+    expect(singleTapReleaseDelay([mapping], "KeyF", started, 1010)).toBe(90);
+    expect(singleTapReleaseDelay([mapping], "KeyF", started, 1100)).toBe(0);
+    expect(singleTapReleaseDelay([mapping], "KeyG", started, 1010)).toBe(0);
   });
 
   it("recognizes nested UI controls before capturing keyboard mappings", () => {
@@ -88,5 +108,12 @@ describe("mapping controller runtime", () => {
     expect(selector).toContain("[contenteditable='true']");
     expect(isUiControl(deviceSurface)).toBe(false);
     expect(isUiControl(null)).toBe(false);
+  });
+
+  it("uses stable mapping codes for the primary mouse buttons", () => {
+    expect(pointerButtonCode(0)).toBe("MouseLeft");
+    expect(pointerButtonCode(1)).toBe("MouseMiddle");
+    expect(pointerButtonCode(2)).toBe("MouseRight");
+    expect(pointerButtonCode(3)).toBeUndefined();
   });
 });

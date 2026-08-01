@@ -6,6 +6,7 @@
 
 pub mod http;
 pub mod mcp;
+mod mcp_keymap;
 pub mod private_api;
 pub mod spa;
 pub mod status;

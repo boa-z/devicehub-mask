@@ -153,7 +153,8 @@ fn spawn_backend(
                 .build()
                 .expect("build private server runtime");
             runtime.block_on(async move {
-                tokio::spawn(mcp::serve(client.clone()));
+                let mcp_profile_dir = profile_dir.clone();
+                tokio::spawn(mcp::serve(client.clone(), mcp_profile_dir));
                 let app = web::router(
                     devicehub_host::private_api::state(
                         client.clone(),

@@ -11,6 +11,8 @@ function populatedCollections(): DeviceInputCollections {
     directTouches: new Map([[12, { identity: 3, touching: true, x: 0.2, y: 0.7 }]]),
     directTouchStartedAt: new Map([[12, 20]]),
     directTouchReleaseTimers: new Map([[12, 99]]),
+    mappedReleaseTimers: new Map([["KeyF", 100]]),
+    heldPointerBindings: new Map([[7, "MouseRight"]]),
   };
 }
 
@@ -21,7 +23,9 @@ describe("device input lifecycle", () => {
 
     clearDeviceInputCollections(collections, cancelReleaseTimer);
 
-    expect(cancelReleaseTimer).toHaveBeenCalledExactlyOnceWith(99);
+    expect(cancelReleaseTimer).toHaveBeenCalledTimes(2);
+    expect(cancelReleaseTimer).toHaveBeenCalledWith(99);
+    expect(cancelReleaseTimer).toHaveBeenCalledWith(100);
     for (const collection of Object.values(collections)) expect(collection.size).toBe(0);
   });
 });

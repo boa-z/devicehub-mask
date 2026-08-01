@@ -2,7 +2,10 @@
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8009";
 
-pub async fn serve(application: devicehub_runtime::RuntimeClient<std::path::PathBuf>) {
+pub async fn serve(
+    application: devicehub_runtime::RuntimeClient<std::path::PathBuf>,
+    profile_dir: std::path::PathBuf,
+) {
     let address = std::env::var("DEVICEHUB_MCP_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
     if !address.starts_with("127.0.0.1:")
         && !address.starts_with("[::1]:")
@@ -13,7 +16,8 @@ pub async fn serve(application: devicehub_runtime::RuntimeClient<std::path::Path
             "MCP has no authentication and is binding beyond loopback"
         );
     }
-    let router = devicehub_server::mcp::router(application);
+    let profiles = devicehub_host::profile_files::TokioProfileRepository::new(profile_dir);
+    let router = devicehub_server::mcp::router(application, profiles);
     match tokio::net::TcpListener::bind(&address).await {
         Ok(listener) => {
             tracing::info!(address = %address, "MCP server listening");

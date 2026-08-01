@@ -86,13 +86,12 @@ export function buildMappingRuntimeFrame(mappings: Mapping[], held: ReadonlySet<
     for (const key of keys) claimedKeys.add(key);
     return true;
   });
-  const inactive = evaluated.filter((value) => !value.contact.touching);
   const unique = new Map<number, TouchContact>();
   const activeMappingIds = new Set<string>();
-  for (const value of [...active, ...inactive]) {
+  for (const value of active) {
     if (!unique.has(value.contact.identity) && unique.size < 5) {
       unique.set(value.contact.identity, value.contact);
-      if (value.contact.touching) activeMappingIds.add(value.mapping.id);
+      activeMappingIds.add(value.mapping.id);
     }
   }
   return {
@@ -133,8 +132,33 @@ export function mergeTouchContacts(
     .slice(0, 5);
 }
 
+export function transitionTouchContacts(
+  previous: readonly TouchContact[],
+  current: readonly TouchContact[],
+  released: readonly TouchContact[] = [],
+) {
+  const activeIdentities = new Set(current.map((contact) => contact.identity));
+  const implicitReleases = previous
+    .filter((contact) => !activeIdentities.has(contact.identity))
+    .map((contact) => ({ ...contact, touching: false }));
+  return mergeTouchContacts(current, [], [...released, ...implicitReleases]);
+}
+
 export function remainingTapDuration(startedAt: number, now: number, minimum = minimumTapDurationMs) {
   return Math.max(0, minimum - Math.max(0, now - startedAt));
+}
+
+export function singleTapReleaseDelay(
+  mappings: readonly Mapping[],
+  code: string,
+  heldSince: ReadonlyMap<string, number>,
+  now: number,
+) {
+  return mappings.reduce((delay, mapping) => {
+    if (mapping.type !== "SingleTap" || !mapping.bind.includes(code)) return delay;
+    const startedAt = Math.max(...mapping.bind.map((key) => heldSince.get(key) ?? now));
+    return Math.max(delay, remainingTapDuration(startedAt, now, mapping.duration));
+  }, 0);
 }
 
 export function mappingBindings(mapping: Mapping): string[] {
@@ -152,6 +176,13 @@ export function isUiControl(target: EventTarget | null): boolean {
   if (target === null || typeof target !== "object" || !("closest" in target)) return false;
   const closest = target.closest;
   return typeof closest === "function" && closest.call(target, uiControlSelector) !== null;
+}
+
+export function pointerButtonCode(button: number): string | undefined {
+  if (button === 0) return "MouseLeft";
+  if (button === 1) return "MouseMiddle";
+  if (button === 2) return "MouseRight";
+  return undefined;
 }
 
 const fixedKeyboardUsages: Record<string, number> = {

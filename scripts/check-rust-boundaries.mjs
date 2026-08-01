@@ -190,7 +190,7 @@ if (
   !serverMcp.includes('"devicehub_mask"') ||
   tauriMcp.includes("impl ServerHandler") ||
   tauriMcp.includes("ToolRouter") ||
-  !tauriMcp.includes("devicehub_server::mcp::router(application)")
+  !tauriMcp.includes("devicehub_server::mcp::router(application, profiles)")
 ) {
   console.error(
     "Rust boundary check failed: MCP service ownership drifted back into the Tauri host",
@@ -198,7 +198,7 @@ if (
   process.exit(1);
 }
 console.log(
-  "devicehub-server owns MCP tools and routing while Tauri owns only listener policy.",
+  "devicehub-server owns MCP tools and routing while Tauri injects host profile storage and owns listener policy.",
 );
 
 const serverHttp = readFileSync("crates/devicehub-server/src/http.rs", "utf8");

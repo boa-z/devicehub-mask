@@ -79,6 +79,47 @@ DeviceHub Mask 提供三种不同的坐标概念，它们不能互换。
 
 坐标操作和 WDA 修改操作共用手势锁，因此两个 Agent 操作不会交错各自的触控流。但串行化不会让旧截图自动变成最新状态；方向或布局可能变化时必须重新截图。
 
+## Key Mapping 工作流
+
+MCP 可以创建和回放与桌面“Key Mapping”工作区共用的本地 native v2 配置。`list_keymap_profiles` 返回有效的本地配置及其 App/分辨率元数据；`get_keymap_profile` 读取完整配置；`save_keymap_profile` 创建配置，或仅在 `overwrite=true` 时替换同名配置。保存不会切换桌面端当前激活的配置。保存时省略 `hardwareBindings` 会将全部硬件快捷键初始化为空。
+
+映射位置使用 0 到 1 的显示比例，不是截图像素。截图后，应将目标的像素 `x` 除以 `image_width`、像素 `y` 除以 `image_height`，再写入映射。下面的参数会创建一个包含移动方向盘和动作键的可移植游戏配置：
+
+```json
+{
+  "name": "example-game",
+  "mappings": [
+    {
+      "id": "move",
+      "type": "dpad",
+      "contactId": 0,
+      "x": 0.23,
+      "y": 0.73,
+      "radius": 0.1,
+      "keys": { "up": "KeyW", "down": "KeyS", "left": "KeyA", "right": "KeyD" }
+    },
+    {
+      "id": "skill-1",
+      "type": "touch",
+      "contactId": 1,
+      "x": 0.78,
+      "y": 0.72,
+      "key": "Space"
+    }
+  ]
+}
+```
+
+调用 `run_keymap` 时提供已保存的配置名，以及一个或多个浏览器 `KeyboardEvent.code` 值，例如 `KeyW`、`Space` 或 `KeyJ`。它会同时按住所有指定按键 `hold_ms`（默认 100ms，限制在 25 至 5,000ms），在需要时持续发送多点触控帧，并在返回前确保释放触点和硬件按键。操作只作用于该 MCP 连接显式选择的设备，不会自动激活桌面 UI 的配置。
+
+实时游戏应使用 `start_game_session`，再通过 `set_game_input` 提供完整的按住键集合。设备侧会话以 60Hz 计算映射，因此连点、滑动和按住会在 Agent 调用之间持续执行。每次更新都会续期短租约（默认 1,500ms，范围 250 至 30,000ms）；较长租约可覆盖原生截图和视觉推理时间，但应使用满足工作流的最短值。租约到期、调用 `stop_game_session`、设备输入失败或会话关闭时，系统都会释放全部触点和硬件按键。游戏控制会话只占用其选中的设备；切换设备或交还给其他工作流前必须停止。
+
+观察循环使用 `observe_game`。它可以等待比指定 `frame_version` 更新的帧，返回无网格图像，并在传输前裁剪归一化的感兴趣区域。裁剪坐标只用于说明完整截图中的视觉区域，不能作为 `tap` 或 `swipe` 的坐标系。
+
+没有浏览器消费实时流时，`start_game_session` 会从原生截图取得正向屏幕尺寸。CoreDevice 截图可能不包含桌面视频流的少量编码边界填充，因此严格 profile 匹配在保持方向一致的前提下允许每个维度最多 2% 的差异；仓库筛选仍使用 profile 中记录的桌面实时流精确分辨率。
+
+基础回放支持 `touch`、`dpad`、`SingleTap`、`RepeatTap`、`MultipleTap`、`Swipe`、使用键盘 Button 绑定的 `DirectionPad`、`PadCastSpell`、`MouseCastSpell`、`CancelCast`、`Observation`、`Fps`、`Fire` 和 `hardwareBindings`。`DirectionPad`、`PadCastSpell` 及指针驱动映射优先使用 `targetResolution`，没有时使用所选设备当前的正向视频流尺寸。游戏会话中的 `pointer_deltas` 会根据保存的灵敏度移动当前激活的 `MouseCastSpell`、`Observation`、`Fps` 与 `Fire` 触点；`CancelCast` 会取消当前的鼠标/方向施法。浏览器随机化和脚本钩子不会执行。`RawInput` 与 `Script` 仍会明确报错：MCP 绝不执行配置文件提供的代码，也不会从映射配置中推断原始键盘透传。
+
 ## 设备与会话流程
 
 使用 `list_devices` 查看当前传输清单，使用 `status` 检查这条 MCP 连接选中的会话。`connect_device` 会选择或复用准确会话，不会停止其他物理设备的会话；`reconnect_device` 只拆除并重新建立该目标。两者都会在有界时间内等待新视频帧，也可能报告连接仍在建立；此时应继续调用 `status` 或 `screenshot`，不要连续反复重连。
@@ -155,7 +196,8 @@ WDA 是需要单独准备的可选能力，DeviceHub Mask 不负责安装或签�
 
 | 分类 | 工具 | 注意事项 |
 | --- | --- | --- |
-| 画面与输入 | `screenshot`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、`type_text`、`paste_text`、`press_key`、`press_button`、`lock_device`、`rotate` | 截图尺寸定义 HID 坐标；支持一至五个同步触点 |
+| 画面与输入 | `screenshot`、`observe_game`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、`type_text`、`paste_text`、`press_key`、`press_button`、`lock_device`、`rotate` | 截图尺寸定义 HID 坐标；`observe_game` 无网格并支持感兴趣区域 |
+| Key Mapping | `list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile`、`run_keymap`、`start_game_session`、`set_game_input`、`stop_game_session` | 本地 native v2 配置；持续会话使用完整的浏览器键盘代码状态，且不会切换桌面端激活配置 |
 | 设备与会话 | `status`、`device_details`、`list_devices`、`connect_device`、`reconnect_device`、`wait_for_device_event`、`list_companion_devices`、`home_screen_layout` | 准确选择 ID 区分 USB/Wi-Fi；稳定标识符需要显式请求 |
 | App 与进程 | `list_apps`、`launch_app`、`stop_app`、`app_status`、`wait_for_app`、`list_processes`、`process_status`、`wait_for_process` | 使用准确 Bundle ID 和最新 PID |
 | 诊断 | `list_crash_reports`、`read_crash_report`、`performance_snapshot`、`recent_device_logs` | 有界、只读的诊断输出 |
