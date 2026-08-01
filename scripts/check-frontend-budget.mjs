@@ -11,7 +11,7 @@ if (!entry) throw new Error(`No entry chunk found in ${manifestPath}`);
 const budgets = {
   initialJavaScript: 1_075_000,
   initialCss: 50_000,
-  totalJavaScript: 1_452_000,
+  totalJavaScript: 1_464_000,
   asyncJavaScriptChunk: 70_000,
 };
 

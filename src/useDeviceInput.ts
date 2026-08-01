@@ -14,6 +14,7 @@ import {
   touchFramesEqual,
   type TouchContact,
 } from "./control";
+import type { AdvancedMapping, AdvancedMappingRuntime } from "./advancedMappingRuntime";
 import { createDemandScheduler, type DemandScheduler } from "./inputScheduler";
 import { hardwareButtons, type HardwareButtonName, type Mapping, type Profile } from "./types";
 
@@ -39,6 +40,9 @@ type Options = {
 };
 
 type RuntimeOptions = Options;
+
+const advancedMappingTypes = new Set<Mapping["type"]>(["MouseCastSpell", "PadCastSpell", "CancelCast", "Observation", "Fps", "Fire"]);
+const isAdvancedMapping = (mapping: Mapping): mapping is AdvancedMapping => advancedMappingTypes.has(mapping.type);
 
 export type DeviceInputCollections = {
   held: Set<string>;
@@ -101,10 +105,13 @@ export function useDeviceInput(options: Options) {
   const mappedContactIdsRef = useRef(new Map<string, number>());
   const heldPointerBindingsRef = useRef(new Map<number, string>());
   const activeMappingIdsRef = useRef(new Set<string>());
+  const advancedRuntimeRef = useRef<AdvancedMappingRuntime | null>(null);
+  const pointerLockTargetRef = useRef<HTMLElement | null>(null);
   const lastActiveTouchFrameRef = useRef<TouchContact[] | null>(null);
   const schedulerRef = useRef<DemandScheduler | null>(null);
   const sendFrameRef = useRef<(held?: ReadonlySet<string>, released?: TouchContact[]) => void>(() => undefined);
   optionsRef.current = options;
+  advancedRuntimeRef.current?.configure(options.mappings, options.frameSize);
 
   const inputCollections = useCallback((): DeviceInputCollections => ({
     held: heldRef.current,
@@ -126,38 +133,70 @@ export function useDeviceInput(options: Options) {
     setActiveMappingIds(next);
   }, []);
 
+  const capturePointer = useCallback((target: HTMLElement) => {
+    pointerLockTargetRef.current = target;
+    const request = target.requestPointerLock?.();
+    if (request && "catch" in request) void request.catch(() => {
+      if (pointerLockTargetRef.current === target) pointerLockTargetRef.current = null;
+    });
+  }, []);
+
+  const releasePointerCaptureIfIdle = useCallback(() => {
+    const runtime = advancedRuntimeRef.current;
+    if (runtime?.needsPointerCapture() || runtime?.hasTimedWork()) return;
+    const target = pointerLockTargetRef.current;
+    pointerLockTargetRef.current = null;
+    if (target && document.pointerLockElement === target) document.exitPointerLock();
+  }, []);
+
   const sendFrame = useCallback((nextHeld = heldRef.current as ReadonlySet<string>, released: TouchContact[] = []) => {
     const current = optionsRef.current;
+    const now = performance.now();
     const directContacts = [...directTouchesRef.current.values()];
+    const directIdentities = new Set([...directContacts, ...released].map((contact) => contact.identity));
+    const advancedFrame = advancedRuntimeRef.current?.frame(nextHeld, now) ?? {
+      contacts: [], activeMappingIds: new Set<string>(), blockDirectionPad: false,
+    };
+    const advancedContacts = advancedFrame.contacts.filter((contact) => !directIdentities.has(contact.identity));
+    const advancedIdentities = new Set(advancedContacts.map((contact) => contact.identity));
+    const regularMappings = current.mappings.filter((mapping) => !isAdvancedMapping(mapping)
+      && !(advancedFrame.blockDirectionPad && mapping.type === "DirectionPad"));
     const mappedFrame = buildMappingRuntimeFrame(
-      current.mappings,
+      regularMappings,
       nextHeld,
       current.frameSize,
-      performance.now(),
+      now,
       heldSinceRef.current,
       mappingOffsetsRef.current,
       {
-        reservedIdentities: new Set([...directContacts, ...released].map((contact) => contact.identity)),
+        reservedIdentities: new Set([...directIdentities, ...advancedIdentities]),
         assignedIdentities: mappedContactIdsRef.current,
       },
     );
     const activeContacts = mergeTouchContacts(
-      mappedFrame.contacts,
+      [...advancedContacts, ...mappedFrame.contacts],
       directContacts,
     );
-    publishActiveMappings(mappedFrame.activeMappingIds);
+    publishActiveMappings(new Set([...advancedFrame.activeMappingIds, ...mappedFrame.activeMappingIds]));
+    if (nextHeld.size > 0 || advancedRuntimeRef.current?.hasTimedWork()) schedulerRef.current?.start();
+    else schedulerRef.current?.stop();
+    releasePointerCaptureIfIdle();
     if (!current.connected) return;
     const previous = lastActiveTouchFrameRef.current ?? [];
     if (released.length === 0 && touchFramesEqual(lastActiveTouchFrameRef.current, activeContacts)) return;
     const contacts = transitionTouchContacts(previous, activeContacts, released);
     current.command({ type: "multi_touch", contacts });
     lastActiveTouchFrameRef.current = activeContacts;
-  }, [publishActiveMappings]);
+  }, [publishActiveMappings, releasePointerCaptureIfIdle]);
   sendFrameRef.current = sendFrame;
 
   const clearLocalState = useCallback((publish: boolean) => {
     clearDeviceInputCollections(inputCollections(), (timer) => window.clearTimeout(timer));
     schedulerRef.current?.stop();
+    advancedRuntimeRef.current?.reset();
+    const pointerLockTarget = pointerLockTargetRef.current;
+    pointerLockTargetRef.current = null;
+    if (pointerLockTarget && document.pointerLockElement === pointerLockTarget) document.exitPointerLock();
     lastActiveTouchFrameRef.current = null;
     activeMappingIdsRef.current = new Set();
     if (publish) {
@@ -173,11 +212,26 @@ export function useDeviceInput(options: Options) {
     const forwardedKeyboard = [...forwardedKeyboardRef.current.values()];
     clearDeviceInputCollections(inputCollections(), (timer) => window.clearTimeout(timer));
     schedulerRef.current?.stop();
+    advancedRuntimeRef.current?.reset();
+    const pointerLockTarget = pointerLockTargetRef.current;
+    pointerLockTargetRef.current = null;
+    if (pointerLockTarget && document.pointerLockElement === pointerLockTarget) document.exitPointerLock();
     for (const name of heldHardware) current.command({ type: "button_up", name });
     for (const usage of forwardedKeyboard) current.command({ type: "keyboard_up", usage });
     setDirectTouches([]);
     sendFrameRef.current(heldRef.current, released);
   }, [inputCollections]);
+
+  useEffect(() => {
+    const changed = () => {
+      const target = pointerLockTargetRef.current;
+      if (!target || document.pointerLockElement === target) return;
+      pointerLockTargetRef.current = null;
+      releaseAllControls();
+    };
+    document.addEventListener("pointerlockchange", changed);
+    return () => document.removeEventListener("pointerlockchange", changed);
+  }, [releaseAllControls]);
 
   useEffect(() => {
     const scheduler = createDemandScheduler(
@@ -192,6 +246,31 @@ export function useDeviceInput(options: Options) {
       clearLocalState(false);
     };
   }, [clearLocalState]);
+
+  const hasAdvancedMappings = options.mappings.some(isAdvancedMapping);
+  useEffect(() => {
+    if (!hasAdvancedMappings || advancedRuntimeRef.current) return;
+    let cancelled = false;
+    void import("./advancedMappingRuntime").then(({ AdvancedMappingRuntime: Runtime }) => {
+      if (cancelled || advancedRuntimeRef.current) return;
+      const runtime = new Runtime();
+      const current = optionsRef.current;
+      runtime.configure(current.mappings, current.frameSize);
+      const replayHeld = new Set<string>();
+      const heldInOrder = [...heldRef.current].sort((left, right) =>
+        (heldSinceRef.current.get(left) ?? 0) - (heldSinceRef.current.get(right) ?? 0));
+      for (const code of heldInOrder) {
+        replayHeld.add(code);
+        runtime.keyDown(code, replayHeld, performance.now());
+      }
+      advancedRuntimeRef.current = runtime;
+      if (runtime.needsPointerCapture() && document.activeElement instanceof HTMLElement) {
+        capturePointer(document.activeElement);
+      }
+      sendFrameRef.current();
+    });
+    return () => { cancelled = true; };
+  }, [capturePointer, hasAdvancedMappings]);
 
   const wasConnectedRef = useRef(options.connected);
   useEffect(() => {
@@ -211,10 +290,13 @@ export function useDeviceInput(options: Options) {
   }, []);
 
   const releaseMappedKey = useCallback((code: string) => {
+    advancedRuntimeRef.current?.keyUp(code);
     const pending = mappedReleaseTimersRef.current.get(code);
     if (pending !== undefined) window.clearTimeout(pending);
-    const delay = singleTapReleaseDelay(
-      optionsRef.current.mappings,
+    const mappings = optionsRef.current.mappings;
+    const isAdvancedBinding = mappings.some((mapping) => isAdvancedMapping(mapping) && mappingBindings(mapping).includes(code));
+    const delay = isAdvancedBinding ? 0 : singleTapReleaseDelay(
+      mappings,
       code,
       heldSinceRef.current,
       performance.now(),
@@ -224,27 +306,16 @@ export function useDeviceInput(options: Options) {
     } else {
       finishMappedRelease(code);
     }
-  }, [finishMappedRelease]);
+    releasePointerCaptureIfIdle();
+  }, [finishMappedRelease, releasePointerCaptureIfIdle]);
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
       const current = optionsRef.current;
       if (!current.connected || current.mappingEditing || current.controlMode !== "mapping" || (!event.movementX && !event.movementY)) return;
-      let changed = false;
-      for (const mapping of current.mappings) {
-        if (!(mapping.type === "Observation" || mapping.type === "Fps" || mapping.type === "Fire" || mapping.type === "MouseCastSpell")) continue;
-        const keys = mappingBindings(mapping);
-        if (!keys.length || !keys.every((key) => heldRef.current.has(key))) continue;
-        const offset = mappingOffsetsRef.current.get(mapping.id) ?? mapping.position;
-        const sensitivityX = "sensitivity_x" in mapping ? mapping.sensitivity_x : mapping.horizontal_scale_factor;
-        const sensitivityY = "sensitivity_y" in mapping ? mapping.sensitivity_y : mapping.vertical_scale_factor;
-        mappingOffsetsRef.current.set(mapping.id, {
-          x: Math.max(0, Math.min(1, offset.x + event.movementX * sensitivityX / current.frameSize.width)),
-          y: Math.max(0, Math.min(1, offset.y + event.movementY * sensitivityY / current.frameSize.height)),
-        });
-        changed = true;
-      }
-      if (changed) sendFrameRef.current();
+      if (!advancedRuntimeRef.current?.needsPointerCapture()) return;
+      advancedRuntimeRef.current.pointerDelta(event.movementX, event.movementY, performance.now());
+      sendFrameRef.current();
     };
     window.addEventListener("pointermove", move);
     return () => window.removeEventListener("pointermove", move);
@@ -285,33 +356,21 @@ export function useDeviceInput(options: Options) {
         current.onControlModeChange("keyboard");
         return;
       }
-      if (triggered.some((mapping) => mapping.type === "CancelCast")) {
-        for (const mapping of current.mappings) {
-          if (mapping.type === "MouseCastSpell" || mapping.type === "PadCastSpell") {
-            for (const key of mappingBindings(mapping)) {
-              heldRef.current.delete(key);
-              heldSinceRef.current.delete(key);
-            }
-          }
-        }
-        if (heldRef.current.size === 0) schedulerRef.current?.stop();
-        sendFrameRef.current();
-        return;
-      }
-      for (const mapping of triggered) {
-        if (mapping.type === "Observation" || mapping.type === "Fps" || mapping.type === "Fire" || mapping.type === "MouseCastSpell") {
-          mappingOffsetsRef.current.set(mapping.id, mapping.position);
-        }
-      }
       const pendingRelease = mappedReleaseTimersRef.current.get(event.code);
       if (pendingRelease !== undefined) {
         window.clearTimeout(pendingRelease);
         mappedReleaseTimersRef.current.delete(event.code);
       }
+      const now = performance.now();
+      const nextHeld = new Set(heldRef.current).add(event.code);
+      const advanced = advancedRuntimeRef.current?.keyDown(event.code, nextHeld, now)
+        ?? { handled: false, capturePointer: false };
       heldRef.current.add(event.code);
-      heldSinceRef.current.set(event.code, performance.now());
+      heldSinceRef.current.set(event.code, now);
+      if (advanced.capturePointer && event.target instanceof HTMLElement) capturePointer(event.target);
       schedulerRef.current?.start();
       sendFrameRef.current();
+      releasePointerCaptureIfIdle();
     };
 
     const up = (event: KeyboardEvent) => {
@@ -343,7 +402,7 @@ export function useDeviceInput(options: Options) {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", releaseAllControls);
     };
-  }, [releaseAllControls, releaseMappedKey]);
+  }, [capturePointer, releaseAllControls, releaseMappedKey, releasePointerCaptureIfIdle]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const current = optionsRef.current;
@@ -362,15 +421,24 @@ export function useDeviceInput(options: Options) {
         mappedReleaseTimersRef.current.delete(pointerCode);
       }
       heldPointerBindingsRef.current.set(event.pointerId, pointerCode);
+      const now = performance.now();
+      const nextHeld = new Set(heldRef.current).add(pointerCode);
+      const advanced = advancedRuntimeRef.current?.keyDown(pointerCode, nextHeld, now)
+        ?? { handled: false, capturePointer: false };
       heldRef.current.add(pointerCode);
-      heldSinceRef.current.set(pointerCode, performance.now());
+      heldSinceRef.current.set(pointerCode, now);
+      if (advanced.capturePointer) capturePointer(event.currentTarget);
       schedulerRef.current?.start();
       sendFrameRef.current();
+      releasePointerCaptureIfIdle();
       return;
     }
     if (event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
+    const now = performance.now();
+    const advancedContacts = advancedRuntimeRef.current?.frame(heldRef.current, now).contacts ?? [];
+    const regularMappings = current.mappings.filter((mapping) => !isAdvancedMapping(mapping));
     const used = new Set([
-      ...(lastActiveTouchFrameRef.current ?? buildTouchFrame(current.mappings, heldRef.current, current.frameSize)).map((contact) => contact.identity),
+      ...(lastActiveTouchFrameRef.current ?? [...advancedContacts, ...buildTouchFrame(regularMappings, heldRef.current, current.frameSize)]).map((contact) => contact.identity),
       ...[...directTouchesRef.current.values()].map((contact) => contact.identity),
     ]);
     const identity = [0, 1, 2, 3, 4].find((candidate) => !used.has(candidate));
@@ -386,7 +454,7 @@ export function useDeviceInput(options: Options) {
     directTouchStartedAtRef.current.set(event.pointerId, performance.now());
     setDirectTouches([...directTouchesRef.current.values()]);
     sendFrameRef.current();
-  }, []);
+  }, [capturePointer, releasePointerCaptureIfIdle]);
 
   const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const contact = directTouchesRef.current.get(event.pointerId);

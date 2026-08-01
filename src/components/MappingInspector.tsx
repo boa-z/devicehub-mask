@@ -2,7 +2,7 @@ import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
 import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
 import PlusOutlined from "@ant-design/icons/es/icons/PlusOutlined";
 import SearchOutlined from "@ant-design/icons/es/icons/SearchOutlined";
-import { Button, Dropdown, Empty, Input, InputNumber, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from "antd";
+import { Button, Dropdown, Empty, Input, InputNumber, Modal, Segmented, Select, Space, Switch, Tag, Tooltip, Typography } from "antd";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { convertEditorMappingType } from "../mappingEditor";
@@ -287,7 +287,10 @@ export function MappingInspector({
                 <label><span>{t("mapping.name")}</span><Input value={mappingLabel(selected)} onChange={(event) => patch("label" in selected ? { label: event.target.value } : { note: event.target.value })} /></label>
                 <label><span>{t("mapping.type")}</span><Select value={selected.type} options={typeOptions} onChange={(type) => changeType(type as KeyMappingType)} /></label>
                 {primaryPosition && <label className="mapping-wide-field"><span>{t("mapping.position")}</span><PositionInput value={primaryPosition} onChange={setPrimaryPosition} /></label>}
-                {pointerId !== null && <label><span>{t("mapping.contactId")}</span><InputNumber min={0} max={4} value={pointerId} onChange={(value) => value !== null && patch("contactId" in selected ? { contactId: value } : { pointer_id: value })} /></label>}
+                {pointerId !== null && <label><span>{t("mapping.contactId")}</span><InputNumber min={0} max={4} value={pointerId} onChange={(value) => {
+                  if (value === null || (selected.type === "Fps" && selected.touch_mode.type === "dual" && value === selected.touch_mode.another_pointer_id)) return;
+                  patch("contactId" in selected ? { contactId: value } : { pointer_id: value });
+                }} /></label>}
               </FieldSection>
 
               {(binding || selected.type === "dpad" || selected.type === "DirectionPad" || selected.type === "PadCastSpell") && (
@@ -302,13 +305,47 @@ export function MappingInspector({
               {hasBehaviorFields && <FieldSection title={t("mapping.behavior") }>
                 {selected.type === "dpad" && numberField(t("mapping.radius"), "radius", selected.radius, 0.01, 0.01)}
                 {selected.type === "DirectionPad" && <>{numberField(t("mapping.offsetX"), "max_offset_x", selected.max_offset_x)}{numberField(t("mapping.offsetY"), "max_offset_y", selected.max_offset_y)}</>}
-                {selected.type === "PadCastSpell" && numberField(t("mapping.dragRadius"), "drag_radius", selected.drag_radius)}
+                {selected.type === "PadCastSpell" && <>
+                  {numberField(t("mapping.dragRadius"), "drag_radius", selected.drag_radius)}
+                  <label><span>{t("mapping.blockDirectionPad")}</span><Switch checked={selected.block_direction_pad} onChange={(block_direction_pad) => patch({ block_direction_pad })} /></label>
+                </>}
                 {(selected.type === "SingleTap" || selected.type === "RepeatTap") && numberField(t("mapping.duration"), "duration", selected.duration)}
                 {selected.type === "RepeatTap" && numberField(t("mapping.interval"), "interval", selected.interval, 1)}
                 {selected.type === "Swipe" && numberField(t("mapping.duration"), "duration", selected.duration)}
                 {(selected.type === "MouseCastSpell" || selected.type === "PadCastSpell") && <label><span>{t("mapping.releaseMode")}</span><Select value={selected.release_mode} options={(selected.type === "MouseCastSpell" ? ["OnPress", "OnRelease", "OnSecondPress"] : ["OnRelease", "OnSecondPress"]).map((value) => ({ value }))} onChange={(release_mode) => patch({ release_mode })} /></label>}
                 {selected.type === "MouseCastSpell" && <>{numberField(t("mapping.castRadius"), "cast_radius", selected.cast_radius)}{numberField(t("mapping.dragRadius"), "drag_radius", selected.drag_radius)}<label className="mapping-wide-field"><span>{t("mapping.castCenter")}</span><PositionInput value={selected.center} onChange={(center) => patch({ center })} /></label></>}
                 {(selected.type === "Observation" || selected.type === "Fps" || selected.type === "Fire") && <>{numberField(t("mapping.sensitivityX"), "sensitivity_x", selected.sensitivity_x, 0, 0.1)}{numberField(t("mapping.sensitivityY"), "sensitivity_y", selected.sensitivity_y, 0, 0.1)}</>}
+                {selected.type === "Observation" && numberField(t("mapping.maxRadius"), "max_radius", selected.max_radius)}
+                {selected.type === "Fps" && <>
+                  {numberField(t("mapping.offsetX"), "max_offset_x", selected.max_offset_x)}
+                  {numberField(t("mapping.offsetY"), "max_offset_y", selected.max_offset_y)}
+                  <label className="mapping-wide-field"><span>{t("mapping.fpsTouchMode")}</span><Select
+                    value={selected.touch_mode.type === "single" ? "single" : `dual-${selected.touch_mode.strategy}`}
+                    options={[
+                      { value: "single", label: t("mapping.fpsTouchModes.single") },
+                      { value: "dual-delay", label: t("mapping.fpsTouchModes.dualDelay") },
+                      { value: "dual-overlap", label: t("mapping.fpsTouchModes.dualOverlap") },
+                    ]}
+                    onChange={(mode) => {
+                      const another_pointer_id = selected.touch_mode.type === "dual"
+                        ? selected.touch_mode.another_pointer_id
+                        : [0, 1, 2, 3, 4].find((identity) => identity !== selected.pointer_id) ?? 0;
+                      const interval = "interval" in selected.touch_mode ? selected.touch_mode.interval : 0;
+                      const touch_mode = mode === "single"
+                        ? { type: "single" as const, interval }
+                        : mode === "dual-delay"
+                          ? { type: "dual" as const, another_pointer_id, strategy: "delay" as const, interval }
+                          : { type: "dual" as const, another_pointer_id, strategy: "overlap" as const };
+                      patch({ touch_mode }, false);
+                    }}
+                  /></label>
+                  {selected.touch_mode.type === "dual" && <label><span>{t("mapping.secondaryContactId")}</span><InputNumber min={0} max={4} value={selected.touch_mode.another_pointer_id} onChange={(another_pointer_id) => {
+                    if (another_pointer_id === null || another_pointer_id === selected.pointer_id) return;
+                    patch({ touch_mode: { ...selected.touch_mode, another_pointer_id } });
+                  }} /></label>}
+                  {(selected.touch_mode.type === "single" || selected.touch_mode.strategy === "delay") && <label><span>{t("mapping.recenterInterval")}</span><InputNumber min={0} value={selected.touch_mode.interval} onChange={(interval) => interval !== null && patch({ touch_mode: { ...selected.touch_mode, interval } })} /></label>}
+                </>}
+                {selected.type === "Fire" && <label><span>{t("mapping.preserveFpsControl")}</span><Switch checked={selected.preserve_fps_control} onChange={(preserve_fps_control) => patch({ preserve_fps_control })} /></label>}
               </FieldSection>}
 
               {(selected.type === "MultipleTap" || selected.type === "Swipe") && (

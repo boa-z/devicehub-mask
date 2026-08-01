@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devicehub_core::{HardwareButton, KeyMappingProfile, KeyMappingResolution, hardware_button};
 use serde_json::{Map, Value};
@@ -126,6 +126,8 @@ enum Mapping {
         pad_binding: DirectionBinding,
         drag_radius: f32,
         frame: KeyMappingResolution,
+        block_direction_pad: bool,
+        release_mode: CastReleaseMode,
     },
     Pointer {
         id: String,
@@ -135,11 +137,12 @@ enum Mapping {
         sensitivity_x: f32,
         sensitivity_y: f32,
         frame: KeyMappingResolution,
-        is_cast: bool,
+        kind: PointerKind,
     },
     CancelCast {
         id: String,
         bind: Vec<String>,
+        position: Point,
     },
     Unsupported {
         id: String,
@@ -161,13 +164,91 @@ struct TapItem {
     wait_ms: f64,
 }
 
-struct PointerParts<'a> {
-    id: &'a str,
+#[derive(Debug, Clone)]
+enum PointerKind {
+    MouseCast {
+        drag_radius: f32,
+        cast_no_direction: bool,
+        initial_duration: Duration,
+        release_mode: CastReleaseMode,
+    },
+    Observation {
+        max_radius: f32,
+    },
+    Fps {
+        max_offset_x: f32,
+        max_offset_y: f32,
+        touch_mode: FpsTouchMode,
+    },
+    Fire {
+        preserve_fps_control: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CastReleaseMode {
+    Press,
+    Release,
+    SecondPress,
+}
+
+#[derive(Debug, Clone)]
+enum FpsTouchMode {
+    Single {
+        interval: Duration,
+    },
+    Dual {
+        another_identity: u8,
+        strategy: FpsHandoffStrategy,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum FpsHandoffStrategy {
+    Delay(Duration),
+    Overlap,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct KeymapRuntimeState {
+    pointer_positions: BTreeMap<String, Point>,
+    fps: Option<FpsRuntime>,
+    cast: Option<CastRuntime>,
+    cancel: Option<CancelRuntime>,
+}
+
+#[derive(Debug, Clone)]
+struct FpsRuntime {
+    mapping_id: String,
+    identity: u8,
     position: Point,
-    bind: &'a [String],
-    sensitivity_x: f32,
-    sensitivity_y: f32,
-    frame: KeyMappingResolution,
+    touching: bool,
+    pending: Option<PendingFpsTouch>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingFpsTouch {
+    ready_at: Instant,
+    old_contact: Option<(u8, Point)>,
+    deferred_x: f32,
+    deferred_y: f32,
+}
+
+#[derive(Debug, Clone)]
+struct CastRuntime {
+    mapping_id: String,
+    position: Point,
+    auto_release_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct CancelRuntime {
+    mapping_id: String,
+    identity: u8,
+    start: Point,
+    end: Point,
+    started_at: Instant,
+    duration: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -240,23 +321,13 @@ impl CompiledKeymap {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn frame(
         &self,
         held: &BTreeSet<String>,
         elapsed: Duration,
     ) -> Result<KeymapFrame, KeymapError> {
         self.frame_with_state(held, &BTreeMap::new(), elapsed, &BTreeMap::new())
-    }
-
-    /// Evaluate a persistent game session. `held_for` tracks each key from its
-    /// most recent press so a keepalive does not restart tap and swipe mappings.
-    pub(crate) fn frame_with_hold_times(
-        &self,
-        held: &BTreeSet<String>,
-        held_for: &BTreeMap<String, Duration>,
-        pointer_offsets: &BTreeMap<String, (f32, f32)>,
-    ) -> Result<KeymapFrame, KeymapError> {
-        self.frame_with_state(held, held_for, Duration::ZERO, pointer_offsets)
     }
 
     fn frame_with_state(
@@ -329,74 +400,10 @@ impl CompiledKeymap {
             .collect()
     }
 
-    pub(crate) fn reset_pointer_offsets_for_new_keys(
-        &self,
-        newly_held: &BTreeSet<String>,
-        pointer_offsets: &mut BTreeMap<String, (f32, f32)>,
-    ) {
-        if newly_held.is_empty() {
-            return;
-        }
-        for mapping in &self.mappings {
-            let Some(pointer) = mapping.pointer_parts() else {
-                continue;
-            };
-            if pointer.bind.iter().any(|key| newly_held.contains(key)) {
-                pointer_offsets.remove(pointer.id);
-            }
-        }
-    }
-
-    pub(crate) fn apply_pointer_deltas(
-        &self,
-        held: &BTreeSet<String>,
-        pointer_offsets: &mut BTreeMap<String, (f32, f32)>,
-        deltas: &[KeymapPointerDelta<'_>],
-    ) -> Result<(), KeymapError> {
-        let held = self.effective_held(held);
-        for delta in deltas {
-            if !delta.delta_x.is_finite()
-                || !delta.delta_y.is_finite()
-                || delta.delta_x.abs() > MAX_POINTER_DELTA
-                || delta.delta_y.abs() > MAX_POINTER_DELTA
-            {
-                return Err(KeymapError::Invalid(format!(
-                    "pointer delta for {} must be finite and within +/-{MAX_POINTER_DELTA}",
-                    delta.mapping_id
-                )));
-            }
-            let mapping = self
-                .mappings
-                .iter()
-                .find(|mapping| mapping.id() == delta.mapping_id)
-                .ok_or_else(|| {
-                    KeymapError::Invalid(format!("unknown pointer mapping: {}", delta.mapping_id))
-                })?;
-            let Some(pointer) = mapping.pointer_parts() else {
-                return Err(KeymapError::Invalid(format!(
-                    "mapping {} does not accept pointer deltas",
-                    delta.mapping_id
-                )));
-            };
-            if !bound(&held, pointer.bind) {
-                return Err(KeymapError::Invalid(format!(
-                    "mapping {} must be held before applying a pointer delta",
-                    delta.mapping_id
-                )));
-            }
-            let (x, y) = pointer_offsets
-                .get(pointer.id)
-                .copied()
-                .unwrap_or((pointer.position.x, pointer.position.y));
-            pointer_offsets.insert(
-                pointer.id.to_string(),
-                (
-                    clamp(x + delta.delta_x * pointer.sensitivity_x / pointer.frame.width as f32),
-                    clamp(y + delta.delta_y * pointer.sensitivity_y / pointer.frame.height as f32),
-                ),
-            );
-        }
-        Ok(())
+    pub(crate) fn has_matching_mapping(&self, held: &BTreeSet<String>) -> bool {
+        self.mappings
+            .iter()
+            .any(|mapping| mapping.matches_input(held))
     }
 
     fn effective_held(&self, held: &BTreeSet<String>) -> BTreeSet<String> {
@@ -416,9 +423,747 @@ impl CompiledKeymap {
         }
         result
     }
+
+    pub(crate) fn update_runtime(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        previous: &BTreeSet<String>,
+        held: &BTreeSet<String>,
+        newly_held: &BTreeSet<String>,
+        deltas: &[KeymapPointerDelta<'_>],
+        now: Instant,
+    ) -> Result<(), KeymapError> {
+        self.tick_runtime(runtime, now);
+
+        for mapping in &self.mappings {
+            let Some(bind) = mapping.binding() else {
+                continue;
+            };
+            let activated = !newly_held.is_empty()
+                && bind.iter().any(|key| newly_held.contains(key))
+                && bound(held, bind);
+            if !activated {
+                continue;
+            }
+            match mapping {
+                Mapping::Pointer {
+                    id,
+                    identity,
+                    position,
+                    kind,
+                    ..
+                } => match kind {
+                    PointerKind::Observation { .. } | PointerKind::Fire { .. } => {
+                        runtime.pointer_positions.insert(id.clone(), *position);
+                    }
+                    PointerKind::Fps { .. } => {
+                        if runtime
+                            .fps
+                            .as_ref()
+                            .is_some_and(|fps| fps.mapping_id == *id)
+                        {
+                            runtime.fps = None;
+                        } else {
+                            runtime.fps = Some(FpsRuntime {
+                                mapping_id: id.clone(),
+                                identity: *identity,
+                                position: *position,
+                                touching: true,
+                                pending: None,
+                            });
+                        }
+                    }
+                    PointerKind::MouseCast {
+                        release_mode,
+                        initial_duration,
+                        ..
+                    } => {
+                        if *release_mode == CastReleaseMode::SecondPress
+                            && runtime
+                                .cast
+                                .as_ref()
+                                .is_some_and(|cast| cast.mapping_id == *id)
+                        {
+                            runtime.cast = None;
+                        } else {
+                            runtime.cast = Some(CastRuntime {
+                                mapping_id: id.clone(),
+                                position: *position,
+                                auto_release_at: (*release_mode == CastReleaseMode::Press).then(
+                                    || now + (*initial_duration).max(Duration::from_millis(16)),
+                                ),
+                            });
+                        }
+                    }
+                },
+                Mapping::PadCastSpell {
+                    id,
+                    position,
+                    release_mode,
+                    ..
+                } => {
+                    if *release_mode == CastReleaseMode::SecondPress
+                        && runtime
+                            .cast
+                            .as_ref()
+                            .is_some_and(|cast| cast.mapping_id == *id)
+                    {
+                        runtime.cast = None;
+                    } else {
+                        runtime.cast = Some(CastRuntime {
+                            mapping_id: id.clone(),
+                            position: *position,
+                            auto_release_at: None,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for mapping in &self.mappings {
+            let Mapping::CancelCast { id, bind, position } = mapping else {
+                continue;
+            };
+            if newly_held.iter().any(|key| bind.contains(key))
+                && bound(held, bind)
+                && let Some(cast) = runtime.cast.take()
+                && let Some(identity) = self.mapping_identity(&cast.mapping_id)
+            {
+                runtime.cancel = Some(CancelRuntime {
+                    mapping_id: id.clone(),
+                    identity,
+                    start: cast.position,
+                    end: *position,
+                    started_at: now,
+                    duration: Duration::from_millis(150),
+                });
+            }
+        }
+
+        for mapping in &self.mappings {
+            let Some(bind) = mapping.binding() else {
+                continue;
+            };
+            if bound(previous, bind) && !bound(held, bind) {
+                match mapping {
+                    Mapping::Pointer { id, kind, .. } => match kind {
+                        PointerKind::Observation { .. } => {
+                            runtime.pointer_positions.remove(id);
+                        }
+                        PointerKind::Fire {
+                            preserve_fps_control,
+                        } => {
+                            runtime.pointer_positions.remove(id);
+                            if !preserve_fps_control
+                                && let Some(fps) = &mut runtime.fps
+                                && let Some(Mapping::Pointer {
+                                    identity, position, ..
+                                }) = self.mapping(&fps.mapping_id)
+                            {
+                                fps.identity = *identity;
+                                fps.position = *position;
+                                fps.touching = true;
+                                fps.pending = None;
+                            }
+                        }
+                        PointerKind::MouseCast {
+                            release_mode: CastReleaseMode::Release,
+                            ..
+                        } if runtime
+                            .cast
+                            .as_ref()
+                            .is_some_and(|cast| cast.mapping_id == *id) =>
+                        {
+                            runtime.cast = None
+                        }
+                        _ => {}
+                    },
+                    Mapping::PadCastSpell {
+                        id,
+                        release_mode: CastReleaseMode::Release,
+                        ..
+                    } if runtime
+                        .cast
+                        .as_ref()
+                        .is_some_and(|cast| cast.mapping_id == *id) =>
+                    {
+                        runtime.cast = None
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for delta in deltas {
+            self.apply_runtime_delta(runtime, held, *delta, now)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn frame_with_runtime(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        held: &BTreeSet<String>,
+        held_for: &BTreeMap<String, Duration>,
+        now: Instant,
+    ) -> Result<KeymapFrame, KeymapError> {
+        self.tick_runtime(runtime, now);
+        let base = self.frame_with_state(held, held_for, Duration::ZERO, &BTreeMap::new())?;
+        let blocked_direction_pad = runtime
+            .cast
+            .as_ref()
+            .and_then(|cast| self.mapping(&cast.mapping_id))
+            .is_some_and(|mapping| {
+                matches!(
+                    mapping,
+                    Mapping::PadCastSpell {
+                        block_direction_pad: true,
+                        ..
+                    }
+                )
+            });
+        let mut contacts = Vec::new();
+        let mut active_mapping_ids = Vec::new();
+        let mut matched_mapping_ids = base
+            .matched_mapping_ids
+            .into_iter()
+            .filter(|id| {
+                self.mapping(id)
+                    .is_some_and(|mapping| !mapping.is_advanced())
+            })
+            .collect::<Vec<_>>();
+
+        let interrupting_fire = self.mappings.iter().any(|mapping| matches!(mapping,
+            Mapping::Pointer { id, bind, kind: PointerKind::Fire { preserve_fps_control: false }, .. }
+                if bound(held, bind) && runtime.pointer_positions.contains_key(id)));
+
+        for mapping in &self.mappings {
+            match mapping {
+                Mapping::Pointer {
+                    id,
+                    identity,
+                    position,
+                    bind,
+                    kind: PointerKind::Observation { .. },
+                    ..
+                } if bound(held, bind) => {
+                    let point = runtime
+                        .pointer_positions
+                        .get(id)
+                        .copied()
+                        .unwrap_or(*position);
+                    add_runtime_contact(
+                        &mut contacts,
+                        &mut active_mapping_ids,
+                        id,
+                        *identity,
+                        point,
+                    );
+                    matched_mapping_ids.push(id.clone());
+                }
+                Mapping::Pointer {
+                    id,
+                    identity,
+                    position,
+                    bind,
+                    kind: PointerKind::Fire { .. },
+                    ..
+                } if bound(held, bind) => {
+                    let point = runtime
+                        .pointer_positions
+                        .get(id)
+                        .copied()
+                        .unwrap_or(*position);
+                    add_runtime_contact(
+                        &mut contacts,
+                        &mut active_mapping_ids,
+                        id,
+                        *identity,
+                        point,
+                    );
+                    matched_mapping_ids.push(id.clone());
+                }
+                _ => {}
+            }
+        }
+        if let Some(fps) = &runtime.fps {
+            matched_mapping_ids.push(fps.mapping_id.clone());
+            if !interrupting_fire {
+                if fps.touching {
+                    add_runtime_contact(
+                        &mut contacts,
+                        &mut active_mapping_ids,
+                        &fps.mapping_id,
+                        fps.identity,
+                        fps.position,
+                    );
+                }
+                if let Some(PendingFpsTouch {
+                    old_contact: Some((identity, point)),
+                    ..
+                }) = &fps.pending
+                {
+                    add_runtime_contact(
+                        &mut contacts,
+                        &mut active_mapping_ids,
+                        &fps.mapping_id,
+                        *identity,
+                        *point,
+                    );
+                }
+            }
+        }
+        if let Some(cast) = &mut runtime.cast
+            && let Some(mapping) = self.mapping(&cast.mapping_id)
+        {
+            let (identity, point) = match mapping {
+                Mapping::PadCastSpell {
+                    identity,
+                    position,
+                    pad_binding,
+                    drag_radius,
+                    frame,
+                    ..
+                } => {
+                    let (dx, dy) = pad_binding.direction(held);
+                    cast.position = Point {
+                        x: clamp(position.x + dx * drag_radius / frame.width as f32),
+                        y: clamp(position.y + dy * drag_radius / frame.height as f32),
+                    };
+                    (*identity, cast.position)
+                }
+                Mapping::Pointer { identity, .. } => (*identity, cast.position),
+                _ => unreachable!(),
+            };
+            add_runtime_contact(
+                &mut contacts,
+                &mut active_mapping_ids,
+                &cast.mapping_id,
+                identity,
+                point,
+            );
+            matched_mapping_ids.push(cast.mapping_id.clone());
+        }
+        if let Some(cancel) = &runtime.cancel {
+            let progress = now
+                .saturating_duration_since(cancel.started_at)
+                .as_secs_f32()
+                / cancel.duration.as_secs_f32();
+            let point = Point {
+                x: cancel.start.x + (cancel.end.x - cancel.start.x) * progress.clamp(0.0, 1.0),
+                y: cancel.start.y + (cancel.end.y - cancel.start.y) * progress.clamp(0.0, 1.0),
+            };
+            add_runtime_contact(
+                &mut contacts,
+                &mut active_mapping_ids,
+                &cancel.mapping_id,
+                cancel.identity,
+                point,
+            );
+            matched_mapping_ids.push(cancel.mapping_id.clone());
+        }
+
+        for (contact, id) in base.contacts.into_iter().zip(base.active_mapping_ids) {
+            let Some(mapping) = self.mapping(&id) else {
+                continue;
+            };
+            if mapping.is_advanced()
+                || (blocked_direction_pad && matches!(mapping, Mapping::DirectionPad { .. }))
+            {
+                continue;
+            }
+            if contacts.len() >= 5
+                || contacts
+                    .iter()
+                    .any(|candidate| candidate.identity == contact.identity)
+            {
+                continue;
+            }
+            contacts.push(contact);
+            active_mapping_ids.push(id);
+        }
+        matched_mapping_ids.sort();
+        matched_mapping_ids.dedup();
+        Ok(KeymapFrame {
+            contacts,
+            active_mapping_ids,
+            matched_mapping_ids,
+        })
+    }
+
+    fn tick_runtime(&self, runtime: &mut KeymapRuntimeState, now: Instant) {
+        if runtime
+            .cast
+            .as_ref()
+            .and_then(|cast| cast.auto_release_at)
+            .is_some_and(|at| now >= at)
+        {
+            runtime.cast = None;
+        }
+        if runtime.cancel.as_ref().is_some_and(|cancel| {
+            now.saturating_duration_since(cancel.started_at) >= cancel.duration
+        }) {
+            runtime.cancel = None;
+        }
+        let pending = runtime.fps.as_mut().and_then(|fps| fps.pending.take());
+        if let Some(pending) = pending {
+            if now >= pending.ready_at {
+                if let Some(fps) = &mut runtime.fps {
+                    fps.touching = true;
+                }
+                self.move_runtime_fps(runtime, pending.deferred_x, pending.deferred_y, now);
+            } else if let Some(fps) = &mut runtime.fps {
+                fps.pending = Some(pending);
+            }
+        }
+    }
+
+    fn apply_runtime_delta(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        held: &BTreeSet<String>,
+        delta: KeymapPointerDelta<'_>,
+        now: Instant,
+    ) -> Result<(), KeymapError> {
+        if !delta.delta_x.is_finite()
+            || !delta.delta_y.is_finite()
+            || delta.delta_x.abs() > MAX_POINTER_DELTA
+            || delta.delta_y.abs() > MAX_POINTER_DELTA
+        {
+            return Err(KeymapError::Invalid(format!(
+                "pointer delta for {} must be finite and within +/-{MAX_POINTER_DELTA}",
+                delta.mapping_id
+            )));
+        }
+        let mapping = self.mapping(delta.mapping_id).ok_or_else(|| {
+            KeymapError::Invalid(format!("unknown pointer mapping: {}", delta.mapping_id))
+        })?;
+        let Mapping::Pointer {
+            id,
+            position,
+            bind,
+            sensitivity_x,
+            sensitivity_y,
+            frame,
+            kind,
+            ..
+        } = mapping
+        else {
+            return Err(KeymapError::Invalid(format!(
+                "mapping {} does not accept pointer deltas",
+                delta.mapping_id
+            )));
+        };
+        match kind {
+            PointerKind::Observation { max_radius } => {
+                if !bound(held, bind) {
+                    return Err(pointer_not_active(id));
+                }
+                let current = runtime
+                    .pointer_positions
+                    .get(id)
+                    .copied()
+                    .unwrap_or(*position);
+                runtime.pointer_positions.insert(
+                    id.clone(),
+                    clamp_radius(
+                        *position,
+                        Point {
+                            x: current.x + delta.delta_x * sensitivity_x / frame.width as f32,
+                            y: current.y + delta.delta_y * sensitivity_y / frame.height as f32,
+                        },
+                        *max_radius,
+                        *frame,
+                    ),
+                );
+            }
+            PointerKind::Fire {
+                preserve_fps_control,
+            } => {
+                if !bound(held, bind) {
+                    return Err(pointer_not_active(id));
+                }
+                if *preserve_fps_control {
+                    return Err(KeymapError::Invalid(format!(
+                        "mapping {id} preserves FPS control and remains stationary; send deltas to the active Fps mapping"
+                    )));
+                }
+                let current = runtime
+                    .pointer_positions
+                    .get(id)
+                    .copied()
+                    .unwrap_or(*position);
+                runtime.pointer_positions.insert(
+                    id.clone(),
+                    Point {
+                        x: clamp(current.x + delta.delta_x * sensitivity_x / frame.width as f32),
+                        y: clamp(current.y + delta.delta_y * sensitivity_y / frame.height as f32),
+                    },
+                );
+            }
+            PointerKind::Fps { .. } => {
+                if runtime.fps.as_ref().is_none_or(|fps| fps.mapping_id != *id) {
+                    return Err(pointer_not_active(id));
+                }
+                self.move_runtime_fps(runtime, delta.delta_x, delta.delta_y, now);
+            }
+            PointerKind::MouseCast {
+                drag_radius,
+                cast_no_direction,
+                ..
+            } => {
+                if *cast_no_direction
+                    || runtime
+                        .cast
+                        .as_ref()
+                        .is_none_or(|cast| cast.mapping_id != *id)
+                {
+                    return Err(pointer_not_active(id));
+                }
+                if let Some(cast) = &mut runtime.cast {
+                    cast.position = clamp_radius(
+                        *position,
+                        Point {
+                            x: cast.position.x + delta.delta_x * sensitivity_x / frame.width as f32,
+                            y: cast.position.y
+                                + delta.delta_y * sensitivity_y / frame.height as f32,
+                        },
+                        *drag_radius,
+                        *frame,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn move_runtime_fps(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        delta_x: f32,
+        delta_y: f32,
+        now: Instant,
+    ) {
+        let Some(fps) = &mut runtime.fps else { return };
+        let Some(Mapping::Pointer {
+            identity,
+            position,
+            sensitivity_x,
+            sensitivity_y,
+            frame,
+            kind:
+                PointerKind::Fps {
+                    max_offset_x,
+                    max_offset_y,
+                    touch_mode,
+                },
+            ..
+        }) = self.mapping(&fps.mapping_id)
+        else {
+            return;
+        };
+        if let Some(pending) = &mut fps.pending {
+            pending.deferred_x += delta_x;
+            pending.deferred_y += delta_y;
+            return;
+        }
+        let candidate = Point {
+            x: fps.position.x + delta_x * sensitivity_x / frame.width as f32,
+            y: fps.position.y + delta_y * sensitivity_y / frame.height as f32,
+        };
+        let margin_x = 8.0 / frame.width as f32;
+        let margin_y = 8.0 / frame.height as f32;
+        let min_x = if *max_offset_x > 0.0 {
+            margin_x.max(position.x - max_offset_x / frame.width as f32)
+        } else {
+            margin_x
+        };
+        let max_x = if *max_offset_x > 0.0 {
+            (1.0 - margin_x).min(position.x + max_offset_x / frame.width as f32)
+        } else {
+            1.0 - margin_x
+        };
+        let min_y = if *max_offset_y > 0.0 {
+            margin_y.max(position.y - max_offset_y / frame.height as f32)
+        } else {
+            margin_y
+        };
+        let max_y = if *max_offset_y > 0.0 {
+            (1.0 - margin_y).min(position.y + max_offset_y / frame.height as f32)
+        } else {
+            1.0 - margin_y
+        };
+        if candidate.x > min_x && candidate.x < max_x && candidate.y > min_y && candidate.y < max_y
+        {
+            fps.position = candidate;
+            return;
+        }
+        let deferred_x = if *sensitivity_x == 0.0 {
+            0.0
+        } else {
+            (candidate.x - candidate.x.clamp(min_x, max_x)) * frame.width as f32 / sensitivity_x
+        };
+        let deferred_y = if *sensitivity_y == 0.0 {
+            0.0
+        } else {
+            (candidate.y - candidate.y.clamp(min_y, max_y)) * frame.height as f32 / sensitivity_y
+        };
+        let (ready_at, old_contact, next_identity, touching) = match touch_mode {
+            FpsTouchMode::Single { interval } => (
+                now + (*interval).max(Duration::from_millis(16)),
+                None,
+                *identity,
+                false,
+            ),
+            FpsTouchMode::Dual {
+                another_identity,
+                strategy,
+            } => {
+                let next = if fps.identity == *identity {
+                    *another_identity
+                } else {
+                    *identity
+                };
+                let (duration, old_contact, touching) = match strategy {
+                    FpsHandoffStrategy::Delay(value) => {
+                        ((*value).max(Duration::from_millis(16)), None, false)
+                    }
+                    FpsHandoffStrategy::Overlap => (
+                        Duration::from_millis(16),
+                        Some((
+                            fps.identity,
+                            Point {
+                                x: candidate.x.clamp(min_x, max_x),
+                                y: candidate.y.clamp(min_y, max_y),
+                            },
+                        )),
+                        true,
+                    ),
+                };
+                (now + duration, old_contact, next, touching)
+            }
+        };
+        fps.identity = next_identity;
+        fps.position = *position;
+        fps.touching = touching;
+        fps.pending = Some(PendingFpsTouch {
+            ready_at,
+            old_contact,
+            deferred_x,
+            deferred_y,
+        });
+    }
+
+    fn mapping(&self, id: &str) -> Option<&Mapping> {
+        self.mappings.iter().find(|mapping| mapping.id() == id)
+    }
+    fn mapping_identity(&self, id: &str) -> Option<u8> {
+        self.mapping(id).and_then(Mapping::identity)
+    }
+}
+
+fn add_runtime_contact(
+    contacts: &mut Vec<NormalizedTouchContact>,
+    ids: &mut Vec<String>,
+    id: &str,
+    identity: u8,
+    point: Point,
+) {
+    if contacts.len() >= 5 || contacts.iter().any(|contact| contact.identity == identity) {
+        return;
+    }
+    contacts.push(NormalizedTouchContact {
+        identity,
+        touching: true,
+        x: clamp(point.x),
+        y: clamp(point.y),
+    });
+    if !ids.iter().any(|active| active == id) {
+        ids.push(id.into());
+    }
+}
+
+fn pointer_not_active(id: &str) -> KeymapError {
+    KeymapError::Invalid(format!(
+        "mapping {id} must be active before applying a pointer delta"
+    ))
+}
+
+fn clamp_radius(origin: Point, point: Point, radius: f32, frame: KeyMappingResolution) -> Point {
+    let dx = (point.x - origin.x) * frame.width as f32;
+    let dy = (point.y - origin.y) * frame.height as f32;
+    let distance = dx.hypot(dy);
+    if radius <= 0.0 || distance <= radius {
+        return Point {
+            x: clamp(point.x),
+            y: clamp(point.y),
+        };
+    }
+    let scale = radius / distance;
+    Point {
+        x: clamp(origin.x + dx * scale / frame.width as f32),
+        y: clamp(origin.y + dy * scale / frame.height as f32),
+    }
 }
 
 impl Mapping {
+    fn matches_input(&self, held: &BTreeSet<String>) -> bool {
+        match self {
+            Self::Touch { key, .. } => held.contains(key),
+            Self::Dpad { binding, .. } | Self::DirectionPad { binding, .. } => {
+                binding.has_pressed_key(held)
+            }
+            Self::Unsupported { activation, .. } => activation.is_active(held),
+            _ => self.binding().is_some_and(|bind| bound(held, bind)),
+        }
+    }
+
+    fn binding(&self) -> Option<&[String]> {
+        match self {
+            Self::Touch { .. } | Self::Dpad { .. } | Self::DirectionPad { .. } => None,
+            Self::SingleTap { bind, .. }
+            | Self::Press { bind, .. }
+            | Self::RepeatTap { bind, .. }
+            | Self::MultipleTap { bind, .. }
+            | Self::Swipe { bind, .. }
+            | Self::PadCastSpell { bind, .. }
+            | Self::Pointer { bind, .. }
+            | Self::CancelCast { bind, .. } => Some(bind),
+            Self::Unsupported {
+                activation: Activation::All(bind),
+                ..
+            } => Some(bind),
+            Self::Unsupported {
+                activation: Activation::Never,
+                ..
+            } => None,
+        }
+    }
+
+    fn identity(&self) -> Option<u8> {
+        match self {
+            Self::Touch { identity, .. }
+            | Self::Dpad { identity, .. }
+            | Self::SingleTap { identity, .. }
+            | Self::Press { identity, .. }
+            | Self::RepeatTap { identity, .. }
+            | Self::MultipleTap { identity, .. }
+            | Self::Swipe { identity, .. }
+            | Self::DirectionPad { identity, .. }
+            | Self::PadCastSpell { identity, .. }
+            | Self::Pointer { identity, .. } => Some(*identity),
+            Self::CancelCast { .. } | Self::Unsupported { .. } => None,
+        }
+    }
+
+    fn is_advanced(&self) -> bool {
+        matches!(
+            self,
+            Self::PadCastSpell { .. } | Self::Pointer { .. } | Self::CancelCast { .. }
+        )
+    }
+
     fn evaluate(
         &self,
         held: &BTreeSet<String>,
@@ -617,6 +1362,7 @@ impl Mapping {
                 pad_binding,
                 drag_radius,
                 frame,
+                ..
             } => {
                 let matched = bound(held, bind);
                 let (dx, dy) = pad_binding.direction(held);
@@ -656,7 +1402,7 @@ impl Mapping {
                     matched,
                 ))
             }
-            Self::CancelCast { id, bind } => {
+            Self::CancelCast { id, bind, .. } => {
                 Ok(EvaluatedMapping::empty_with_match(id, bound(held, bind)))
             }
             Self::Unsupported {
@@ -714,35 +1460,12 @@ impl Mapping {
             .min()
     }
 
-    fn pointer_parts(&self) -> Option<PointerParts<'_>> {
-        let Self::Pointer {
-            id,
-            position,
-            bind,
-            sensitivity_x,
-            sensitivity_y,
-            frame,
-            ..
-        } = self
-        else {
-            return None;
-        };
-        Some(PointerParts {
-            id,
-            position: *position,
-            bind,
-            sensitivity_x: *sensitivity_x,
-            sensitivity_y: *sensitivity_y,
-            frame: *frame,
-        })
-    }
-
     fn cast_binding(&self) -> Option<&[String]> {
         match self {
             Self::PadCastSpell { bind, .. } => Some(bind),
             Self::Pointer {
                 bind,
-                is_cast: true,
+                kind: PointerKind::MouseCast { .. },
                 ..
             } => Some(bind),
             _ => None,
@@ -969,21 +1692,33 @@ fn compile_mapping(
             bind: binding_field(mapping, "bind")?,
             pad_binding: direction_binding(mapping, "pad_bind")?,
             drag_radius: finite_number(mapping, "drag_radius", 0.0, MAX_TIMING_MS)? as f32,
+            block_direction_pad: boolean_field(mapping, "block_direction_pad")?,
+            release_mode: cast_release_mode(mapping, false)?,
             frame: frame.ok_or_else(|| {
                 KeymapError::Invalid(
                     "PadCastSpell needs targetResolution or a connected device screen".into(),
                 )
             })?,
         }),
-        "MouseCastSpell" => pointer_mapping(
-            id,
-            mapping,
-            frame,
-            "MouseCastSpell",
-            "horizontal_scale_factor",
-            "vertical_scale_factor",
-            true,
-        ),
+        "MouseCastSpell" => {
+            let kind = PointerKind::MouseCast {
+                drag_radius: finite_number(mapping, "drag_radius", 0.0, MAX_TIMING_MS)? as f32,
+                cast_no_direction: boolean_field(mapping, "cast_no_direction")?,
+                initial_duration: Duration::from_secs_f64(
+                    finite_number(mapping, "initial_duration", 0.0, MAX_TIMING_MS)? / 1000.0,
+                ),
+                release_mode: cast_release_mode(mapping, true)?,
+            };
+            pointer_mapping(
+                id,
+                mapping,
+                frame,
+                "MouseCastSpell",
+                "horizontal_scale_factor",
+                "vertical_scale_factor",
+                kind,
+            )
+        }
         "Observation" => pointer_mapping(
             id,
             mapping,
@@ -991,17 +1726,28 @@ fn compile_mapping(
             "Observation",
             "sensitivity_x",
             "sensitivity_y",
-            false,
+            PointerKind::Observation {
+                max_radius: finite_number(mapping, "max_radius", 0.0, MAX_TIMING_MS)? as f32,
+            },
         ),
-        "Fps" => pointer_mapping(
-            id,
-            mapping,
-            frame,
-            "Fps",
-            "sensitivity_x",
-            "sensitivity_y",
-            false,
-        ),
+        "Fps" => {
+            let touch_mode = fps_touch_mode(mapping)?;
+            pointer_mapping(
+                id,
+                mapping,
+                frame,
+                "Fps",
+                "sensitivity_x",
+                "sensitivity_y",
+                PointerKind::Fps {
+                    max_offset_x: finite_number(mapping, "max_offset_x", 0.0, MAX_TIMING_MS)?
+                        as f32,
+                    max_offset_y: finite_number(mapping, "max_offset_y", 0.0, MAX_TIMING_MS)?
+                        as f32,
+                    touch_mode,
+                },
+            )
+        }
         "Fire" => pointer_mapping(
             id,
             mapping,
@@ -1009,11 +1755,14 @@ fn compile_mapping(
             "Fire",
             "sensitivity_x",
             "sensitivity_y",
-            false,
+            PointerKind::Fire {
+                preserve_fps_control: boolean_field(mapping, "preserve_fps_control")?,
+            },
         ),
         "CancelCast" => Ok(Mapping::CancelCast {
             id,
             bind: binding_field(mapping, "bind")?,
+            position: position(mapping, "position")?,
         }),
         unsupported => Ok(Mapping::Unsupported {
             id,
@@ -1030,7 +1779,7 @@ fn pointer_mapping(
     mapping_type: &str,
     sensitivity_x: &str,
     sensitivity_y: &str,
-    is_cast: bool,
+    kind: PointerKind,
 ) -> Result<Mapping, KeymapError> {
     Ok(Mapping::Pointer {
         id,
@@ -1044,8 +1793,67 @@ fn pointer_mapping(
                 "{mapping_type} needs targetResolution or a connected device screen"
             ))
         })?,
-        is_cast,
+        kind,
     })
+}
+
+fn boolean_field(mapping: &Map<String, Value>, name: &str) -> Result<bool, KeymapError> {
+    mapping
+        .get(name)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| KeymapError::Invalid(format!("mapping field {name} must be a boolean")))
+}
+
+fn cast_release_mode(
+    mapping: &Map<String, Value>,
+    allow_on_press: bool,
+) -> Result<CastReleaseMode, KeymapError> {
+    match string_field(mapping, "release_mode")?.as_str() {
+        "OnPress" if allow_on_press => Ok(CastReleaseMode::Press),
+        "OnRelease" => Ok(CastReleaseMode::Release),
+        "OnSecondPress" => Ok(CastReleaseMode::SecondPress),
+        _ => Err(KeymapError::Invalid(
+            "mapping field release_mode is not valid for this cast mapping".into(),
+        )),
+    }
+}
+
+fn fps_touch_mode(mapping: &Map<String, Value>) -> Result<FpsTouchMode, KeymapError> {
+    let mode = object_field(mapping, "touch_mode")?;
+    match string_field(mode, "type")?.as_str() {
+        "single" => Ok(FpsTouchMode::Single {
+            interval: Duration::from_secs_f64(
+                finite_number(mode, "interval", 0.0, MAX_TIMING_MS)? / 1000.0,
+            ),
+        }),
+        "dual" => {
+            let another_identity = contact_id(mode, "another_pointer_id")?;
+            let primary_identity = contact_id(mapping, "pointer_id")?;
+            if another_identity == primary_identity {
+                return Err(KeymapError::Invalid(
+                    "FPS dual touch identities must be different".into(),
+                ));
+            }
+            let strategy = match string_field(mode, "strategy")?.as_str() {
+                "delay" => FpsHandoffStrategy::Delay(Duration::from_secs_f64(
+                    finite_number(mode, "interval", 0.0, MAX_TIMING_MS)? / 1000.0,
+                )),
+                "overlap" => FpsHandoffStrategy::Overlap,
+                _ => {
+                    return Err(KeymapError::Invalid(
+                        "mapping field touch_mode.strategy must be delay or overlap".into(),
+                    ));
+                }
+            };
+            Ok(FpsTouchMode::Dual {
+                another_identity,
+                strategy,
+            })
+        }
+        _ => Err(KeymapError::Invalid(
+            "mapping field touch_mode.type must be single or dual".into(),
+        )),
+    }
 }
 
 fn unsupported_activation(mapping: &Map<String, Value>) -> Activation {
@@ -1369,21 +2177,22 @@ mod tests {
         .unwrap();
         let held = normalize_key_state(vec!["Space".into()]).unwrap();
         let held_for = BTreeMap::from([(String::from("Space"), Duration::from_millis(70))]);
+        let mut runtime = KeymapRuntimeState::default();
         let frame = compiled
-            .frame_with_hold_times(&held, &held_for, &BTreeMap::new())
+            .frame_with_runtime(&mut runtime, &held, &held_for, Instant::now())
             .unwrap();
         assert!(frame.contacts.is_empty());
 
         let held_for = BTreeMap::from([(String::from("Space"), Duration::from_millis(110))]);
         let frame = compiled
-            .frame_with_hold_times(&held, &held_for, &BTreeMap::new())
+            .frame_with_runtime(&mut runtime, &held, &held_for, Instant::now())
             .unwrap();
         assert_eq!(frame.contacts.len(), 1);
         assert!(frame.contacts[0].touching);
     }
 
     #[test]
-    fn pointer_mappings_apply_agent_relative_deltas() {
+    fn fps_mapping_toggles_and_accepts_pointer_deltas_after_key_release() {
         let compiled = CompiledKeymap::from_profile(
             &profile(vec![json!({
                 "id": "aim",
@@ -1393,6 +2202,9 @@ mod tests {
                 "bind": ["KeyQ"],
                 "sensitivity_x": 1.0,
                 "sensitivity_y": 0.5,
+                "max_offset_x": 200,
+                "max_offset_y": 200,
+                "touch_mode": { "type": "single", "interval": 0 },
             })]),
             Some(KeyMappingResolution {
                 width: 1000,
@@ -1401,24 +2213,55 @@ mod tests {
         )
         .unwrap();
         let held = normalize_key_state(vec!["KeyQ".into()]).unwrap();
-        let mut offsets = BTreeMap::new();
+        let newly_held = held.clone();
+        let now = Instant::now();
+        let mut runtime = KeymapRuntimeState::default();
         compiled
-            .apply_pointer_deltas(
+            .update_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
                 &held,
-                &mut offsets,
+                &newly_held,
                 &[KeymapPointerDelta {
                     mapping_id: "aim",
                     delta_x: 100.0,
                     delta_y: 100.0,
                 }],
+                now,
             )
             .unwrap();
         let frame = compiled
-            .frame_with_hold_times(&held, &BTreeMap::new(), &offsets)
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
             .unwrap();
         assert_eq!(frame.contacts.len(), 1);
         assert!((frame.contacts[0].x - 0.6).abs() < 0.0001);
         assert!((frame.contacts[0].y - 0.6).abs() < 0.0001);
+
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &held,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now,
+            )
+            .unwrap();
+        let released_key = compiled
+            .frame_with_runtime(&mut runtime, &BTreeSet::new(), &BTreeMap::new(), now)
+            .unwrap();
+        assert_eq!(released_key.contacts.len(), 1);
+
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+        assert!(
+            compiled
+                .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+                .unwrap()
+                .contacts
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1433,6 +2276,10 @@ mod tests {
                     "bind": ["KeyQ"],
                     "horizontal_scale_factor": 1.0,
                     "vertical_scale_factor": 1.0,
+                    "drag_radius": 100,
+                    "cast_no_direction": false,
+                    "initial_duration": 0,
+                    "release_mode": "OnRelease",
                 }),
                 json!({
                     "id": "cancel",
@@ -1447,9 +2294,181 @@ mod tests {
             }),
         )
         .unwrap();
+        let now = Instant::now();
+        let cast_held = normalize_key_state(vec!["KeyQ".into()]).unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &cast_held,
+                &cast_held,
+                &[],
+                now,
+            )
+            .unwrap();
         let held = normalize_key_state(vec!["KeyQ".into(), "Escape".into()]).unwrap();
-        let frame = compiled.frame(&held, Duration::ZERO).unwrap();
-        assert!(frame.contacts.is_empty());
-        assert_eq!(frame.matched_mapping_ids, vec!["cancel"]);
+        let newly = normalize_key_state(vec!["Escape".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &cast_held, &held, &newly, &[], now)
+            .unwrap();
+        let animating = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(75),
+            )
+            .unwrap();
+        assert_eq!(animating.active_mapping_ids, vec!["cancel"]);
+        assert!((animating.contacts[0].x - 0.55).abs() < 0.0001);
+        let released = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(150),
+            )
+            .unwrap();
+        assert!(released.contacts.is_empty());
+    }
+
+    #[test]
+    fn observation_clamps_pointer_motion_and_releases_with_its_binding() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "look", "type": "Observation", "pointer_id": 1,
+                "position": { "x": 0.5, "y": 0.5 }, "bind": ["KeyO"],
+                "sensitivity_x": 1.0, "sensitivity_y": 1.0, "max_radius": 20,
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 500,
+            }),
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["KeyO".into()]).unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &held,
+                &held,
+                &[KeymapPointerDelta {
+                    mapping_id: "look",
+                    delta_x: 100.0,
+                    delta_y: 0.0,
+                }],
+                now,
+            )
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+        assert!((frame.contacts[0].x - 0.52).abs() < 0.0001);
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &held,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now,
+            )
+            .unwrap();
+        assert!(
+            compiled
+                .frame_with_runtime(&mut runtime, &BTreeSet::new(), &BTreeMap::new(), now)
+                .unwrap()
+                .contacts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn non_preserving_fire_temporarily_takes_over_fps_control() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![
+                json!({
+                    "id": "camera", "type": "Fps", "pointer_id": 0,
+                    "position": { "x": 0.5, "y": 0.5 }, "bind": ["KeyV"],
+                    "sensitivity_x": 1.0, "sensitivity_y": 1.0,
+                    "max_offset_x": 200, "max_offset_y": 200,
+                    "touch_mode": { "type": "single", "interval": 0 },
+                }),
+                json!({
+                    "id": "fire", "type": "Fire", "pointer_id": 2,
+                    "position": { "x": 0.8, "y": 0.7 }, "bind": ["MouseLeft"],
+                    "sensitivity_x": 1.0, "sensitivity_y": 1.0,
+                    "preserve_fps_control": false,
+                }),
+            ]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 500,
+            }),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let fps_key = normalize_key_state(vec!["KeyV".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &fps_key, &fps_key, &[], now)
+            .unwrap();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &fps_key,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now,
+            )
+            .unwrap();
+        let fire_key = normalize_key_state(vec!["MouseLeft".into()]).unwrap();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &fire_key,
+                &fire_key,
+                &[KeymapPointerDelta {
+                    mapping_id: "fire",
+                    delta_x: 10.0,
+                    delta_y: 5.0,
+                }],
+                now,
+            )
+            .unwrap();
+        let firing = compiled
+            .frame_with_runtime(&mut runtime, &fire_key, &BTreeMap::new(), now)
+            .unwrap();
+        assert_eq!(firing.contacts.len(), 1);
+        assert_eq!(firing.contacts[0].identity, 2);
+        assert!((firing.contacts[0].x - 0.81).abs() < 0.0001);
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &fire_key,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now,
+            )
+            .unwrap();
+        let restored = compiled
+            .frame_with_runtime(&mut runtime, &BTreeSet::new(), &BTreeMap::new(), now)
+            .unwrap();
+        assert_eq!(
+            restored.contacts,
+            vec![NormalizedTouchContact {
+                identity: 0,
+                touching: true,
+                x: 0.5,
+                y: 0.5
+            }]
+        );
     }
 }

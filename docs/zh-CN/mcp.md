@@ -118,7 +118,9 @@ MCP 可以创建和回放与桌面“Key Mapping”工作区共用的本地 nati
 
 没有浏览器消费实时流时，`start_game_session` 会从原生截图取得正向屏幕尺寸。CoreDevice 截图可能不包含桌面视频流的少量编码边界填充，因此严格 profile 匹配在保持方向一致的前提下允许每个维度最多 2% 的差异；仓库筛选仍使用 profile 中记录的桌面实时流精确分辨率。
 
-基础回放支持 `touch`、`dpad`、`Press`、`SingleTap`、`RepeatTap`、`MultipleTap`、`Swipe`、使用键盘 Button 绑定的 `DirectionPad`、`PadCastSpell`、`MouseCastSpell`、`CancelCast`、`Observation`、`Fps`、`Fire` 和 `hardwareBindings`。`Press` 触点会在整个 `run_keymap.hold_ms` 时段内保持按下，或在游戏会话的按键持续处于 held 状态时保持按下。`DirectionPad`、`PadCastSpell` 及指针驱动映射优先使用 `targetResolution`，没有时使用所选设备当前的正向视频流尺寸。游戏会话中的 `pointer_deltas` 会根据保存的灵敏度移动当前激活的 `MouseCastSpell`、`Observation`、`Fps` 与 `Fire` 触点；`CancelCast` 会取消当前的鼠标/方向施法。浏览器随机化和脚本钩子不会执行。`RawInput` 与 `Script` 仍会明确报错：MCP 绝不执行配置文件提供的代码，也不会从映射配置中推断原始键盘透传。
+回放支持 `touch`、`dpad`、`Press`、`SingleTap`、`RepeatTap`、`MultipleTap`、`Swipe`、使用键盘 Button 绑定的 `DirectionPad`、`PadCastSpell`、`MouseCastSpell`、`CancelCast`、`Observation`、`Fps`、`Fire` 和 `hardwareBindings`。`Press` 触点会在整个 `run_keymap.hold_ms` 时段内保持按下，或在游戏会话的按键持续处于 held 状态时保持按下。`DirectionPad`、施法映射及指针驱动映射优先使用 `targetResolution`，没有时使用所选设备当前的正向视频流尺寸。
+
+游戏会话中的 `pointer_deltas` 会移动指定且当前生效的 `MouseCastSpell`、`Observation`、`Fps` 或不保留 FPS 控制的 `Fire` 映射。`Observation` 会限制在 `max_radius` 内。`Fps` 使用按下边沿切换：在一次 `set_game_input` 更新中加入绑定键，并在下一次更新中移除；之后即使不按键也会保持生效并接收增量，直到再次产生按下边沿。其单/双触点回中策略会在本地 60Hz 会话中执行。`Fire` 根据 `preserve_fps_control` 选择以固定触点与 FPS 并存，或暂时接管指针控制。`CancelCast` 会把当前施法动画移动到取消点后释放。浏览器随机化和脚本钩子不会执行。`RawInput` 与 `Script` 仍会明确报错：MCP 绝不执行配置文件提供的代码，也不会从映射配置中推断原始键盘透传。
 
 ## 设备与会话流程
 

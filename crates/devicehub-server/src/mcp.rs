@@ -29,8 +29,8 @@ use crate::http::{ProfileRepository, ProfileRepositoryError};
 #[cfg(test)]
 use crate::http::{ProfileRepositoryFuture, ProfileRepositorySnapshot, StoredProfile};
 use crate::mcp_keymap::{
-    ActiveHardwareButton, CompiledKeymap, KeymapError, KeymapPointerDelta, NormalizedTouchContact,
-    normalize_held_keys, normalize_key_state,
+    ActiveHardwareButton, CompiledKeymap, KeymapError, KeymapPointerDelta, KeymapRuntimeState,
+    NormalizedTouchContact, normalize_held_keys, normalize_key_state,
 };
 
 use devicehub_core::hardware_button;
@@ -249,7 +249,7 @@ impl From<KeymapError> for GameControlFailure {
 struct GameControlState {
     held: BTreeSet<String>,
     held_since: BTreeMap<String, Instant>,
-    pointer_offsets: BTreeMap<String, (f32, f32)>,
+    keymap_runtime: KeymapRuntimeState,
     active_contacts: Vec<NormalizedTouchContact>,
     active_buttons: Vec<ActiveHardwareButton>,
     lease: Duration,
@@ -261,7 +261,7 @@ impl GameControlState {
         Self {
             held: BTreeSet::new(),
             held_since: BTreeMap::new(),
-            pointer_offsets: BTreeMap::new(),
+            keymap_runtime: KeymapRuntimeState::default(),
             active_contacts: Vec::new(),
             active_buttons: Vec::new(),
             lease,
@@ -850,8 +850,10 @@ fn render_game_control(
     keymap: &CompiledKeymap,
     state: &mut GameControlState,
 ) -> Result<GameControlReport, GameControlFailure> {
-    let held_for = held_durations(state, Instant::now());
-    let frame = keymap.frame_with_hold_times(&state.held, &held_for, &state.pointer_offsets)?;
+    let now = Instant::now();
+    let held_for = held_durations(state, now);
+    let frame =
+        keymap.frame_with_runtime(&mut state.keymap_runtime, &state.held, &held_for, now)?;
     let desired_buttons = keymap.active_hardware_buttons(&state.held);
 
     for binding in state.active_buttons.iter().rev() {
@@ -917,8 +919,7 @@ fn update_game_control(
         held_since.insert(key.clone(), now);
     }
 
-    let mut pointer_offsets = state.pointer_offsets.clone();
-    keymap.reset_pointer_offsets_for_new_keys(&newly_held, &mut pointer_offsets);
+    let mut keymap_runtime = state.keymap_runtime.clone();
     let deltas = pointer_deltas
         .iter()
         .map(|delta| KeymapPointerDelta {
@@ -927,21 +928,29 @@ fn update_game_control(
             delta_y: delta.delta_y,
         })
         .collect::<Vec<_>>();
-    keymap.apply_pointer_deltas(&keys, &mut pointer_offsets, &deltas)?;
+    keymap.update_runtime(
+        &mut keymap_runtime,
+        &state.held,
+        &keys,
+        &newly_held,
+        &deltas,
+        now,
+    )?;
 
     let candidate = GameControlState {
         held: keys.clone(),
         held_since,
-        pointer_offsets,
+        keymap_runtime,
         active_contacts: state.active_contacts.clone(),
         active_buttons: state.active_buttons.clone(),
         lease: lease.unwrap_or(state.lease),
         lease_deadline: now + lease.unwrap_or(state.lease),
     };
     let held_for = held_durations(&candidate, now);
-    let initial = keymap.frame_with_hold_times(&keys, &held_for, &candidate.pointer_offsets)?;
+    let mut validation_runtime = candidate.keymap_runtime.clone();
+    keymap.frame_with_runtime(&mut validation_runtime, &keys, &held_for, now)?;
     let hardware_buttons = keymap.active_hardware_buttons(&keys);
-    if !keys.is_empty() && initial.matched_mapping_ids.is_empty() && hardware_buttons.is_empty() {
+    if !keys.is_empty() && !keymap.has_matching_mapping(&keys) && hardware_buttons.is_empty() {
         return Err(GameControlFailure::Keymap(KeymapError::Invalid(
             "none of the supplied keys are bound by this keymap profile".into(),
         )));
@@ -981,7 +990,7 @@ fn release_game_control(
     }
     state.held.clear();
     state.held_since.clear();
-    state.pointer_offsets.clear();
+    state.keymap_runtime = KeymapRuntimeState::default();
     state.active_contacts.clear();
     state.active_buttons.clear();
     failure.map_or(Ok(()), Err)
@@ -2073,8 +2082,17 @@ impl DeviceHub {
         let held = normalize_held_keys(params.keys).map_err(keymap_execution_error)?;
         let compiled = CompiledKeymap::from_profile(&profile, self.current_keymap_frame_size())
             .map_err(keymap_execution_error)?;
+        let started = Instant::now();
+        let mut runtime = KeymapRuntimeState::default();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], started)
+            .map_err(keymap_execution_error)?;
+        let initial_hold_times = held
+            .iter()
+            .map(|key| (key.clone(), Duration::ZERO))
+            .collect();
         let initial = compiled
-            .frame(&held, Duration::ZERO)
+            .frame_with_runtime(&mut runtime, &held, &initial_hold_times, started)
             .map_err(keymap_execution_error)?;
         let hardware_buttons = compiled.active_hardware_buttons(&held);
         if initial.matched_mapping_ids.is_empty() && hardware_buttons.is_empty() {
@@ -2107,9 +2125,13 @@ impl DeviceHub {
         let mut active_contacts = Vec::new();
         let mut active_mapping_ids = BTreeSet::new();
         if failure.is_none() {
-            let started = Instant::now();
             loop {
-                let frame = match compiled.frame(&held, started.elapsed()) {
+                let now = Instant::now();
+                let held_for = held
+                    .iter()
+                    .map(|key| (key.clone(), now.saturating_duration_since(started)))
+                    .collect();
+                let frame = match compiled.frame_with_runtime(&mut runtime, &held, &held_for, now) {
                     Ok(frame) => frame,
                     Err(error) => {
                         failure = Some(keymap_execution_error(error));
@@ -4629,6 +4651,9 @@ mod tests {
                     "bind": ["KeyQ"],
                     "sensitivity_x": 1.0,
                     "sensitivity_y": 0.5,
+                    "max_offset_x": 200,
+                    "max_offset_y": 200,
+                    "touch_mode": { "type": "single", "interval": 0 },
                 })],
                 default_hardware_bindings(),
             ),
