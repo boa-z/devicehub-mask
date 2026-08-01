@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeLanguage, supportedLanguages } from "./i18n";
-import { enUS } from "./locales/en-US";
-import { zhCN } from "./locales/zh-CN";
+import enUS from "./locales/en-US";
+import zhCN from "./locales/zh-CN";
 
 function keys(value: object, prefix = ""): string[] {
   return Object.entries(value).flatMap(([key, child]) => {

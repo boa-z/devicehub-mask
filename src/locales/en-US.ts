@@ -1173,3 +1173,5 @@ export const enUS = {
     failed: "Failed to check for updates: {{error}}",
   },
 } as const;
+
+export default enUS;
