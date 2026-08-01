@@ -112,7 +112,11 @@ MCP 可以创建和回放与桌面“Key Mapping”工作区共用的本地 nati
 
 调用 `run_keymap` 时提供已保存的配置名，以及一个或多个浏览器 `KeyboardEvent.code` 值，例如 `KeyW`、`Space` 或 `KeyJ`。它会同时按住所有指定按键 `hold_ms`（默认 100ms，限制在 25 至 5,000ms），在需要时持续发送多点触控帧，并在返回前确保释放触点和硬件按键。操作只作用于该 MCP 连接显式选择的设备，不会自动激活桌面 UI 的配置。
 
-可确定回放的类型包括 `touch`、`dpad`、`SingleTap`、`RepeatTap`、`MultipleTap`、`Swipe`、使用键盘 Button 绑定的 `DirectionPad`、`PadCastSpell` 和 `hardwareBindings`。`DirectionPad` 与 `PadCastSpell` 优先使用 `targetResolution`，没有时使用所选设备当前视频流尺寸。浏览器专用的指针偏移、随机偏移和脚本钩子不会执行；受支持映射会使用保存的基础坐标。触发 `MouseCastSpell`、`CancelCast`、`Observation`、`Fps`、`Fire`、`RawInput` 或 `Script` 时会返回明确错误，而不会静默忽略。
+实时游戏应使用 `start_game_session`，再通过 `set_game_input` 提供完整的按住键集合。设备侧会话以 60Hz 计算映射，因此连点、滑动和按住会在 Agent 调用之间持续执行。每次更新都会续期短租约（默认 1,500ms，范围 250 至 10,000ms）；租约到期、调用 `stop_game_session`、设备输入失败或会话关闭时，系统都会释放全部触点和硬件按键。游戏控制会话只占用其选中的设备；切换设备或交还给其他工作流前必须停止。
+
+观察循环使用 `observe_game`。它可以等待比指定 `frame_version` 更新的帧，返回无网格图像，并在传输前裁剪归一化的感兴趣区域。裁剪坐标只用于说明完整截图中的视觉区域，不能作为 `tap` 或 `swipe` 的坐标系。
+
+基础回放支持 `touch`、`dpad`、`SingleTap`、`RepeatTap`、`MultipleTap`、`Swipe`、使用键盘 Button 绑定的 `DirectionPad`、`PadCastSpell`、`MouseCastSpell`、`CancelCast`、`Observation`、`Fps`、`Fire` 和 `hardwareBindings`。`DirectionPad`、`PadCastSpell` 及指针驱动映射优先使用 `targetResolution`，没有时使用所选设备当前的正向视频流尺寸。游戏会话中的 `pointer_deltas` 会根据保存的灵敏度移动当前激活的 `MouseCastSpell`、`Observation`、`Fps` 与 `Fire` 触点；`CancelCast` 会取消当前的鼠标/方向施法。浏览器随机化和脚本钩子不会执行。`RawInput` 与 `Script` 仍会明确报错：MCP 绝不执行配置文件提供的代码，也不会从映射配置中推断原始键盘透传。
 
 ## 设备与会话流程
 
@@ -190,8 +194,8 @@ WDA 是需要单独准备的可选能力，DeviceHub Mask 不负责安装或签�
 
 | 分类 | 工具 | 注意事项 |
 | --- | --- | --- |
-| 画面与输入 | `screenshot`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、`type_text`、`paste_text`、`press_key`、`press_button`、`lock_device`、`rotate` | 截图尺寸定义 HID 坐标；支持一至五个同步触点 |
-| Key Mapping | `list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile`、`run_keymap` | 本地 native v2 配置；回放使用浏览器键盘代码，且不会切换桌面端激活配置 |
+| 画面与输入 | `screenshot`、`observe_game`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、`type_text`、`paste_text`、`press_key`、`press_button`、`lock_device`、`rotate` | 截图尺寸定义 HID 坐标；`observe_game` 无网格并支持感兴趣区域 |
+| Key Mapping | `list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile`、`run_keymap`、`start_game_session`、`set_game_input`、`stop_game_session` | 本地 native v2 配置；持续会话使用完整的浏览器键盘代码状态，且不会切换桌面端激活配置 |
 | 设备与会话 | `status`、`device_details`、`list_devices`、`connect_device`、`reconnect_device`、`wait_for_device_event`、`list_companion_devices`、`home_screen_layout` | 准确选择 ID 区分 USB/Wi-Fi；稳定标识符需要显式请求 |
 | App 与进程 | `list_apps`、`launch_app`、`stop_app`、`app_status`、`wait_for_app`、`list_processes`、`process_status`、`wait_for_process` | 使用准确 Bundle ID 和最新 PID |
 | 诊断 | `list_crash_reports`、`read_crash_report`、`performance_snapshot`、`recent_device_logs` | 有界、只读的诊断输出 |

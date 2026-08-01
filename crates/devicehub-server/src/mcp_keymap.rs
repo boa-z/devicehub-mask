@@ -1,10 +1,10 @@
 //! Deterministic key-mapping playback shared by the MCP adapter.
 //!
 //! The desktop frontend remains the interactive mapping runtime. This module
-//! evaluates the keyboard-driven subset without browser state such as pointer
-//! deltas or script hooks, so MCP can safely replay saved profiles.
+//! evaluates the deterministic subset of saved mappings, including agent-supplied
+//! pointer deltas. It intentionally never executes browser script hooks.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -15,6 +15,8 @@ const MAX_KEY_CODES: usize = 32;
 const MAX_KEY_CODE_LENGTH: usize = 64;
 const MAX_TIMING_MS: f64 = 60_000.0;
 const MAX_PATH_POINTS: usize = 32;
+const MAX_POINTER_SENSITIVITY: f64 = 100.0;
+const MAX_POINTER_DELTA: f32 = 16_384.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct NormalizedTouchContact {
@@ -35,6 +37,14 @@ pub(crate) struct KeymapFrame {
 pub(crate) struct ActiveHardwareButton {
     pub name: String,
     pub button: HardwareButton,
+}
+
+/// Relative pointer movement in pixels of the profile's target display.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct KeymapPointerDelta<'a> {
+    pub mapping_id: &'a str,
+    pub delta_x: f32,
+    pub delta_y: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +121,20 @@ enum Mapping {
         drag_radius: f32,
         frame: KeyMappingResolution,
     },
+    Pointer {
+        id: String,
+        identity: u8,
+        position: Point,
+        bind: Vec<String>,
+        sensitivity_x: f32,
+        sensitivity_y: f32,
+        frame: KeyMappingResolution,
+        is_cast: bool,
+    },
+    CancelCast {
+        id: String,
+        bind: Vec<String>,
+    },
     Unsupported {
         id: String,
         mapping_type: String,
@@ -118,7 +142,7 @@ enum Mapping {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Point {
     x: f32,
     y: f32,
@@ -129,6 +153,15 @@ struct TapItem {
     position: Point,
     duration_ms: f64,
     wait_ms: f64,
+}
+
+struct PointerParts<'a> {
+    id: &'a str,
+    position: Point,
+    bind: &'a [String],
+    sensitivity_x: f32,
+    sensitivity_y: f32,
+    frame: KeyMappingResolution,
 }
 
 #[derive(Debug, Clone)]
@@ -160,7 +193,7 @@ impl fmt::Display for KeymapError {
             Self::Invalid(message) => formatter.write_str(message),
             Self::Unsupported { id, mapping_type } => write!(
                 formatter,
-                "mapping {id} uses {mapping_type}, which run_keymap does not support"
+                "mapping {id} uses {mapping_type}, which MCP keymap playback does not support"
             ),
         }
     }
@@ -206,11 +239,36 @@ impl CompiledKeymap {
         held: &BTreeSet<String>,
         elapsed: Duration,
     ) -> Result<KeymapFrame, KeymapError> {
-        let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+        self.frame_with_state(held, &BTreeMap::new(), elapsed, &BTreeMap::new())
+    }
+
+    /// Evaluate a persistent game session. `held_for` tracks each key from its
+    /// most recent press so a keepalive does not restart tap and swipe mappings.
+    pub(crate) fn frame_with_hold_times(
+        &self,
+        held: &BTreeSet<String>,
+        held_for: &BTreeMap<String, Duration>,
+        pointer_offsets: &BTreeMap<String, (f32, f32)>,
+    ) -> Result<KeymapFrame, KeymapError> {
+        self.frame_with_state(held, held_for, Duration::ZERO, pointer_offsets)
+    }
+
+    fn frame_with_state(
+        &self,
+        held: &BTreeSet<String>,
+        held_for: &BTreeMap<String, Duration>,
+        fallback_elapsed: Duration,
+        pointer_offsets: &BTreeMap<String, (f32, f32)>,
+    ) -> Result<KeymapFrame, KeymapError> {
+        let held = self.effective_held(held);
         let mut candidates = Vec::with_capacity(self.mappings.len());
         let mut matched_mapping_ids = Vec::new();
         for mapping in &self.mappings {
-            let evaluated = mapping.evaluate(held, elapsed_ms)?;
+            let elapsed = mapping
+                .activation_elapsed(&held, held_for)
+                .unwrap_or(fallback_elapsed);
+            let evaluated =
+                mapping.evaluate(&held, elapsed.as_secs_f64() * 1000.0, pointer_offsets)?;
             if evaluated.matched {
                 matched_mapping_ids.push(evaluated.id.clone());
             }
@@ -264,6 +322,94 @@ impl CompiledKeymap {
             })
             .collect()
     }
+
+    pub(crate) fn reset_pointer_offsets_for_new_keys(
+        &self,
+        newly_held: &BTreeSet<String>,
+        pointer_offsets: &mut BTreeMap<String, (f32, f32)>,
+    ) {
+        if newly_held.is_empty() {
+            return;
+        }
+        for mapping in &self.mappings {
+            let Some(pointer) = mapping.pointer_parts() else {
+                continue;
+            };
+            if pointer.bind.iter().any(|key| newly_held.contains(key)) {
+                pointer_offsets.remove(pointer.id);
+            }
+        }
+    }
+
+    pub(crate) fn apply_pointer_deltas(
+        &self,
+        held: &BTreeSet<String>,
+        pointer_offsets: &mut BTreeMap<String, (f32, f32)>,
+        deltas: &[KeymapPointerDelta<'_>],
+    ) -> Result<(), KeymapError> {
+        let held = self.effective_held(held);
+        for delta in deltas {
+            if !delta.delta_x.is_finite()
+                || !delta.delta_y.is_finite()
+                || delta.delta_x.abs() > MAX_POINTER_DELTA
+                || delta.delta_y.abs() > MAX_POINTER_DELTA
+            {
+                return Err(KeymapError::Invalid(format!(
+                    "pointer delta for {} must be finite and within +/-{MAX_POINTER_DELTA}",
+                    delta.mapping_id
+                )));
+            }
+            let mapping = self
+                .mappings
+                .iter()
+                .find(|mapping| mapping.id() == delta.mapping_id)
+                .ok_or_else(|| {
+                    KeymapError::Invalid(format!("unknown pointer mapping: {}", delta.mapping_id))
+                })?;
+            let Some(pointer) = mapping.pointer_parts() else {
+                return Err(KeymapError::Invalid(format!(
+                    "mapping {} does not accept pointer deltas",
+                    delta.mapping_id
+                )));
+            };
+            if !bound(&held, pointer.bind) {
+                return Err(KeymapError::Invalid(format!(
+                    "mapping {} must be held before applying a pointer delta",
+                    delta.mapping_id
+                )));
+            }
+            let (x, y) = pointer_offsets
+                .get(pointer.id)
+                .copied()
+                .unwrap_or((pointer.position.x, pointer.position.y));
+            pointer_offsets.insert(
+                pointer.id.to_string(),
+                (
+                    clamp(x + delta.delta_x * pointer.sensitivity_x / pointer.frame.width as f32),
+                    clamp(y + delta.delta_y * pointer.sensitivity_y / pointer.frame.height as f32),
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    fn effective_held(&self, held: &BTreeSet<String>) -> BTreeSet<String> {
+        let cancelled = self.mappings.iter().any(
+            |mapping| matches!(mapping, Mapping::CancelCast { bind, .. } if bound(held, bind)),
+        );
+        if !cancelled {
+            return held.clone();
+        }
+        let mut result = held.clone();
+        for mapping in &self.mappings {
+            if let Some(bind) = mapping.cast_binding() {
+                for key in bind {
+                    result.remove(key);
+                }
+            }
+        }
+        result
+    }
 }
 
 impl Mapping {
@@ -271,6 +417,7 @@ impl Mapping {
         &self,
         held: &BTreeSet<String>,
         elapsed_ms: f64,
+        pointer_offsets: &BTreeMap<String, (f32, f32)>,
     ) -> Result<EvaluatedMapping, KeymapError> {
         match self {
             Self::Touch {
@@ -463,6 +610,33 @@ impl Mapping {
                     matched,
                 ))
             }
+            Self::Pointer {
+                id,
+                identity,
+                position,
+                bind,
+                ..
+            } => {
+                let matched = bound(held, bind);
+                let (x, y) = pointer_offsets
+                    .get(id)
+                    .copied()
+                    .unwrap_or((position.x, position.y));
+                Ok(EvaluatedMapping::contact(
+                    id,
+                    *identity,
+                    Point {
+                        x: clamp(x),
+                        y: clamp(y),
+                    },
+                    matched,
+                    claimed_binding_keys(matched, bind),
+                    matched,
+                ))
+            }
+            Self::CancelCast { id, bind } => {
+                Ok(EvaluatedMapping::empty_with_match(id, bound(held, bind)))
+            }
             Self::Unsupported {
                 id,
                 mapping_type,
@@ -476,6 +650,79 @@ impl Mapping {
                 }
                 Ok(EvaluatedMapping::empty(id))
             }
+        }
+    }
+
+    fn id(&self) -> &str {
+        match self {
+            Self::Touch { id, .. }
+            | Self::Dpad { id, .. }
+            | Self::SingleTap { id, .. }
+            | Self::RepeatTap { id, .. }
+            | Self::MultipleTap { id, .. }
+            | Self::Swipe { id, .. }
+            | Self::DirectionPad { id, .. }
+            | Self::PadCastSpell { id, .. }
+            | Self::Pointer { id, .. }
+            | Self::CancelCast { id, .. }
+            | Self::Unsupported { id, .. } => id,
+        }
+    }
+
+    fn activation_elapsed(
+        &self,
+        held: &BTreeSet<String>,
+        held_for: &BTreeMap<String, Duration>,
+    ) -> Option<Duration> {
+        let bind = match self {
+            Self::SingleTap { bind, .. }
+            | Self::RepeatTap { bind, .. }
+            | Self::MultipleTap { bind, .. }
+            | Self::Swipe { bind, .. } => bind,
+            _ => return None,
+        };
+        if !bound(held, bind) {
+            return None;
+        }
+        bind.iter()
+            .map(|key| held_for.get(key).copied())
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .min()
+    }
+
+    fn pointer_parts(&self) -> Option<PointerParts<'_>> {
+        let Self::Pointer {
+            id,
+            position,
+            bind,
+            sensitivity_x,
+            sensitivity_y,
+            frame,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(PointerParts {
+            id,
+            position: *position,
+            bind,
+            sensitivity_x: *sensitivity_x,
+            sensitivity_y: *sensitivity_y,
+            frame: *frame,
+        })
+    }
+
+    fn cast_binding(&self) -> Option<&[String]> {
+        match self {
+            Self::PadCastSpell { bind, .. } => Some(bind),
+            Self::Pointer {
+                bind,
+                is_cast: true,
+                ..
+            } => Some(bind),
+            _ => None,
         }
     }
 }
@@ -495,6 +742,15 @@ impl EvaluatedMapping {
             contact: None,
             claimed_keys: Vec::new(),
             matched: false,
+        }
+    }
+
+    fn empty_with_match(id: &str, matched: bool) -> Self {
+        Self {
+            id: id.into(),
+            contact: None,
+            claimed_keys: Vec::new(),
+            matched,
         }
     }
 
@@ -573,9 +829,20 @@ impl Activation {
 }
 
 pub(crate) fn normalize_held_keys(keys: Vec<String>) -> Result<BTreeSet<String>, KeymapError> {
-    if keys.is_empty() || keys.len() > MAX_KEY_CODES {
+    if keys.is_empty() {
         return Err(KeymapError::Invalid(format!(
             "keys must contain between one and {MAX_KEY_CODES} browser keyboard codes"
+        )));
+    }
+    normalize_key_state(keys)
+}
+
+/// Validate a complete key-state update. An empty state is valid and releases
+/// all mapped controls in a persistent game session.
+pub(crate) fn normalize_key_state(keys: Vec<String>) -> Result<BTreeSet<String>, KeymapError> {
+    if keys.len() > MAX_KEY_CODES {
+        return Err(KeymapError::Invalid(format!(
+            "keys must contain at most {MAX_KEY_CODES} browser keyboard codes"
         )));
     }
     let mut held = BTreeSet::new();
@@ -679,12 +946,77 @@ fn compile_mapping(
                 )
             })?,
         }),
+        "MouseCastSpell" => pointer_mapping(
+            id,
+            mapping,
+            frame,
+            "MouseCastSpell",
+            "horizontal_scale_factor",
+            "vertical_scale_factor",
+            true,
+        ),
+        "Observation" => pointer_mapping(
+            id,
+            mapping,
+            frame,
+            "Observation",
+            "sensitivity_x",
+            "sensitivity_y",
+            false,
+        ),
+        "Fps" => pointer_mapping(
+            id,
+            mapping,
+            frame,
+            "Fps",
+            "sensitivity_x",
+            "sensitivity_y",
+            false,
+        ),
+        "Fire" => pointer_mapping(
+            id,
+            mapping,
+            frame,
+            "Fire",
+            "sensitivity_x",
+            "sensitivity_y",
+            false,
+        ),
+        "CancelCast" => Ok(Mapping::CancelCast {
+            id,
+            bind: binding_field(mapping, "bind")?,
+        }),
         unsupported => Ok(Mapping::Unsupported {
             id,
             mapping_type: unsupported.into(),
             activation: unsupported_activation(mapping),
         }),
     }
+}
+
+fn pointer_mapping(
+    id: String,
+    mapping: &Map<String, Value>,
+    frame: Option<KeyMappingResolution>,
+    mapping_type: &str,
+    sensitivity_x: &str,
+    sensitivity_y: &str,
+    is_cast: bool,
+) -> Result<Mapping, KeymapError> {
+    Ok(Mapping::Pointer {
+        id,
+        identity: contact_id(mapping, "pointer_id")?,
+        position: position(mapping, "position")?,
+        bind: binding_field(mapping, "bind")?,
+        sensitivity_x: finite_number(mapping, sensitivity_x, 0.0, MAX_POINTER_SENSITIVITY)? as f32,
+        sensitivity_y: finite_number(mapping, sensitivity_y, 0.0, MAX_POINTER_SENSITIVITY)? as f32,
+        frame: frame.ok_or_else(|| {
+            KeymapError::Invalid(format!(
+                "{mapping_type} needs targetResolution or a connected device screen"
+            ))
+        })?,
+        is_cast,
+    })
 }
 
 fn unsupported_activation(mapping: &Map<String, Value>) -> Activation {
@@ -962,5 +1294,106 @@ mod tests {
             compiled.frame(&held, Duration::ZERO),
             Err(KeymapError::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn persistent_hold_times_do_not_restart_repeat_taps() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "fire",
+                "type": "RepeatTap",
+                "pointer_id": 1,
+                "position": { "x": 0.75, "y": 0.25 },
+                "bind": ["Space"],
+                "duration": 40,
+                "interval": 60,
+            })]),
+            None,
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["Space".into()]).unwrap();
+        let held_for = BTreeMap::from([(String::from("Space"), Duration::from_millis(70))]);
+        let frame = compiled
+            .frame_with_hold_times(&held, &held_for, &BTreeMap::new())
+            .unwrap();
+        assert!(frame.contacts.is_empty());
+
+        let held_for = BTreeMap::from([(String::from("Space"), Duration::from_millis(110))]);
+        let frame = compiled
+            .frame_with_hold_times(&held, &held_for, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(frame.contacts.len(), 1);
+        assert!(frame.contacts[0].touching);
+    }
+
+    #[test]
+    fn pointer_mappings_apply_agent_relative_deltas() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "aim",
+                "type": "Fps",
+                "pointer_id": 2,
+                "position": { "x": 0.5, "y": 0.5 },
+                "bind": ["KeyQ"],
+                "sensitivity_x": 1.0,
+                "sensitivity_y": 0.5,
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 500,
+            }),
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["KeyQ".into()]).unwrap();
+        let mut offsets = BTreeMap::new();
+        compiled
+            .apply_pointer_deltas(
+                &held,
+                &mut offsets,
+                &[KeymapPointerDelta {
+                    mapping_id: "aim",
+                    delta_x: 100.0,
+                    delta_y: 100.0,
+                }],
+            )
+            .unwrap();
+        let frame = compiled
+            .frame_with_hold_times(&held, &BTreeMap::new(), &offsets)
+            .unwrap();
+        assert_eq!(frame.contacts.len(), 1);
+        assert!((frame.contacts[0].x - 0.6).abs() < 0.0001);
+        assert!((frame.contacts[0].y - 0.6).abs() < 0.0001);
+    }
+
+    #[test]
+    fn cancel_cast_releases_active_mouse_cast_mappings() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![
+                json!({
+                    "id": "cast",
+                    "type": "MouseCastSpell",
+                    "pointer_id": 1,
+                    "position": { "x": 0.6, "y": 0.5 },
+                    "bind": ["KeyQ"],
+                    "horizontal_scale_factor": 1.0,
+                    "vertical_scale_factor": 1.0,
+                }),
+                json!({
+                    "id": "cancel",
+                    "type": "CancelCast",
+                    "position": { "x": 0.5, "y": 0.5 },
+                    "bind": ["Escape"],
+                }),
+            ]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 500,
+            }),
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["KeyQ".into(), "Escape".into()]).unwrap();
+        let frame = compiled.frame(&held, Duration::ZERO).unwrap();
+        assert!(frame.contacts.is_empty());
+        assert_eq!(frame.matched_mapping_ids, vec!["cancel"]);
     }
 }

@@ -112,7 +112,11 @@ Mapping positions are normalized display fractions, not screenshot pixels. After
 
 Call `run_keymap` with the saved profile name and one or more browser `KeyboardEvent.code` values, such as `KeyW`, `Space`, or `KeyJ`. It holds all supplied keys together for `hold_ms` (100ms by default, bounded to 25 through 5,000ms), emits repeated multi-touch frames while required, and always sends touch and hardware-button releases before returning. The action applies to this MCP connection's explicitly selected device; it never auto-activates a profile in the desktop UI.
 
-Deterministic MCP playback supports `touch`, `dpad`, `SingleTap`, `RepeatTap`, `MultipleTap`, `Swipe`, keyboard-button `DirectionPad`, `PadCastSpell`, and `hardwareBindings`. `DirectionPad` and `PadCastSpell` use `targetResolution` when it is present, otherwise the selected device's current stream size. Browser-only pointer deltas, random offsets, and script hooks are not executed; supported mappings use their saved base positions. A triggered `MouseCastSpell`, `CancelCast`, `Observation`, `Fps`, `Fire`, `RawInput`, or `Script` mapping returns an explicit error instead of silently doing nothing.
+For real-time play, use `start_game_session`, then call `set_game_input` with the complete desired set of held keys. The device-side session evaluates the mapping at 60Hz, so repeat taps, swipes, and holds continue between Agent calls. Each update renews a short lease (1,500ms by default; 250 through 10,000ms), and expiry, `stop_game_session`, a device-input failure, or session shutdown releases every active touch and hardware button. A game-control session is exclusive to its selected device; stop it before switching devices or returning control to another workflow.
+
+Use `observe_game` for the observation loop. It can wait for a newer `frame_version`, returns an ungridded image, and can crop a normalized region of interest before transfer. Its crop coordinates describe the full screenshot only; they are visual context, not a coordinate system for `tap` or `swipe`.
+
+Base playback supports `touch`, `dpad`, `SingleTap`, `RepeatTap`, `MultipleTap`, `Swipe`, keyboard-button `DirectionPad`, `PadCastSpell`, `MouseCastSpell`, `CancelCast`, `Observation`, `Fps`, `Fire`, and `hardwareBindings`. `DirectionPad`, `PadCastSpell`, and pointer-driven mappings use `targetResolution` when present, otherwise the selected device's current upright stream size. In a game session, `pointer_deltas` move active `MouseCastSpell`, `Observation`, `Fps`, and `Fire` contacts using their saved sensitivity. `CancelCast` releases active mouse/pad casts. Browser randomization and script hooks are not executed. `RawInput` and `Script` remain explicit errors: MCP never runs profile-provided code, and raw keyboard passthrough is not inferred from a mapping profile.
 
 ## Device and Session Workflow
 
@@ -190,8 +194,8 @@ Supported selector strategies are `accessibility id`, `name`, `class name`, `xpa
 
 | Area | Tools | Notes |
 | --- | --- | --- |
-| Screen and input | `screenshot`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, `lock_device`, `rotate` | Screenshot dimensions define HID coordinates; one to five simultaneous contacts |
-| Key mapping | `list_keymap_profiles`, `get_keymap_profile`, `save_keymap_profile`, `run_keymap` | Local native v2 profiles; playback uses browser keyboard codes and never changes desktop activation |
+| Screen and input | `screenshot`, `observe_game`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, `lock_device`, `rotate` | Screenshot dimensions define HID coordinates; `observe_game` is ungridded and supports a region of interest |
+| Key mapping | `list_keymap_profiles`, `get_keymap_profile`, `save_keymap_profile`, `run_keymap`, `start_game_session`, `set_game_input`, `stop_game_session` | Local native v2 profiles; persistent sessions use complete keyboard-code state and never change desktop activation |
 | Device and session | `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `wait_for_device_event`, `list_companion_devices`, `home_screen_layout` | Exact selection IDs preserve USB/Wi-Fi identity; stable identifiers are opt-in |
 | Apps and processes | `list_apps`, `launch_app`, `stop_app`, `app_status`, `wait_for_app`, `list_processes`, `process_status`, `wait_for_process` | Use exact Bundle IDs and fresh PIDs |
 | Diagnostics | `list_crash_reports`, `read_crash_report`, `performance_snapshot`, `recent_device_logs` | Bounded, read-only diagnostic output |
