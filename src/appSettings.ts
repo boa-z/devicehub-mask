@@ -6,6 +6,7 @@ export type AppSettingsStatus = {
   audio_muted: boolean;
   audio_volume: number;
   clipboard_sync_enabled: boolean;
+  startup_device_priority: string[];
 };
 
 export type AudioOutputStatus = {
@@ -49,7 +50,13 @@ export function setClipboardSyncEnabled(enabled: boolean) {
     : updateBrowserSettings({ clipboard_sync_enabled: enabled });
 }
 
-function updateBrowserSettings(patch: Record<string, boolean | number>) {
+export function setStartupDevicePriority(priority: string[]) {
+  return runningInDesktopHost()
+    ? invoke<AppSettingsStatus>("set_startup_device_priority", { priority })
+    : updateBrowserSettings({ startup_device_priority: priority });
+}
+
+function updateBrowserSettings(patch: Record<string, boolean | number | string[]>) {
   return browserHostJson<AppSettingsStatus>("/api/host/settings", {
     method: "PUT",
     headers: { "content-type": "application/json" },

@@ -15,6 +15,8 @@ struct PersistedSettings {
     audio_volume: f32,
     #[serde(default)]
     clipboard_sync_enabled: bool,
+    #[serde(default)]
+    startup_device_priority: Vec<String>,
 }
 
 impl Default for PersistedSettings {
@@ -24,6 +26,7 @@ impl Default for PersistedSettings {
             audio_muted: false,
             audio_volume: DEFAULT_AUDIO_VOLUME,
             clipboard_sync_enabled: false,
+            startup_device_priority: Vec::new(),
         }
     }
 }
@@ -38,6 +41,7 @@ pub struct SettingsStatus {
     pub audio_muted: bool,
     pub audio_volume: f32,
     pub clipboard_sync_enabled: bool,
+    pub startup_device_priority: Vec<String>,
 }
 
 pub struct AppSettings {
@@ -68,6 +72,7 @@ impl AppSettings {
             persisted.audio_enabled,
             persisted.clipboard_sync_enabled,
         );
+        runtime.set_startup_device_priority(persisted.startup_device_priority.clone());
         let settings = Self {
             path,
             persisted: RwLock::new(persisted),
@@ -80,6 +85,7 @@ impl AppSettings {
             audio_muted = status.audio_muted,
             audio_volume = status.audio_volume,
             clipboard_sync_enabled = status.clipboard_sync_enabled,
+            startup_device_priority_count = status.startup_device_priority.len(),
             "application settings loaded"
         );
         settings
@@ -95,6 +101,7 @@ impl AppSettings {
             audio_muted: persisted.audio_muted,
             audio_volume: persisted.audio_volume,
             clipboard_sync_enabled: persisted.clipboard_sync_enabled,
+            startup_device_priority: persisted.startup_device_priority.clone(),
         }
     }
 
@@ -171,6 +178,26 @@ impl AppSettings {
         Ok(self.status())
     }
 
+    pub fn set_startup_device_priority(
+        &self,
+        startup_device_priority: Vec<String>,
+    ) -> Result<SettingsStatus, String> {
+        validate_startup_device_priority(&startup_device_priority)?;
+        let mut persisted = self
+            .persisted
+            .write()
+            .map_err(|_| "application settings lock poisoned".to_owned())?;
+        let next = PersistedSettings {
+            startup_device_priority: startup_device_priority.clone(),
+            ..persisted.clone()
+        };
+        self.save_locked(&mut persisted, next)?;
+        drop(persisted);
+        self.runtime
+            .set_startup_device_priority(startup_device_priority);
+        Ok(self.status())
+    }
+
     fn save_locked(
         &self,
         persisted: &mut PersistedSettings,
@@ -191,6 +218,22 @@ impl AppSettings {
         *persisted = next;
         Ok(())
     }
+}
+
+fn validate_startup_device_priority(priority: &[String]) -> Result<(), String> {
+    if priority.len() > 64 {
+        return Err("startup device priority cannot contain more than 64 devices".into());
+    }
+    let mut unique = std::collections::HashSet::new();
+    for udid in priority {
+        if udid.is_empty() || udid.len() > 255 || udid.chars().any(char::is_control) {
+            return Err("startup device priority contains an invalid device identifier".into());
+        }
+        if !unique.insert(udid) {
+            return Err("startup device priority contains duplicate device identifiers".into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -234,6 +277,20 @@ mod tests {
         assert!(saved.audio_enabled);
         assert!(saved.clipboard_sync_enabled);
 
+        let status = settings
+            .set_startup_device_priority(vec!["phone".into(), "tablet".into()])
+            .unwrap();
+        assert_eq!(status.startup_device_priority, ["phone", "tablet"]);
+        assert_eq!(
+            settings.runtime_preferences().startup_device_priority(),
+            ["phone", "tablet"]
+        );
+        assert!(
+            settings
+                .set_startup_device_priority(vec!["phone".into(), "phone".into()])
+                .is_err()
+        );
+
         let status = settings.set_audio_enabled(false).unwrap();
         assert!(!status.audio_enabled);
         assert!(!settings.runtime_preferences().audio_enabled());
@@ -253,6 +310,7 @@ mod tests {
         assert!(!saved.audio_muted);
         assert_eq!(saved.audio_volume, DEFAULT_AUDIO_VOLUME);
         assert!(!saved.clipboard_sync_enabled);
+        assert!(saved.startup_device_priority.is_empty());
     }
 
     #[test]
@@ -272,9 +330,15 @@ mod tests {
 
         assert!(settings.set_audio_enabled(true).is_err());
         assert!(settings.set_clipboard_sync_enabled(true).is_err());
+        assert!(
+            settings
+                .set_startup_device_priority(vec!["phone".into()])
+                .is_err()
+        );
         let runtime = settings.runtime_preferences();
         assert!(!runtime.audio_enabled());
         assert!(!runtime.clipboard_sync_enabled());
+        assert!(runtime.startup_device_priority().is_empty());
 
         std::fs::remove_file(blocking_file).unwrap();
         std::fs::remove_dir(directory).unwrap();

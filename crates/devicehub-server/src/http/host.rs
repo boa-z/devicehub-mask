@@ -42,6 +42,7 @@ pub struct HostSettingsStatus {
     pub audio_muted: bool,
     pub audio_volume: f32,
     pub clipboard_sync_enabled: bool,
+    pub startup_device_priority: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -50,6 +51,7 @@ pub struct HostSettingsPatch {
     pub audio_muted: Option<bool>,
     pub audio_volume: Option<f32>,
     pub clipboard_sync_enabled: Option<bool>,
+    pub startup_device_priority: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -177,6 +179,25 @@ async fn update_settings(
             "audio volume must be a finite value between 0 and 1".into(),
         ));
     }
+    if patch
+        .startup_device_priority
+        .as_ref()
+        .is_some_and(|priority| {
+            priority.len() > 64
+                || priority.iter().any(|udid| {
+                    udid.is_empty() || udid.len() > 255 || udid.chars().any(char::is_control)
+                })
+                || priority
+                    .iter()
+                    .enumerate()
+                    .any(|(index, udid)| priority[..index].contains(udid))
+        })
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "invalid startup device priority".into(),
+        ));
+    }
     state
         .control
         .update_settings(patch)
@@ -268,6 +289,22 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"level":"info","component":"web","operation":"ready","message":"bad\nline"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn startup_device_priority_rejects_duplicate_identifiers() {
+        let response = router::<()>(HostHttpState::unavailable())
+            .oneshot(
+                Request::put("/api/host/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"startup_device_priority":["phone","phone"]}"#,
                     ))
                     .unwrap(),
             )

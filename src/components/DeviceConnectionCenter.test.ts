@@ -29,6 +29,15 @@ describe("device connection center", () => {
     expect(groups[1].devices.map((entry) => entry.id)).toEqual(["phone::usb", "phone::wifi"]);
   });
 
+  it("orders available physical devices by startup priority", () => {
+    const groups = groupDevices([
+      device("phone::usb", "phone", "USB", "disconnected"),
+      device("tablet::usb", "tablet", "USB", "disconnected"),
+    ], ["phone", "tablet"]);
+
+    expect(groups.map((group) => group.udid)).toEqual(["phone", "tablet"]);
+  });
+
   it("counts active physical devices rather than transport rows", () => {
     const devices = [
       device("phone::usb", "phone", "USB", "connected"),
