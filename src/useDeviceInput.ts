@@ -50,6 +50,7 @@ export type DeviceInputCollections = {
   directTouchStartedAt: Map<number, number>;
   directTouchReleaseTimers: Map<number, number>;
   mappedReleaseTimers: Map<string, number>;
+  mappedContactIds: Map<string, number>;
   heldPointerBindings: Map<number, string>;
 };
 
@@ -61,6 +62,7 @@ export function clearDeviceInputCollections(
   for (const timer of collections.mappedReleaseTimers.values()) cancelReleaseTimer(timer);
   collections.directTouchReleaseTimers.clear();
   collections.mappedReleaseTimers.clear();
+  collections.mappedContactIds.clear();
   collections.directTouchStartedAt.clear();
   collections.directTouches.clear();
   collections.heldPointerBindings.clear();
@@ -96,6 +98,7 @@ export function useDeviceInput(options: Options) {
   const directTouchStartedAtRef = useRef(new Map<number, number>());
   const directTouchReleaseTimersRef = useRef(new Map<number, number>());
   const mappedReleaseTimersRef = useRef(new Map<string, number>());
+  const mappedContactIdsRef = useRef(new Map<string, number>());
   const heldPointerBindingsRef = useRef(new Map<number, string>());
   const activeMappingIdsRef = useRef(new Set<string>());
   const lastActiveTouchFrameRef = useRef<TouchContact[] | null>(null);
@@ -113,6 +116,7 @@ export function useDeviceInput(options: Options) {
     directTouchStartedAt: directTouchStartedAtRef.current,
     directTouchReleaseTimers: directTouchReleaseTimersRef.current,
     mappedReleaseTimers: mappedReleaseTimersRef.current,
+    mappedContactIds: mappedContactIdsRef.current,
     heldPointerBindings: heldPointerBindingsRef.current,
   }), []);
 
@@ -124,6 +128,7 @@ export function useDeviceInput(options: Options) {
 
   const sendFrame = useCallback((nextHeld = heldRef.current as ReadonlySet<string>, released: TouchContact[] = []) => {
     const current = optionsRef.current;
+    const directContacts = [...directTouchesRef.current.values()];
     const mappedFrame = buildMappingRuntimeFrame(
       current.mappings,
       nextHeld,
@@ -131,10 +136,14 @@ export function useDeviceInput(options: Options) {
       performance.now(),
       heldSinceRef.current,
       mappingOffsetsRef.current,
+      {
+        reservedIdentities: new Set([...directContacts, ...released].map((contact) => contact.identity)),
+        assignedIdentities: mappedContactIdsRef.current,
+      },
     );
     const activeContacts = mergeTouchContacts(
       mappedFrame.contacts,
-      [...directTouchesRef.current.values()],
+      directContacts,
     );
     publishActiveMappings(mappedFrame.activeMappingIds);
     if (!current.connected) return;
@@ -361,7 +370,7 @@ export function useDeviceInput(options: Options) {
     }
     if (event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
     const used = new Set([
-      ...buildTouchFrame(current.mappings, heldRef.current, current.frameSize).filter((contact) => contact.touching).map((contact) => contact.identity),
+      ...(lastActiveTouchFrameRef.current ?? buildTouchFrame(current.mappings, heldRef.current, current.frameSize)).map((contact) => contact.identity),
       ...[...directTouchesRef.current.values()].map((contact) => contact.identity),
     ]);
     const identity = [0, 1, 2, 3, 4].find((candidate) => !used.has(candidate));

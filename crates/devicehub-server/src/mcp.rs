@@ -4404,7 +4404,13 @@ mod tests {
             &repository,
             &profile(
                 "game",
-                vec![touch_mapping("jump", "Space", 1)],
+                vec![json!({
+                    "id": "jump",
+                    "type": "Press",
+                    "pointer_id": 1,
+                    "position": { "x": 0.75, "y": 0.25 },
+                    "bind": ["Space"]
+                })],
                 default_hardware_bindings(),
             ),
         )

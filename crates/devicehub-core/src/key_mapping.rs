@@ -123,6 +123,7 @@ fn valid_mapping_type(mapping_type: &str) -> bool {
         "touch"
             | "dpad"
             | "SingleTap"
+            | "Press"
             | "RepeatTap"
             | "MultipleTap"
             | "Swipe"

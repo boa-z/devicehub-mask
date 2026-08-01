@@ -948,7 +948,7 @@ export const enUS = {
     joystickPreserved: "Imported joystick-axis bindings are preserved.",
     directions: { up: "Up", down: "Down", left: "Left", right: "Right" },
     sequenceSummary: "Sequence contains {{count}} points; imported points are preserved on export.",
-    types: { SingleTap: "Single tap", RepeatTap: "Repeat tap", MultipleTap: "Multiple tap", Swipe: "Swipe", DirectionPad: "Direction pad", MouseCastSpell: "Mouse cast spell", PadCastSpell: "Pad cast spell", CancelCast: "Cancel cast", Observation: "Observation", Fps: "FPS camera", Fire: "Fire", RawInput: "Raw input", Script: "Script" },
+    types: { Press: "Hold", SingleTap: "Single tap", RepeatTap: "Repeat tap", MultipleTap: "Multiple tap", Swipe: "Swipe", DirectionPad: "Direction pad", MouseCastSpell: "Mouse cast spell", PadCastSpell: "Pad cast spell", CancelCast: "Cancel cast", Observation: "Observation", Fps: "FPS camera", Fire: "Fire", RawInput: "Raw input", Script: "Script" },
     delete: "Delete mapping",
     selectHint: "Select a control point on the screen to edit it",
     hardwareShortcuts: "Hardware button shortcuts",

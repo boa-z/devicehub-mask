@@ -14,14 +14,14 @@ import {
   mappingContactIds,
   mappingLabel,
   mappingPosition,
-  scrcpyMappingTypes,
+  keyMappingTypes,
   type ButtonBinding,
   type DirectionBinding,
   type HardwareBindings,
   type HardwareButtonName,
   type Mapping,
   type Position,
-  type ScrcpyMappingType,
+  type KeyMappingType,
 } from "../types";
 
 type Props = {
@@ -29,7 +29,7 @@ type Props = {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onChange: (mapping: Mapping, mergeKey?: string) => void;
-  onAdd: (type: ScrcpyMappingType) => void;
+  onAdd: (type: KeyMappingType) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
   frameSize: { width: number; height: number };
@@ -188,8 +188,8 @@ export function MappingInspector({
     </label>
   );
   const addMenu = {
-    items: scrcpyMappingTypes.map((type) => ({ key: type, label: t(`mapping.types.${type}`) })),
-    onClick: ({ key }: { key: string }) => onAdd(key as ScrcpyMappingType),
+    items: keyMappingTypes.map((type) => ({ key: type, label: t(`mapping.types.${type}`) })),
+    onClick: ({ key }: { key: string }) => onAdd(key as KeyMappingType),
   };
   const selectedTypeLabel = selected
     ? t(`mapping.types.${selected.type === "touch" ? "SingleTap" : selected.type === "dpad" ? "DirectionPad" : selected.type}`)
@@ -198,9 +198,9 @@ export function MappingInspector({
     ...(selected.type === "touch" || selected.type === "dpad"
       ? [{ value: selected.type, label: t("mapping.legacyType", { type: selectedTypeLabel }), disabled: true }]
       : []),
-    ...scrcpyMappingTypes.map((type) => ({ value: type, label: t(`mapping.types.${type}`) })),
+    ...keyMappingTypes.map((type) => ({ value: type, label: t(`mapping.types.${type}`) })),
   ] : [];
-  const changeType = (type: ScrcpyMappingType) => {
+  const changeType = (type: KeyMappingType) => {
     if (!selected || selected.type === type) return;
     Modal.confirm({
       title: t("mapping.changeTypeTitle"),
@@ -285,7 +285,7 @@ export function MappingInspector({
 
               <FieldSection title={t("mapping.basic") }>
                 <label><span>{t("mapping.name")}</span><Input value={mappingLabel(selected)} onChange={(event) => patch("label" in selected ? { label: event.target.value } : { note: event.target.value })} /></label>
-                <label><span>{t("mapping.type")}</span><Select value={selected.type} options={typeOptions} onChange={(type) => changeType(type as ScrcpyMappingType)} /></label>
+                <label><span>{t("mapping.type")}</span><Select value={selected.type} options={typeOptions} onChange={(type) => changeType(type as KeyMappingType)} /></label>
                 {primaryPosition && <label className="mapping-wide-field"><span>{t("mapping.position")}</span><PositionInput value={primaryPosition} onChange={setPrimaryPosition} /></label>}
                 {pointerId !== null && <label><span>{t("mapping.contactId")}</span><InputNumber min={0} max={4} value={pointerId} onChange={(value) => value !== null && patch("contactId" in selected ? { contactId: value } : { pointer_id: value })} /></label>}
               </FieldSection>

@@ -82,6 +82,12 @@ enum Mapping {
         bind: Vec<String>,
         duration_ms: f64,
     },
+    Press {
+        id: String,
+        identity: u8,
+        position: Point,
+        bind: Vec<String>,
+    },
     RepeatTap {
         id: String,
         identity: u8,
@@ -484,6 +490,22 @@ impl Mapping {
                     matched,
                 ))
             }
+            Self::Press {
+                id,
+                identity,
+                position,
+                bind,
+            } => {
+                let matched = bound(held, bind);
+                Ok(EvaluatedMapping::contact(
+                    id,
+                    *identity,
+                    *position,
+                    matched,
+                    claimed_binding_keys(matched, bind),
+                    matched,
+                ))
+            }
             Self::RepeatTap {
                 id,
                 identity,
@@ -658,6 +680,7 @@ impl Mapping {
             Self::Touch { id, .. }
             | Self::Dpad { id, .. }
             | Self::SingleTap { id, .. }
+            | Self::Press { id, .. }
             | Self::RepeatTap { id, .. }
             | Self::MultipleTap { id, .. }
             | Self::Swipe { id, .. }
@@ -898,6 +921,12 @@ fn compile_mapping(
             position: position(mapping, "position")?,
             bind: binding_field(mapping, "bind")?,
             duration_ms: finite_number(mapping, "duration", 1.0, MAX_TIMING_MS)?,
+        }),
+        "Press" => Ok(Mapping::Press {
+            id,
+            identity: contact_id(mapping, "pointer_id")?,
+            position: position(mapping, "position")?,
+            bind: binding_field(mapping, "bind")?,
         }),
         "RepeatTap" => Ok(Mapping::RepeatTap {
             id,
@@ -1294,6 +1323,33 @@ mod tests {
             compiled.frame(&held, Duration::ZERO),
             Err(KeymapError::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn press_stays_down_for_the_complete_held_state() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "pickup",
+                "type": "Press",
+                "pointer_id": 4,
+                "position": { "x": 0.63, "y": 0.55 },
+                "bind": ["KeyF"]
+            })]),
+            None,
+        )
+        .unwrap();
+        let held = normalize_held_keys(vec!["KeyF".into()]).unwrap();
+
+        let initial = compiled.frame(&held, Duration::ZERO).unwrap();
+        let later = compiled.frame(&held, Duration::from_secs(8)).unwrap();
+        let released = compiled
+            .frame(&BTreeSet::new(), Duration::from_secs(8))
+            .unwrap();
+
+        assert_eq!(initial.contacts.len(), 1);
+        assert!(initial.contacts[0].touching);
+        assert_eq!(initial.contacts, later.contacts);
+        assert!(released.contacts.is_empty());
     }
 
     #[test]
