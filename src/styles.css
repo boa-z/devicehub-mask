@@ -45,7 +45,14 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .workspace-loading { min-width: 0; min-height: 180px; height: 100%; flex: 1; display: grid; place-items: center; }
 .workspace-loading-inspector { min-width: 360px; border-left: 1px solid #303638; background: #171b1c; }
 .profile-manager { min-height: 48px; padding: 7px 12px; border-bottom: 1px solid #2a3031; display: flex; align-items: center; gap: 8px; background: #131718; }
-.profile-manager > .ant-select { width: min(260px, 30vw); }
+.profile-selector { width: min(310px, 34vw); min-width: 190px; display: grid; gap: 3px; }
+.profile-selector > .ant-select { width: 100%; }
+.profile-option { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.profile-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.profile-option .anticon { flex: 0 0 auto; color: #6dbb91; }
+.profile-status { min-width: 0; display: flex; align-items: center; gap: 4px; font-size: 11px; }
+.profile-status .ant-tag { margin: 0; line-height: 18px; }
+.profile-status .ant-typography { min-width: 0; margin: 0; font-size: 11px; }
 .profile-manager > .ant-space { margin-left: auto; }
 .profile-app-bindings { width: 100%; }
 .profile-app-bindings-hint { margin: 10px 0 0; color: #899493; font-size: 12px; }
@@ -57,6 +64,9 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .profile-import-file { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
 .profile-import-file .ant-typography { min-width: 0; margin: 0; }
 .profile-import-formats { margin: 0; font-size: 11px; }
+.profile-import-target { display: grid; gap: 3px; color: #9ba5a4; font-size: 12px; }
+.profile-import-target .ant-typography { margin: 0; }
+.profile-import-conflict { display: grid; gap: 8px; }
 .file-input { display: none; }
 .workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 310px; }
 .workspace.device-workspace { grid-template-columns: minmax(0, 1fr) 360px; }

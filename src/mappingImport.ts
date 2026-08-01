@@ -149,6 +149,16 @@ export function uniqueImportedProfileName(fileName: string, existing: readonly s
   return name;
 }
 
+export function resolveImportedProfileName(
+  fileName: string,
+  existing: readonly string[],
+  conflictMode: "replace" | "copy",
+) {
+  return conflictMode === "copy"
+    ? uniqueImportedProfileName(fileName, existing)
+    : uniqueImportedProfileName(fileName, []);
+}
+
 export async function importMappingFile(
   sourceId: MappingImportSourceId,
   file: MappingImportFile,

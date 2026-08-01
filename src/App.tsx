@@ -704,6 +704,7 @@ export default function App() {
     try {
       await writeProfile(profile.name, profile);
       await refreshProfiles();
+      resetProfile(profile);
       if (activeProfile === profile.name) {
         releaseAllControls();
         setControlProfile(profile);
@@ -715,10 +716,13 @@ export default function App() {
   };
   const activateCurrentProfile = async () => {
     releaseAllControls();
+    await writeProfile(profile.name, profile);
+    await refreshProfiles();
     const response = await request(`/api/profiles/${encodeURIComponent(profile.name)}/activate`, { method: "PUT" });
     if (!response.ok) throw new Error(t("errors.activateProfile", { status: response.status }));
     setActiveProfile(profile.name);
     setControlProfile(profile);
+    resetProfile(profile);
     void message.success(t("mapping.activated"));
   };
   const createProfile = async (name: string) => {
@@ -758,7 +762,12 @@ export default function App() {
   const importProfile = async (next: Profile, imported: number, skipped: number) => {
     await writeProfile(next.name, next);
     await refreshProfiles();
-    await loadProfile(next.name);
+    resetProfile(next);
+    setSelectedId(next.mappings[0]?.id ?? null);
+    if (activeProfile === next.name) {
+      releaseAllControls();
+      setControlProfile(next);
+    }
     void message.success(t(skipped ? "mapping.importedWithSkipped" : "mapping.imported", { imported, skipped }));
   };
   const installCatalogProfile = async (name: string) => {
@@ -1210,6 +1219,7 @@ export default function App() {
                   onTargetResolutionChange={(targetResolution) => updateProfile((current) => ({ ...current, targetResolution }))}
                   onImport={importProfile}
                   onBrowseCatalog={() => setCatalogOpen(true)}
+                  hasUnsavedChanges={canUndoProfile}
                   canUndo={canUndoProfile}
                   canRedo={canRedoProfile}
                   onUndo={undoProfile}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   importMappingFile,
   mappingImportSources,
+  resolveImportedProfileName,
   uniqueImportedProfileName,
   type MappingImportContext,
   type MappingImportFile,
@@ -64,5 +65,13 @@ describe("mapping import", () => {
     const unique = uniqueImportedProfileName(`${longName}.json`, [longName]);
     expect(unique).toHaveLength(80);
     expect(unique).toMatch(/-import-2$/);
+  });
+
+  it("requires an explicit import conflict policy instead of silently creating a copy", () => {
+    const existing = ["Genshin-Impact-fixed-16by9", "Genshin-Impact-fixed-16by9-import-2"];
+    expect(resolveImportedProfileName("Genshin-Impact-fixed-16by9.json", existing, "replace"))
+      .toBe("Genshin-Impact-fixed-16by9");
+    expect(resolveImportedProfileName("Genshin-Impact-fixed-16by9.json", existing, "copy"))
+      .toBe("Genshin-Impact-fixed-16by9-import-3");
   });
 });

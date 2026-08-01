@@ -12,10 +12,10 @@ import SaveOutlined from "@ant-design/icons/es/icons/SaveOutlined";
 import UndoOutlined from "@ant-design/icons/es/icons/UndoOutlined";
 import UploadOutlined from "@ant-design/icons/es/icons/UploadOutlined";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { Button, Input, Modal, Select, Space, Tag, Tooltip, Typography } from "antd";
+import { Alert, Button, Input, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { importMappingFile, mappingImportSource, mappingImportSources, uniqueImportedProfileName, type MappingImportSourceId } from "../mappingImport";
+import { importMappingFile, mappingImportSource, mappingImportSources, resolveImportedProfileName, type MappingImportSourceId } from "../mappingImport";
 import { showErrorMessage } from "../errorMessage";
 import type { AppBindingConflict, Profile, ProfileResolution } from "../types";
 import { conflictForScope } from "../profileBindings";
@@ -39,6 +39,7 @@ type Props = {
   onTargetResolutionChange: (targetResolution: ProfileResolution | null) => void;
   onImport: (profile: Profile, imported: number, skipped: number) => Promise<void>;
   onBrowseCatalog: () => void;
+  hasUnsavedChanges: boolean;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -77,6 +78,7 @@ export function ProfileManager({
   onTargetResolutionChange,
   onImport,
   onBrowseCatalog,
+  hasUnsavedChanges,
   canUndo,
   canRedo,
   onUndo,
@@ -93,6 +95,12 @@ export function ProfileManager({
   const [importSource, setImportSource] = useState<MappingImportSourceId>("devicehub-mask");
   const [selectedImportFile, setSelectedImportFile] = useState<File | null>(null);
   const [importBusy, setImportBusy] = useState(false);
+  const [importConflictMode, setImportConflictMode] = useState<"replace" | "copy">("replace");
+  const importBaseName = selectedImportFile ? resolveImportedProfileName(selectedImportFile.name, profiles, "replace") : "";
+  const importConflicts = importBaseName.length > 0 && profiles.includes(importBaseName);
+  const importTargetName = selectedImportFile
+    ? resolveImportedProfileName(selectedImportFile.name, profiles, importConflictMode)
+    : "";
   const hasBindingConflict = profile.bundleIdentifiers.some((bundleId) => (
     conflictForScope(bundleId, profile.targetResolution, bindingConflicts)
   ));
@@ -136,13 +144,29 @@ export function ProfileManager({
     const file = event.target.files?.[0] ?? null;
     event.target.value = "";
     setSelectedImportFile(file);
+    setImportConflictMode("replace");
+  };
+  const loadSelectedProfile = (name: string) => {
+    if (name === profile.name) return;
+    const load = () => onLoad(name).catch((error) => showErrorMessage(error));
+    if (!hasUnsavedChanges) {
+      void load();
+      return;
+    }
+    Modal.confirm({
+      title: t("profile.discardChangesTitle"),
+      content: t("profile.discardChangesWarning", { name: profile.name }),
+      okText: t("profile.discardChanges"),
+      cancelText: t("common.cancel"),
+      onOk: () => load(),
+    });
   };
   const submitImport = async () => {
     if (!selectedImportFile) return;
     setImportBusy(true);
     try {
       const result = await importMappingFile(importSource, selectedImportFile, {
-        profileName: uniqueImportedProfileName(selectedImportFile.name, profiles),
+        profileName: importTargetName,
         frameSize,
         invalidMessages: {
           "devicehub-mask": t("profile.invalidNative"),
@@ -175,17 +199,32 @@ export function ProfileManager({
 
   return (
     <div className="profile-manager">
-      <Select
-        value={profile.name}
-        options={profiles.map((name) => ({ value: name, label: name }))}
-        onChange={(name) => void onLoad(name).catch((error) => showErrorMessage(error))}
-      />
-      {activeProfile === profile.name && <Tag color="success">{t("profile.active")}</Tag>}
+      <div className="profile-selector">
+        <Select
+          value={profile.name}
+          options={profiles.map((name) => ({
+            value: name,
+            label: <span className="profile-option"><span>{name}</span>{activeProfile === name && <CheckOutlined />}</span>,
+          }))}
+          onChange={loadSelectedProfile}
+        />
+        <div className="profile-status">
+          {activeProfile === profile.name
+            ? <Tag color="success">{t("profile.active")}</Tag>
+            : <Tag color="processing">{t("profile.editing")}</Tag>}
+          {hasUnsavedChanges && <Tag color="warning">{t("profile.unsaved")}</Tag>}
+          {activeProfile !== profile.name && (
+            <Typography.Text type="secondary" ellipsis={{ tooltip: activeProfile }}>
+              {t("profile.activeProfile", { name: activeProfile })}
+            </Typography.Text>
+          )}
+        </div>
+      </div>
       <Space size={4}>
         <Tooltip title={t("profile.undo")}><Button disabled={!canUndo} icon={<UndoOutlined />} aria-label={t("profile.undo")} onClick={onUndo} /></Tooltip>
         <Tooltip title={t("profile.redo")}><Button disabled={!canRedo} icon={<RedoOutlined />} aria-label={t("profile.redo")} onClick={onRedo} /></Tooltip>
-        <Tooltip title={t("profile.save")}><Button icon={<SaveOutlined />} onClick={() => void onSave()} /></Tooltip>
-        <Tooltip title={t("profile.activate")}><Button disabled={activeProfile === profile.name} icon={<CheckOutlined />} onClick={() => void onActivate().catch((error) => showErrorMessage(error))} /></Tooltip>
+        <Tooltip title={t("profile.save")}><Button type={hasUnsavedChanges ? "primary" : "default"} icon={<SaveOutlined />} onClick={() => void onSave()} /></Tooltip>
+        <Tooltip title={t("profile.activate")}><Button disabled={activeProfile === profile.name && !hasUnsavedChanges} icon={<CheckOutlined />} onClick={() => void onActivate().catch((error) => showErrorMessage(error))} /></Tooltip>
         <Tooltip title={t("profile.create")}><Button icon={<PlusOutlined />} onClick={() => openDialog("create")} /></Tooltip>
         <Tooltip title={t("profile.duplicate")}><Button icon={<CopyOutlined />} onClick={() => openDialog("duplicate")} /></Tooltip>
         <Tooltip title={t("profile.rename")}><Button icon={<EditOutlined />} onClick={() => openDialog("rename")} /></Tooltip>
@@ -299,6 +338,7 @@ export function ProfileManager({
               onChange={(source) => {
                 setImportSource(source);
                 setSelectedImportFile(null);
+                setImportConflictMode("replace");
               }}
             />
           </label>
@@ -311,6 +351,31 @@ export function ProfileManager({
           <Typography.Text type="secondary" className="profile-import-formats">
             {t("profile.importFormats", { formats: mappingImportSource(importSource).extensions.join(", ") })}
           </Typography.Text>
+          {selectedImportFile && (
+            <div className="profile-import-target">
+              <span>{t("profile.importTarget")}</span>
+              <Typography.Text strong>{importTargetName}</Typography.Text>
+            </div>
+          )}
+          {importConflicts && (
+            <div className="profile-import-conflict">
+              <Alert
+                type="warning"
+                showIcon
+                message={t("profile.importConflictTitle")}
+                description={t("profile.importConflictHint", { name: importBaseName })}
+              />
+              <Segmented
+                block
+                value={importConflictMode}
+                options={[
+                  { value: "replace", label: t("profile.replaceExisting") },
+                  { value: "copy", label: t("profile.saveAsCopy") },
+                ]}
+                onChange={(mode) => setImportConflictMode(mode === "copy" ? "copy" : "replace")}
+              />
+            </div>
+          )}
         </div>
       </Modal>
     </div>
