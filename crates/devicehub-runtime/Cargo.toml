@@ -3,7 +3,7 @@ name = "devicehub-runtime"
 version = "0.1.0"
 edition = "2024"
 description = "Host-independent Apple device runtime for DeviceHub"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [features]
 test-support = []

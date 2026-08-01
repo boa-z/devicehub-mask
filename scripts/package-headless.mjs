@@ -53,6 +53,7 @@ copyResource(descriptor.windows ? "netmuxd.exe" : "netmuxd", packageRoot, true);
 copyResource("ffmpeg-LICENSE.txt", packageRoot, false);
 copyResource("netmuxd-LICENSE.txt", packageRoot, false);
 copyResource("THIRD_PARTY_NOTICES.txt", packageRoot, false);
+cpSync("LICENSE", join(packageRoot, "LICENSE"));
 cpSync("docs/en/headless.md", join(packageRoot, "README.md"));
 cpSync("docs/zh-CN/headless.md", join(packageRoot, "README.zh-CN.md"));
 
