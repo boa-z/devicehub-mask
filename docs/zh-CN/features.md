@@ -98,6 +98,7 @@
 桌面应用运行时，Streamable HTTP MCP 端点提供以下工具：
 
 - 画面与输入：`screenshot`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、 `type_text`、`paste_text`、`press_key`、`press_button`、`rotate`。
+- Key Mapping：`list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile` 和 `run_keymap`。Agent 可以创建 native v2 配置，并在自身选中的设备上回放可确定的键盘驱动映射，不会改变桌面端当前激活的配置。
 - 设备与会话：`status`、`device_details`、`list_devices`、`connect_device`、 `reconnect_device`、`lock_device`、`wait_for_device_event`、 `list_companion_devices`、`home_screen_layout`。
 - App 与诊断：`list_apps`、`launch_app`、`stop_app`、`app_status`、`wait_for_app`、`list_processes`、`process_status`、`wait_for_process`、`list_crash_reports`、带归一化摘要的 `read_crash_report`、`performance_snapshot`、`recent_device_logs`。
 - 定位与条件：`set_location`、`clear_location`、`list_device_conditions`、 `apply_device_condition`、`clear_device_condition`。

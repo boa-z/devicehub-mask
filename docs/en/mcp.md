@@ -79,6 +79,41 @@ For latency-sensitive loops:
 
 Coordinate and WDA mutation tools share a gesture lock, so two agent actions do not interleave their touch streams. This serialization does not make an old screenshot current; take another screenshot whenever orientation or layout may have changed.
 
+## Key-Mapping Workflow
+
+MCP can create and replay the same local native v2 key-mapping profiles used by the desktop Key Mapping workspace. `list_keymap_profiles` returns valid local profiles and their app/resolution metadata. `get_keymap_profile` reads a complete profile. `save_keymap_profile` creates a profile, or replaces an existing one only when `overwrite=true`; it does not change the desktop app's active profile. Omit `hardwareBindings` when saving to initialize all hardware shortcuts as empty.
+
+Mapping positions are normalized display fractions, not screenshot pixels. After taking a screenshot, divide a point's pixel `x` by `image_width` and `y` by `image_height` before placing it in a mapping. The following creates a portable game profile with a movement pad and an action button:
+
+```json
+{
+  "name": "example-game",
+  "mappings": [
+    {
+      "id": "move",
+      "type": "dpad",
+      "contactId": 0,
+      "x": 0.23,
+      "y": 0.73,
+      "radius": 0.1,
+      "keys": { "up": "KeyW", "down": "KeyS", "left": "KeyA", "right": "KeyD" }
+    },
+    {
+      "id": "skill-1",
+      "type": "touch",
+      "contactId": 1,
+      "x": 0.78,
+      "y": 0.72,
+      "key": "Space"
+    }
+  ]
+}
+```
+
+Call `run_keymap` with the saved profile name and one or more browser `KeyboardEvent.code` values, such as `KeyW`, `Space`, or `KeyJ`. It holds all supplied keys together for `hold_ms` (100ms by default, bounded to 25 through 5,000ms), emits repeated multi-touch frames while required, and always sends touch and hardware-button releases before returning. The action applies to this MCP connection's explicitly selected device; it never auto-activates a profile in the desktop UI.
+
+Deterministic MCP playback supports `touch`, `dpad`, `SingleTap`, `RepeatTap`, `MultipleTap`, `Swipe`, keyboard-button `DirectionPad`, `PadCastSpell`, and `hardwareBindings`. `DirectionPad` and `PadCastSpell` use `targetResolution` when it is present, otherwise the selected device's current stream size. Browser-only pointer deltas, random offsets, and script hooks are not executed; supported mappings use their saved base positions. A triggered `MouseCastSpell`, `CancelCast`, `Observation`, `Fps`, `Fire`, `RawInput`, or `Script` mapping returns an explicit error instead of silently doing nothing.
+
 ## Device and Session Workflow
 
 Use `list_devices` for the current transport inventory and `status` for this MCP connection's selected session. `connect_device` selects or reuses the exact session without stopping sessions for other physical devices. `reconnect_device` tears down and rebuilds only that target. Both wait for a new video frame for a bounded period and may report that connection is still being established; follow with `status` or `screenshot` rather than repeatedly reconnecting.
@@ -156,6 +191,7 @@ Supported selector strategies are `accessibility id`, `name`, `class name`, `xpa
 | Area | Tools | Notes |
 | --- | --- | --- |
 | Screen and input | `screenshot`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, `lock_device`, `rotate` | Screenshot dimensions define HID coordinates; one to five simultaneous contacts |
+| Key mapping | `list_keymap_profiles`, `get_keymap_profile`, `save_keymap_profile`, `run_keymap` | Local native v2 profiles; playback uses browser keyboard codes and never changes desktop activation |
 | Device and session | `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `wait_for_device_event`, `list_companion_devices`, `home_screen_layout` | Exact selection IDs preserve USB/Wi-Fi identity; stable identifiers are opt-in |
 | Apps and processes | `list_apps`, `launch_app`, `stop_app`, `app_status`, `wait_for_app`, `list_processes`, `process_status`, `wait_for_process` | Use exact Bundle IDs and fresh PIDs |
 | Diagnostics | `list_crash_reports`, `read_crash_report`, `performance_snapshot`, `recent_device_logs` | Bounded, read-only diagnostic output |

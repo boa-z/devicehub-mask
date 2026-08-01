@@ -98,6 +98,7 @@ For setup, coordinate rules, recommended agent workflows, WDA prerequisites, and
 The Streamable HTTP MCP endpoint exposes the following tools while the desktop app is running:
 
 - Screen and input: `screenshot`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, and `rotate`.
+- Key mapping: `list_keymap_profiles`, `get_keymap_profile`, `save_keymap_profile`, and `run_keymap`. Agents can create native v2 profiles and replay deterministic keyboard-driven mappings on their selected device without changing the desktop active profile.
 - Device/session: `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `lock_device`, `wait_for_device_event`, `list_companion_devices`, and `home_screen_layout`.
 - Apps and diagnosis: `list_apps`, `launch_app`, `stop_app`, `app_status`, `wait_for_app`, `list_processes`, `process_status`, `wait_for_process`, `list_crash_reports`, `read_crash_report` with a normalized summary, `performance_snapshot`, and `recent_device_logs`.
 - Location and conditions: `set_location`, `clear_location`, `list_device_conditions`, `apply_device_condition`, and `clear_device_condition`.

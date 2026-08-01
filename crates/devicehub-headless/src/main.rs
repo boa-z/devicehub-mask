@@ -266,6 +266,7 @@ async fn run(config: Config) -> Result<(), String> {
         diagnostics,
     )?;
     let (runtime, client) = started.into_parts();
+    let mcp_profile_dir = profile_dir.clone();
     let mut api_state = devicehub_host::private_api::state(
         client.clone(),
         profile_dir,
@@ -314,7 +315,9 @@ async fn run(config: Config) -> Result<(), String> {
     println!("Open {url}");
 
     let mcp = config.mcp_listen.map(|address| {
-        let router = devicehub_server::mcp::router(client);
+        let profiles =
+            devicehub_host::profile_files::TokioProfileRepository::new(mcp_profile_dir.clone());
+        let router = devicehub_server::mcp::router(client, profiles);
         tokio::spawn(async move {
             match tokio::net::TcpListener::bind(address).await {
                 Ok(listener) => {

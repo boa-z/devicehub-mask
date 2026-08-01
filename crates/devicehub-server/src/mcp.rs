@@ -1,5 +1,6 @@
 //! Streamable HTTP MCP frontend for observing and controlling the active device.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,11 @@ use serde_json::json;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
+use crate::http::{ProfileRepository, ProfileRepositoryError};
+#[cfg(test)]
+use crate::http::{ProfileRepositoryFuture, ProfileRepositorySnapshot, StoredProfile};
+use crate::mcp_keymap::{CompiledKeymap, KeymapError, NormalizedTouchContact, normalize_held_keys};
+
 use devicehub_core::hardware_button;
 #[cfg(test)]
 use devicehub_core::{
@@ -27,8 +33,10 @@ use devicehub_core::{
     OrientationSlot, PerformanceSlot, StatusSlot,
 };
 use devicehub_core::{
-    DeviceInputCommand, DeviceLogEntry, DeviceLogLevel, MAX_DEVICE_LOG_BATCH_ENTRIES, Orientation,
-    RotateDir, TouchContact, norm, unrotate_norm, validate_paste_text,
+    DeviceInputCommand, DeviceLogEntry, DeviceLogLevel, KeyMappingProfile, KeyMappingResolution,
+    MAX_DEVICE_LOG_BATCH_ENTRIES, Orientation, RotateDir, TouchContact, default_hardware_bindings,
+    norm, unrotate_norm, validate_key_mapping_profile, validate_key_mapping_profile_name,
+    validate_paste_text,
 };
 #[cfg(test)]
 use devicehub_runtime::DeviceEventSlot;
@@ -86,6 +94,79 @@ struct McpObservability {
     device_log_demand: DeviceLogDemand,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct MemoryProfileState {
+    profiles: BTreeMap<String, Vec<u8>>,
+    active: Option<String>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct MemoryProfileRepository(Arc<Mutex<MemoryProfileState>>);
+
+#[cfg(test)]
+impl ProfileRepository for MemoryProfileRepository {
+    fn snapshot(&self) -> ProfileRepositoryFuture<ProfileRepositorySnapshot> {
+        let state = self.0.lock().unwrap();
+        let snapshot = ProfileRepositorySnapshot {
+            profiles: state
+                .profiles
+                .iter()
+                .map(|(name, bytes)| StoredProfile {
+                    name: name.clone(),
+                    bytes: bytes.clone(),
+                })
+                .collect(),
+            active: state.active.clone(),
+        };
+        Box::pin(async move { Ok(snapshot) })
+    }
+
+    fn read(&self, name: String) -> ProfileRepositoryFuture<Vec<u8>> {
+        let result = self
+            .0
+            .lock()
+            .unwrap()
+            .profiles
+            .get(&name)
+            .cloned()
+            .ok_or(ProfileRepositoryError::NotFound);
+        Box::pin(async move { result })
+    }
+
+    fn write(&self, name: String, bytes: Vec<u8>) -> ProfileRepositoryFuture<()> {
+        self.0.lock().unwrap().profiles.insert(name, bytes);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn exists(&self, name: String) -> ProfileRepositoryFuture<bool> {
+        let exists = self.0.lock().unwrap().profiles.contains_key(&name);
+        Box::pin(async move { Ok(exists) })
+    }
+
+    fn active(&self) -> ProfileRepositoryFuture<Option<String>> {
+        let active = self.0.lock().unwrap().active.clone();
+        Box::pin(async move { Ok(active) })
+    }
+
+    fn set_active(&self, name: String) -> ProfileRepositoryFuture<()> {
+        self.0.lock().unwrap().active = Some(name);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn delete(&self, name: String) -> ProfileRepositoryFuture<()> {
+        let deleted = self.0.lock().unwrap().profiles.remove(&name).is_some();
+        Box::pin(async move {
+            if deleted {
+                Ok(())
+            } else {
+                Err(ProfileRepositoryError::NotFound)
+            }
+        })
+    }
+}
+
 #[derive(Clone)]
 struct DeviceHub {
     application: RuntimeClient<std::path::PathBuf>,
@@ -93,6 +174,8 @@ struct DeviceHub {
     selection_id: Arc<RwLock<Option<String>>>,
     last_image: Arc<Mutex<Option<(u32, u32)>>>,
     gesture_lock: Arc<tokio::sync::Mutex<()>>,
+    profiles: Arc<dyn ProfileRepository>,
+    profile_lock: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<DeviceHub>,
 }
 
@@ -102,6 +185,51 @@ struct ScreenshotParams {
     grid: Option<bool>,
     /// Maximum length of the image's longer edge. Defaults to 1024; 0 keeps native size.
     max_dim: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct KeymapResolutionParams {
+    /// Width of the upright target display in pixels.
+    width: u32,
+    /// Height of the upright target display in pixels.
+    height: u32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SaveKeymapProfileParams {
+    /// Local profile name: 1-80 ASCII letters, digits, hyphens, or underscores.
+    name: String,
+    /// Native v2 mapping objects. Supported types include touch, dpad, SingleTap, RepeatTap, MultipleTap, Swipe, DirectionPad, and PadCastSpell.
+    mappings: Vec<serde_json::Value>,
+    /// Optional associated iOS bundle IDs. When set, targetResolution is required.
+    #[serde(default, rename = "bundleIdentifiers")]
+    bundle_identifiers: Vec<String>,
+    /// Optional upright target display size for app-specific profiles.
+    #[serde(default, rename = "targetResolution")]
+    target_resolution: Option<KeymapResolutionParams>,
+    /// Optional keyboard shortcuts for home, lock, volume-up, volume-down, mute, siri, and action. Omit to use empty bindings.
+    #[serde(default, rename = "hardwareBindings")]
+    hardware_bindings: Option<BTreeMap<String, String>>,
+    /// Replace an existing profile with the same name. Defaults to false.
+    overwrite: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct KeymapProfileNameParams {
+    /// Local key-mapping profile name.
+    name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RunKeymapParams {
+    /// Local key-mapping profile name.
+    profile_name: String,
+    /// Browser KeyboardEvent.code values to hold together, for example KeyW, Space, or KeyJ.
+    keys: Vec<String>,
+    /// How long to hold the keys in milliseconds. Defaults to 100 and is clamped to 25..5000.
+    hold_ms: Option<u64>,
+    /// Wait for the screen to become visually stable after playback. Defaults to false for game input.
+    wait_for_settle: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -457,6 +585,49 @@ fn validate_process_pid(pid: u32) -> Result<(), McpError> {
     }
 }
 
+fn validate_keymap_profile_name(name: &str) -> Result<(), McpError> {
+    validate_key_mapping_profile_name(name).map_err(|_| {
+        McpError::invalid_params(
+            "keymap profile name must be 1-80 ASCII letters, digits, hyphens, or underscores",
+            None,
+        )
+    })
+}
+
+fn keymap_repository_error(error: ProfileRepositoryError) -> McpError {
+    match error {
+        ProfileRepositoryError::NotFound => {
+            McpError::resource_not_found("keymap profile not found", None)
+        }
+        ProfileRepositoryError::Unavailable => {
+            McpError::internal_error("keymap profile storage is unavailable", None)
+        }
+    }
+}
+
+fn keymap_execution_error(error: KeymapError) -> McpError {
+    McpError::invalid_params(error.to_string(), None)
+}
+
+fn keymap_frame_with_releases(
+    current: &[NormalizedTouchContact],
+    previous: &[NormalizedTouchContact],
+) -> Vec<NormalizedTouchContact> {
+    let mut frame = current.to_vec();
+    for contact in previous {
+        if !current
+            .iter()
+            .any(|candidate| candidate.identity == contact.identity)
+        {
+            frame.push(NormalizedTouchContact {
+                touching: false,
+                ..*contact
+            });
+        }
+    }
+    frame
+}
+
 fn downscale(rgb: Vec<u8>, width: u32, height: u32, max_dim: u32) -> (u32, u32, Vec<u8>) {
     let longer = width.max(height);
     if max_dim == 0 || longer <= max_dim || rgb.len() != width as usize * height as usize * 3 {
@@ -753,10 +924,37 @@ impl DeviceHub {
             .with_device_logs(device_logs)
             .with_device_log_demand(device_log_demand)
             .build_with_control(control);
-        Self::new_with_service(application)
+        Self::new_with_test_profiles(application)
     }
 
+    #[cfg(test)]
     fn new_with_service(application: RuntimeClient<std::path::PathBuf>) -> Self {
+        Self::new_with_test_profiles(application)
+    }
+
+    #[cfg(test)]
+    fn new_with_test_profiles(application: RuntimeClient<std::path::PathBuf>) -> Self {
+        Self::new_with_repository(application, Arc::new(MemoryProfileRepository::default()))
+    }
+
+    fn new_with_repository(
+        application: RuntimeClient<std::path::PathBuf>,
+        profiles: Arc<dyn ProfileRepository>,
+    ) -> Self {
+        Self::new_with_locks(
+            application,
+            profiles,
+            Arc::new(tokio::sync::Mutex::new(())),
+            Arc::new(tokio::sync::Mutex::new(())),
+        )
+    }
+
+    fn new_with_locks(
+        application: RuntimeClient<std::path::PathBuf>,
+        profiles: Arc<dyn ProfileRepository>,
+        gesture_lock: Arc<tokio::sync::Mutex<()>>,
+        profile_lock: Arc<tokio::sync::Mutex<()>>,
+    ) -> Self {
         let selection_id = application.manager.active.selection_id();
         let session = selection_id
             .as_deref()
@@ -767,7 +965,9 @@ impl DeviceHub {
             session: Arc::new(RwLock::new(session)),
             selection_id: Arc::new(RwLock::new(selection_id)),
             last_image: Arc::new(Mutex::new(None)),
-            gesture_lock: Arc::new(tokio::sync::Mutex::new(())),
+            gesture_lock,
+            profiles,
+            profile_lock,
             tool_router: Self::tool_router(),
         }
     }
@@ -820,6 +1020,49 @@ impl DeviceHub {
 
     fn frame_version(&self) -> u64 {
         self.current_session().device_control.frame_version()
+    }
+
+    fn current_keymap_frame_size(&self) -> Option<KeyMappingResolution> {
+        let session = self.current_session();
+        let turns = session.orientation.get().quarter_turns_cw();
+        let (width, height) = session.device_control.browser_dimensions()?;
+        let (width, height) = if turns.is_multiple_of(2) {
+            (width, height)
+        } else {
+            (height, width)
+        };
+        Some(KeyMappingResolution { width, height })
+    }
+
+    fn keymap_device_contacts(&self, contacts: &[NormalizedTouchContact]) -> Vec<TouchContact> {
+        let turns = self.current_session().orientation.get().quarter_turns_cw();
+        contacts
+            .iter()
+            .map(|contact| {
+                let (x, y) = unrotate_norm(contact.x, contact.y, turns);
+                TouchContact {
+                    identity: contact.identity,
+                    touching: contact.touching,
+                    x: norm(x),
+                    y: norm(y),
+                }
+            })
+            .collect()
+    }
+
+    async fn read_keymap_profile(&self, name: &str) -> Result<KeyMappingProfile, McpError> {
+        validate_keymap_profile_name(name)?;
+        let bytes = self
+            .profiles
+            .read(name.into())
+            .await
+            .map_err(keymap_repository_error)?;
+        let profile = serde_json::from_slice::<KeyMappingProfile>(&bytes)
+            .map_err(|_| McpError::internal_error("stored keymap profile is invalid JSON", None))?;
+        validate_key_mapping_profile(&profile).map_err(|_| {
+            McpError::internal_error("stored keymap profile failed validation", None)
+        })?;
+        Ok(profile)
     }
 
     async fn native_screenshot(&self) -> Result<(u32, u32, Vec<u8>), McpError> {
@@ -1075,6 +1318,255 @@ impl DeviceHub {
                 "action": "multi_touch",
                 "contacts": paths.len(),
                 "duration_ms": duration,
+                "frame_version_before": frame_version,
+                "frame_version_after": frame_version_after,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "List valid local key-mapping profiles available to this MCP server. The active field reflects the desktop-selected profile but this tool does not change it."
+    )]
+    async fn list_keymap_profiles(&self) -> Result<CallToolResult, McpError> {
+        let mut snapshot = self
+            .profiles
+            .snapshot()
+            .await
+            .map_err(keymap_repository_error)?;
+        snapshot
+            .profiles
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        let requested_active = snapshot
+            .active
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| validate_key_mapping_profile_name(name).is_ok())
+            .map(str::to_owned);
+        let mut profiles = Vec::new();
+        for stored in snapshot.profiles {
+            if validate_key_mapping_profile_name(&stored.name).is_err() {
+                continue;
+            }
+            let Ok(profile) = serde_json::from_slice::<KeyMappingProfile>(&stored.bytes) else {
+                continue;
+            };
+            if validate_key_mapping_profile(&profile).is_err() {
+                continue;
+            }
+            profiles.push(json!({
+                "name": stored.name,
+                "mappings": profile.mappings.len(),
+                "bundleIdentifiers": profile.bundle_identifiers,
+                "targetResolution": profile.target_resolution,
+            }));
+        }
+        let active_profile = requested_active.filter(|active| {
+            profiles.iter().any(|profile| {
+                profile.get("name").and_then(serde_json::Value::as_str) == Some(active)
+            })
+        });
+        ok_text(
+            json!({
+                "active_profile": active_profile,
+                "profiles": profiles,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Read one local key-mapping profile as native v2 JSON. Use this to inspect mappings created by the desktop app or before replacing a profile."
+    )]
+    async fn get_keymap_profile(
+        &self,
+        Parameters(params): Parameters<KeymapProfileNameParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let profile = self.read_keymap_profile(&params.name).await?;
+        ok_text(serde_json::to_string(&profile).map_err(|error| {
+            McpError::internal_error(
+                format!("keymap profile serialization failed: {error}"),
+                None,
+            )
+        })?)
+    }
+
+    #[tool(
+        description = "Create or replace a local native v2 key-mapping profile. This stores mappings only; it never changes the desktop app's active profile. Omit hardwareBindings to initialize all hardware shortcuts as empty."
+    )]
+    async fn save_keymap_profile(
+        &self,
+        Parameters(params): Parameters<SaveKeymapProfileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        validate_keymap_profile_name(&params.name)?;
+        let profile = KeyMappingProfile {
+            version: 2,
+            name: params.name.clone(),
+            mappings: params.mappings,
+            bundle_identifiers: params.bundle_identifiers,
+            target_resolution: params
+                .target_resolution
+                .map(|resolution| KeyMappingResolution {
+                    width: resolution.width,
+                    height: resolution.height,
+                }),
+            hardware_bindings: params
+                .hardware_bindings
+                .unwrap_or_else(default_hardware_bindings),
+        };
+        validate_key_mapping_profile(&profile).map_err(|_| {
+            McpError::invalid_params("keymap profile failed native v2 validation", None)
+        })?;
+        let bytes = serde_json::to_vec_pretty(&profile).map_err(|error| {
+            McpError::internal_error(
+                format!("keymap profile serialization failed: {error}"),
+                None,
+            )
+        })?;
+        let _lock = self.profile_lock.lock().await;
+        if self
+            .profiles
+            .exists(params.name.clone())
+            .await
+            .map_err(keymap_repository_error)?
+            && !params.overwrite.unwrap_or(false)
+        {
+            return Err(McpError::invalid_params(
+                "keymap profile already exists; set overwrite to true to replace it",
+                None,
+            ));
+        }
+        self.profiles
+            .write(params.name.clone(), bytes)
+            .await
+            .map_err(keymap_repository_error)?;
+        ok_text(
+            json!({
+                "saved": params.name,
+                "mappings": profile.mappings.len(),
+                "bundleIdentifiers": profile.bundle_identifiers,
+                "targetResolution": profile.target_resolution,
+            })
+            .to_string(),
+        )
+    }
+
+    #[tool(
+        description = "Run a saved key-mapping profile on this MCP session's selected device. keys are browser KeyboardEvent.code values held together for hold_ms. Supported playback types are touch, dpad, SingleTap, RepeatTap, MultipleTap, Swipe, DirectionPad, PadCastSpell, and hardwareBindings; unsupported triggered mapping types return an error."
+    )]
+    async fn run_keymap(
+        &self,
+        Parameters(params): Parameters<RunKeymapParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let profile = self.read_keymap_profile(&params.profile_name).await?;
+        let held = normalize_held_keys(params.keys).map_err(keymap_execution_error)?;
+        let compiled = CompiledKeymap::from_profile(&profile, self.current_keymap_frame_size())
+            .map_err(keymap_execution_error)?;
+        let initial = compiled
+            .frame(&held, Duration::ZERO)
+            .map_err(keymap_execution_error)?;
+        let hardware_buttons = compiled.active_hardware_buttons(&held);
+        if initial.matched_mapping_ids.is_empty() && hardware_buttons.is_empty() {
+            return Err(McpError::invalid_params(
+                "none of the supplied keys are bound by this keymap profile",
+                None,
+            ));
+        }
+        let hold_ms = params
+            .hold_ms
+            .unwrap_or(DEFAULT_TAP_HOLD_MS)
+            .clamp(25, 5000);
+        let hold = Duration::from_millis(hold_ms);
+        let frame_version = self.frame_version();
+        let _gesture = self.gesture_lock.lock().await;
+        let mut pressed_buttons = Vec::new();
+        let mut failure = None;
+        for binding in &hardware_buttons {
+            match self.send(InputCmd::DeviceInput(DeviceInputCommand::ButtonDown(
+                binding.button,
+            ))) {
+                Ok(()) => pressed_buttons.push(binding.button),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+
+        let mut active_contacts = Vec::new();
+        let mut active_mapping_ids = BTreeSet::new();
+        if failure.is_none() {
+            let started = Instant::now();
+            loop {
+                let frame = match compiled.frame(&held, started.elapsed()) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        failure = Some(keymap_execution_error(error));
+                        break;
+                    }
+                };
+                active_mapping_ids.extend(frame.active_mapping_ids);
+                let report = keymap_frame_with_releases(&frame.contacts, &active_contacts);
+                if !report.is_empty() {
+                    match self.send(InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(
+                        self.keymap_device_contacts(&report),
+                    ))) {
+                        Ok(()) => active_contacts = frame.contacts,
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
+                    }
+                } else {
+                    active_contacts = frame.contacts;
+                }
+                let elapsed = started.elapsed();
+                if elapsed >= hold {
+                    break;
+                }
+                tokio::time::sleep((hold - elapsed).min(Duration::from_millis(16))).await;
+            }
+        }
+
+        if !active_contacts.is_empty() {
+            let release = active_contacts
+                .iter()
+                .map(|contact| NormalizedTouchContact {
+                    touching: false,
+                    ..*contact
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) = self.send(InputCmd::DeviceInput(
+                DeviceInputCommand::MultiTouchFrame(self.keymap_device_contacts(&release)),
+            )) && failure.is_none()
+            {
+                failure = Some(error);
+            }
+        }
+        for button in pressed_buttons.into_iter().rev() {
+            if let Err(error) =
+                self.send(InputCmd::DeviceInput(DeviceInputCommand::ButtonUp(button)))
+                && failure.is_none()
+            {
+                failure = Some(error);
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if params.wait_for_settle.unwrap_or(false) {
+            self.settle().await;
+        }
+        let frame_version_after = self.frame_version();
+        ok_text(
+            json!({
+                "action": "run_keymap",
+                "profile_name": params.profile_name,
+                "keys": held,
+                "hold_ms": hold_ms,
+                "matched_mappings": initial.matched_mapping_ids,
+                "active_mappings": active_mapping_ids,
+                "hardware_buttons": hardware_buttons.iter().map(|binding| &binding.name).collect::<Vec<_>>(),
                 "frame_version_before": frame_version,
                 "frame_version_after": frame_version_after,
             })
@@ -2636,19 +3128,35 @@ impl ServerHandler for DeviceHub {
                 "devicehub_mask",
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. For semantic accessibility automation, use wda_status, wda_device_state, wda_ui_tree, wda_find_elements, wda_inspect_element, wda_wait_for_element, wda_click, wda_type_text, wda_double_tap, wda_touch_and_hold, and wda_scroll. WDA element rectangles use the logical coordinate space reported by wda_device_state, not screenshot pixels. Inspect a match before acting when visibility, enabled, or selected state matters, and use wda_wait_for_element instead of repeatedly polling for presence, visibility, enabled, or selected state. wda_unlock accepts no passcode and succeeds only after WDA confirms the unlocked state. wda_background_app affects only the current foreground app and can use a bounded automatic restore delay. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, then app_status or wait_for_app for bundle-aware lifecycle checks. Use home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes for a current PID snapshot, then process_status or wait_for_process only when PID-level diagnosis is required. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
+            .with_instructions("Control the connected iPhone by calling screenshot, then an input tool, then screenshot again. Coordinates are pixels in the screenshot; include image_width and image_height in actions. For games, use multi_touch for simultaneous controls and set wait_for_settle=false on tap/swipe, then call wait_for_frame with frame_version_after. Use list_keymap_profiles/get_keymap_profile to inspect local keymaps, save_keymap_profile to create native v2 profiles, and run_keymap with browser KeyboardEvent.code values to replay supported bindings without changing the desktop active profile. For semantic accessibility automation, use wda_status, wda_device_state, wda_ui_tree, wda_find_elements, wda_inspect_element, wda_wait_for_element, wda_click, wda_type_text, wda_double_tap, wda_touch_and_hold, and wda_scroll. WDA element rectangles use the logical coordinate space reported by wda_device_state, not screenshot pixels. Inspect a match before acting when visibility, enabled, or selected state matters, and use wda_wait_for_element instead of repeatedly polling for presence, visibility, enabled, or selected state. wda_unlock accepts no passcode and succeeds only after WDA confirms the unlocked state. wda_background_app affects only the current foreground app and can use a bounded automatic restore delay. If WDA is not already reachable, list_apps can discover an installed developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. Use list_apps with launch_app or stop_app for app lifecycle control, then app_status or wait_for_app for bundle-aware lifecycle checks. Use home_screen_layout for ordinal Dock/page/folder context, and list_devices/connect_device when no device is active. Use lock_device for a one-way lock request; press_button with lock toggles the hardware button and can wake an already locked device. Use device_details for battery and system context, list_companion_devices for paired Apple Watch context, and wait_for_device_event instead of polling for app, storage, or name changes. Use list_processes for a current PID snapshot, then process_status or wait_for_process only when PID-level diagnosis is required. Use performance_snapshot and recent_device_logs to diagnose device-side behavior. For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. After an app unexpectedly exits, call list_crash_reports and read_crash_report to inspect a bounded device crash report.")
     }
 }
 
 /// Build the MCP application without binding a listener or owning a runtime.
-pub fn router(application: RuntimeClient<std::path::PathBuf>) -> axum::Router {
-    service_router(DeviceHub::new_with_service(application))
+pub fn router(
+    application: RuntimeClient<std::path::PathBuf>,
+    profiles: impl ProfileRepository,
+) -> axum::Router {
+    service_router(DeviceHub::new_with_repository(
+        application,
+        Arc::new(profiles),
+    ))
 }
 
 fn service_router(hub: DeviceHub) -> axum::Router {
+    let profiles = hub.profiles.clone();
+    let gesture_lock = hub.gesture_lock.clone();
+    let profile_lock = hub.profile_lock.clone();
     let application = hub.application;
     let service = StreamableHttpService::new(
-        move || Ok(DeviceHub::new_with_service(application.clone())),
+        move || {
+            Ok(DeviceHub::new_with_locks(
+                application.clone(),
+                profiles.clone(),
+                gesture_lock.clone(),
+                profile_lock.clone(),
+            ))
+        },
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig::default(),
     );
@@ -2663,6 +3171,51 @@ mod tests {
         model::{CallToolRequestParams, ClientInfo},
         transport::StreamableHttpClientTransport,
     };
+
+    fn keymap_hub(input: InputSink, profiles: MemoryProfileRepository) -> DeviceHub {
+        let (application, _) =
+            devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default()
+                .with_commands(input)
+                .build();
+        DeviceHub::new_with_repository(application, Arc::new(profiles))
+    }
+
+    fn touch_mapping(id: &str, key: &str, contact_id: u8) -> serde_json::Value {
+        json!({
+            "id": id,
+            "type": "touch",
+            "label": id,
+            "contactId": contact_id,
+            "x": 0.75,
+            "y": 0.25,
+            "key": key,
+        })
+    }
+
+    fn profile(
+        name: &str,
+        mappings: Vec<serde_json::Value>,
+        hardware_bindings: BTreeMap<String, String>,
+    ) -> KeyMappingProfile {
+        KeyMappingProfile {
+            version: 2,
+            name: name.into(),
+            mappings,
+            bundle_identifiers: Vec::new(),
+            target_resolution: None,
+            hardware_bindings,
+        }
+    }
+
+    async fn store_profile(repository: &MemoryProfileRepository, profile: &KeyMappingProfile) {
+        repository
+            .write(
+                profile.name.clone(),
+                serde_json::to_vec(profile).expect("serialize test profile"),
+            )
+            .await
+            .expect("store test profile");
+    }
 
     #[test]
     fn mcp_session_selection_routes_commands_without_cross_device_leakage() {
@@ -2755,6 +3308,10 @@ mod tests {
             "tap",
             "swipe",
             "multi_touch",
+            "list_keymap_profiles",
+            "get_keymap_profile",
+            "save_keymap_profile",
+            "run_keymap",
             "wait_for_frame",
             "type_text",
             "paste_text",
@@ -2838,6 +3395,222 @@ mod tests {
         assert!(valid_bundle_identifier("com.example.game"));
         assert!(!valid_bundle_identifier("com..game"));
         assert!(!valid_bundle_identifier("invalid bundle"));
+    }
+
+    #[tokio::test]
+    async fn save_keymap_profile_validates_and_round_trips() {
+        let repository = MemoryProfileRepository::default();
+        let hub = keymap_hub(InputSink::default(), repository.clone());
+        let save = || SaveKeymapProfileParams {
+            name: "game".into(),
+            mappings: vec![touch_mapping("jump", "Space", 1)],
+            bundle_identifiers: Vec::new(),
+            target_resolution: None,
+            hardware_bindings: None,
+            overwrite: None,
+        };
+
+        hub.save_keymap_profile(Parameters(save())).await.unwrap();
+        let stored = repository.read("game".into()).await.unwrap();
+        let stored: KeyMappingProfile = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(stored.name, "game");
+        assert_eq!(stored.mappings.len(), 1);
+        assert_eq!(stored.hardware_bindings, default_hardware_bindings());
+        repository.set_active("game".into()).await.unwrap();
+
+        let listed = hub.list_keymap_profiles().await.unwrap();
+        assert!(listed.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""active_profile":"game""#))
+        }));
+
+        let loaded = hub
+            .get_keymap_profile(Parameters(KeymapProfileNameParams {
+                name: "game".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(loaded.content.iter().any(|content| {
+            content
+                .as_text()
+                .is_some_and(|text| text.text.contains(r#""name":"game""#))
+        }));
+        assert!(hub.save_keymap_profile(Parameters(save())).await.is_err());
+        assert!(
+            hub.save_keymap_profile(Parameters(SaveKeymapProfileParams {
+                name: "invalid name".into(),
+                mappings: Vec::new(),
+                bundle_identifiers: Vec::new(),
+                target_resolution: None,
+                hardware_bindings: None,
+                overwrite: None,
+            }))
+            .await
+            .is_err()
+        );
+        assert!(
+            hub.save_keymap_profile(Parameters(SaveKeymapProfileParams {
+                name: "invalid-profile".into(),
+                mappings: vec![json!({
+                    "id": "unknown",
+                    "type": "Unknown",
+                    "x": 0.5,
+                    "y": 0.5,
+                })],
+                bundle_identifiers: Vec::new(),
+                target_resolution: None,
+                hardware_bindings: None,
+                overwrite: None,
+            }))
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_keymap_sends_touch_frames_and_a_final_release() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let repository = MemoryProfileRepository::default();
+        let hub = keymap_hub(input, repository.clone());
+        store_profile(
+            &repository,
+            &profile(
+                "game",
+                vec![touch_mapping("jump", "Space", 1)],
+                default_hardware_bindings(),
+            ),
+        )
+        .await;
+
+        hub.run_keymap(Parameters(RunKeymapParams {
+            profile_name: "game".into(),
+            keys: vec!["Space".into()],
+            hold_ms: Some(25),
+            wait_for_settle: Some(false),
+        }))
+        .await
+        .unwrap();
+
+        let sent = std::iter::from_fn(|| input_rx.try_recv().ok()).collect::<Vec<_>>();
+        let InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(first)) = &sent[0] else {
+            panic!("first command must be a multi-touch frame");
+        };
+        let InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(last)) = sent.last().unwrap()
+        else {
+            panic!("last command must be a multi-touch frame");
+        };
+        assert_eq!(
+            first,
+            &vec![TouchContact {
+                identity: 1,
+                touching: true,
+                x: norm(0.75),
+                y: norm(0.25),
+            }]
+        );
+        assert_eq!(last.len(), 1);
+        assert_eq!(last[0].identity, 1);
+        assert!(!last[0].touching);
+    }
+
+    #[tokio::test]
+    async fn run_keymap_uses_dpad_direction_and_hardware_bindings() {
+        let input = InputSink::default();
+        let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        input.set(Some(input_tx));
+        let repository = MemoryProfileRepository::default();
+        let hub = keymap_hub(input, repository.clone());
+        let mut hardware_bindings = default_hardware_bindings();
+        hardware_bindings.insert("home".into(), "KeyH".into());
+        store_profile(
+            &repository,
+            &profile(
+                "game",
+                vec![json!({
+                    "id": "move",
+                    "type": "dpad",
+                    "contactId": 0,
+                    "x": 0.2,
+                    "y": 0.8,
+                    "radius": 0.1,
+                    "keys": { "up": "KeyW", "down": "KeyS", "left": "KeyA", "right": "KeyD" },
+                })],
+                hardware_bindings,
+            ),
+        )
+        .await;
+
+        hub.run_keymap(Parameters(RunKeymapParams {
+            profile_name: "game".into(),
+            keys: vec!["KeyW".into(), "KeyD".into()],
+            hold_ms: Some(25),
+            wait_for_settle: Some(false),
+        }))
+        .await
+        .unwrap();
+        let InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(frame)) =
+            input_rx.try_recv().unwrap()
+        else {
+            panic!("dpad must send a multi-touch frame");
+        };
+        assert_eq!(frame[0].identity, 0);
+        assert!((frame[0].x as i32 - norm(0.2 + 0.1 / std::f32::consts::SQRT_2) as i32).abs() <= 1);
+        assert!((frame[0].y as i32 - norm(0.8 - 0.1 / std::f32::consts::SQRT_2) as i32).abs() <= 1);
+        while input_rx.try_recv().is_ok() {}
+
+        hub.run_keymap(Parameters(RunKeymapParams {
+            profile_name: "game".into(),
+            keys: vec!["KeyH".into()],
+            hold_ms: Some(25),
+            wait_for_settle: Some(false),
+        }))
+        .await
+        .unwrap();
+        let sent = std::iter::from_fn(|| input_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(sent.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::ButtonDown(button))
+                if *button == hardware_button("home").unwrap()
+        )));
+        assert!(sent.iter().any(|command| matches!(
+            command,
+            InputCmd::DeviceInput(DeviceInputCommand::ButtonUp(button))
+                if *button == hardware_button("home").unwrap()
+        )));
+    }
+
+    #[tokio::test]
+    async fn run_keymap_rejects_triggered_unsupported_mappings() {
+        let repository = MemoryProfileRepository::default();
+        let hub = keymap_hub(InputSink::default(), repository.clone());
+        store_profile(
+            &repository,
+            &profile(
+                "game",
+                vec![json!({
+                    "id": "raw",
+                    "type": "RawInput",
+                    "position": { "x": 0.5, "y": 0.5 },
+                    "bind": ["KeyR"],
+                })],
+                default_hardware_bindings(),
+            ),
+        )
+        .await;
+
+        let error = hub
+            .run_keymap(Parameters(RunKeymapParams {
+                profile_name: "game".into(),
+                keys: vec!["KeyR".into()],
+                hold_ms: Some(25),
+                wait_for_settle: Some(false),
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("RawInput"));
     }
 
     #[tokio::test]
@@ -4411,6 +5184,13 @@ mod tests {
         let client = ClientInfo::default().serve(transport).await.unwrap();
         let tools = client.peer().list_tools(None).await.unwrap();
         assert!(tools.tools.iter().any(|tool| tool.name == "screenshot"));
+        assert!(
+            tools
+                .tools
+                .iter()
+                .any(|tool| tool.name == "save_keymap_profile")
+        );
+        assert!(tools.tools.iter().any(|tool| tool.name == "run_keymap"));
         assert!(
             tools
                 .tools
