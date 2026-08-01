@@ -943,7 +943,7 @@ export const zhCN = {
     joystickPreserved: "已导入的摇杆轴绑定会原样保留。",
     directions: { up: "上", down: "下", left: "左", right: "右" },
     sequenceSummary: "序列包含 {{count}} 个点，导入的点会在导出时完整保留。",
-    types: { SingleTap: "单次点击", RepeatTap: "连续点击", MultipleTap: "多段点击", Swipe: "滑动", DirectionPad: "方向盘", MouseCastSpell: "鼠标施法", PadCastSpell: "方向施法", CancelCast: "取消施法", Observation: "视野观察", Fps: "FPS 视角", Fire: "开火", RawInput: "原始输入", Script: "脚本" },
+    types: { Press: "按住", SingleTap: "单次点击", RepeatTap: "连续点击", MultipleTap: "多段点击", Swipe: "滑动", DirectionPad: "方向盘", MouseCastSpell: "鼠标施法", PadCastSpell: "方向施法", CancelCast: "取消施法", Observation: "视野观察", Fps: "FPS 视角", Fire: "开火", RawInput: "原始输入", Script: "脚本" },
     delete: "删除映射",
     selectHint: "选择画面中的控制点进行编辑",
     hardwareShortcuts: "硬件按键快捷键",

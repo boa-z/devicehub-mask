@@ -77,6 +77,7 @@ For reliable combinations such as movement plus two skills, assign different IDs
 | Controller | Current runtime behavior | Important limits |
 | --- | --- | --- |
 | Single tap | Holds one contact while the complete binding remains pressed, for at most `duration` | Releasing early releases the contact; holding the key does not repeat the tap |
+| Press and hold | Starts touching on key-down and releases at the same point on key-up | The screen touch lasts exactly as long as the complete keyboard binding is held |
 | Repeat tap | Alternates contact down for `duration` and up for `interval` while the binding remains held | Use positive intervals; device and game timing still determine acceptance |
 | Multiple tap | Runs the ordered points once, applying each point's wait and duration | It does not loop while held after the sequence ends |
 | Swipe | Interpolates through the ordered points over `duration` | The final point remains held until the binding is released |

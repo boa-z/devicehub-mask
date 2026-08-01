@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { buildMappingRuntimeFrame, buildTouchFrame, isUiControl, mappingBindings, mergeTouchContacts, pointerButtonCode, remainingTapDuration, singleTapReleaseDelay, touchFramesEqual, transitionTouchContacts } from "./control";
-import { createMapping, type PadCastSpellMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
+import { createMapping, type PadCastSpellMapping, type PressMapping, type RepeatTapMapping, type SingleTapMapping, type SwipeMapping } from "./types";
 
 describe("mapping controller runtime", () => {
+  it("keeps Press touching for exactly as long as its binding is held", () => {
+    const mapping = { ...createMapping("Press", { x: 0.63, y: 0.55 }), bind: ["KeyF"], pointer_id: 4 } as PressMapping;
+    const heldSince = new Map([["KeyF", 1000]]);
+    const active = buildTouchFrame([mapping], new Set(["KeyF"]), undefined, 8000, heldSince);
+
+    expect(buildTouchFrame([mapping], new Set(["KeyF"]), undefined, 1001, heldSince)).toEqual([
+      { identity: 4, touching: true, x: 0.63, y: 0.55 },
+    ]);
+    expect(active).toEqual([{ identity: 4, touching: true, x: 0.63, y: 0.55 }]);
+    expect(transitionTouchContacts(active, buildTouchFrame([mapping], new Set(), undefined, 8001, heldSince)))
+      .toEqual([{ identity: 4, touching: false, x: 0.63, y: 0.55 }]);
+  });
+
   it("pulses repeat taps according to duration and interval", () => {
     const mapping = { ...createMapping("RepeatTap", { x: 0.5, y: 0.5 }), bind: ["Space"], duration: 50, interval: 100 } as RepeatTapMapping;
     const held = new Set(["Space"]);

@@ -493,15 +493,16 @@ type LegacyBase = { id: string; label: string; contactId: number; x: number; y: 
 export type TouchMapping = LegacyBase & { type: "touch"; key: string };
 export type DpadMapping = LegacyBase & { type: "dpad"; radius: number; keys: { up: string; down: string; left: string; right: string } };
 
-type ScrcpyBase = { id: string; type: ScrcpyMappingType; note: string; position: Position };
-type PointerBase = ScrcpyBase & { bind: ButtonBinding; pointer_id: number };
+type KeyMappingBase = { id: string; type: KeyMappingType; note: string; position: Position };
+type PointerBase = KeyMappingBase & { bind: ButtonBinding; pointer_id: number };
 type RandomPointerBase = PointerBase & { random_offset_x: number; random_offset_y: number; script_hooks: ScriptHooks };
 
 export type SingleTapMapping = RandomPointerBase & { type: "SingleTap"; duration: number; sync: boolean };
+export type PressMapping = RandomPointerBase & { type: "Press" };
 export type RepeatTapMapping = RandomPointerBase & { type: "RepeatTap"; duration: number; interval: number };
 export type MultipleTapMapping = Omit<RandomPointerBase, "position"> & { type: "MultipleTap"; position: Position; items: { position: Position; duration: number; wait: number }[] };
 export type SwipeMapping = PointerBase & { type: "Swipe"; duration: number; enable_randomization: boolean; positions: Position[]; script_hooks: ScriptHooks };
-export type DirectionPadMapping = ScrcpyBase & {
+export type DirectionPadMapping = KeyMappingBase & {
   type: "DirectionPad"; bind: DirectionBinding; pointer_id: number; max_offset_x: number; max_offset_y: number;
   enable_randomization: boolean; initial_duration: number; random_distance_max_scale: number; random_distance_min_scale: number;
   random_offset_x: number; random_offset_y: number; jitter_offset_x: number; jitter_offset_y: number;
@@ -516,28 +517,30 @@ export type PadCastSpellMapping = RandomPointerBase & {
   type: "PadCastSpell"; block_direction_pad: boolean; drag_radius: number; enable_randomization: boolean;
   pad_bind: DirectionBinding; release_mode: "OnRelease" | "OnSecondPress";
 };
-export type CancelCastMapping = ScrcpyBase & { type: "CancelCast"; bind: ButtonBinding; script_hooks: ScriptHooks };
+export type CancelCastMapping = KeyMappingBase & { type: "CancelCast"; bind: ButtonBinding; script_hooks: ScriptHooks };
 export type ObservationMapping = RandomPointerBase & { type: "Observation"; max_radius: number; sensitivity_x: number; sensitivity_y: number };
 export type FpsTouchMode = { type: "single"; interval: number } | { type: "dual"; another_pointer_id: number; strategy: "delay"; interval: number } | { type: "dual"; another_pointer_id: number; strategy: "overlap" };
 export type FpsMapping = PointerBase & { type: "Fps"; sensitivity_x: number; sensitivity_y: number; max_offset_x: number; max_offset_y: number; touch_mode: FpsTouchMode };
 export type FireMapping = RandomPointerBase & { type: "Fire"; preserve_fps_control: boolean; sensitivity_x: number; sensitivity_y: number };
-export type RawInputMapping = ScrcpyBase & { type: "RawInput"; bind: ButtonBinding };
-export type ScriptMapping = ScrcpyBase & { type: "Script"; bind: ButtonBinding; pressed_script: string; released_script: string; held_script: string; interval: number };
+export type RawInputMapping = KeyMappingBase & { type: "RawInput"; bind: ButtonBinding };
+export type ScriptMapping = KeyMappingBase & { type: "Script"; bind: ButtonBinding; pressed_script: string; released_script: string; held_script: string; interval: number };
 
 export type ScrcpyMappingType = "SingleTap" | "RepeatTap" | "MultipleTap" | "Swipe" | "DirectionPad" | "MouseCastSpell" | "PadCastSpell" | "CancelCast" | "Observation" | "Fps" | "Fire" | "RawInput" | "Script";
-export const scrcpyMappingTypes: ScrcpyMappingType[] = ["SingleTap", "RepeatTap", "MultipleTap", "Swipe", "DirectionPad", "MouseCastSpell", "PadCastSpell", "CancelCast", "Observation", "Fps", "Fire", "RawInput", "Script"];
-export type ScrcpyMapping = SingleTapMapping | RepeatTapMapping | MultipleTapMapping | SwipeMapping | DirectionPadMapping | MouseCastSpellMapping | PadCastSpellMapping | CancelCastMapping | ObservationMapping | FpsMapping | FireMapping | RawInputMapping | ScriptMapping;
-export type Mapping = TouchMapping | DpadMapping | ScrcpyMapping;
+export type KeyMappingType = "Press" | ScrcpyMappingType;
+export const keyMappingTypes: KeyMappingType[] = ["Press", "SingleTap", "RepeatTap", "MultipleTap", "Swipe", "DirectionPad", "MouseCastSpell", "PadCastSpell", "CancelCast", "Observation", "Fps", "Fire", "RawInput", "Script"];
+export type KeyMapping = PressMapping | SingleTapMapping | RepeatTapMapping | MultipleTapMapping | SwipeMapping | DirectionPadMapping | MouseCastSpellMapping | PadCastSpellMapping | CancelCastMapping | ObservationMapping | FpsMapping | FireMapping | RawInputMapping | ScriptMapping;
+export type Mapping = TouchMapping | DpadMapping | KeyMapping;
 
 const hooks = (): ScriptHooks => ({ before_script: "", after_script: "" });
 const buttons = (): DirectionBinding => ({ type: "Button", up: [], down: [], left: [], right: [] });
-export function createMapping(type: ScrcpyMappingType, position: Position, frame = { width: 1296, height: 2816 }): ScrcpyMapping {
+export function createMapping(type: KeyMappingType, position: Position, frame = { width: 1296, height: 2816 }): KeyMapping {
   const id = crypto.randomUUID();
   const base = { id, type, note: "", position };
   const pointer = { ...base, bind: [] as string[], pointer_id: 0 };
   const random = { ...pointer, random_offset_x: 0, random_offset_y: 0, script_hooks: hooks() };
   const distance = Math.min(frame.width, frame.height);
   switch (type) {
+    case "Press": return { ...random, type };
     case "SingleTap": return { ...random, type, duration: 50, sync: false };
     case "RepeatTap": return { ...random, type, duration: 50, interval: 100 };
     case "MultipleTap": return { ...random, type, items: [{ position, duration: 50, wait: 0 }] };

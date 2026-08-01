@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { importScrcpyMaskConfig } from "./scrcpyCompat";
-import { scrcpyMappingTypes } from "./types";
+import { keyMappingTypes } from "./types";
 
 const position = { x: 500, y: 250 };
 const hooks = { before_script: "", after_script: "" };
@@ -30,7 +30,7 @@ describe("scrcpy-mask compatibility", () => {
     const result = importScrcpyMaskConfig({ version: "0.0.1", original_size: { width: 1000, height: 1000 }, mappings: fixtures() }, "game");
     expect(result.imported).toBe(13);
     expect(result.skipped).toBe(0);
-    expect(result.profile.mappings.map((mapping) => mapping.type)).toEqual(scrcpyMappingTypes);
+    expect(result.profile.mappings.map((mapping) => mapping.type)).toEqual(keyMappingTypes.slice(1));
     expect(result.profile.mappings[0]).toMatchObject({ type: "SingleTap", position: { x: 0.5, y: 0.25 }, bind: ["Space"] });
   });
 

@@ -1,4 +1,4 @@
-import { createMapping, defaultHardwareBindings, scrcpyMappingTypes, type Mapping, type Profile, type ScrcpyMapping, type ScrcpyMappingType } from "./types";
+import { createMapping, defaultHardwareBindings, keyMappingTypes, type KeyMapping, type Mapping, type Profile, type ScrcpyMappingType } from "./types";
 
 type JsonObject = Record<string, unknown>;
 export type ScrcpyImportResult = { profile: Profile; imported: number; skipped: number };
@@ -24,8 +24,8 @@ function directionBinding(value: unknown, convert: (key: unknown) => unknown) {
   return raw;
 }
 
-function importMapping(raw: JsonObject, width: number, height: number): ScrcpyMapping | undefined {
-  if (typeof raw.type !== "string" || !scrcpyMappingTypes.includes(raw.type as never)) return undefined;
+function importMapping(raw: JsonObject, width: number, height: number): KeyMapping | undefined {
+  if (typeof raw.type !== "string" || raw.type === "Press" || !keyMappingTypes.includes(raw.type as never)) return undefined;
   const position = point(raw.position, width, height);
   if (!position) return undefined;
   const defaults = createMapping(raw.type as ScrcpyMappingType, position, { width, height });
@@ -46,7 +46,7 @@ function importMapping(raw: JsonObject, width: number, height: number): ScrcpyMa
   if (raw.center) mapping.center = point(raw.center, width, height) ?? position;
   if (raw.type === "DirectionPad") mapping.bind = directionBinding(raw.bind, keyIn);
   if (raw.type === "PadCastSpell") mapping.pad_bind = directionBinding(raw.pad_bind, keyIn);
-  return mapping as unknown as ScrcpyMapping;
+  return mapping as unknown as KeyMapping;
 }
 
 export function importScrcpyMaskConfig(value: unknown, profileName: string, options: ScrcpyImportOptions = {}): ScrcpyImportResult {

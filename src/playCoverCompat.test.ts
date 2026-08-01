@@ -29,7 +29,7 @@ describe("PlayCover compatibility", () => {
     }, "game", { width: 1600, height: 900 });
     expect(result).toMatchObject({ imported: 3, skipped: 0 });
     expect(result.profile.bundleIdentifiers).toEqual(["com.example.game"]);
-    expect(result.profile.mappings[0]).toMatchObject({ type: "SingleTap", bind: ["Space"], position: { x: 0.8, y: 0.7 } });
+    expect(result.profile.mappings[0]).toMatchObject({ type: "Press", bind: ["Space"], position: { x: 0.8, y: 0.7 } });
     expect(result.profile.mappings[1]).toMatchObject({ type: "MouseCastSpell", bind: ["KeyQ"], position: { x: 0.7, y: 0.8 } });
     expect(result.profile.mappings[2]).toMatchObject({
       type: "DirectionPad",

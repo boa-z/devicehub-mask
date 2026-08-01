@@ -7,7 +7,7 @@ import {
   type MouseCastSpellMapping,
   type Position,
   type Profile,
-  type SingleTapMapping,
+  type PressMapping,
 } from "./types";
 
 type PlistObject = Record<string, unknown>;
@@ -192,7 +192,7 @@ export function importPlayCoverConfig(
           drag_radius: radius,
         });
       } else {
-        const mapping = createMapping("SingleTap", point, frame) as SingleTapMapping;
+        const mapping = createMapping("Press", point, frame) as PressMapping;
         mappings.push({
           ...mapping,
           id: `playcover-button-${index}`,

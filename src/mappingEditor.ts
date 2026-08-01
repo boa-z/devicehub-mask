@@ -1,4 +1,4 @@
-import { createMapping, mappingContactIds, mappingPosition, type ButtonBinding, type DirectionBinding, type Mapping, type Position, type ScrcpyMapping, type ScrcpyMappingType } from "./types";
+import { createMapping, mappingContactIds, mappingPosition, type ButtonBinding, type DirectionBinding, type KeyMapping, type KeyMappingType, type Mapping, type Position } from "./types";
 
 const CONTACT_IDS = [0, 1, 2, 3, 4] as const;
 
@@ -67,10 +67,10 @@ function directionBinding(mapping: Mapping): DirectionBinding | null {
  */
 export function convertEditorMappingType(
   source: Mapping,
-  type: ScrcpyMappingType,
+  type: KeyMappingType,
   frame: { width: number; height: number },
-): ScrcpyMapping {
-  if (source.type === type) return cloneValue(source) as ScrcpyMapping;
+): KeyMapping {
+  if (source.type === type) return cloneValue(source) as KeyMapping;
 
   const next = createMapping(type, mappingPosition(source), frame);
   next.id = source.id;
@@ -110,7 +110,7 @@ export function convertEditorMappingType(
   return next;
 }
 
-export function createEditorMapping(type: ScrcpyMappingType, position: Position, frame: { width: number; height: number }, existing: Mapping[]) {
+export function createEditorMapping(type: KeyMappingType, position: Position, frame: { width: number; height: number }, existing: Mapping[]) {
   return assignContactIds(createMapping(type, position, frame), existing);
 }
 

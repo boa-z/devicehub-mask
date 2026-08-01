@@ -45,7 +45,7 @@ import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPrefere
 import { logFrontend } from "./diagnostics";
 import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
-import { defaultHardwareBindings, defaultProfile, hardwareButtons, scrcpyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type Mapping, type PairDeviceResult, type Position, type Profile, type ScrcpyMappingType } from "./types";
+import { defaultHardwareBindings, defaultProfile, hardwareButtons, keyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type KeyMappingType, type Mapping, type PairDeviceResult, type Position, type Profile } from "./types";
 import type { AppBindingConflict, AppProfileBinding } from "./types";
 import { bindingForScope, conflictForScope, resolveAppProfileBinding, sameProfileResolution } from "./profileBindings";
 import { useDeviceInput, type ControlMode } from "./useDeviceInput";
@@ -704,7 +704,7 @@ export default function App() {
     return { ...current, hardwareBindings: { ...current.hardwareBindings, [name]: key } };
   });
   const moveMapping = (id: string, x: number, y: number) => updateProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? ("position" in mapping ? { ...mapping, position: { x, y } } : { ...mapping, x, y }) as Mapping : mapping) }), { mergeKey: `move:${id}` });
-  const addMapping = (type: ScrcpyMappingType, position: Position = { x: 0.5, y: 0.5 }) => {
+  const addMapping = (type: KeyMappingType, position: Position = { x: 0.5, y: 0.5 }) => {
     const next = createEditorMapping(type, position, mappingFrameSize, profile.mappings);
     const id = next.id;
     updateProfile((current) => ({ ...current, mappings: [...current.mappings, next] }));
@@ -1371,8 +1371,8 @@ export default function App() {
                       disabled={page !== "mappings" || !mappingEditing}
                       trigger={["contextMenu"]}
                       menu={{
-                        items: scrcpyMappingTypes.map((type) => ({ key: type, label: t(`mapping.types.${type}`) })),
-                        onClick: ({ key }) => addMapping(key as ScrcpyMappingType, mappingInsertPositionRef.current),
+                        items: keyMappingTypes.map((type) => ({ key: type, label: t(`mapping.types.${type}`) })),
+                        onClick: ({ key }) => addMapping(key as KeyMappingType, mappingInsertPositionRef.current),
                       }}
                     >
                       <div
