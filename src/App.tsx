@@ -1,6 +1,7 @@
 import AimOutlined from "@ant-design/icons/es/icons/AimOutlined";
 import ApiOutlined from "@ant-design/icons/es/icons/ApiOutlined";
 import AudioMutedOutlined from "@ant-design/icons/es/icons/AudioMutedOutlined";
+import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
 import CameraOutlined from "@ant-design/icons/es/icons/CameraOutlined";
 import CustomerServiceOutlined from "@ant-design/icons/es/icons/CustomerServiceOutlined";
 import EditOutlined from "@ant-design/icons/es/icons/EditOutlined";
@@ -36,6 +37,7 @@ import { KeyboardIcon } from "./components/KeyboardIcon";
 import type { MappingBackgroundMode } from "./components/MappingBackgroundToolbar";
 import { MappingOverlay } from "./components/MappingOverlay";
 import { PerformanceHud } from "./components/PerformanceHud";
+import { PointerDebugOverlay } from "./components/PointerDebugOverlay";
 import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
@@ -415,6 +417,7 @@ export default function App() {
     profile: controlProfile,
     keymapStatus,
     frameSize,
+    pointerDebugEnabled: deviceViewPreferences.pointerDebugVisible,
     mappingEditing,
     controlMode,
     onControlModeChange: handleControlModeChange,
@@ -1094,6 +1097,14 @@ export default function App() {
           onClick={() => void saveDeviceScreenshot()}
         />
       </Tooltip>
+      <Tooltip title={t(deviceViewPreferences.pointerDebugVisible ? "device.hidePointerDebug" : "device.showPointerDebug")}>
+        <Button
+          aria-label={t(deviceViewPreferences.pointerDebugVisible ? "device.hidePointerDebug" : "device.showPointerDebug")}
+          type={deviceViewPreferences.pointerDebugVisible ? "primary" : "default"}
+          icon={<BugOutlined />}
+          onClick={() => patchDeviceViewPreferences({ pointerDebugVisible: !deviceViewPreferences.pointerDebugVisible })}
+        />
+      </Tooltip>
       <Tooltip title={audioControlLabel}>
         <Button
           aria-label={audioControlLabel}
@@ -1416,9 +1427,18 @@ export default function App() {
                       {(page === "mappings" || controlOverlayVisible) && (
                         <MappingOverlay mappings={displayedMappings} selectedId={selectedId} editing={mappingEditing} showGuides={mappingGuidesVisible} frameSize={displayedFrameSize} activeMappingIds={activeMappingIds} onSelect={setSelectedId} onMove={moveMapping} />
                       )}
-                      {directTouches.map((contact) => (
+                      {!deviceViewPreferences.pointerDebugVisible && directTouches.map((contact) => (
                         <span key={contact.identity} className="direct-touch" style={{ left: `${contact.x * 100}%`, top: `${contact.y * 100}%` }} />
                       ))}
+                      <PointerDebugOverlay
+                        visible={deviceViewPreferences.pointerDebugVisible}
+                        frameSize={displayedFrameSize}
+                        orientation={status.orientation}
+                        directTouches={directTouches}
+                        keymapConfigured={keymapStatus.configured}
+                        keymapContacts={keymapStatus.active_contacts}
+                        activeMappingIds={keymapStatus.active_mapping_ids}
+                      />
                       {stageIssue && !(page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot) && (
                         <div className="device-stage-state" onPointerDown={(event) => event.stopPropagation()}>
                           <AimOutlined />

@@ -8,13 +8,13 @@ This page is the concise inventory of functionality already implemented in Devic
 
 | Workspace | Implemented capabilities |
 | --- | --- |
-| **Device** | USB and Wi-Fi device selection, in-app USB trust pairing, explicit reconnect, live screen, direct touch, mapping and keyboard-passthrough modes, rotation, native screenshot, WebView-supported screen recording, Unicode paste, device audio mute, hardware buttons, focused device fullscreen, and a device inspector with regular/system/App Clip scopes |
+| **Device** | USB and Wi-Fi device selection, in-app USB trust pairing, explicit reconnect, live screen, direct touch, mapping and keyboard-passthrough modes, optional injected-touch debug overlay with orientation-aware coordinates and trails, rotation, native screenshot, WebView-supported screen recording, Unicode paste, device audio mute, hardware buttons, focused device fullscreen, and a device inspector with regular/system/App Clip scopes |
 | **Key Mapping** | Visual placement and editing, live or frozen screenshot background, profile create/duplicate/rename/import/export, scrcpy-mask `0.0.1` compatibility, PlayCover `2.0.0` import, app-profile associations, and hardware-button shortcuts |
 | **AFC** | Unified public AFC, App Documents, App Container, and Crash Reports workspace; searchable app selection; bounded browsing and transfer; create, rename, confirmed recursive delete, progress, cancellation, and confirmed crash-report deletion |
 | **Performance** | iPhone CPU/process/memory/energy data, bounded logical/physical core and physical-memory capacity, searchable on-demand running-process inventory, Core Animation FPS, GPU memory, network rates, app activity, video-pipeline telemetry, service health, DVT network/thermal conditions, all-device or per-process network PCAP, and Bluetooth HCI PCAP |
 | **Device Logs** | On-demand structured Unified Log with SyslogRelay fallback, search, level filtering, pause, auto-scroll, copy, clear, bounded buffering, recovery state, and confirmed 1/6/24-hour offline Unified Log archive export |
 | **Location** | DVT-first virtual location with legacy service fallback, numeric coordinate entry, built-in presets, backend status, and explicit restoration of the real device location |
-| **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, rotation-control lock, device-fullscreen toolbar behavior, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
+| **Settings** | Language, always-on-top, system fullscreen, inspector visibility, display scale, mapping overlay, optional injected-touch debug, rotation-control lock, device-fullscreen toolbar behavior, audio, clipboard sync, configurable performance HUD, updates, debug logging, and log-directory access |
 
 System fullscreen and device fullscreen are different. System fullscreen changes the desktop window. Device fullscreen hides navigation and the inspector to give the phone picture and essential controls the available window area.
 

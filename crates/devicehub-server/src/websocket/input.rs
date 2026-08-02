@@ -68,6 +68,9 @@ enum ClientMessage {
     KeymapDirectTouches {
         contacts: Vec<BrowserDirectContact>,
     },
+    KeymapDebug {
+        enabled: bool,
+    },
     KeymapStop,
     Rotate {
         direction: RotateRequest,
@@ -410,6 +413,9 @@ pub(super) fn handle_client_message_with_keymap<HostPath>(
                 orientation,
                 contacts,
             ));
+        }
+        ClientMessage::KeymapDebug { enabled } => {
+            return ClientVideoFeedback::KeymapEvent(keymap.set_debug_enabled(enabled));
         }
         ClientMessage::KeymapStop => {
             return ClientVideoFeedback::KeymapEvent(keymap.stop(input, orientation));

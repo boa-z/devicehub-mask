@@ -61,6 +61,7 @@ pub(super) struct BrowserKeymapSession {
     active_buttons: Vec<ActiveHardwareButton>,
     script_device: ScriptDeviceState,
     active_mapping_ids: Vec<String>,
+    debug_enabled: bool,
 }
 
 impl BrowserKeymapSession {
@@ -94,6 +95,7 @@ impl BrowserKeymapSession {
                         "profile": profile.name,
                         "scripts_enabled": allow_scripts,
                         "active_mapping_ids": [],
+                        "active_contacts": self.debug_active_contacts(),
                     }
                 })
             }
@@ -177,7 +179,8 @@ impl BrowserKeymapSession {
             .pointer("/payload/control_mode")
             .is_some_and(|value| !value.is_null());
         let has_error = event.pointer("/payload/error").is_some();
-        (self.active_mapping_ids != previous || has_control_mode || has_error).then_some(event)
+        (self.debug_enabled || self.active_mapping_ids != previous || has_control_mode || has_error)
+            .then_some(event)
     }
 
     pub(super) fn stop<HostPath>(
@@ -188,8 +191,17 @@ impl BrowserKeymapSession {
         self.release(input, orientation);
         json!({
             "type": "keymap_status",
-            "payload": { "configured": false, "active_mapping_ids": [] }
+            "payload": {
+                "configured": false,
+                "active_mapping_ids": [],
+                "active_contacts": self.debug_active_contacts(),
+            }
         })
+    }
+
+    pub(super) fn set_debug_enabled(&mut self, enabled: bool) -> Value {
+        self.debug_enabled = enabled;
+        self.status_event(None)
     }
 
     pub(super) fn release<HostPath>(
@@ -350,15 +362,40 @@ impl BrowserKeymapSession {
             self.active_contacts = contacts;
         }
         self.active_mapping_ids = frame.active_mapping_ids;
+        self.status_event(control_mode)
+    }
+
+    fn status_event(&self, control_mode: Option<&str>) -> Value {
         json!({
             "type": "keymap_status",
             "payload": {
-                "configured": true,
+                "configured": self.compiled.is_some(),
                 "active_mapping_ids": self.active_mapping_ids,
                 "active_contact_ids": self.active_contacts.iter().map(|contact| contact.identity).collect::<Vec<_>>(),
+                "active_contacts": self.debug_active_contacts(),
                 "control_mode": control_mode,
             }
         })
+    }
+
+    fn debug_active_contacts(&self) -> Value {
+        if !self.debug_enabled {
+            return json!([]);
+        }
+        json!(
+            self.active_contacts
+                .iter()
+                .filter(|contact| contact.touching)
+                .map(|contact| {
+                    json!({
+                        "identity": contact.identity,
+                        "touching": contact.touching,
+                        "x": contact.x,
+                        "y": contact.y,
+                    })
+                })
+                .collect::<Vec<_>>()
+        )
     }
 }
 
@@ -433,7 +470,12 @@ fn send_contacts<HostPath>(
 fn error_event(message: impl ToString) -> Value {
     json!({
         "type": "keymap_status",
-        "payload": { "configured": false, "active_mapping_ids": [], "error": message.to_string() }
+        "payload": {
+            "configured": false,
+            "active_mapping_ids": [],
+            "active_contacts": [],
+            "error": message.to_string(),
+        }
     })
 }
 
@@ -472,12 +514,15 @@ mod tests {
             },
             true,
         );
-        session.set_input(
+        let debug = session.set_debug_enabled(true);
+        assert_eq!(debug["payload"]["active_contacts"], json!([]));
+        let status = session.set_input(
             &input,
             Orientation::Portrait,
             vec!["KeyF".into()],
             Vec::new(),
         );
+        assert_eq!(status["payload"]["active_contacts"][0]["identity"], 1);
         let InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(down)) =
             receiver.try_recv().unwrap()
         else {

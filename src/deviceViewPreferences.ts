@@ -7,6 +7,7 @@ export type DeviceViewScale = (typeof deviceViewScales)[number];
 export type DeviceViewPreferences = {
   scale: DeviceViewScale;
   controlOverlayVisible: boolean;
+  pointerDebugVisible: boolean;
   rotationControlsLocked: boolean;
   fullscreenToolbarAutoHide: boolean;
   deviceInspectorVisible: boolean;
@@ -19,6 +20,7 @@ export type DeviceViewPreferences = {
 export const defaultDeviceViewPreferences: DeviceViewPreferences = {
   scale: "fit",
   controlOverlayVisible: true,
+  pointerDebugVisible: false,
   rotationControlsLocked: false,
   fullscreenToolbarAutoHide: true,
   deviceInspectorVisible: true,
@@ -55,6 +57,9 @@ export function parseDeviceViewPreferences(value: string | null): DeviceViewPref
       controlOverlayVisible: typeof candidate.controlOverlayVisible === "boolean"
         ? candidate.controlOverlayVisible
         : defaultDeviceViewPreferences.controlOverlayVisible,
+      pointerDebugVisible: typeof candidate.pointerDebugVisible === "boolean"
+        ? candidate.pointerDebugVisible
+        : defaultDeviceViewPreferences.pointerDebugVisible,
       rotationControlsLocked: typeof candidate.rotationControlsLocked === "boolean"
         ? candidate.rotationControlsLocked
         : defaultDeviceViewPreferences.rotationControlsLocked,

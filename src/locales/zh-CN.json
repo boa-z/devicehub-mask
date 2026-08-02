@@ -429,6 +429,21 @@
     "controlProfile": "当前控制配置",
     "showControlOverlay": "显示按键映射",
     "hideControlOverlay": "隐藏按键映射",
+    "showPointerDebug": "显示注入触摸调试",
+    "hidePointerDebug": "隐藏注入触摸调试",
+    "pointerDebug": "注入触摸调试",
+    "pointerDebugContacts": "触点 {{count}} 个",
+    "pointerDebugMappings": "映射：{{value}}",
+    "pointerDebugSource": {
+      "direct": "直接触控",
+      "keymap": "按键映射"
+    },
+    "pointerDebugAction": {
+      "down": "按下",
+      "move": "移动",
+      "up": "释放"
+    },
+    "pointerDebugCoordinate": "显示 {{displayX}} · 原生 {{nativeX}}",
     "edit": "编辑",
     "rotateLeft": "左转",
     "rotateRight": "右转",
@@ -1175,6 +1190,8 @@
     "deviceControl": "设备控制",
     "defaultDisplayScale": "显示比例",
     "showControlOverlay": "显示按键映射",
+    "pointerDebug": "注入触摸调试",
+    "pointerDebugHint": "显示当前浏览器控制会话生成的最终触点帧。默认关闭，且不会从 iOS 反向读取真实触摸事件。",
     "lockRotationControls": "锁定旋转控制",
     "fullscreenToolbarAutoHide": "自动隐藏设备画面全屏控制栏",
     "toolbarLayout": "设备画面全屏工具条布局",

@@ -24,7 +24,14 @@ export type DeviceInputCommand =
   | { type: "keymap_configure"; profile: Profile; frame: FrameSize; allow_scripts: boolean }
   | { type: "keymap_input"; keys: string[]; pointer_deltas: PointerDelta[] }
   | { type: "keymap_direct_touches"; contacts: TouchContact[] }
+  | { type: "keymap_debug"; enabled: boolean }
   | { type: "keymap_stop" };
+
+export function directTouchCommand(controlMode: ControlMode, contacts: TouchContact[]): DeviceInputCommand {
+  return controlMode === "mapping"
+    ? { type: "keymap_direct_touches", contacts }
+    : { type: "multi_touch", contacts };
+}
 
 type FrameSize = { width: number; height: number };
 
@@ -34,6 +41,7 @@ type Options = {
   profile: Profile;
   keymapStatus: KeymapStatus;
   frameSize: FrameSize;
+  pointerDebugEnabled: boolean;
   mappingEditing: boolean;
   controlMode: ControlMode;
   onControlModeChange: (mode: ControlMode) => void;
@@ -95,6 +103,7 @@ export function useDeviceInput(options: Options) {
     frameSize,
     keymapStatus,
     onControlModeChange,
+    pointerDebugEnabled,
     profile,
   } = options;
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
@@ -138,11 +147,8 @@ export function useDeviceInput(options: Options) {
 
   const sendDirectTouches = useCallback(() => {
     const current = optionsRef.current;
-    if (!current.connected || current.controlMode !== "mapping") return;
-    current.command({
-      type: "keymap_direct_touches",
-      contacts: [...directTouchesRef.current.values()],
-    });
+    if (!current.connected) return;
+    current.command(directTouchCommand(current.controlMode, [...directTouchesRef.current.values()]));
   }, []);
 
   const exitPointerLock = useCallback(() => {
@@ -159,8 +165,12 @@ export function useDeviceInput(options: Options) {
     exitPointerLock();
     if (!current.connected) return;
     for (const usage of forwarded) current.command({ type: "keyboard_up", usage });
-    current.command({ type: "keymap_input", keys: [], pointer_deltas: [] });
-    current.command({ type: "keymap_direct_touches", contacts: [] });
+    if (current.controlMode === "mapping") {
+      current.command({ type: "keymap_input", keys: [], pointer_deltas: [] });
+      current.command({ type: "keymap_direct_touches", contacts: [] });
+    } else {
+      current.command({ type: "multi_touch", contacts: [] });
+    }
   }, [collections, exitPointerLock]);
 
   useEffect(() => {
@@ -178,6 +188,11 @@ export function useDeviceInput(options: Options) {
       command({ type: "keymap_stop" });
     }
   }, [command, connected, controlMode, frameSize, profile, sendDirectTouches, sendKeyState]);
+
+  useEffect(() => {
+    if (!connected) return;
+    command({ type: "keymap_debug", enabled: pointerDebugEnabled });
+  }, [command, connected, pointerDebugEnabled]);
 
   useEffect(() => {
     const mode = keymapStatus.control_mode;
@@ -355,7 +370,7 @@ export function useDeviceInput(options: Options) {
     }
     if (event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
     const used = new Set([
-      ...(current.keymapStatus.active_contact_ids ?? []),
+      ...(current.controlMode === "mapping" ? current.keymapStatus.active_contact_ids ?? [] : []),
       ...[...directTouchesRef.current.values()].map((contact) => contact.identity),
     ]);
     const identity = [0, 1, 2, 3, 4].find((candidate) => !used.has(candidate));

@@ -108,6 +108,25 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .performance-hud strong { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mapping-screenshot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; }
 .direct-touch { position: absolute; width: 24px; height: 24px; border: 2px solid #42b883; border-radius: 50%; background: rgba(66,184,131,.25); box-shadow: 0 0 10px rgba(66,184,131,.65); transform: translate(-50%, -50%); pointer-events: none; }
+.pointer-debug-overlay { position: absolute; inset: 0; z-index: 6; overflow: hidden; pointer-events: none; user-select: none; color: #edf2f0; font-variant-numeric: tabular-nums; }
+.pointer-debug-summary { position: absolute; top: 8px; right: 8px; z-index: 2; width: min(290px, calc(100% - 16px)); display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-end; gap: 4px 9px; padding: 6px 8px; border: 1px solid rgba(237,242,240,.2); border-radius: 5px; background: rgba(8,11,12,.86); box-shadow: 0 4px 14px rgba(0,0,0,.3); font-size: 10px; line-height: 1.35; text-align: right; }
+.pointer-debug-summary strong { color: #f0c75e; font-size: 11px; font-weight: 700; }
+.pointer-debug-summary span { color: #b7c0be; overflow-wrap: anywhere; }
+.pointer-debug-contact, .pointer-debug-trail { position: absolute; width: 22px; height: 22px; transform: translate(-50%, -50%); }
+.pointer-debug-contact { border: 2px solid #f0c75e; border-radius: 50%; background: rgba(240,199,94,.18); box-shadow: 0 0 0 1px rgba(7,9,9,.72), 0 0 13px rgba(240,199,94,.72); }
+.pointer-debug-contact.keymap { border-color: #55c5e8; background: rgba(85,197,232,.18); box-shadow: 0 0 0 1px rgba(7,9,9,.72), 0 0 13px rgba(85,197,232,.72); }
+.pointer-debug-contact::before, .pointer-debug-contact::after { content: ""; position: absolute; left: 50%; top: 50%; background: currentColor; opacity: .9; transform: translate(-50%, -50%); }
+.pointer-debug-contact::before { width: 30px; height: 1px; }
+.pointer-debug-contact::after { width: 1px; height: 30px; }
+.pointer-debug-label { position: absolute; left: 12px; top: 12px; min-width: 118px; max-width: min(210px, 42vw); display: grid; gap: 1px; padding: 4px 6px; border: 1px solid rgba(240,199,94,.42); border-radius: 3px; background: rgba(8,11,12,.9); box-shadow: 0 3px 10px rgba(0,0,0,.3); color: #edf2f0; text-align: left; white-space: nowrap; }
+.pointer-debug-contact.keymap .pointer-debug-label { border-color: rgba(85,197,232,.5); }
+.pointer-debug-contact.label-left .pointer-debug-label { left: auto; right: 12px; }
+.pointer-debug-label strong { color: #f0c75e; font-size: 11px; line-height: 1.1; }
+.pointer-debug-contact.keymap .pointer-debug-label strong { color: #55c5e8; }
+.pointer-debug-label small { overflow: hidden; text-overflow: ellipsis; color: #b7c0be; font-size: 9px; line-height: 1.25; }
+.pointer-debug-trail { width: 8px; height: 8px; border: 1px solid #f0c75e; border-radius: 50%; background: rgba(240,199,94,.28); }
+.pointer-debug-trail.keymap { border-color: #55c5e8; background: rgba(85,197,232,.28); }
+.pointer-debug-trail.up { border-style: dashed; }
 .empty-stage { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; color: #667170; font-size: 14px; }
 .empty-stage svg { font-size: 32px; }
 .device-stage-state { position: absolute; inset: 0; z-index: 8; display: grid; place-content: center; justify-items: center; gap: 10px; padding: 18px; background: rgba(5,6,6,.82); color: #aab4b2; font-size: 12px; text-align: center; pointer-events: none; }

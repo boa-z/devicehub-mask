@@ -12,7 +12,7 @@ Multiple devices can remain connected. Selecting another device changes the visi
 
 ## Control the Device
 
-The Device workspace contains the live frame, direct touch surface, stream state, display controls, hardware buttons, and feature tools. Right-click the frame to send Home. Select **Mapping** to convert configured keys into touch/hardware actions, or **Keyboard passthrough** to forward physical HID key events. Changing mode, page, focus, fullscreen, or connection releases held input.
+The Device workspace contains the live frame, direct touch surface, stream state, display controls, hardware buttons, and feature tools. Right-click the frame to send Home. Select **Mapping** to convert configured keys into touch/hardware actions, or **Keyboard passthrough** to forward physical HID key events. Mouse direct touch remains available in both modes; keyboard passthrough sends it through the raw multi-touch path without key mapping. Changing mode, page, focus, fullscreen, or connection releases held input.
 
 Pointer coordinates are confined to the displayed phone frame, excluding letterbox areas, and follow orientation. Up to five simultaneous contacts are supported. The text action writes bounded Unicode text to the device pasteboard and sends paste; focus an editable field first.
 
@@ -23,6 +23,8 @@ Hardware and feature toolbar groups can be arranged for the available space. In 
 Use fit and scale controls to size the frame. Hide sidebars when the device needs more room. A static device screen is not considered a stopped stream solely because pixels do not change; connection and media progress determine health. If the transport actually stalls, use the copyable error details and reconnect action rather than repeatedly opening new sessions.
 
 Screenshots use a lossless device service fallback chain and are separate from WebCodecs video frames. The optional performance HUD appears over the Device workspace and can be configured in Settings.
+
+Enable **Injected touch debug** from the device toolbar or Settings when diagnosing host input. It overlays the final touch frames produced by the current browser control session, including contact IDs, down/move/release trails, display coordinates, native coordinates after orientation conversion, and active mapping IDs. It is disabled by default and reports host-generated frames only; iOS touch events are not read back.
 
 ## Use Key Mapping
 

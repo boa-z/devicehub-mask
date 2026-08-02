@@ -181,6 +181,11 @@ export function SettingsPage({
           />
         </label>
         <label><span>{t("settings.showControlOverlay")}</span><Switch checked={deviceView.controlOverlayVisible} onChange={(controlOverlayVisible) => onDeviceViewChange({ ...deviceView, controlOverlayVisible })} /></label>
+        <label>
+          <span>{t("settings.pointerDebug")}</span>
+          <Switch checked={deviceView.pointerDebugVisible} onChange={(pointerDebugVisible) => onDeviceViewChange({ ...deviceView, pointerDebugVisible })} />
+        </label>
+        <Typography.Text type="secondary">{t("settings.pointerDebugHint")}</Typography.Text>
         <label><span>{t("settings.lockRotationControls")}</span><Switch checked={deviceView.rotationControlsLocked} onChange={(rotationControlsLocked) => onDeviceViewChange({ ...deviceView, rotationControlsLocked })} /></label>
         <label><span>{t("settings.fullscreenToolbarAutoHide")}</span><Switch checked={deviceView.fullscreenToolbarAutoHide} onChange={(fullscreenToolbarAutoHide) => onDeviceViewChange({ ...deviceView, fullscreenToolbarAutoHide })} /></label>
         <label>

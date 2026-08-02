@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { clearDeviceInputCollections, type DeviceInputCollections } from "./useDeviceInput";
+import { clearDeviceInputCollections, directTouchCommand, type DeviceInputCollections } from "./useDeviceInput";
 
 function populatedCollections(): DeviceInputCollections {
   return {
@@ -18,6 +18,13 @@ function populatedCollections(): DeviceInputCollections {
 }
 
 describe("device input lifecycle", () => {
+  it("routes direct touches through the active input mode", () => {
+    const contacts = [{ identity: 1, touching: true, x: 0.25, y: 0.75 }];
+
+    expect(directTouchCommand("mapping", contacts)).toEqual({ type: "keymap_direct_touches", contacts });
+    expect(directTouchCommand("keyboard", contacts)).toEqual({ type: "multi_touch", contacts });
+  });
+
   it("clears every locally owned input resource on disconnect", () => {
     const collections = populatedCollections();
     const cancelReleaseTimer = vi.fn();

@@ -40,8 +40,16 @@ export type KeymapStatus = {
   configured: boolean;
   active_mapping_ids: string[];
   active_contact_ids?: number[];
+  active_contacts?: KeymapContact[];
   control_mode?: "mapping" | "keyboard" | null;
   error?: string;
+};
+
+export type KeymapContact = {
+  identity: number;
+  touching: boolean;
+  x: number;
+  y: number;
 };
 
 type FrontendMetrics = {
@@ -378,6 +386,7 @@ export function useDeviceVideoStream({
         audioPlayer.close();
         if (audioPlayerRef.current === audioPlayer) audioPlayerRef.current = null;
         if (ownsCurrentSocket) {
+          callbacksRef.current.onKeymapStatus({ configured: false, active_mapping_ids: [], active_contacts: [] });
           setBrowserAudioState("idle");
           callbacksRef.current.onDisconnect?.();
           socketRef.current = null;

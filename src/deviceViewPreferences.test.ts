@@ -11,6 +11,7 @@ describe("device view preferences", () => {
     expect(parseDeviceViewPreferences(JSON.stringify({
       scale: "1.5",
       controlOverlayVisible: false,
+      pointerDebugVisible: true,
       rotationControlsLocked: true,
       fullscreenToolbarAutoHide: false,
       deviceInspectorVisible: false,
@@ -21,6 +22,7 @@ describe("device view preferences", () => {
     }))).toEqual({
       scale: "1.5",
       controlOverlayVisible: false,
+      pointerDebugVisible: true,
       rotationControlsLocked: true,
       fullscreenToolbarAutoHide: false,
       deviceInspectorVisible: false,
@@ -36,11 +38,13 @@ describe("device view preferences", () => {
     expect(parseDeviceViewPreferences(JSON.stringify({
       scale: "1",
       controlOverlayVisible: false,
+      pointerDebugVisible: false,
       rotationControlsLocked: true,
       fullscreenToolbarAutoHide: false,
     }))).toEqual({
       scale: "1",
       controlOverlayVisible: false,
+      pointerDebugVisible: false,
       rotationControlsLocked: true,
       fullscreenToolbarAutoHide: false,
       deviceInspectorVisible: true,
