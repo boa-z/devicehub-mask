@@ -2,7 +2,61 @@
 
 简体中文 | [English](../en/getting-started.md) | [文档首页](README.md)
 
-## 基础要求
+## 设备版本要求
+
+当前版本要求 iPhone 或 iPad 运行 iOS/iPadOS 27 或更高版本。DeviceHub Mask 依赖 Rust [idevice](https://github.com/jkcoxson/idevice) 提供底层设备服务和传输能力；较低版本的 iOS 不是当前项目的支持目标。
+
+## 选择运行方式
+
+| 目标 | 推荐入口 | 是否需要 Rust/Node.js |
+| --- | --- | --- |
+| 直接使用桌面端 | [Nightly 安装包](https://github.com/boa-z/devicehub-mask/releases/tag/nightly) | 不需要 |
+| 在没有桌面窗口的主机运行，并从浏览器访问 | [Headless 归档](headless.md) | 不需要 |
+| 修改代码或参与开发 | 从源码构建 | 需要 |
+
+普通用户优先使用发布页中的安装包。Nightly 是当前主要分发渠道；使用前请阅读项目的[状态与安全说明](../../README.zh-CN.md#状态与安全)。
+
+## 使用发布版
+
+从 [Nightly 发布页](https://github.com/boa-z/devicehub-mask/releases/tag/nightly)选择对应平台的文件，并同时下载相邻的 `.sha256` 文件。
+
+### macOS
+
+1. 下载 Universal DMG 并校验 SHA-256。
+2. 打开 DMG，将应用拖入 Applications。
+3. 首次启动时，如果系统提示无法验证开发者，请按[故障排查](troubleshooting.md#macos-提示无法验证应用是否包含恶意软件)中的步骤允许打开。
+4. 启动应用后继续完成下方的[设备准备](#准备设备)。
+
+### Windows
+
+1. 下载 x64 NSIS 或 MSI 安装包并校验 SHA-256。
+2. 安装 WebView2、Apple Mobile Device Service 和系统 HEVC 支持；普通用户不需要安装 Rust 或 Node.js。
+3. 启动 DeviceHub Mask，并继续完成[设备准备](#准备设备)。
+
+### Linux
+
+AppImage 不需要安装到系统目录：
+
+```sh
+chmod +x ./devicehub-mask_<version>+<build>_amd64.AppImage
+./devicehub-mask_<version>+<build>_amd64.AppImage
+```
+
+Debian/Ubuntu 可以安装 DEB：
+
+```sh
+sudo apt install ./devicehub-mask_<version>+<build>_amd64.deb
+```
+
+Linux 仍需要可用的 usbmuxd 和 Apple 配对环境。安装包不能替代主机侧设备准备。
+
+### Headless
+
+如果需要从浏览器访问无桌面主机，下载对应平台的 Headless 归档。必须保留归档内的可执行文件、`dist/`、sidecar、许可证和启动文档的相对位置；详细命令见 [Headless 服务](headless.md)。
+
+## 从源码运行
+
+### 源码构建要求
 
 所有平台都需要：
 

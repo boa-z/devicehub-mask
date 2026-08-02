@@ -2,7 +2,61 @@
 
 [简体中文](../zh-CN/getting-started.md) | [Documentation](README.md)
 
-## Requirements
+## Device Requirement
+
+The current target requires an iPhone or iPad running iOS/iPadOS 27 or newer. DeviceHub Mask depends on the Rust [idevice](https://github.com/jkcoxson/idevice) library for the underlying device services and transport capabilities. Older iOS versions are not a supported target for the current project.
+
+## Choose an Entry Point
+
+| Goal | Recommended entry point | Rust/Node.js required? |
+| --- | --- | --- |
+| Use the desktop application directly | [Nightly packages](https://github.com/boa-z/devicehub-mask/releases/tag/nightly) | No |
+| Run without a desktop window and use a browser | [Headless archive](headless.md) | No |
+| Change code or contribute | Build from source | Yes |
+
+Most users should start with a package from the release page. Nightly is the current primary distribution channel; read the project's [status and security notes](../../README.md#status-and-security) before using it.
+
+## Use a Release Package
+
+Choose the file for your platform on the [Nightly release page](https://github.com/boa-z/devicehub-mask/releases/tag/nightly), and download the adjacent `.sha256` file as well.
+
+### macOS
+
+1. Download the Universal DMG and verify its SHA-256 checksum.
+2. Open the DMG and drag the application to Applications.
+3. On first launch, if macOS says it cannot verify the developer, follow [Troubleshooting](troubleshooting.md#macos-cannot-verify-the-app-is-free-of-malware) to allow the app to open.
+4. Launch the app and continue with [Prepare the Device](#prepare-the-device) below.
+
+### Windows
+
+1. Download the x64 NSIS or MSI installer and verify its SHA-256 checksum.
+2. Install WebView2, Apple Mobile Device Service, and system HEVC support; Rust and Node.js are not required for package users.
+3. Launch DeviceHub Mask and continue with [Prepare the Device](#prepare-the-device).
+
+### Linux
+
+An AppImage does not need to be installed into a system directory:
+
+```sh
+chmod +x ./devicehub-mask_<version>+<build>_amd64.AppImage
+./devicehub-mask_<version>+<build>_amd64.AppImage
+```
+
+Debian/Ubuntu can install the DEB package:
+
+```sh
+sudo apt install ./devicehub-mask_<version>+<build>_amd64.deb
+```
+
+Linux still requires a working usbmuxd and Apple pairing environment. A package does not replace host-side device preparation.
+
+### Headless
+
+To use a browser on a host without a desktop window, download the matching Headless archive. Keep the executable, `dist/`, sidecars, licenses, and startup guides in their relative locations inside the extracted archive; see [Headless Service](headless.md) for the complete commands.
+
+## Build from Source
+
+### Source Build Requirements
 
 All platforms require:
 
