@@ -16,7 +16,7 @@ DeviceHub Mask translates desktop keyboard and pointer input into Universal HID 
 1. Select an existing profile or create one. Profile names are 1-80 characters and may contain only letters, numbers, `_`, and `-`.
 2. Leave **Edit** enabled. Right-click the exact target on the device picture and choose **Single tap**, or use the add button in the inspector and move the new controller into place.
 3. Select the controller. Click **Keyboard binding**, then press the desired physical key or chord. The editor stores `KeyboardEvent.code`, so the binding identifies a physical key position rather than a composed character.
-4. Set a Contact ID from `0` to `4`. New and duplicated mappings choose a least-used identity, but verify it when actions may overlap.
+4. Set a Contact ID from `0` to `4`. For ordinary mappings this is the preferred runtime identity; new and duplicated mappings choose a least-used identity, but verify it when actions may overlap.
 5. Select **Save**. Saving writes the profile but does not activate an inactive profile.
 6. Select **Set active**, or switch to the saved profile from the Device workspace profile selector.
 7. Disable **Edit** before testing on the Key Mapping page. While editing is enabled, keyboard mappings and direct touch are intentionally suppressed so editing cannot operate the device.
@@ -37,7 +37,7 @@ Rotation changes the frame dimensions and coordinate transform. Use separate pro
 
 ## Bindings and Chords
 
-A button binding can contain one key or a chord. Every key in a chord must be held before the mapping becomes active. Modifier keys are captured with their left/right physical identity when the browser reports it. Backspace or Delete clears the focused binding field.
+A button binding can contain one key or a chord. Every key in a chord must be held before the mapping becomes active. Imported scrcpy-mask `M-*` mouse buttons, `G-*` gamepad buttons, and `ScrollUp`/`ScrollDown` wheel bindings are converted to DeviceHub names. Browser Gamepad input is sampled while Mapping mode is active; standard axes and buttons use the connected controller layout, with the strongest value used when multiple controllers are present. Focus a binding field and press a standard or `Other-*` Gamepad button to record it; DirectionPad and PadCastSpell can switch between Button directions and selectable JoyStick axes. Mapping mode also turns wheel movement into short `ScrollUp`/`ScrollDown` pulses, and the binding editor can record wheel direction directly. Modifier keys are captured with their left/right physical identity when the browser reports it. Backspace or Delete clears the focused binding field.
 
 Do not assign the same physical key to multiple touch mappings. The runtime gives that key to the first active mapping in profile order and suppresses later mappings. Touch keys also cannot be reused by a hardware-button shortcut, and one hardware shortcut cannot be reused by another hardware button; the editor and backend reject those hardware conflicts.
 
@@ -52,11 +52,13 @@ The runtime mapping handler ignores keys while focus is inside buttons, fields, 
 | Position / Cast center | X/Y percentages in the current oriented source picture |
 | Contact ID | Universal HID identity `0..4`; simultaneous contacts must be unique |
 | Keyboard binding | One physical key or an all-keys-required chord |
-| Direction bindings | Independent Button chords for up, down, left, and right; imported JoyStick axes are read-only compatibility data |
+| Direction bindings | Independent Button chords or selectable JoyStick axes read from the browser Gamepad API; DirectionPad also supports an optional up-boost binding |
 | Radius / range | Source-frame pixels, converted to normalized coordinates at runtime; DirectionPad has independent horizontal and vertical ranges |
 | Duration / interval / wait | Milliseconds used by taps, repeats, swipes, sequences, or stored Script metadata |
 | Sensitivity | Pointer delta multiplier relative to source-frame width or height |
-| Release mode | Imported and editable cast metadata; only ordinary release-on-binding-up behavior is reliable in the current runtime |
+| Randomization | Random offsets are source-frame pixels applied on activation; DirectionPad also supports distance scaling, initial motion, up boost, and bounded drift, while randomized swipes/casts keep their endpoints |
+| Mouse cast projection | The cursor is projected from `center` through `cast_radius` into `drag_radius`, using the horizontal/vertical scale factors; relative MCP deltas remain supported |
+| Release mode | `OnPress`, `OnRelease`, or `OnSecondPress` cast lifecycle |
 | Sequence | Ordered normalized points; MultipleTap also stores each point's duration and preceding wait |
 | Script fields | Bounded lifecycle programs executed by the shared Rust runtime |
 
@@ -68,7 +70,7 @@ The profile toolbar provides Undo and Redo for unsaved editor changes. `Ctrl+Z` 
 
 ## Contact IDs and Simultaneous Input
 
-Universal HID reports contain at most five contacts with identities `0` through `4`. Profiles may store more than five mappings, and mappings that can never overlap may reuse an identity. Stateful camera and cast mappings reserve their configured identities so FPS handoff remains stable; an ordinary mapping that conflicts is assigned another free identity until release. Direct pointer input also consumes an available identity while held and is never displaced by a newly active mapping. A mapping is skipped when no free identity remains.
+Universal HID reports contain at most five contacts with identities `0` through `4`. Profiles may store more than five mappings, and mappings that can never overlap may reuse an identity. The saved `pointer_id` is never rewritten: for ordinary mappings it is only the preferred identity for a runtime lease, which remains stable until release and is then returned to the pool. Stateful camera and cast mappings reserve their configured identities so FPS handoff remains stable; an ordinary mapping that conflicts is assigned another free identity until release. Direct pointer input also consumes an available identity while held and is never displaced by a newly active mapping. A mapping is skipped when no free identity remains; its ID is reported in keymap status and MCP results as unavailable.
 
 For reliable combinations such as movement plus two skills, assign different IDs to every action that can be held simultaneously. FPS dual-touch handoff alternates between its primary and secondary IDs, so both must be different from every contact that can remain active with camera control.
 
@@ -76,22 +78,22 @@ For reliable combinations such as movement plus two skills, assign different IDs
 
 | Controller | Current runtime behavior | Important limits |
 | --- | --- | --- |
-| Single tap | Holds one contact while the complete binding remains pressed, for at most `duration` | Releasing early releases the contact; holding the key does not repeat the tap |
+| Single tap | `sync=false` taps for `duration`; `sync=true` stays down until the complete binding is released | `sync=false` is a timed tap and does not repeat while held |
 | Press and hold | Starts touching on key-down and releases at the same point on key-up | The screen touch lasts exactly as long as the complete keyboard binding is held |
 | Repeat tap | Alternates contact down for `duration` and up for `interval` while the binding remains held | Use positive intervals; device and game timing still determine acceptance |
-| Multiple tap | Runs the ordered points once, applying each point's wait and duration | It does not loop while held after the sequence ends |
-| Swipe | Interpolates through the ordered points over `duration` | The final point remains held until the binding is released |
-| Direction pad | Converts Button up/down/left/right chords into a normalized diagonal-safe drag | Imported JoyStick axis bindings are preserved but not evaluated |
-| Mouse cast spell | Supports pointer movement within `drag_radius` and `OnPress`, `OnRelease`, and `OnSecondPress` release modes | Cast-center randomization is not executed |
-| Pad cast spell | Offsets the cast contact with Button directions, supports release modes, and can temporarily block the normal direction pad | Imported JoyStick axes and randomization are not executed |
+| Multiple tap | Runs the ordered points once, applying each point's wait and duration | It continues to completion after the press edge, even if the binding is released |
+| Swipe | Interpolates through the ordered points over `duration`; `enable_randomization` adds a bounded curved path while preserving both endpoints | It continues to completion after the press edge and releases at the end |
+| Direction pad | Converts Button chords or JoyStick axes into a normalized drag; optional random anchor, distance scale, initial motion, and bounded micro-drift are applied in the native runtime | Gamepad axis support requires a connected browser Gamepad; values use a small dead zone |
+| Mouse cast spell | Projects the locked browser cursor from `center` through `cast_radius` into `drag_radius`, with optional axis scaling, random anchor offsets, initial motion, and all three release modes | `OnPress` is a one-shot cast and does not capture the pointer; `cast_no_direction` disables cursor projection; relative MCP deltas remain bounded by `drag_radius` |
+| Pad cast spell | Offsets the cast contact with Button chords or JoyStick axes, supports release modes, and can temporarily block the normal direction pad; optional random anchor and drift are applied while held | Random movement remains bounded by `drag_radius` |
 | Cancel cast | Animates the active mouse/pad cast contact to the configured cancel point, then releases it | It only affects an active cast and is triggered on the binding's press edge |
-| Observation | Holds while its binding is down, applies X/Y pointer sensitivity, and clamps movement to `max_radius` | Randomization is not executed |
+| Observation | Holds while its binding is down, applies X/Y pointer sensitivity, clamps movement to `max_radius`, and chooses a bounded random anchor on activation | Random offset is applied once per activation |
 | FPS camera | Press once to enter persistent relative camera control and press again to exit; max offsets recenter using single-touch delay or dual-touch delay/overlap handoff | Escape from pointer lock releases mapped input; assign distinct IDs for dual touch |
-| Fire | Holds a stationary fire contact while preserving FPS control, or takes over pointer movement and restores FPS at center when preservation is disabled | Randomization is not executed |
+| Fire | Holds a stationary fire contact while preserving FPS control, or takes over pointer movement and restores FPS at center when preservation is disabled | Random offset is applied once per activation |
 | Raw input | Releases mapped input and switches the application to Keyboard passthrough | It emits no contact; use one key because any member of a chord can trigger this special action |
 | Script | Executes `pressed_script` once, serial `held_script` iterations while bound, and `released_script` after release | Each mapping has isolated bounded state and a serialized virtual-time queue |
 
-Pointer-driven controllers lock the pointer to the focused device viewport while relative movement is required. Leaving pointer lock, losing window focus, disconnecting, or changing control mode releases locally owned input. Imported random offsets and other fields not listed as active above remain stored data rather than executable behavior. A non-empty `before_script` runs on a mapping's press edge and its complete virtual timeline finishes before the mapping contact activates. `after_script` is queued on release.
+Pointer-driven controllers lock the pointer to the focused device viewport while relative movement is required. MouseCastSpell sends the normalized locked-cursor position to the native runtime, which performs the center/radius projection; Observation, FPS, and non-preserving Fire continue to use relative deltas. Leaving pointer lock, losing window focus, disconnecting, or changing control mode releases locally owned input. Randomization runs in the shared native runtime, not in the browser: each activation samples within the configured source-frame pixel bounds, and zero/disabled settings preserve the original point or path. A non-empty `before_script` runs on a mapping's press edge and its complete virtual timeline finishes before the mapping contact activates. `after_script` is queued on release.
 
 ## Script Runtime
 
@@ -123,10 +125,12 @@ Hardware shortcuts belong to the profile. The Device toolbar always exposes the 
 ## Edit, Mapping, and Keyboard Modes
 
 - **Edit on**: move and configure controllers; mapped input and direct device touch are disabled.
-- **Edit off + Mapping**: physical keys run the active profile, hardware shortcuts work, and pointer input directly touches the device.
+- **Edit off + Mapping**: physical keys, connected browser Gamepads, and pointer input run the active profile; hardware shortcuts work and unbound pointer input directly touches the device.
 - **Keyboard passthrough**: touch mappings and hardware shortcuts are disabled; supported physical HID keyboard down/up events are sent to iOS.
 
-Use `Ctrl+Shift+K` to switch between Mapping and Keyboard passthrough. RawInput performs the same switch when its binding is pressed. Printable HID input is not composed Unicode text; use the Device toolbar paste action for CJK and other Unicode text.
+Use `Ctrl+Shift+K` to switch between Mapping and Keyboard passthrough. RawInput performs the same switch when its complete binding is satisfied; keyboard, mouse, wheel, and Gamepad-button bindings are supported as desktop triggers. Printable HID input is not composed Unicode text; use the Device toolbar paste action for CJK and other Unicode text.
+
+Mapping mode can store and evaluate browser `KeyboardEvent.code` values. Keyboard passthrough is narrower and accepts only the bounded HID keyboard usage set; browser media/browser keys and `F25`-`F35` are not direct passthrough keys. scrcpy-mask non-standard gamepad codes such as `G-C` and `G-Z` remain import-compatible data because Web Gamepad has no stable semantic index for them.
 
 ## Profile Management
 
@@ -165,7 +169,7 @@ Choose the source explicitly in the import dialog; format guessing is intentiona
 | Source | Accepted input | Conversion behavior |
 | --- | --- | --- |
 | DeviceHub Mask | Profile `version: 2` JSON, up to 4 MiB | Preserves mappings, hardware shortcuts, Bundle IDs, and target resolution; backend validation runs before saving |
-| scrcpy-mask | `0.0.1` JSON with `original_size`, up to 4 MiB | Normalizes coordinates, converts Super to Meta key names, preserves all 13 recognized controller records and nested fields; hardware shortcuts and App associations start empty |
+| scrcpy-mask | `0.0.1` JSON with `original_size`, up to 4 MiB | Normalizes coordinates, converts Super to Meta plus mouse/gamepad binding names, preserves all 13 recognized controller records and nested fields; hardware shortcuts and App associations start empty |
 | PlayCover | XML `2.0.0` `.playmap`, up to 1 MiB | Converts keyboard buttons to SingleTap, draggable buttons to MouseCastSpell, and keyboard joysticks to DirectionPad; stores its Bundle ID association with the current frame size at import time |
 
 PlayCover mouse areas, unsupported or negative mouse/controller codes, malformed positions, and incomplete joystick bindings are skipped and counted in the result. The parser rejects XML entities and nonstandard document declarations and enforces nesting, node, and model limits.
@@ -190,7 +194,7 @@ PlayCover export is not implemented. Import/export compatibility does not add sc
 | Several controls seem related to one key | Remove duplicate physical-key bindings; only the first active mapping owns a reused key |
 | One of two simultaneous actions disappears | Give them different Contact IDs and leave capacity for direct pointer input |
 | Coordinates are wrong after rotation | Edit in the game's current orientation or maintain separate portrait and landscape profiles |
-| An imported controller is visible but ineffective | Consult the controller table; some scrcpy-mask fields and Script/JoyStick behaviors are preserved only for round-trip compatibility |
+| An imported controller is visible but ineffective | Confirm Mapping mode, disable Edit, and connect the Gamepad used by JoyStick bindings; randomization only takes effect when its enable switch or non-zero offset is configured |
 | PlayCover reports skipped mappings | Mouse areas, unsupported key codes, invalid positions, and incomplete joysticks have no safe equivalent and are intentionally skipped |
 | Input appears stuck | Release the keys, change mode or page, or refocus the window; each transition sends a full release. Reconnect if the device session itself ended |
 

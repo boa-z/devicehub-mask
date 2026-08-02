@@ -1,4 +1,4 @@
-import { createMapping, mappingContactIds, mappingPosition, type ButtonBinding, type DirectionBinding, type KeyMapping, type KeyMappingType, type Mapping, type Position } from "./types";
+import { createMapping, mappingContactIds, mappingPosition, updateMappingPosition, type ButtonBinding, type DirectionBinding, type KeyMapping, type KeyMappingType, type Mapping, type Position } from "./types";
 
 const CONTACT_IDS = [0, 1, 2, 3, 4] as const;
 
@@ -118,10 +118,5 @@ export function duplicateEditorMapping(source: Mapping, existing: Mapping[]) {
   const duplicate = cloneValue(source);
   duplicate.id = crypto.randomUUID();
   const position = offsetPosition(mappingPosition(source));
-  if ("position" in duplicate) duplicate.position = position;
-  else {
-    duplicate.x = position.x;
-    duplicate.y = position.y;
-  }
-  return assignContactIds(duplicate, existing);
+  return assignContactIds(updateMappingPosition(duplicate, position), existing);
 }

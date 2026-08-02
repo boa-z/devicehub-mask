@@ -39,6 +39,7 @@ type Options = {
 export type KeymapStatus = {
   configured: boolean;
   active_mapping_ids: string[];
+  unavailable_mapping_ids?: string[];
   active_contact_ids?: number[];
   active_contacts?: KeymapContact[];
   control_mode?: "mapping" | "keyboard" | null;

@@ -4,7 +4,7 @@
 //! router. The adapter supplies only the current orientation, input sink, and
 //! browser video slot; this module cannot reach unrelated HTTP or device APIs.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
@@ -64,6 +64,8 @@ enum ClientMessage {
         keys: Vec<String>,
         #[serde(default)]
         pointer_deltas: Vec<BrowserKeymapPointerDelta>,
+        #[serde(default)]
+        gamepad_axes: BTreeMap<String, f32>,
     },
     KeymapDirectTouches {
         contacts: Vec<BrowserDirectContact>,
@@ -399,12 +401,14 @@ pub(super) fn handle_client_message_with_keymap<HostPath>(
         ClientMessage::KeymapInput {
             keys,
             pointer_deltas,
+            gamepad_axes,
         } => {
             return ClientVideoFeedback::KeymapEvent(keymap.set_input(
                 input,
                 orientation,
                 keys,
                 pointer_deltas,
+                gamepad_axes,
             ));
         }
         ClientMessage::KeymapDirectTouches { contacts } => {

@@ -10,7 +10,7 @@ use devicehub_core::{
 };
 use devicehub_keymap::{
     ActiveHardwareButton, CompileOptions, CompiledKeymap, KeymapPointerDelta, KeymapRuntimeState,
-    NormalizedTouchContact, ScriptAction, normalize_key_state,
+    NormalizedTouchContact, ScriptAction, normalize_gamepad_axes, normalize_key_state,
 };
 use devicehub_runtime::{DeviceSessionCommand as InputCmd, SessionCommandSlot as InputSink};
 
@@ -34,6 +34,8 @@ pub(super) struct BrowserKeymapPointerDelta {
     mapping_id: String,
     delta_x: f32,
     delta_y: f32,
+    cursor_x: Option<f32>,
+    cursor_y: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -61,6 +63,7 @@ pub(super) struct BrowserKeymapSession {
     active_buttons: Vec<ActiveHardwareButton>,
     script_device: ScriptDeviceState,
     active_mapping_ids: Vec<String>,
+    unavailable_mapping_ids: Vec<String>,
     debug_enabled: bool,
 }
 
@@ -95,6 +98,7 @@ impl BrowserKeymapSession {
                         "profile": profile.name,
                         "scripts_enabled": allow_scripts,
                         "active_mapping_ids": [],
+                        "unavailable_mapping_ids": [],
                         "active_contacts": self.debug_active_contacts(),
                     }
                 })
@@ -109,12 +113,20 @@ impl BrowserKeymapSession {
         orientation: Orientation,
         keys: Vec<String>,
         pointer_deltas: Vec<BrowserKeymapPointerDelta>,
+        gamepad_axes: BTreeMap<String, f32>,
     ) -> Value {
         let Some(compiled) = self.compiled.as_ref() else {
             return error_event("keymap session is not configured");
         };
         let keys = match normalize_key_state(keys) {
             Ok(keys) => keys,
+            Err(error) => {
+                self.release(input, orientation);
+                return error_event(error.to_string());
+            }
+        };
+        let gamepad_axes = match normalize_gamepad_axes(&gamepad_axes) {
+            Ok(axes) => axes,
             Err(error) => {
                 self.release(input, orientation);
                 return error_event(error.to_string());
@@ -135,14 +147,17 @@ impl BrowserKeymapSession {
                 mapping_id: &delta.mapping_id,
                 delta_x: delta.delta_x,
                 delta_y: delta.delta_y,
+                cursor_x: delta.cursor_x,
+                cursor_y: delta.cursor_y,
             })
             .collect::<Vec<_>>();
-        if let Err(error) = compiled.update_runtime(
+        if let Err(error) = compiled.update_runtime_with_gamepad(
             &mut self.runtime,
             &self.held,
             &keys,
             &newly_held,
             &deltas,
+            &gamepad_axes,
             now,
         ) {
             self.release(input, orientation);
@@ -174,12 +189,17 @@ impl BrowserKeymapSession {
     ) -> Option<Value> {
         self.compiled.as_ref()?;
         let previous = self.active_mapping_ids.clone();
+        let previous_unavailable = self.unavailable_mapping_ids.clone();
         let event = self.render(input, orientation, Instant::now());
         let has_control_mode = event
             .pointer("/payload/control_mode")
             .is_some_and(|value| !value.is_null());
         let has_error = event.pointer("/payload/error").is_some();
-        (self.debug_enabled || self.active_mapping_ids != previous || has_control_mode || has_error)
+        (self.debug_enabled
+            || self.active_mapping_ids != previous
+            || self.unavailable_mapping_ids != previous_unavailable
+            || has_control_mode
+            || has_error)
             .then_some(event)
     }
 
@@ -194,6 +214,7 @@ impl BrowserKeymapSession {
             "payload": {
                 "configured": false,
                 "active_mapping_ids": [],
+                "unavailable_mapping_ids": [],
                 "active_contacts": self.debug_active_contacts(),
             }
         })
@@ -242,6 +263,7 @@ impl BrowserKeymapSession {
         self.active_buttons.clear();
         self.script_device = ScriptDeviceState::default();
         self.active_mapping_ids.clear();
+        self.unavailable_mapping_ids.clear();
     }
 
     fn render<HostPath>(
@@ -262,8 +284,18 @@ impl BrowserKeymapSession {
                     .map(|at| (key.clone(), now.saturating_duration_since(*at)))
             })
             .collect::<BTreeMap<String, Duration>>();
-        let frame = match compiled.frame_with_runtime(&mut self.runtime, &self.held, &held_for, now)
-        {
+        let reserved_contact_ids = self
+            .direct_contacts
+            .iter()
+            .map(|contact| contact.identity)
+            .collect::<BTreeSet<_>>();
+        let frame = match compiled.frame_with_runtime_and_reserved_contacts(
+            &mut self.runtime,
+            &self.held,
+            &held_for,
+            now,
+            &reserved_contact_ids,
+        ) {
             Ok(frame) => frame,
             Err(error) => {
                 self.release(input, orientation);
@@ -362,6 +394,7 @@ impl BrowserKeymapSession {
             self.active_contacts = contacts;
         }
         self.active_mapping_ids = frame.active_mapping_ids;
+        self.unavailable_mapping_ids = frame.unavailable_mapping_ids;
         self.status_event(control_mode)
     }
 
@@ -371,6 +404,7 @@ impl BrowserKeymapSession {
             "payload": {
                 "configured": self.compiled.is_some(),
                 "active_mapping_ids": self.active_mapping_ids,
+                "unavailable_mapping_ids": self.unavailable_mapping_ids,
                 "active_contact_ids": self.active_contacts.iter().map(|contact| contact.identity).collect::<Vec<_>>(),
                 "active_contacts": self.debug_active_contacts(),
                 "control_mode": control_mode,
@@ -473,6 +507,7 @@ fn error_event(message: impl ToString) -> Value {
         "payload": {
             "configured": false,
             "active_mapping_ids": [],
+            "unavailable_mapping_ids": [],
             "active_contacts": [],
             "error": message.to_string(),
         }
@@ -521,6 +556,7 @@ mod tests {
             Orientation::Portrait,
             vec!["KeyF".into()],
             Vec::new(),
+            BTreeMap::new(),
         );
         assert_eq!(status["payload"]["active_contacts"][0]["identity"], 1);
         let InputCmd::DeviceInput(DeviceInputCommand::MultiTouchFrame(down)) =

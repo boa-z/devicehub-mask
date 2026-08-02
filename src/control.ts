@@ -15,7 +15,7 @@ export function singleTapReleaseDelay(
   now: number,
 ) {
   return mappings.reduce((delay, mapping) => {
-    if (mapping.type !== "SingleTap" || !mapping.bind.includes(code)) return delay;
+    if (mapping.type !== "SingleTap" || mapping.sync || !mapping.bind.includes(code)) return delay;
     const startedAt = Math.max(...mapping.bind.map((key) => heldSince.get(key) ?? now));
     return Math.max(delay, remainingTapDuration(startedAt, now, mapping.duration));
   }, 0);
@@ -27,10 +27,116 @@ export function mappingBindings(mapping: Mapping): string[] {
   const result = "bind" in mapping && Array.isArray(mapping.bind) ? [...mapping.bind] : [];
   const directionBindings = [mapping.type === "DirectionPad" ? mapping.bind : mapping.type === "PadCastSpell" ? mapping.pad_bind : undefined];
   for (const value of directionBindings) if (value?.type === "Button") result.push(...value.up, ...value.down, ...value.left, ...value.right);
+  if (mapping.type === "DirectionPad" && mapping.up_boost_key) result.push(...mapping.up_boost_key);
   return result.filter(Boolean);
 }
 
-export function isBoundKey(mappings: Mapping[], code: string) { return mappings.some((mapping) => mappingBindings(mapping).includes(code)); }
+export function isBoundKey(mappings: readonly Mapping[], code: string) { return mappings.some((mapping) => mappingBindings(mapping).includes(code)); }
+
+export type GamepadInputNames = { buttons: string[]; axes: string[] };
+export type GamepadInputState = { keys: string[]; axes: Record<string, number> };
+
+const gamepadAxisIndexes: Record<string, number> = {
+  LeftStickX: 0,
+  LeftStickY: 1,
+  RightStickX: 2,
+  RightStickY: 3,
+  LeftZ: 4,
+  RightZ: 5,
+};
+
+const gamepadButtonIndexes: Record<string, number> = {
+  GamepadSouth: 0,
+  GamepadEast: 1,
+  GamepadWest: 2,
+  GamepadNorth: 3,
+  GamepadLeftTrigger: 4,
+  GamepadRightTrigger: 5,
+  GamepadLeftTrigger2: 6,
+  GamepadRightTrigger2: 7,
+  GamepadSelect: 8,
+  GamepadStart: 9,
+  GamepadLeftThumb: 10,
+  GamepadRightThumb: 11,
+  GamepadDPadUp: 12,
+  GamepadDPadDown: 13,
+  GamepadDPadLeft: 14,
+  GamepadDPadRight: 15,
+  GamepadMode: 16,
+};
+const gamepadButtonNames = new Map(Object.entries(gamepadButtonIndexes).map(([name, index]) => [index, name]));
+
+export const gamepadAxisNames = [
+  ...Object.keys(gamepadAxisIndexes),
+  ...Array.from({ length: 32 }, (_, index) => `Other-${index}`),
+];
+
+function gamepadBindingNames(mapping: Mapping, names: Set<string>) {
+  for (const code of mappingBindings(mapping)) if (code.startsWith("Gamepad")) names.add(code);
+  const direction = mapping.type === "DirectionPad" ? mapping.bind : mapping.type === "PadCastSpell" ? mapping.pad_bind : undefined;
+  if (direction?.type === "JoyStick") {
+    names.add(`axis:${direction.x}`);
+    names.add(`axis:${direction.y}`);
+  }
+}
+
+export function gamepadInputNames(mappings: readonly Mapping[]): GamepadInputNames {
+  const names = new Set<string>();
+  for (const mapping of mappings) gamepadBindingNames(mapping, names);
+  return {
+    buttons: [...names].filter((name) => !name.startsWith("axis:")).sort(),
+    axes: [...names].filter((name) => name.startsWith("axis:")).map((name) => name.slice(5)).sort(),
+  };
+}
+
+function gamepadIndex(name: string): number | undefined {
+  if (gamepadAxisIndexes[name] !== undefined) return gamepadAxisIndexes[name];
+  if (/^Other-[0-9]+$/.test(name)) return Number(name.slice(6));
+  return undefined;
+}
+
+function buttonIndex(name: string): number | undefined {
+  if (gamepadButtonIndexes[name] !== undefined) return gamepadButtonIndexes[name];
+  if (/^GamepadOther[0-9]+$/.test(name)) return Number(name.slice("GamepadOther".length));
+  return undefined;
+}
+
+function gamepads(): Gamepad[] {
+  if (typeof navigator === "undefined" || typeof navigator.getGamepads !== "function") return [];
+  return Array.from(navigator.getGamepads()).filter((gamepad): gamepad is Gamepad => gamepad !== null);
+}
+
+export function readGamepadButtonPress(): string | undefined {
+  for (const gamepad of gamepads()) {
+    for (let index = 0; index < gamepad.buttons.length; index += 1) {
+      const button = gamepad.buttons[index];
+      if (button?.pressed || button?.value > 0.5) return gamepadButtonNames.get(index) ?? `GamepadOther${index}`;
+    }
+  }
+  return undefined;
+}
+
+export function readGamepadInput(names: GamepadInputNames): GamepadInputState {
+  const devices = gamepads();
+  const keys = names.buttons.filter((name) => {
+    const index = buttonIndex(name);
+    return index !== undefined && devices.some((gamepad) => {
+      const button = gamepad.buttons[index];
+      return button !== undefined && (button.pressed || button.value > 0.5);
+    });
+  });
+  const axes = Object.fromEntries(names.axes.map((name) => {
+    const index = gamepadIndex(name);
+    const value = index === undefined
+      ? 0
+      : devices.reduce((current, gamepad) => {
+        const candidate = gamepad.axes[index];
+        return typeof candidate === "number" && Number.isFinite(candidate) && Math.abs(candidate) > Math.abs(current) ? candidate : current;
+      }, 0);
+    return [name, Math.max(-1, Math.min(1, value))];
+  }));
+  return { keys, axes };
+}
 
 export function isUiControl(target: EventTarget | null): boolean {
   if (target === null || typeof target !== "object" || !("closest" in target)) return false;
@@ -42,7 +148,15 @@ export function pointerButtonCode(button: number): string | undefined {
   if (button === 0) return "MouseLeft";
   if (button === 1) return "MouseMiddle";
   if (button === 2) return "MouseRight";
+  if (button === 3) return "MouseBack";
+  if (button === 4) return "MouseForward";
+  if (Number.isInteger(button) && button >= 5) return `MouseOther${button}`;
   return undefined;
+}
+
+export function scrollBindingCode(deltaY: number): "ScrollDown" | "ScrollUp" | undefined {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return undefined;
+  return deltaY > 0 ? "ScrollDown" : "ScrollUp";
 }
 
 const fixedKeyboardUsages: Record<string, number> = {

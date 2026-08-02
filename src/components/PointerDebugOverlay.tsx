@@ -13,6 +13,7 @@ type Props = {
   keymapConfigured: boolean;
   keymapContacts?: readonly KeymapContact[];
   activeMappingIds: readonly string[];
+  unavailableMappingIds: readonly string[];
 };
 
 const maxTrailEvents = 96;
@@ -25,6 +26,7 @@ export function PointerDebugOverlay({
   keymapConfigured,
   keymapContacts,
   activeMappingIds,
+  unavailableMappingIds,
 }: Props) {
   const { t } = useTranslation();
   const [renderVersion, setRenderVersion] = useState(0);
@@ -76,6 +78,7 @@ export function PointerDebugOverlay({
       <strong>{t("device.pointerDebug")}</strong>
       <span>{t("device.pointerDebugContacts", { count: contacts.length })}</span>
       {activeMappingIds.length > 0 && <span>{t("device.pointerDebugMappings", { value: activeMappingIds.join(", ") })}</span>}
+      {unavailableMappingIds.length > 0 && <span>{t("device.pointerDebugUnavailable", { value: unavailableMappingIds.join(", ") })}</span>}
       {latest && <span>{t(`device.pointerDebugAction.${latest.action}`)} · {latest.source === "direct" ? t("device.pointerDebugSource.direct") : t("device.pointerDebugSource.keymap")} {latest.identity}</span>}
     </div>
     {trail.map((event, index) => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { convertEditorMappingType, createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
-import { createMapping, type Mapping } from "./types";
+import { createMapping, mappingPosition, updateMappingPosition, type Mapping } from "./types";
 
 vi.stubGlobal("crypto", { randomUUID: () => "new-id" });
 
@@ -22,6 +22,19 @@ describe("mapping editor", () => {
       pointer_id: 1,
       position: { x: 0.525, y: 0.525 },
     });
+  });
+
+  it("keeps sequence mappings anchored to their first runtime point", () => {
+    const swipe = createMapping("Swipe", { x: 0.2, y: 0.3 });
+    if (swipe.type !== "Swipe") throw new Error("unexpected mapping type");
+    swipe.position = { x: 0.9, y: 0.9 };
+    swipe.positions = [{ x: 0.25, y: 0.35 }, { x: 0.8, y: 0.35 }];
+
+    expect(mappingPosition(swipe)).toEqual({ x: 0.25, y: 0.35 });
+    const moved = updateMappingPosition(swipe, { x: 0.4, y: 0.45 });
+    expect(moved).toMatchObject({ position: { x: 0.4, y: 0.45 }, positions: [{ x: 0.4, y: 0.45 }, { x: 0.8, y: 0.35 }] });
+    const duplicate = duplicateEditorMapping(swipe, [swipe]);
+    expect(duplicate).toMatchObject({ position: { x: 0.275, y: 0.375 }, positions: [{ x: 0.275, y: 0.375 }, { x: 0.8, y: 0.35 }] });
   });
 
   it("keeps dual FPS contacts distinct", () => {

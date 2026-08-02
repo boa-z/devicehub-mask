@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devicehub_core::{HardwareButton, KeyMappingProfile, KeyMappingResolution, hardware_button};
 use serde_json::{Map, Value};
@@ -24,6 +24,13 @@ const MAX_TIMING_MS: f64 = 60_000.0;
 const MAX_PATH_POINTS: usize = 32;
 const MAX_POINTER_SENSITIVITY: f64 = 100.0;
 const MAX_POINTER_DELTA: f32 = 16_384.0;
+const MAX_GAMEPAD_AXES: usize = 16;
+const GAMEPAD_AXIS_DEADZONE: f32 = 0.05;
+const MAX_RANDOM_OFFSET: f64 = 16_384.0;
+const MAX_RANDOM_DISTANCE_SCALE: f64 = 100.0;
+const RANDOM_JITTER_MIN_MS: u64 = 80;
+const RANDOM_JITTER_MAX_MS: u64 = 120;
+const RANDOM_SWIPE_BEND: f32 = 0.035;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormalizedTouchContact {
@@ -38,6 +45,7 @@ pub struct KeymapFrame {
     pub contacts: Vec<NormalizedTouchContact>,
     pub active_mapping_ids: Vec<String>,
     pub matched_mapping_ids: Vec<String>,
+    pub unavailable_mapping_ids: Vec<String>,
     pub script_actions: Vec<ScriptAction>,
 }
 
@@ -47,12 +55,18 @@ pub struct ActiveHardwareButton {
     pub button: HardwareButton,
 }
 
-/// Relative pointer movement in pixels of the profile's target display.
+/// Pointer movement in pixels of the profile's target display.
+///
+/// `cursor_x` and `cursor_y` are optional normalized screen coordinates. They
+/// let browser clients reproduce scrcpy-mask's absolute mouse-cast projection
+/// while keeping relative deltas compatible with MCP callers and older clients.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KeymapPointerDelta<'a> {
     pub mapping_id: &'a str,
     pub delta_x: f32,
     pub delta_y: f32,
+    pub cursor_x: Option<f32>,
+    pub cursor_y: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,12 +110,15 @@ enum Mapping {
         position: Point,
         bind: Vec<String>,
         duration_ms: f64,
+        sync: bool,
+        random_offset: Point,
     },
     Press {
         id: String,
         identity: u8,
         position: Point,
         bind: Vec<String>,
+        random_offset: Point,
     },
     RepeatTap {
         id: String,
@@ -110,12 +127,14 @@ enum Mapping {
         bind: Vec<String>,
         duration_ms: f64,
         interval_ms: f64,
+        random_offset: Point,
     },
     MultipleTap {
         id: String,
         identity: u8,
         bind: Vec<String>,
         items: Vec<TapItem>,
+        random_offset: Point,
     },
     Swipe {
         id: String,
@@ -123,6 +142,7 @@ enum Mapping {
         bind: Vec<String>,
         positions: Vec<Point>,
         duration_ms: f64,
+        enable_randomization: bool,
     },
     DirectionPad {
         id: String,
@@ -131,6 +151,14 @@ enum Mapping {
         binding: DirectionBinding,
         max_offset_x: f32,
         max_offset_y: f32,
+        enable_randomization: bool,
+        random_distance_min_scale: f32,
+        random_distance_max_scale: f32,
+        random_offset: Point,
+        jitter_offset: Point,
+        up_boost: Option<Vec<String>>,
+        up_boost_scale: f32,
+        initial_duration: Duration,
         frame: KeyMappingResolution,
     },
     PadCastSpell {
@@ -143,6 +171,8 @@ enum Mapping {
         frame: KeyMappingResolution,
         block_direction_pad: bool,
         release_mode: CastReleaseMode,
+        random_offset: Point,
+        enable_randomization: bool,
     },
     Pointer {
         id: String,
@@ -152,6 +182,7 @@ enum Mapping {
         sensitivity_x: f32,
         sensitivity_y: f32,
         frame: KeyMappingResolution,
+        random_offset: Point,
         kind: PointerKind,
     },
     CancelCast {
@@ -166,10 +197,14 @@ enum Mapping {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct Point {
     x: f32,
     y: f32,
+}
+
+impl Point {
+    const ZERO: Self = Self { x: 0.0, y: 0.0 };
 }
 
 #[derive(Debug, Clone)]
@@ -182,9 +217,14 @@ struct TapItem {
 #[derive(Debug, Clone)]
 enum PointerKind {
     MouseCast {
+        center: Point,
+        cast_radius: f32,
         drag_radius: f32,
         cast_no_direction: bool,
+        horizontal_scale_factor: f32,
+        vertical_scale_factor: f32,
         initial_duration: Duration,
+        enable_initial_swipe_randomization: bool,
         release_mode: CastReleaseMode,
     },
     Observation {
@@ -224,13 +264,46 @@ enum FpsHandoffStrategy {
     Overlap,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct KeymapRuntimeState {
+    gamepad_axes: BTreeMap<String, f32>,
+    pulse_starts: BTreeMap<String, Instant>,
+    random_states: BTreeMap<String, RandomMappingState>,
+    random_seed: u64,
     pointer_positions: BTreeMap<String, Point>,
+    mapping_contact_ids: BTreeMap<String, u8>,
     fps: Option<FpsRuntime>,
     cast: Option<CastRuntime>,
     cancel: Option<CancelRuntime>,
     scripts: ScriptRuntime,
+}
+
+impl Default for KeymapRuntimeState {
+    fn default() -> Self {
+        Self {
+            gamepad_axes: BTreeMap::new(),
+            pulse_starts: BTreeMap::new(),
+            random_states: BTreeMap::new(),
+            random_seed: random_seed(),
+            pointer_positions: BTreeMap::new(),
+            mapping_contact_ids: BTreeMap::new(),
+            fps: None,
+            cast: None,
+            cancel: None,
+            scripts: ScriptRuntime::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RandomMappingState {
+    offset: Point,
+    path_bend: Point,
+    distance_scale: f32,
+    jitter: Point,
+    jitter_range: Point,
+    next_jitter_at: Instant,
+    started_at: Instant,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -309,6 +382,10 @@ struct PendingFpsTouch {
 struct CastRuntime {
     mapping_id: String,
     position: Point,
+    origin: Point,
+    target: Point,
+    cursor: Option<Point>,
+    started_at: Instant,
     auto_release_at: Option<Instant>,
 }
 
@@ -330,7 +407,10 @@ enum DirectionBinding {
         left: Vec<String>,
         right: Vec<String>,
     },
-    JoyStick,
+    JoyStick {
+        x: String,
+        y: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -417,38 +497,93 @@ impl CompiledKeymap {
         held: &BTreeSet<String>,
         elapsed: Duration,
     ) -> Result<KeymapFrame, KeymapError> {
-        self.frame_with_state(held, &BTreeMap::new(), elapsed, &BTreeMap::new())
+        self.frame_with_state(
+            held,
+            &BTreeMap::new(),
+            elapsed,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            None,
+            &BTreeSet::new(),
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn frame_with_state(
         &self,
         held: &BTreeSet<String>,
         held_for: &BTreeMap<String, Duration>,
         fallback_elapsed: Duration,
+        gamepad_axes: &BTreeMap<String, f32>,
+        pulse_elapsed: &BTreeMap<String, f64>,
+        forced_active_mapping_ids: &BTreeSet<String>,
         pointer_offsets: &BTreeMap<String, (f32, f32)>,
+        random_states: &BTreeMap<String, RandomMappingState>,
+        now: Option<Instant>,
+        mut mapping_contact_ids: Option<&mut BTreeMap<String, u8>>,
+        reserved_contact_ids: &BTreeSet<u8>,
     ) -> Result<KeymapFrame, KeymapError> {
         let held = self.effective_held(held);
         let mut candidates = Vec::with_capacity(self.mappings.len());
         let mut matched_mapping_ids = Vec::new();
+        let mut matched_ordinary_mapping_ids = BTreeSet::new();
         for mapping in &self.mappings {
-            let elapsed = mapping
-                .activation_elapsed(&held, held_for)
-                .unwrap_or(fallback_elapsed);
-            let evaluated =
-                mapping.evaluate(&held, elapsed.as_secs_f64() * 1000.0, pointer_offsets)?;
+            let elapsed = pulse_elapsed.get(mapping.id()).copied().unwrap_or_else(|| {
+                mapping
+                    .activation_elapsed(&held, held_for)
+                    .unwrap_or(fallback_elapsed)
+                    .as_secs_f64()
+                    * 1000.0
+            });
+            let evaluated = mapping.evaluate(
+                &held,
+                elapsed,
+                gamepad_axes,
+                forced_active_mapping_ids.contains(mapping.id()),
+                pointer_offsets,
+                random_states,
+                now,
+            )?;
             if evaluated.matched {
                 matched_mapping_ids.push(evaluated.id.clone());
+                if !mapping.is_advanced() {
+                    matched_ordinary_mapping_ids.insert(evaluated.id.clone());
+                }
             }
             candidates.push(evaluated);
+        }
+
+        if let Some(leases) = mapping_contact_ids.as_deref_mut() {
+            leases.retain(|id, _| matched_ordinary_mapping_ids.contains(id));
         }
 
         let mut claimed_keys = HashSet::new();
         let mut contacts = Vec::new();
         let mut active_mapping_ids = Vec::new();
+        let mut unavailable_mapping_ids = Vec::new();
+        let dynamic_leases_enabled = mapping_contact_ids.is_some();
+        let mut used_contact_ids = reserved_contact_ids.clone();
+        if dynamic_leases_enabled && let Some(leases) = mapping_contact_ids.as_deref() {
+            for mapping_id in &matched_ordinary_mapping_ids {
+                if let Some(identity) = leases.get(mapping_id) {
+                    used_contact_ids.insert(*identity);
+                }
+            }
+        }
         for candidate in candidates {
             let Some(contact) = candidate.contact else {
                 continue;
             };
+            let Some(mapping) = self.mapping(&candidate.id) else {
+                continue;
+            };
+            if dynamic_leases_enabled && mapping.is_advanced() {
+                continue;
+            }
             if !contact.touching
                 || candidate
                     .claimed_keys
@@ -458,21 +593,44 @@ impl CompiledKeymap {
                 continue;
             }
             claimed_keys.extend(candidate.claimed_keys);
-            if contacts
-                .iter()
-                .any(|existing: &NormalizedTouchContact| existing.identity == contact.identity)
-                || contacts.len() >= 5
-            {
-                continue;
+            if dynamic_leases_enabled {
+                if let Some(identity) = mapping_contact_ids
+                    .as_deref()
+                    .and_then(|leases| leases.get(&candidate.id).copied())
+                    && !reserved_contact_ids.contains(&identity)
+                {
+                    used_contact_ids.remove(&identity);
+                }
+                let Some(identity) = mapping_contact_ids.as_deref_mut().and_then(|leases| {
+                    lease_contact_id(leases, &candidate.id, contact.identity, &used_contact_ids)
+                }) else {
+                    unavailable_mapping_ids.push(candidate.id);
+                    continue;
+                };
+                used_contact_ids.insert(identity);
+                contacts.push(NormalizedTouchContact {
+                    identity,
+                    ..contact
+                });
+                active_mapping_ids.push(candidate.id);
+            } else {
+                if contacts
+                    .iter()
+                    .any(|existing: &NormalizedTouchContact| existing.identity == contact.identity)
+                    || contacts.len() >= 5
+                {
+                    continue;
+                }
+                contacts.push(contact);
+                active_mapping_ids.push(candidate.id);
             }
-            contacts.push(contact);
-            active_mapping_ids.push(candidate.id);
         }
 
         Ok(KeymapFrame {
             contacts,
             active_mapping_ids,
             matched_mapping_ids,
+            unavailable_mapping_ids,
             script_actions: Vec::new(),
         })
     }
@@ -511,6 +669,19 @@ impl CompiledKeymap {
             .is_none_or(|ready_at| now >= *ready_at)
     }
 
+    fn begin_randomization(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        mapping: &Mapping,
+        now: Instant,
+    ) {
+        if let Some(state) = random_state_for_mapping(mapping, &mut runtime.random_seed, now) {
+            runtime
+                .random_states
+                .insert(mapping.id().to_string(), state);
+        }
+    }
+
     fn effective_held(&self, held: &BTreeSet<String>) -> BTreeSet<String> {
         let cancelled = self.mappings.iter().any(
             |mapping| matches!(mapping, Mapping::CancelCast { bind, .. } if bound(held, bind)),
@@ -538,9 +709,45 @@ impl CompiledKeymap {
         deltas: &[KeymapPointerDelta<'_>],
         now: Instant,
     ) -> Result<(), KeymapError> {
+        self.update_runtime_with_gamepad(
+            runtime,
+            previous,
+            held,
+            newly_held,
+            deltas,
+            &BTreeMap::new(),
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_runtime_with_gamepad(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        previous: &BTreeSet<String>,
+        held: &BTreeSet<String>,
+        newly_held: &BTreeSet<String>,
+        deltas: &[KeymapPointerDelta<'_>],
+        gamepad_axes: &BTreeMap<String, f32>,
+        now: Instant,
+    ) -> Result<(), KeymapError> {
+        runtime.gamepad_axes = normalize_gamepad_axes(gamepad_axes)?;
         self.tick_runtime(runtime, now);
         self.update_script_lifecycles(runtime, previous, held, now)?;
         self.tick_script_runtime(runtime, now)?;
+
+        for mapping in &self.mappings {
+            let Mapping::DirectionPad { id, binding, .. } = mapping else {
+                continue;
+            };
+            if binding.has_pressed_key(held, &runtime.gamepad_axes) {
+                if !runtime.random_states.contains_key(id) {
+                    self.begin_randomization(runtime, mapping, now);
+                }
+            } else {
+                runtime.random_states.remove(id);
+            }
+        }
 
         for mapping in &self.mappings {
             let Some(bind) = mapping.binding() else {
@@ -552,6 +759,18 @@ impl CompiledKeymap {
             if !activated {
                 continue;
             }
+            self.begin_randomization(runtime, mapping, now);
+            if matches!(
+                mapping,
+                Mapping::SingleTap { sync: false, .. }
+                    | Mapping::MultipleTap { .. }
+                    | Mapping::Swipe { .. }
+            ) {
+                runtime
+                    .pulse_starts
+                    .entry(mapping.id().to_string())
+                    .or_insert(now);
+            }
             match mapping {
                 Mapping::Pointer {
                     id,
@@ -561,7 +780,10 @@ impl CompiledKeymap {
                     ..
                 } => match kind {
                     PointerKind::Observation { .. } | PointerKind::Fire { .. } => {
-                        runtime.pointer_positions.insert(id.clone(), *position);
+                        runtime.pointer_positions.insert(
+                            id.clone(),
+                            randomized_point(*position, runtime.random_states.get(id)),
+                        );
                     }
                     PointerKind::Fps { .. } => {
                         if runtime
@@ -592,10 +814,16 @@ impl CompiledKeymap {
                                 .is_some_and(|cast| cast.mapping_id == *id)
                         {
                             runtime.cast = None;
+                            runtime.random_states.remove(id);
                         } else {
+                            let anchor = randomized_point(*position, runtime.random_states.get(id));
                             runtime.cast = Some(CastRuntime {
                                 mapping_id: id.clone(),
-                                position: *position,
+                                position: anchor,
+                                origin: anchor,
+                                target: anchor,
+                                cursor: None,
+                                started_at: now,
                                 auto_release_at: (*release_mode == CastReleaseMode::Press).then(
                                     || now + (*initial_duration).max(Duration::from_millis(16)),
                                 ),
@@ -616,10 +844,16 @@ impl CompiledKeymap {
                             .is_some_and(|cast| cast.mapping_id == *id)
                     {
                         runtime.cast = None;
+                        runtime.random_states.remove(id);
                     } else {
+                        let anchor = randomized_point(*position, runtime.random_states.get(id));
                         runtime.cast = Some(CastRuntime {
                             mapping_id: id.clone(),
-                            position: *position,
+                            position: anchor,
+                            origin: anchor,
+                            target: anchor,
+                            cursor: None,
+                            started_at: now,
                             auto_release_at: None,
                         });
                     }
@@ -637,6 +871,7 @@ impl CompiledKeymap {
                 && let Some(cast) = runtime.cast.take()
                 && let Some(identity) = self.mapping_identity(&cast.mapping_id)
             {
+                runtime.random_states.remove(&cast.mapping_id);
                 runtime.cancel = Some(CancelRuntime {
                     mapping_id: id.clone(),
                     identity,
@@ -654,14 +889,24 @@ impl CompiledKeymap {
             };
             if bound(previous, bind) && !bound(held, bind) {
                 match mapping {
+                    Mapping::SingleTap { sync: false, .. }
+                    | Mapping::MultipleTap { .. }
+                    | Mapping::Swipe { .. } => {}
+                    Mapping::SingleTap { id, .. }
+                    | Mapping::Press { id, .. }
+                    | Mapping::RepeatTap { id, .. } => {
+                        runtime.random_states.remove(id);
+                    }
                     Mapping::Pointer { id, kind, .. } => match kind {
                         PointerKind::Observation { .. } => {
                             runtime.pointer_positions.remove(id);
+                            runtime.random_states.remove(id);
                         }
                         PointerKind::Fire {
                             preserve_fps_control,
                         } => {
                             runtime.pointer_positions.remove(id);
+                            runtime.random_states.remove(id);
                             if !preserve_fps_control
                                 && let Some(fps) = &mut runtime.fps
                                 && let Some(Mapping::Pointer {
@@ -682,7 +927,8 @@ impl CompiledKeymap {
                             .as_ref()
                             .is_some_and(|cast| cast.mapping_id == *id) =>
                         {
-                            runtime.cast = None
+                            runtime.cast = None;
+                            runtime.random_states.remove(id);
                         }
                         _ => {}
                     },
@@ -695,7 +941,8 @@ impl CompiledKeymap {
                         .as_ref()
                         .is_some_and(|cast| cast.mapping_id == *id) =>
                     {
-                        runtime.cast = None
+                        runtime.cast = None;
+                        runtime.random_states.remove(id);
                     }
                     _ => {}
                 }
@@ -715,10 +962,46 @@ impl CompiledKeymap {
         held_for: &BTreeMap<String, Duration>,
         now: Instant,
     ) -> Result<KeymapFrame, KeymapError> {
+        self.frame_with_runtime_and_reserved_contacts(
+            runtime,
+            held,
+            held_for,
+            now,
+            &BTreeSet::new(),
+        )
+    }
+
+    pub fn frame_with_runtime_and_reserved_contacts(
+        &self,
+        runtime: &mut KeymapRuntimeState,
+        held: &BTreeSet<String>,
+        held_for: &BTreeMap<String, Duration>,
+        now: Instant,
+        externally_reserved_contact_ids: &BTreeSet<u8>,
+    ) -> Result<KeymapFrame, KeymapError> {
         self.tick_runtime(runtime, now);
         self.schedule_held_scripts(runtime, now)?;
         self.tick_script_runtime(runtime, now)?;
-        let base = self.frame_with_state(held, held_for, Duration::ZERO, &BTreeMap::new())?;
+        let pulse_elapsed = runtime
+            .pulse_starts
+            .iter()
+            .filter_map(|(id, started_at)| {
+                self.mapping(id).map(|_| {
+                    let ready_at = runtime
+                        .scripts
+                        .hook_ready_at
+                        .get(id)
+                        .copied()
+                        .unwrap_or(*started_at);
+                    let started_at = (*started_at).max(ready_at);
+                    (
+                        id.clone(),
+                        now.saturating_duration_since(started_at).as_secs_f64() * 1000.0,
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        let forced_active_mapping_ids = pulse_elapsed.keys().cloned().collect::<BTreeSet<_>>();
         let blocked_direction_pad = runtime
             .cast
             .as_ref()
@@ -733,8 +1016,34 @@ impl CompiledKeymap {
                     }
                 )
             });
+        let interrupting_fire = self.mappings.iter().any(|mapping| matches!(mapping,
+            Mapping::Pointer { id, bind, kind: PointerKind::Fire { preserve_fps_control: false }, .. }
+                if bound(held, bind) && runtime.pointer_positions.contains_key(id)));
+        let mut reserved_contact_ids = externally_reserved_contact_ids.clone();
+        self.reserve_runtime_contact_ids(
+            runtime,
+            held,
+            now,
+            interrupting_fire,
+            &mut reserved_contact_ids,
+        );
+        let base = self.frame_with_state(
+            held,
+            held_for,
+            Duration::ZERO,
+            &runtime.gamepad_axes,
+            &pulse_elapsed,
+            &forced_active_mapping_ids,
+            &BTreeMap::new(),
+            &runtime.random_states,
+            Some(now),
+            Some(&mut runtime.mapping_contact_ids),
+            &reserved_contact_ids,
+        )?;
+        let gamepad_axes = runtime.gamepad_axes.clone();
         let mut contacts = Vec::new();
         let mut active_mapping_ids = Vec::new();
+        let mut unavailable_mapping_ids = base.unavailable_mapping_ids;
         let mut matched_mapping_ids = base
             .matched_mapping_ids
             .into_iter()
@@ -762,10 +1071,6 @@ impl CompiledKeymap {
             matched_mapping_ids.push(contact.scope.clone());
         }
 
-        let interrupting_fire = self.mappings.iter().any(|mapping| matches!(mapping,
-            Mapping::Pointer { id, bind, kind: PointerKind::Fire { preserve_fps_control: false }, .. }
-                if bound(held, bind) && runtime.pointer_positions.contains_key(id)));
-
         for mapping in &self.mappings {
             match mapping {
                 Mapping::Pointer {
@@ -780,7 +1085,9 @@ impl CompiledKeymap {
                         .pointer_positions
                         .get(id)
                         .copied()
-                        .unwrap_or(*position);
+                        .unwrap_or_else(|| {
+                            randomized_point(*position, runtime.random_states.get(id))
+                        });
                     add_runtime_contact(
                         &mut contacts,
                         &mut active_mapping_ids,
@@ -802,7 +1109,9 @@ impl CompiledKeymap {
                         .pointer_positions
                         .get(id)
                         .copied()
-                        .unwrap_or(*position);
+                        .unwrap_or_else(|| {
+                            randomized_point(*position, runtime.random_states.get(id))
+                        });
                     add_runtime_contact(
                         &mut contacts,
                         &mut active_mapping_ids,
@@ -860,14 +1169,76 @@ impl CompiledKeymap {
                     frame,
                     ..
                 } => {
-                    let (dx, dy) = pad_binding.direction(held);
+                    let (dx, dy) = normalized_direction(pad_binding.direction(held, &gamepad_axes));
+                    let random = runtime.random_states.get(&cast.mapping_id).copied();
+                    let anchor = randomized_point(*position, random.as_ref());
+                    let scale = random.map_or(1.0, |state| state.distance_scale);
+                    let jitter = random.map_or(Point::ZERO, |state| state.jitter);
+                    cast.target = Point {
+                        x: anchor.x + dx * drag_radius * scale / frame.width as f32,
+                        y: anchor.y + dy * drag_radius * scale / frame.height as f32,
+                    };
                     cast.position = Point {
-                        x: clamp(position.x + dx * drag_radius / frame.width as f32),
-                        y: clamp(position.y + dy * drag_radius / frame.height as f32),
+                        x: clamp(cast.target.x + jitter.x),
+                        y: clamp(cast.target.y + jitter.y),
                     };
                     (*identity, cast.position)
                 }
-                Mapping::Pointer { identity, .. } => (*identity, cast.position),
+                Mapping::Pointer {
+                    identity,
+                    kind:
+                        PointerKind::MouseCast {
+                            center,
+                            cast_radius,
+                            drag_radius,
+                            cast_no_direction,
+                            horizontal_scale_factor,
+                            vertical_scale_factor,
+                            initial_duration,
+                            enable_initial_swipe_randomization,
+                            ..
+                        },
+                    frame,
+                    ..
+                } => {
+                    if !*cast_no_direction && let Some(cursor) = cast.cursor {
+                        cast.target = mouse_cast_target(
+                            cursor,
+                            MouseCastProjection {
+                                center: *center,
+                                cast_position: cast.origin,
+                                cast_radius: *cast_radius,
+                                drag_radius: *drag_radius,
+                                horizontal_scale_factor: *horizontal_scale_factor,
+                                vertical_scale_factor: *vertical_scale_factor,
+                                frame: *frame,
+                            },
+                        );
+                    }
+                    let random = runtime.random_states.get(&cast.mapping_id).copied();
+                    let progress = if !initial_duration.is_zero() {
+                        (now.saturating_duration_since(cast.started_at).as_secs_f32()
+                            / initial_duration.as_secs_f32())
+                        .clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    let bend = random.map_or(Point::ZERO, |state| state.path_bend);
+                    let curve = if *enable_initial_swipe_randomization {
+                        (std::f32::consts::PI * progress).sin()
+                    } else {
+                        0.0
+                    };
+                    cast.position = Point {
+                        x: cast.origin.x
+                            + (cast.target.x - cast.origin.x) * progress
+                            + bend.x * curve,
+                        y: cast.origin.y
+                            + (cast.target.y - cast.origin.y) * progress
+                            + bend.y * curve,
+                    };
+                    (*identity, cast.position)
+                }
                 _ => unreachable!(),
             };
             add_runtime_contact(
@@ -915,6 +1286,7 @@ impl CompiledKeymap {
                     .iter()
                     .any(|candidate| candidate.identity == contact.identity)
             {
+                push_unique(&mut unavailable_mapping_ids, &id);
                 continue;
             }
             contacts.push(contact);
@@ -926,6 +1298,7 @@ impl CompiledKeymap {
             contacts,
             active_mapping_ids,
             matched_mapping_ids,
+            unavailable_mapping_ids,
             script_actions: std::mem::take(&mut runtime.scripts.pending_output),
         })
     }
@@ -1223,6 +1596,7 @@ impl CompiledKeymap {
                 if let Some(cast) = runtime.cast.take()
                     && let Some(identity) = self.mapping_identity(&cast.mapping_id)
                 {
+                    runtime.random_states.remove(&cast.mapping_id);
                     runtime.cancel = Some(CancelRuntime {
                         mapping_id,
                         identity,
@@ -1234,7 +1608,9 @@ impl CompiledKeymap {
                 }
             }
             ScriptAction::ReleaseCast => {
-                runtime.cast = None;
+                if let Some(cast) = runtime.cast.take() {
+                    runtime.random_states.remove(&cast.mapping_id);
+                }
                 runtime.cancel = None;
             }
             external => runtime.scripts.pending_output.push(external),
@@ -1243,18 +1619,60 @@ impl CompiledKeymap {
     }
 
     fn tick_runtime(&self, runtime: &mut KeymapRuntimeState, now: Instant) {
-        if runtime
-            .cast
-            .as_ref()
-            .and_then(|cast| cast.auto_release_at)
-            .is_some_and(|at| now >= at)
-        {
+        let expired_pulses = runtime
+            .pulse_starts
+            .iter()
+            .filter_map(|(id, started_at)| {
+                self.mapping(id).and_then(|mapping| {
+                    let ready_at = runtime
+                        .scripts
+                        .hook_ready_at
+                        .get(id)
+                        .copied()
+                        .unwrap_or(*started_at);
+                    let started_at = (*started_at).max(ready_at);
+                    mapping
+                        .pulse_duration()
+                        .filter(|duration| now.saturating_duration_since(started_at) >= *duration)
+                        .map(|_| id.clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        for id in expired_pulses {
+            runtime.pulse_starts.remove(&id);
+            runtime.random_states.remove(&id);
+        }
+        let auto_released_cast = runtime.cast.as_ref().and_then(|cast| {
+            cast.auto_release_at
+                .filter(|at| now >= *at)
+                .map(|_| cast.mapping_id.clone())
+        });
+        if let Some(mapping_id) = auto_released_cast {
             runtime.cast = None;
+            runtime.random_states.remove(&mapping_id);
         }
         if runtime.cancel.as_ref().is_some_and(|cancel| {
             now.saturating_duration_since(cancel.started_at) >= cancel.duration
         }) {
             runtime.cancel = None;
+        }
+        let due_jitter = runtime
+            .random_states
+            .iter()
+            .filter(|(_, state)| now >= state.next_jitter_at)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in due_jitter {
+            let range = runtime
+                .random_states
+                .get(&id)
+                .map_or(Point::ZERO, |state| state.jitter_range);
+            let jitter = random_point(&mut runtime.random_seed, range);
+            let next_jitter_at = now + random_jitter_delay(&mut runtime.random_seed);
+            if let Some(state) = runtime.random_states.get_mut(&id) {
+                state.jitter = jitter;
+                state.next_jitter_at = next_jitter_at;
+            }
         }
         let pending = runtime.fps.as_mut().and_then(|fps| fps.pending.take());
         if let Some(pending) = pending {
@@ -1372,16 +1790,30 @@ impl CompiledKeymap {
                     return Err(pointer_not_active(id));
                 }
                 if let Some(cast) = &mut runtime.cast {
-                    cast.position = clamp_radius(
-                        *position,
-                        Point {
-                            x: cast.position.x + delta.delta_x * sensitivity_x / frame.width as f32,
-                            y: cast.position.y
-                                + delta.delta_y * sensitivity_y / frame.height as f32,
-                        },
-                        *drag_radius,
-                        *frame,
-                    );
+                    match (delta.cursor_x, delta.cursor_y) {
+                        (Some(cursor_x), Some(cursor_y)) => {
+                            cast.cursor = Some(normalized_cursor(cursor_x, cursor_y)?);
+                        }
+                        (Some(_), None) | (None, Some(_)) => {
+                            return Err(KeymapError::Invalid(
+                                "pointer cursor coordinates must include both x and y".into(),
+                            ));
+                        }
+                        (None, None) => {
+                            cast.cursor = None;
+                            cast.target = clamp_radius(
+                                cast.origin,
+                                Point {
+                                    x: cast.target.x
+                                        + delta.delta_x * sensitivity_x / frame.width as f32,
+                                    y: cast.target.y
+                                        + delta.delta_y * sensitivity_y / frame.height as f32,
+                                },
+                                *drag_radius,
+                                *frame,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1508,8 +1940,84 @@ impl CompiledKeymap {
     fn mapping(&self, id: &str) -> Option<&Mapping> {
         self.mappings.iter().find(|mapping| mapping.id() == id)
     }
+
+    fn reserve_runtime_contact_ids(
+        &self,
+        runtime: &KeymapRuntimeState,
+        held: &BTreeSet<String>,
+        now: Instant,
+        interrupting_fire: bool,
+        reserved: &mut BTreeSet<u8>,
+    ) {
+        reserved.extend(runtime.scripts.contacts.keys().copied());
+
+        for mapping in &self.mappings {
+            match mapping {
+                Mapping::Pointer {
+                    id,
+                    identity,
+                    bind,
+                    kind: PointerKind::Observation { .. } | PointerKind::Fire { .. },
+                    ..
+                } if bound(held, bind) && self.hook_ready(runtime, id, now) => {
+                    reserved.insert(*identity);
+                }
+                _ => {}
+            }
+        }
+
+        if !interrupting_fire
+            && let Some(fps) = &runtime.fps
+            && self.hook_ready(runtime, &fps.mapping_id, now)
+        {
+            reserved.insert(fps.identity);
+            if let Some(PendingFpsTouch {
+                old_contact: Some((identity, _)),
+                ..
+            }) = &fps.pending
+            {
+                reserved.insert(*identity);
+            }
+        }
+
+        if let Some(cast) = &runtime.cast
+            && self.hook_ready(runtime, &cast.mapping_id, now)
+            && let Some(identity) = self.mapping_identity(&cast.mapping_id)
+        {
+            reserved.insert(identity);
+        }
+        if let Some(cancel) = &runtime.cancel
+            && self.hook_ready(runtime, &cancel.mapping_id, now)
+        {
+            reserved.insert(cancel.identity);
+        }
+    }
+
     fn mapping_identity(&self, id: &str) -> Option<u8> {
         self.mapping(id).and_then(Mapping::identity)
+    }
+}
+
+fn lease_contact_id(
+    leases: &mut BTreeMap<String, u8>,
+    mapping_id: &str,
+    preferred: u8,
+    occupied: &BTreeSet<u8>,
+) -> Option<u8> {
+    if let Some(identity) = leases.get(mapping_id).copied() {
+        return (!occupied.contains(&identity)).then_some(identity);
+    }
+
+    let identity = std::iter::once(preferred)
+        .chain(0..5)
+        .find(|identity| !occupied.contains(identity))?;
+    leases.insert(mapping_id.to_string(), identity);
+    Some(identity)
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
     }
 }
 
@@ -1540,6 +2048,157 @@ fn pointer_not_active(id: &str) -> KeymapError {
     ))
 }
 
+fn random_seed() -> u64 {
+    let time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos() as u64);
+    let seed = time ^ 0x9e37_79b9_7f4a_7c15;
+    if seed == 0 { 1 } else { seed }
+}
+
+fn next_random_u64(seed: &mut u64) -> u64 {
+    let mut value = *seed;
+    value ^= value << 13;
+    value ^= value >> 7;
+    value ^= value << 17;
+    *seed = if value == 0 { 1 } else { value };
+    *seed
+}
+
+fn random_unit(seed: &mut u64) -> f32 {
+    (next_random_u64(seed) as f64 / u64::MAX as f64) as f32
+}
+
+fn random_signed(seed: &mut u64) -> f32 {
+    random_unit(seed) * 2.0 - 1.0
+}
+
+fn random_point(seed: &mut u64, range: Point) -> Point {
+    Point {
+        x: random_signed(seed) * range.x,
+        y: random_signed(seed) * range.y,
+    }
+}
+
+fn random_jitter_delay(seed: &mut u64) -> Duration {
+    let span = RANDOM_JITTER_MAX_MS - RANDOM_JITTER_MIN_MS + 1;
+    Duration::from_millis(RANDOM_JITTER_MIN_MS + (random_unit(seed) * span as f32) as u64)
+}
+
+fn randomized_point(position: Point, state: Option<&RandomMappingState>) -> Point {
+    state.map_or(position, |state| Point {
+        x: position.x + state.offset.x,
+        y: position.y + state.offset.y,
+    })
+}
+
+fn random_state_for_mapping(
+    mapping: &Mapping,
+    seed: &mut u64,
+    now: Instant,
+) -> Option<RandomMappingState> {
+    let mut offset_range = Point::ZERO;
+    let mut random_path = false;
+    let mut random_distance = None;
+    let mut jitter_range = Point::ZERO;
+    let mut needs_lifecycle_state = false;
+
+    match mapping {
+        Mapping::SingleTap { random_offset, .. }
+        | Mapping::Press { random_offset, .. }
+        | Mapping::RepeatTap { random_offset, .. }
+        | Mapping::MultipleTap { random_offset, .. } => {
+            offset_range = *random_offset;
+        }
+        Mapping::Swipe {
+            enable_randomization,
+            ..
+        } => random_path = *enable_randomization,
+        Mapping::DirectionPad {
+            enable_randomization,
+            random_distance_min_scale,
+            random_distance_max_scale,
+            random_offset,
+            jitter_offset,
+            initial_duration,
+            ..
+        } => {
+            needs_lifecycle_state = !initial_duration.is_zero();
+            if *enable_randomization {
+                offset_range = *random_offset;
+                random_distance = Some((*random_distance_min_scale, *random_distance_max_scale));
+                jitter_range = *jitter_offset;
+            }
+        }
+        Mapping::PadCastSpell {
+            random_offset,
+            enable_randomization,
+            drag_radius,
+            frame,
+            ..
+        } => {
+            offset_range = *random_offset;
+            if *enable_randomization {
+                jitter_range = Point {
+                    x: drag_radius * 0.1 / frame.width as f32,
+                    y: drag_radius * 0.1 / frame.height as f32,
+                };
+            }
+        }
+        Mapping::Pointer {
+            random_offset,
+            kind,
+            ..
+        } => {
+            offset_range = *random_offset;
+            if let PointerKind::MouseCast {
+                enable_initial_swipe_randomization,
+                ..
+            } = kind
+            {
+                random_path = *enable_initial_swipe_randomization;
+            }
+        }
+        Mapping::Touch { .. }
+        | Mapping::Dpad { .. }
+        | Mapping::CancelCast { .. }
+        | Mapping::Unsupported { .. } => {}
+    }
+
+    if offset_range == Point::ZERO
+        && !random_path
+        && random_distance.is_none()
+        && jitter_range == Point::ZERO
+        && !needs_lifecycle_state
+    {
+        return None;
+    }
+
+    let distance_scale = random_distance.map_or(1.0, |(minimum, maximum)| {
+        if (maximum - minimum).abs() < f32::EPSILON {
+            minimum
+        } else {
+            minimum + random_unit(seed) * (maximum - minimum)
+        }
+    });
+    Some(RandomMappingState {
+        offset: random_point(seed, offset_range),
+        path_bend: if random_path {
+            Point {
+                x: random_signed(seed) * RANDOM_SWIPE_BEND,
+                y: random_signed(seed) * RANDOM_SWIPE_BEND,
+            }
+        } else {
+            Point::ZERO
+        },
+        distance_scale,
+        jitter: Point::ZERO,
+        jitter_range,
+        next_jitter_at: now + random_jitter_delay(seed),
+        started_at: now,
+    })
+}
+
 fn clamp_radius(origin: Point, point: Point, radius: f32, frame: KeyMappingResolution) -> Point {
     let dx = (point.x - origin.x) * frame.width as f32;
     let dy = (point.y - origin.y) * frame.height as f32;
@@ -1557,12 +2216,72 @@ fn clamp_radius(origin: Point, point: Point, radius: f32, frame: KeyMappingResol
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct MouseCastProjection {
+    center: Point,
+    cast_position: Point,
+    cast_radius: f32,
+    drag_radius: f32,
+    horizontal_scale_factor: f32,
+    vertical_scale_factor: f32,
+    frame: KeyMappingResolution,
+}
+
+fn mouse_cast_target(cursor: Point, projection: MouseCastProjection) -> Point {
+    let MouseCastProjection {
+        center,
+        cast_position,
+        cast_radius,
+        drag_radius,
+        horizontal_scale_factor,
+        vertical_scale_factor,
+        frame,
+    } = projection;
+    let width = frame.width as f32;
+    let height = frame.height as f32;
+    let mut delta = Point {
+        x: (cursor.x - center.x) * width,
+        y: (cursor.y - center.y) * height,
+    };
+    let mut radius = cast_radius.max(0.0) / height;
+    let drag = drag_radius.max(0.0) / height;
+    let (scale_x, scale_y) = if horizontal_scale_factor > vertical_scale_factor {
+        let ratio = vertical_scale_factor / horizontal_scale_factor;
+        radius *= ratio;
+        (1.0, ratio)
+    } else {
+        let ratio = horizontal_scale_factor / vertical_scale_factor;
+        radius *= ratio;
+        (ratio, 1.0)
+    };
+    delta.x = delta.x / width * scale_x;
+    delta.y = delta.y / height * scale_y;
+    let distance = delta.x.hypot(delta.y);
+    let scaled = if radius <= f32::EPSILON {
+        Point::ZERO
+    } else if distance > radius {
+        Point {
+            x: delta.x / distance * drag,
+            y: delta.y / distance * drag,
+        }
+    } else {
+        Point {
+            x: delta.x / radius * drag,
+            y: delta.y / radius * drag,
+        }
+    };
+    Point {
+        x: clamp(cast_position.x + scaled.x),
+        y: clamp(cast_position.y + scaled.y),
+    }
+}
+
 impl Mapping {
     fn matches_input(&self, held: &BTreeSet<String>) -> bool {
         match self {
             Self::Touch { key, .. } => held.contains(key),
             Self::Dpad { binding, .. } | Self::DirectionPad { binding, .. } => {
-                binding.has_pressed_key(held)
+                binding.has_pressed_key(held, &BTreeMap::new())
             }
             Self::Unsupported { activation, .. } => activation.is_active(held),
             _ => self.binding().is_some_and(|bind| bound(held, bind)),
@@ -1614,11 +2333,33 @@ impl Mapping {
         )
     }
 
+    fn pulse_duration(&self) -> Option<Duration> {
+        let milliseconds = match self {
+            Self::SingleTap {
+                duration_ms,
+                sync: false,
+                ..
+            }
+            | Self::Swipe { duration_ms, .. } => *duration_ms,
+            Self::MultipleTap { items, .. } => items
+                .iter()
+                .map(|item| item.wait_ms + item.duration_ms)
+                .sum(),
+            _ => return None,
+        };
+        Some(Duration::from_secs_f64(milliseconds / 1000.0))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn evaluate(
         &self,
         held: &BTreeSet<String>,
         elapsed_ms: f64,
+        gamepad_axes: &BTreeMap<String, f32>,
+        forced_active: bool,
         pointer_offsets: &BTreeMap<String, (f32, f32)>,
+        random_states: &BTreeMap<String, RandomMappingState>,
+        now: Option<Instant>,
     ) -> Result<EvaluatedMapping, KeymapError> {
         match self {
             Self::Touch {
@@ -1648,8 +2389,8 @@ impl Mapping {
                 radius,
                 binding,
             } => {
-                let (dx, dy) = binding.direction(held);
-                let matched = binding.has_pressed_key(held);
+                let (dx, dy) = binding.direction(held, gamepad_axes);
+                let matched = binding.has_pressed_key(held, gamepad_axes);
                 let touching = dx != 0.0 || dy != 0.0;
                 Ok(EvaluatedMapping::contact(
                     id,
@@ -1660,7 +2401,7 @@ impl Mapping {
                     },
                     touching,
                     if touching {
-                        binding.pressed_keys(held)
+                        binding.pressed_keys(held, gamepad_axes)
                     } else {
                         Vec::new()
                     },
@@ -1673,13 +2414,15 @@ impl Mapping {
                 position,
                 bind,
                 duration_ms,
+                sync,
+                random_offset: _,
             } => {
-                let matched = bound(held, bind);
-                let touching = matched && elapsed_ms < *duration_ms;
+                let matched = forced_active || bound(held, bind);
+                let touching = matched && (*sync || elapsed_ms < *duration_ms);
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
-                    *position,
+                    randomized_point(*position, random_states.get(id)),
                     touching,
                     claimed_binding_keys(touching, bind),
                     matched,
@@ -1690,12 +2433,13 @@ impl Mapping {
                 identity,
                 position,
                 bind,
+                random_offset: _,
             } => {
                 let matched = bound(held, bind);
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
-                    *position,
+                    randomized_point(*position, random_states.get(id)),
                     matched,
                     claimed_binding_keys(matched, bind),
                     matched,
@@ -1708,6 +2452,7 @@ impl Mapping {
                 bind,
                 duration_ms,
                 interval_ms,
+                random_offset: _,
             } => {
                 let matched = bound(held, bind);
                 let period = (*duration_ms + *interval_ms).max(1.0);
@@ -1715,7 +2460,7 @@ impl Mapping {
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
-                    *position,
+                    randomized_point(*position, random_states.get(id)),
                     touching,
                     claimed_binding_keys(touching, bind),
                     matched,
@@ -1726,8 +2471,9 @@ impl Mapping {
                 identity,
                 bind,
                 items,
+                random_offset: _,
             } => {
-                let matched = bound(held, bind);
+                let matched = forced_active || bound(held, bind);
                 let mut cursor = 0.0;
                 let mut position = items[0].position;
                 let mut touching = false;
@@ -1740,6 +2486,7 @@ impl Mapping {
                     }
                     cursor += item.duration_ms;
                 }
+                position = randomized_point(position, random_states.get(id));
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
@@ -1755,8 +2502,9 @@ impl Mapping {
                 bind,
                 positions,
                 duration_ms,
+                enable_randomization,
             } => {
-                let matched = bound(held, bind);
+                let matched = forced_active || bound(held, bind);
                 let progress = (elapsed_ms / duration_ms.max(1.0)).min(1.0);
                 let segment = progress * (positions.len() - 1) as f64;
                 let index = segment.floor() as usize;
@@ -1764,13 +2512,19 @@ impl Mapping {
                 let amount = (segment - index as f64) as f32;
                 let start = positions[index];
                 let end = positions[next];
+                let mut position = Point {
+                    x: start.x + (end.x - start.x) * amount,
+                    y: start.y + (end.y - start.y) * amount,
+                };
+                if *enable_randomization && let Some(state) = random_states.get(id) {
+                    let curve = (std::f32::consts::PI * progress as f32).sin();
+                    position.x += state.path_bend.x * curve;
+                    position.y += state.path_bend.y * curve;
+                }
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
-                    Point {
-                        x: start.x + (end.x - start.x) * amount,
-                        y: start.y + (end.y - start.y) * amount,
-                    },
+                    position,
                     matched,
                     claimed_binding_keys(matched, bind),
                     matched,
@@ -1783,21 +2537,62 @@ impl Mapping {
                 binding,
                 max_offset_x,
                 max_offset_y,
+                enable_randomization,
+                random_offset: _,
+                initial_duration,
                 frame,
+                up_boost,
+                up_boost_scale,
+                ..
             } => {
-                let (dx, dy) = binding.direction(held);
-                let matched = binding.has_pressed_key(held);
+                let (dx, mut dy) = normalized_direction(binding.direction(held, gamepad_axes));
+                if dy < 0.0 && up_boost.as_ref().is_some_and(|keys| bound(held, keys)) {
+                    dy *= *up_boost_scale;
+                }
+                let matched = binding.has_pressed_key(held, gamepad_axes);
                 let touching = dx != 0.0 || dy != 0.0;
+                let random = random_states.get(id);
+                let anchor = if *enable_randomization {
+                    randomized_point(*position, random)
+                } else {
+                    *position
+                };
+                let scale = if *enable_randomization {
+                    random.map_or(1.0, |state| state.distance_scale)
+                } else {
+                    1.0
+                };
+                let jitter = if *enable_randomization && touching {
+                    random.map_or(Point::ZERO, |state| state.jitter)
+                } else {
+                    Point::ZERO
+                };
+                let target = Point {
+                    x: clamp(anchor.x + dx * max_offset_x * scale / frame.width as f32 + jitter.x),
+                    y: clamp(anchor.y + dy * max_offset_y * scale / frame.height as f32 + jitter.y),
+                };
+                let progress = if !initial_duration.is_zero() {
+                    random
+                        .and_then(|state| {
+                            now.map(|now| now.saturating_duration_since(state.started_at))
+                        })
+                        .map_or(1.0, |elapsed| {
+                            (elapsed.as_secs_f32() / initial_duration.as_secs_f32()).clamp(0.0, 1.0)
+                        })
+                } else {
+                    1.0
+                };
+                let point = Point {
+                    x: anchor.x + (target.x - anchor.x) * progress,
+                    y: anchor.y + (target.y - anchor.y) * progress,
+                };
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
-                    Point {
-                        x: clamp(position.x + dx * max_offset_x / frame.width as f32),
-                        y: clamp(position.y + dy * max_offset_y / frame.height as f32),
-                    },
+                    point,
                     touching,
                     if touching {
-                        binding.pressed_keys(held)
+                        binding.pressed_keys(held, gamepad_axes)
                     } else {
                         Vec::new()
                     },
@@ -1812,16 +2607,25 @@ impl Mapping {
                 pad_binding,
                 drag_radius,
                 frame,
+                random_offset: _,
+                enable_randomization,
                 ..
             } => {
                 let matched = bound(held, bind);
-                let (dx, dy) = pad_binding.direction(held);
+                let (dx, dy) = normalized_direction(pad_binding.direction(held, gamepad_axes));
+                let random = random_states.get(id);
+                let anchor = randomized_point(*position, random);
+                let scale = if *enable_randomization {
+                    random.map_or(1.0, |state| state.distance_scale)
+                } else {
+                    1.0
+                };
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
                     Point {
-                        x: clamp(position.x + dx * drag_radius / frame.width as f32),
-                        y: clamp(position.y + dy * drag_radius / frame.height as f32),
+                        x: clamp(anchor.x + dx * drag_radius * scale / frame.width as f32),
+                        y: clamp(anchor.y + dy * drag_radius * scale / frame.height as f32),
                     },
                     matched,
                     claimed_binding_keys(matched, bind),
@@ -1836,10 +2640,10 @@ impl Mapping {
                 ..
             } => {
                 let matched = bound(held, bind);
-                let (x, y) = pointer_offsets
-                    .get(id)
-                    .copied()
-                    .unwrap_or((position.x, position.y));
+                let (x, y) = pointer_offsets.get(id).copied().unwrap_or_else(|| {
+                    let point = randomized_point(*position, random_states.get(id));
+                    (point.x, point.y)
+                });
                 Ok(EvaluatedMapping::contact(
                     id,
                     *identity,
@@ -1973,30 +2777,52 @@ impl EvaluatedMapping {
 }
 
 impl DirectionBinding {
-    fn direction(&self, held: &BTreeSet<String>) -> (f32, f32) {
-        let Self::Button {
-            up,
-            down,
-            left,
-            right,
-        } = self
-        else {
-            return (0.0, 0.0);
-        };
-        let mut dx = f32::from(bound(held, right)) - f32::from(bound(held, left));
-        let mut dy = f32::from(bound(held, down)) - f32::from(bound(held, up));
-        if dx != 0.0 && dy != 0.0 {
-            dx /= std::f32::consts::SQRT_2;
-            dy /= std::f32::consts::SQRT_2;
+    fn direction(
+        &self,
+        held: &BTreeSet<String>,
+        gamepad_axes: &BTreeMap<String, f32>,
+    ) -> (f32, f32) {
+        match self {
+            Self::Button {
+                up,
+                down,
+                left,
+                right,
+            } => {
+                let mut dx = f32::from(bound(held, right)) - f32::from(bound(held, left));
+                let mut dy = f32::from(bound(held, down)) - f32::from(bound(held, up));
+                if dx != 0.0 && dy != 0.0 {
+                    dx /= std::f32::consts::SQRT_2;
+                    dy /= std::f32::consts::SQRT_2;
+                }
+                (dx, dy)
+            }
+            Self::JoyStick { x, y } => (axis_value(gamepad_axes, x), axis_value(gamepad_axes, y)),
         }
-        (dx, dy)
     }
 
-    fn has_pressed_key(&self, held: &BTreeSet<String>) -> bool {
-        self.pressed_keys(held).into_iter().next().is_some()
+    fn has_pressed_key(
+        &self,
+        held: &BTreeSet<String>,
+        gamepad_axes: &BTreeMap<String, f32>,
+    ) -> bool {
+        match self {
+            Self::JoyStick { x, y } => {
+                axis_value(gamepad_axes, x).abs() > 0.05 || axis_value(gamepad_axes, y).abs() > 0.05
+            }
+            Self::Button { .. } => self
+                .pressed_keys(held, gamepad_axes)
+                .into_iter()
+                .next()
+                .is_some(),
+        }
     }
 
-    fn pressed_keys(&self, held: &BTreeSet<String>) -> Vec<String> {
+    fn pressed_keys(
+        &self,
+        held: &BTreeSet<String>,
+        _gamepad_axes: &BTreeMap<String, f32>,
+    ) -> Vec<String> {
         let Self::Button {
             up,
             down,
@@ -2012,6 +2838,24 @@ impl DirectionBinding {
             .filter(|key| held.contains(*key))
             .cloned()
             .collect()
+    }
+}
+
+fn axis_value(axes: &BTreeMap<String, f32>, name: &str) -> f32 {
+    let value = axes.get(name).copied().unwrap_or_default().clamp(-1.0, 1.0);
+    if value.abs() <= GAMEPAD_AXIS_DEADZONE {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn normalized_direction((x, y): (f32, f32)) -> (f32, f32) {
+    let length = x.hypot(y);
+    if length > 1.0 {
+        (x / length, y / length)
+    } else {
+        (x, y)
     }
 }
 
@@ -2049,6 +2893,41 @@ pub fn normalize_key_state(keys: Vec<String>) -> Result<BTreeSet<String>, Keymap
         }
     }
     Ok(held)
+}
+
+pub fn normalize_gamepad_axes(
+    axes: &BTreeMap<String, f32>,
+) -> Result<BTreeMap<String, f32>, KeymapError> {
+    if axes.len() > MAX_GAMEPAD_AXES {
+        return Err(KeymapError::Invalid(format!(
+            "gamepad axes must contain at most {MAX_GAMEPAD_AXES} values"
+        )));
+    }
+    let mut normalized = BTreeMap::new();
+    for (name, value) in axes {
+        if !valid_gamepad_axis_name(name) {
+            return Err(KeymapError::Invalid(format!(
+                "unsupported gamepad axis: {name}"
+            )));
+        }
+        if !value.is_finite() || !(-1.0..=1.0).contains(value) {
+            return Err(KeymapError::Invalid(format!(
+                "gamepad axis {name} must be finite and within -1..1"
+            )));
+        }
+        normalized.insert(name.clone(), *value);
+    }
+    Ok(normalized)
+}
+
+fn valid_gamepad_axis_name(name: &str) -> bool {
+    matches!(
+        name,
+        "LeftStickX" | "LeftStickY" | "RightStickX" | "RightStickY" | "LeftZ" | "RightZ"
+    ) || name
+        .strip_prefix("Other-")
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|value| value < 32)
 }
 
 fn compile_scripts(
@@ -2193,12 +3072,18 @@ fn compile_mapping(
             position: position(mapping, "position")?,
             bind: binding_field(mapping, "bind")?,
             duration_ms: finite_number(mapping, "duration", 1.0, MAX_TIMING_MS)?,
+            sync: mapping
+                .get("sync")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            random_offset: random_offset(mapping, frame)?,
         }),
         "Press" => Ok(Mapping::Press {
             id,
             identity: contact_id(mapping, "pointer_id")?,
             position: position(mapping, "position")?,
             bind: binding_field(mapping, "bind")?,
+            random_offset: random_offset(mapping, frame)?,
         }),
         "RepeatTap" => Ok(Mapping::RepeatTap {
             id,
@@ -2207,12 +3092,14 @@ fn compile_mapping(
             bind: binding_field(mapping, "bind")?,
             duration_ms: finite_number(mapping, "duration", 1.0, MAX_TIMING_MS)?,
             interval_ms: finite_number(mapping, "interval", 0.0, MAX_TIMING_MS)?,
+            random_offset: random_offset(mapping, frame)?,
         }),
         "MultipleTap" => Ok(Mapping::MultipleTap {
             id,
             identity: contact_id(mapping, "pointer_id")?,
             bind: binding_field(mapping, "bind")?,
             items: tap_items(mapping)?,
+            random_offset: random_offset(mapping, frame)?,
         }),
         "Swipe" => Ok(Mapping::Swipe {
             id,
@@ -2220,42 +3107,141 @@ fn compile_mapping(
             bind: binding_field(mapping, "bind")?,
             positions: positions(mapping)?,
             duration_ms: finite_number(mapping, "duration", 1.0, MAX_TIMING_MS)?,
+            enable_randomization: boolean_field_default(mapping, "enable_randomization", false)?,
         }),
-        "DirectionPad" => Ok(Mapping::DirectionPad {
-            id,
-            identity: contact_id(mapping, "pointer_id")?,
-            position: position(mapping, "position")?,
-            binding: direction_binding(mapping, "bind")?,
-            max_offset_x: finite_number(mapping, "max_offset_x", 0.0, MAX_TIMING_MS)? as f32,
-            max_offset_y: finite_number(mapping, "max_offset_y", 0.0, MAX_TIMING_MS)? as f32,
-            frame: frame.ok_or_else(|| {
+        "DirectionPad" => {
+            let target_frame = frame.ok_or_else(|| {
                 KeymapError::Invalid(
                     "DirectionPad needs targetResolution or a connected device screen".into(),
                 )
-            })?,
-        }),
-        "PadCastSpell" => Ok(Mapping::PadCastSpell {
-            id,
-            identity: contact_id(mapping, "pointer_id")?,
-            position: position(mapping, "position")?,
-            bind: binding_field(mapping, "bind")?,
-            pad_binding: direction_binding(mapping, "pad_bind")?,
-            drag_radius: finite_number(mapping, "drag_radius", 0.0, MAX_TIMING_MS)? as f32,
-            block_direction_pad: boolean_field(mapping, "block_direction_pad")?,
-            release_mode: cast_release_mode(mapping, false)?,
-            frame: frame.ok_or_else(|| {
+            })?;
+            let random_distance_min_scale = finite_number_default(
+                mapping,
+                "random_distance_min_scale",
+                1.0,
+                0.0,
+                MAX_RANDOM_DISTANCE_SCALE,
+            )? as f32;
+            let random_distance_max_scale = finite_number_default(
+                mapping,
+                "random_distance_max_scale",
+                1.0,
+                0.0,
+                MAX_RANDOM_DISTANCE_SCALE,
+            )? as f32;
+            if random_distance_min_scale > random_distance_max_scale {
+                return Err(KeymapError::Invalid(
+                    "DirectionPad random distance minimum scale must not exceed maximum scale"
+                        .into(),
+                ));
+            }
+            Ok(Mapping::DirectionPad {
+                id,
+                identity: contact_id(mapping, "pointer_id")?,
+                position: position(mapping, "position")?,
+                binding: direction_binding(mapping, "bind")?,
+                max_offset_x: finite_number(mapping, "max_offset_x", 0.0, MAX_TIMING_MS)? as f32,
+                max_offset_y: finite_number(mapping, "max_offset_y", 0.0, MAX_TIMING_MS)? as f32,
+                enable_randomization: boolean_field_default(
+                    mapping,
+                    "enable_randomization",
+                    false,
+                )?,
+                random_distance_min_scale,
+                random_distance_max_scale,
+                random_offset: random_offset(mapping, Some(target_frame))?,
+                jitter_offset: random_offset_field(
+                    mapping,
+                    "jitter_offset_x",
+                    "jitter_offset_y",
+                    Some(target_frame),
+                )?,
+                up_boost: optional_binding_field(mapping, "up_boost_key")?,
+                up_boost_scale: finite_number_default(
+                    mapping,
+                    "up_boost_scale",
+                    1.4,
+                    0.0,
+                    MAX_POINTER_SENSITIVITY,
+                )? as f32,
+                initial_duration: Duration::from_secs_f64(
+                    finite_number_default(mapping, "initial_duration", 0.0, 0.0, MAX_TIMING_MS)?
+                        / 1000.0,
+                ),
+                frame: target_frame,
+            })
+        }
+        "PadCastSpell" => {
+            let target_frame = frame.ok_or_else(|| {
                 KeymapError::Invalid(
                     "PadCastSpell needs targetResolution or a connected device screen".into(),
                 )
-            })?,
-        }),
+            })?;
+            Ok(Mapping::PadCastSpell {
+                id,
+                identity: contact_id(mapping, "pointer_id")?,
+                position: position(mapping, "position")?,
+                bind: binding_field(mapping, "bind")?,
+                pad_binding: direction_binding(mapping, "pad_bind")?,
+                drag_radius: finite_number(mapping, "drag_radius", 0.0, MAX_TIMING_MS)? as f32,
+                block_direction_pad: boolean_field(mapping, "block_direction_pad")?,
+                release_mode: cast_release_mode(mapping, false)?,
+                random_offset: random_offset(mapping, Some(target_frame))?,
+                enable_randomization: boolean_field_default(
+                    mapping,
+                    "enable_randomization",
+                    false,
+                )?,
+                frame: target_frame,
+            })
+        }
         "MouseCastSpell" => {
+            let position = position(mapping, "position")?;
+            let center = mapping
+                .get("center")
+                .map(|value| {
+                    value
+                        .as_object()
+                        .ok_or_else(|| {
+                            KeymapError::Invalid("mapping field center must be an object".into())
+                        })
+                        .and_then(|value| point(value, "center"))
+                })
+                .transpose()?
+                .unwrap_or(position);
             let kind = PointerKind::MouseCast {
+                center,
+                cast_radius: finite_number_default(
+                    mapping,
+                    "cast_radius",
+                    0.0,
+                    0.0,
+                    MAX_POINTER_DELTA as f64,
+                )? as f32,
                 drag_radius: finite_number(mapping, "drag_radius", 0.0, MAX_TIMING_MS)? as f32,
                 cast_no_direction: boolean_field(mapping, "cast_no_direction")?,
+                horizontal_scale_factor: finite_number_default(
+                    mapping,
+                    "horizontal_scale_factor",
+                    1.0,
+                    0.001,
+                    MAX_POINTER_SENSITIVITY,
+                )? as f32,
+                vertical_scale_factor: finite_number_default(
+                    mapping,
+                    "vertical_scale_factor",
+                    1.0,
+                    0.001,
+                    MAX_POINTER_SENSITIVITY,
+                )? as f32,
                 initial_duration: Duration::from_secs_f64(
                     finite_number(mapping, "initial_duration", 0.0, MAX_TIMING_MS)? / 1000.0,
                 ),
+                enable_initial_swipe_randomization: boolean_field_default(
+                    mapping,
+                    "enable_initial_swipe_randomization",
+                    false,
+                )?,
                 release_mode: cast_release_mode(mapping, true)?,
             };
             pointer_mapping(
@@ -2337,6 +3323,7 @@ fn pointer_mapping(
         bind: binding_field(mapping, "bind")?,
         sensitivity_x: finite_number(mapping, sensitivity_x, 0.0, MAX_POINTER_SENSITIVITY)? as f32,
         sensitivity_y: finite_number(mapping, sensitivity_y, 0.0, MAX_POINTER_SENSITIVITY)? as f32,
+        random_offset: random_offset(mapping, frame)?,
         frame: frame.ok_or_else(|| {
             KeymapError::Invalid(format!(
                 "{mapping_type} needs targetResolution or a connected device screen"
@@ -2351,6 +3338,53 @@ fn boolean_field(mapping: &Map<String, Value>, name: &str) -> Result<bool, Keyma
         .get(name)
         .and_then(Value::as_bool)
         .ok_or_else(|| KeymapError::Invalid(format!("mapping field {name} must be a boolean")))
+}
+
+fn boolean_field_default(
+    mapping: &Map<String, Value>,
+    name: &str,
+    default: bool,
+) -> Result<bool, KeymapError> {
+    if mapping.contains_key(name) {
+        boolean_field(mapping, name)
+    } else {
+        Ok(default)
+    }
+}
+
+fn finite_number_default(
+    mapping: &Map<String, Value>,
+    name: &str,
+    default: f64,
+    minimum: f64,
+    maximum: f64,
+) -> Result<f64, KeymapError> {
+    if mapping.contains_key(name) {
+        finite_number(mapping, name, minimum, maximum)
+    } else {
+        Ok(default)
+    }
+}
+
+fn random_offset(
+    mapping: &Map<String, Value>,
+    frame: Option<KeyMappingResolution>,
+) -> Result<Point, KeymapError> {
+    random_offset_field(mapping, "random_offset_x", "random_offset_y", frame)
+}
+
+fn random_offset_field(
+    mapping: &Map<String, Value>,
+    x_name: &str,
+    y_name: &str,
+    frame: Option<KeyMappingResolution>,
+) -> Result<Point, KeymapError> {
+    let x = finite_number_default(mapping, x_name, 0.0, 0.0, MAX_RANDOM_OFFSET)?;
+    let y = finite_number_default(mapping, y_name, 0.0, 0.0, MAX_RANDOM_OFFSET)?;
+    Ok(frame.map_or(Point::ZERO, |frame| Point {
+        x: (x / frame.width as f64) as f32,
+        y: (y / frame.height as f64) as f32,
+    }))
 }
 
 fn cast_release_mode(
@@ -2457,6 +3491,19 @@ fn binding_field(mapping: &Map<String, Value>, name: &str) -> Result<Vec<String>
     Ok(result)
 }
 
+fn optional_binding_field(
+    mapping: &Map<String, Value>,
+    name: &str,
+) -> Result<Option<Vec<String>>, KeymapError> {
+    let Some(value) = mapping.get(name) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    binding_field(mapping, name).map(Some)
+}
+
 fn direction_binding(
     mapping: &Map<String, Value>,
     name: &str,
@@ -2469,10 +3516,24 @@ fn direction_binding(
             left: binding_field(binding, "left")?,
             right: binding_field(binding, "right")?,
         }),
-        "JoyStick" => Ok(DirectionBinding::JoyStick),
+        "JoyStick" => Ok(DirectionBinding::JoyStick {
+            x: gamepad_axis_field(binding, "x")?,
+            y: gamepad_axis_field(binding, "y")?,
+        }),
         _ => Err(KeymapError::Invalid(format!(
             "mapping field {name}.type must be Button or JoyStick"
         ))),
+    }
+}
+
+fn gamepad_axis_field(mapping: &Map<String, Value>, name: &str) -> Result<String, KeymapError> {
+    let value = string_field(mapping, name)?;
+    if valid_gamepad_axis_name(&value) {
+        Ok(value)
+    } else {
+        Err(KeymapError::Invalid(format!(
+            "mapping gamepad axis {name} must be a standard axis or Other-N"
+        )))
     }
 }
 
@@ -2528,6 +3589,15 @@ impl Point {
         }
         Ok(Self { x, y })
     }
+}
+
+fn normalized_cursor(x: f32, y: f32) -> Result<Point, KeymapError> {
+    if !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err(KeymapError::Invalid(
+            "pointer cursor coordinates must be finite and within 0..1".into(),
+        ));
+    }
+    Ok(Point { x, y })
 }
 
 fn positions(mapping: &Map<String, Value>) -> Result<Vec<Point>, KeymapError> {
@@ -2663,6 +3733,647 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_mappings_use_dynamic_leases_for_duplicate_pointer_ids() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![
+                json!({
+                    "id": "space", "type": "Press", "pointer_id": 0,
+                    "position": { "x": 0.8, "y": 0.8 }, "bind": ["Space"]
+                }),
+                json!({
+                    "id": "shift", "type": "Press", "pointer_id": 0,
+                    "position": { "x": 0.7, "y": 0.8 }, "bind": ["ShiftLeft"]
+                }),
+                json!({
+                    "id": "move", "type": "DirectionPad", "pointer_id": 1,
+                    "position": { "x": 0.2, "y": 0.8 },
+                    "bind": { "type": "Button", "up": ["KeyW"], "down": ["KeyS"], "left": ["KeyA"], "right": ["KeyD"] },
+                    "max_offset_x": 100, "max_offset_y": 100
+                }),
+            ]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 1000,
+            }),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let held =
+            normalize_key_state(vec!["Space".into(), "ShiftLeft".into(), "KeyW".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+
+        let first = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+        assert_eq!(first.contacts.len(), 3);
+        assert_eq!(first.active_mapping_ids, vec!["space", "shift", "move"]);
+        assert_eq!(
+            first
+                .contacts
+                .iter()
+                .map(|contact| contact.identity)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(first.unavailable_mapping_ids.is_empty());
+
+        let second = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(16),
+            )
+            .unwrap();
+        assert_eq!(
+            second
+                .contacts
+                .iter()
+                .map(|contact| contact.identity)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+
+        let shift_and_move = normalize_key_state(vec!["ShiftLeft".into(), "KeyW".into()]).unwrap();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &held,
+                &shift_and_move,
+                &BTreeSet::new(),
+                &[],
+                now + Duration::from_millis(32),
+            )
+            .unwrap();
+        let released_space = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &shift_and_move,
+                &BTreeMap::new(),
+                now + Duration::from_millis(32),
+            )
+            .unwrap();
+        assert_eq!(
+            released_space
+                .contacts
+                .iter()
+                .map(|contact| contact.identity)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let empty = BTreeSet::new();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &shift_and_move,
+                &empty,
+                &empty,
+                &[],
+                now + Duration::from_millis(48),
+            )
+            .unwrap();
+        let released_all = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &empty,
+                &BTreeMap::new(),
+                now + Duration::from_millis(48),
+            )
+            .unwrap();
+        assert!(released_all.contacts.is_empty());
+        assert!(runtime.mapping_contact_ids.is_empty());
+    }
+
+    #[test]
+    fn fixed_pointer_mapping_reserves_its_identity_for_ordinary_mappings() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![
+                json!({
+                    "id": "look", "type": "Observation", "pointer_id": 0,
+                    "position": { "x": 0.5, "y": 0.5 }, "bind": ["MouseRight"],
+                    "max_radius": 100, "sensitivity_x": 1.0, "sensitivity_y": 1.0
+                }),
+                json!({
+                    "id": "tap", "type": "Press", "pointer_id": 0,
+                    "position": { "x": 0.8, "y": 0.8 }, "bind": ["Space"]
+                }),
+            ]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 1000,
+            }),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let held = normalize_key_state(vec!["MouseRight".into(), "Space".into()]).unwrap();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+
+        assert_eq!(frame.contacts.len(), 2);
+        assert_eq!(frame.contacts[0].identity, 0);
+        assert_eq!(frame.contacts[1].identity, 1);
+        assert_eq!(frame.active_mapping_ids, vec!["look", "tap"]);
+    }
+
+    #[test]
+    fn dynamic_lease_reports_unavailable_when_all_contacts_are_reserved() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "tap", "type": "Press", "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 }, "bind": ["Space"]
+            })]),
+            None,
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let held = normalize_key_state(vec!["Space".into()]).unwrap();
+        let reserved = BTreeSet::from([0, 1, 2, 3, 4]);
+        let frame = compiled
+            .frame_with_runtime_and_reserved_contacts(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                Instant::now(),
+                &reserved,
+            )
+            .unwrap();
+
+        assert!(frame.contacts.is_empty());
+        assert_eq!(frame.unavailable_mapping_ids, vec!["tap"]);
+        assert!(runtime.mapping_contact_ids.is_empty());
+    }
+
+    #[test]
+    fn single_tap_sync_keeps_contact_until_binding_release() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "sync-tap",
+                "type": "SingleTap",
+                "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 },
+                "bind": ["KeyF"],
+                "duration": 25,
+                "sync": true,
+            })]),
+            None,
+        )
+        .unwrap();
+        let held = normalize_held_keys(vec!["KeyF".into()]).unwrap();
+        let frame = compiled.frame(&held, Duration::from_secs(5)).unwrap();
+        assert_eq!(frame.contacts.len(), 1);
+        assert!(frame.contacts[0].touching);
+        assert!(
+            compiled
+                .frame(&BTreeSet::new(), Duration::ZERO)
+                .unwrap()
+                .contacts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn random_pointer_offset_is_bounded_and_reseeded_per_activation() {
+        let mut mapping_profile = profile(vec![json!({
+            "id": "tap",
+            "type": "SingleTap",
+            "pointer_id": 0,
+            "position": { "x": 0.5, "y": 0.5 },
+            "bind": ["KeyF"],
+            "duration": 100,
+            "random_offset_x": 100,
+            "random_offset_y": 50,
+            "sync": true,
+        })]);
+        mapping_profile.target_resolution = Some(KeyMappingResolution {
+            width: 1000,
+            height: 500,
+        });
+        let compiled = CompiledKeymap::from_profile(&mapping_profile, None).unwrap();
+        let held = normalize_key_state(vec!["KeyF".into()]).unwrap();
+        let now = Instant::now();
+        let mut runtime = KeymapRuntimeState {
+            random_seed: 0x1234_5678_9abc_def0,
+            ..Default::default()
+        };
+
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+        let first = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap()
+            .contacts[0];
+        assert!((0.4..=0.6).contains(&first.x));
+        assert!((0.4..=0.6).contains(&first.y));
+
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &held,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now + Duration::from_millis(1),
+            )
+            .unwrap();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &held,
+                &held,
+                &[],
+                now + Duration::from_millis(2),
+            )
+            .unwrap();
+        let second = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(2),
+            )
+            .unwrap()
+            .contacts[0];
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn randomized_swipe_curves_between_endpoints() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "swipe",
+                "type": "Swipe",
+                "pointer_id": 0,
+                "position": { "x": 0.1, "y": 0.5 },
+                "bind": ["KeyS"],
+                "duration": 100,
+                "enable_randomization": true,
+                "positions": [
+                    { "x": 0.1, "y": 0.5 },
+                    { "x": 0.9, "y": 0.5 }
+                ]
+            })]),
+            None,
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["KeyS".into()]).unwrap();
+        let now = Instant::now();
+        let mut runtime = KeymapRuntimeState {
+            random_seed: 0x0fed_cba9_8765_4321,
+            ..Default::default()
+        };
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+        let bend = runtime.random_states["swipe"].path_bend;
+        let frame = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(50),
+            )
+            .unwrap();
+
+        assert_eq!(frame.contacts.len(), 1);
+        assert!((frame.contacts[0].x - (0.5 + bend.x)).abs() < 0.0001);
+        assert!((frame.contacts[0].y - (0.5 + bend.y)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn randomized_direction_pad_uses_anchor_and_distance_scale() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "stick",
+                "type": "DirectionPad",
+                "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 },
+                "bind": { "type": "Button", "up": [], "down": [], "left": [], "right": ["KeyD"] },
+                "max_offset_x": 100,
+                "max_offset_y": 100,
+                "enable_randomization": true,
+                "random_offset_x": 20,
+                "random_offset_y": 10,
+                "random_distance_min_scale": 0.8,
+                "random_distance_max_scale": 1.2,
+                "jitter_offset_x": 0,
+                "jitter_offset_y": 0,
+                "initial_duration": 0
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 500,
+            }),
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["KeyD".into()]).unwrap();
+        let now = Instant::now();
+        let mut runtime = KeymapRuntimeState {
+            random_seed: 0x1111_2222_3333_4444,
+            ..Default::default()
+        };
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+        let state = runtime.random_states["stick"];
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+
+        assert_eq!(frame.contacts.len(), 1);
+        let expected_x = 0.5 + state.offset.x + 0.1 * state.distance_scale;
+        let expected_y = 0.5 + state.offset.y;
+        assert!((frame.contacts[0].x - expected_x).abs() < 0.0001);
+        assert!((frame.contacts[0].y - expected_y).abs() < 0.0001);
+        assert!((0.8..=1.2).contains(&state.distance_scale));
+        assert!(state.offset.x.abs() <= 0.02);
+        assert!(state.offset.y.abs() <= 0.02);
+    }
+
+    #[test]
+    fn joystick_direction_binding_uses_gamepad_axes() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "stick",
+                "type": "DirectionPad",
+                "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 },
+                "bind": { "type": "JoyStick", "x": "LeftStickX", "y": "LeftStickY" },
+                "max_offset_x": 100,
+                "max_offset_y": 100,
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 1000,
+            }),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        let axes = BTreeMap::from([
+            (String::from("LeftStickX"), 1.0),
+            (String::from("LeftStickY"), -0.5),
+        ]);
+        compiled
+            .update_runtime_with_gamepad(
+                &mut runtime,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                &axes,
+                now,
+            )
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &BTreeSet::new(), &BTreeMap::new(), now)
+            .unwrap();
+        assert_eq!(frame.contacts.len(), 1);
+        let scale = 1.0 / 1.25_f32.sqrt();
+        assert!((frame.contacts[0].x - (0.5 + 0.1 * scale)).abs() < 0.0001);
+        assert!((frame.contacts[0].y - (0.5 - 0.05 * scale)).abs() < 0.0001);
+        assert_eq!(frame.active_mapping_ids, vec!["stick"]);
+    }
+
+    #[test]
+    fn direction_pad_applies_up_boost_binding() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "move",
+                "type": "DirectionPad",
+                "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 },
+                "bind": { "type": "Button", "up": ["KeyW"], "down": [], "left": [], "right": [] },
+                "max_offset_x": 100,
+                "max_offset_y": 100,
+                "up_boost_key": ["ShiftLeft"],
+                "up_boost_scale": 2.0,
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 1000,
+            }),
+        )
+        .unwrap();
+        let up = normalize_key_state(vec!["KeyW".into()]).unwrap();
+        let boosted = normalize_key_state(vec!["KeyW".into(), "ShiftLeft".into()]).unwrap();
+        let normal = compiled.frame(&up, Duration::ZERO).unwrap();
+        let fast = compiled.frame(&boosted, Duration::ZERO).unwrap();
+        assert!((normal.contacts[0].y - 0.4).abs() < 0.0001);
+        assert!((fast.contacts[0].y - 0.3).abs() < 0.0001);
+    }
+
+    #[test]
+    fn direction_pad_initial_duration_applies_without_randomization() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "move",
+                "type": "DirectionPad",
+                "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 },
+                "bind": { "type": "Button", "up": ["KeyW"], "down": [], "left": [], "right": [] },
+                "max_offset_x": 100,
+                "max_offset_y": 100,
+                "initial_duration": 100,
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 1000,
+            }),
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["KeyW".into()]).unwrap();
+        let now = Instant::now();
+        let mut runtime = KeymapRuntimeState::default();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &held, &held, &[], now)
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &held,
+                &BTreeMap::new(),
+                now + Duration::from_millis(50),
+            )
+            .unwrap();
+        assert!((frame.contacts[0].y - 0.45).abs() < 0.0001);
+    }
+
+    #[test]
+    fn mouse_cast_projects_absolute_cursor_through_cast_center() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "cast",
+                "type": "MouseCastSpell",
+                "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 },
+                "center": { "x": 0.5, "y": 0.5 },
+                "bind": ["KeyQ"],
+                "cast_radius": 200,
+                "drag_radius": 100,
+                "cast_no_direction": false,
+                "horizontal_scale_factor": 1.0,
+                "vertical_scale_factor": 1.0,
+                "initial_duration": 0,
+                "release_mode": "OnRelease",
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 1000,
+            }),
+        )
+        .unwrap();
+        let held = normalize_key_state(vec!["KeyQ".into()]).unwrap();
+        let now = Instant::now();
+        let mut runtime = KeymapRuntimeState::default();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &held,
+                &held,
+                &[KeymapPointerDelta {
+                    mapping_id: "cast",
+                    delta_x: 0.0,
+                    delta_y: 0.0,
+                    cursor_x: Some(0.7),
+                    cursor_y: Some(0.5),
+                }],
+                now,
+            )
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+        assert_eq!(frame.contacts.len(), 1);
+        assert!((frame.contacts[0].x - 0.6).abs() < 0.0001);
+        assert!((frame.contacts[0].y - 0.5).abs() < 0.0001);
+
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &held,
+                &held,
+                &BTreeSet::new(),
+                &[KeymapPointerDelta {
+                    mapping_id: "cast",
+                    delta_x: -50.0,
+                    delta_y: 0.0,
+                    cursor_x: None,
+                    cursor_y: None,
+                }],
+                now,
+            )
+            .unwrap();
+        let frame = compiled
+            .frame_with_runtime(&mut runtime, &held, &BTreeMap::new(), now)
+            .unwrap();
+        assert!((frame.contacts[0].x - 0.55).abs() < 0.0001);
+    }
+
+    #[test]
+    fn joystick_deadzone_does_not_create_a_contact() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "stick", "type": "DirectionPad", "pointer_id": 0,
+                "position": { "x": 0.5, "y": 0.5 },
+                "bind": { "type": "JoyStick", "x": "LeftStickX", "y": "LeftStickY" },
+                "max_offset_x": 100, "max_offset_y": 100
+            })]),
+            Some(KeyMappingResolution {
+                width: 1000,
+                height: 1000,
+            }),
+        )
+        .unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        compiled
+            .update_runtime_with_gamepad(
+                &mut runtime,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                &BTreeMap::from([("LeftStickX".into(), 0.04), ("LeftStickY".into(), -0.03)]),
+                now,
+            )
+            .unwrap();
+        assert!(
+            compiled
+                .frame_with_runtime(&mut runtime, &BTreeSet::new(), &BTreeMap::new(), now)
+                .unwrap()
+                .contacts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn pulse_swipe_finishes_after_key_release() {
+        let compiled = CompiledKeymap::from_profile(
+            &profile(vec![json!({
+                "id": "swipe",
+                "type": "Swipe",
+                "pointer_id": 0,
+                "position": { "x": 0.1, "y": 0.5 },
+                "bind": ["KeyS"],
+                "duration": 100,
+                "positions": [
+                    { "x": 0.1, "y": 0.5 },
+                    { "x": 0.9, "y": 0.5 }
+                ],
+            })]),
+            None,
+        )
+        .unwrap();
+        let pressed = normalize_key_state(vec!["KeyS".into()]).unwrap();
+        let mut runtime = KeymapRuntimeState::default();
+        let now = Instant::now();
+        compiled
+            .update_runtime(&mut runtime, &BTreeSet::new(), &pressed, &pressed, &[], now)
+            .unwrap();
+        compiled
+            .update_runtime(
+                &mut runtime,
+                &pressed,
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &[],
+                now + Duration::from_millis(10),
+            )
+            .unwrap();
+        let middle = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                now + Duration::from_millis(50),
+            )
+            .unwrap();
+        assert_eq!(middle.contacts.len(), 1);
+        assert!((middle.contacts[0].x - 0.5).abs() < 0.0001);
+        let finished = compiled
+            .frame_with_runtime(
+                &mut runtime,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                now + Duration::from_millis(110),
+            )
+            .unwrap();
+        assert!(finished.contacts.is_empty());
+    }
+
+    #[test]
     fn unsupported_mapping_fails_only_when_its_binding_is_triggered() {
         let compiled = CompiledKeymap::from_profile(
             &profile(vec![json!({
@@ -2775,6 +4486,8 @@ mod tests {
                     mapping_id: "aim",
                     delta_x: 100.0,
                     delta_y: 100.0,
+                    cursor_x: None,
+                    cursor_y: None,
                 }],
                 now,
             )
@@ -2909,6 +4622,8 @@ mod tests {
                     mapping_id: "look",
                     delta_x: 100.0,
                     delta_y: 0.0,
+                    cursor_x: None,
+                    cursor_y: None,
                 }],
                 now,
             )
@@ -2987,6 +4702,8 @@ mod tests {
                     mapping_id: "fire",
                     delta_x: 10.0,
                     delta_y: 5.0,
+                    cursor_x: None,
+                    cursor_y: None,
                 }],
                 now,
             )

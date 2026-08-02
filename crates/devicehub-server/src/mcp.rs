@@ -211,6 +211,8 @@ struct GamePointerDelta {
     mapping_id: String,
     delta_x: f32,
     delta_y: f32,
+    cursor_x: Option<f32>,
+    cursor_y: Option<f32>,
 }
 
 enum GameControlCommand {
@@ -230,6 +232,7 @@ struct GameControlReport {
     held_keys: BTreeSet<String>,
     matched_mapping_ids: Vec<String>,
     active_mapping_ids: Vec<String>,
+    unavailable_mapping_ids: Vec<String>,
     hardware_button_names: Vec<String>,
     frame_version: u64,
     lease_ms: u64,
@@ -350,6 +353,10 @@ struct GamePointerDeltaParams {
     delta_x: f32,
     /// Relative vertical movement in target-display pixels.
     delta_y: f32,
+    /// Optional normalized absolute cursor x coordinate for MouseCastSpell projection.
+    cursor_x: Option<f32>,
+    /// Optional normalized absolute cursor y coordinate for MouseCastSpell projection.
+    cursor_y: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -996,6 +1003,7 @@ fn render_game_control(
         held_keys: state.held.clone(),
         matched_mapping_ids: frame.matched_mapping_ids,
         active_mapping_ids: frame.active_mapping_ids,
+        unavailable_mapping_ids: frame.unavailable_mapping_ids,
         hardware_button_names: state
             .active_buttons
             .iter()
@@ -1032,6 +1040,8 @@ fn update_game_control(
             mapping_id: &delta.mapping_id,
             delta_x: delta.delta_x,
             delta_y: delta.delta_y,
+            cursor_x: delta.cursor_x,
+            cursor_y: delta.cursor_y,
         })
         .collect::<Vec<_>>();
     keymap.update_runtime(
@@ -2263,6 +2273,11 @@ impl DeviceHub {
 
         let mut active_contacts = Vec::new();
         let mut active_mapping_ids = BTreeSet::new();
+        let mut unavailable_mapping_ids = initial
+            .unavailable_mapping_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let mut script_device = ActiveScriptDeviceState::default();
         let session = self.current_session();
         if failure.is_none() {
@@ -2280,6 +2295,7 @@ impl DeviceHub {
                     }
                 };
                 active_mapping_ids.extend(frame.active_mapping_ids);
+                unavailable_mapping_ids.extend(frame.unavailable_mapping_ids);
                 if let Err(error) =
                     dispatch_script_actions(&session, &mut script_device, frame.script_actions)
                 {
@@ -2335,6 +2351,7 @@ impl DeviceHub {
                     }
                 };
                 active_mapping_ids.extend(frame.active_mapping_ids);
+                unavailable_mapping_ids.extend(frame.unavailable_mapping_ids);
                 if let Err(error) =
                     dispatch_script_actions(&session, &mut script_device, frame.script_actions)
                 {
@@ -2398,6 +2415,7 @@ impl DeviceHub {
                 "hold_ms": hold_ms,
                 "matched_mappings": initial.matched_mapping_ids,
                 "active_mappings": active_mapping_ids,
+                "unavailable_mappings": unavailable_mapping_ids,
                 "hardware_buttons": hardware_buttons.iter().map(|binding| &binding.name).collect::<Vec<_>>(),
                 "frame_version_before": frame_version,
                 "frame_version_after": frame_version_after,
@@ -2527,6 +2545,8 @@ impl DeviceHub {
                 mapping_id: delta.mapping_id,
                 delta_x: delta.delta_x,
                 delta_y: delta.delta_y,
+                cursor_x: delta.cursor_x,
+                cursor_y: delta.cursor_y,
             })
             .collect();
         let handle = self.game_control_handle(&params.session_id).await?;
@@ -2553,6 +2573,7 @@ impl DeviceHub {
                 "held_keys": report.held_keys,
                 "matched_mappings": report.matched_mapping_ids,
                 "active_mappings": report.active_mapping_ids,
+                "unavailable_mappings": report.unavailable_mapping_ids,
                 "hardware_buttons": report.hardware_button_names,
                 "lease_ms": report.lease_ms,
                 "frame_version": report.frame_version,
@@ -4984,6 +5005,8 @@ mod tests {
                 mapping_id: "aim".into(),
                 delta_x: 100.0,
                 delta_y: 100.0,
+                cursor_x: None,
+                cursor_y: None,
             }],
             lease_ms: None,
         }))

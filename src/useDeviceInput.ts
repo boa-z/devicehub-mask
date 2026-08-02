@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
+  gamepadInputNames,
+  readGamepadInput,
   isBoundKey,
   isUiControl,
   keyboardUsage,
-  mappingBindings,
   pointerButtonCode,
   remainingTapDuration,
+  scrollBindingCode,
   singleTapReleaseDelay,
   type TouchContact,
 } from "./control";
@@ -15,14 +17,20 @@ import type { KeymapStatus } from "./useDeviceVideoStream";
 
 export type ControlMode = "mapping" | "keyboard";
 
-type PointerDelta = { mapping_id: string; delta_x: number; delta_y: number };
+type PointerDelta = {
+  mapping_id: string;
+  delta_x: number;
+  delta_y: number;
+  cursor_x?: number;
+  cursor_y?: number;
+};
 
 export type DeviceInputCommand =
   | { type: "multi_touch"; contacts: TouchContact[] }
   | { type: "button_down" | "button_up"; name: HardwareButtonName }
   | { type: "keyboard_down" | "keyboard_up"; usage: number }
   | { type: "keymap_configure"; profile: Profile; frame: FrameSize; allow_scripts: boolean }
-  | { type: "keymap_input"; keys: string[]; pointer_deltas: PointerDelta[] }
+  | { type: "keymap_input"; keys: string[]; pointer_deltas: PointerDelta[]; gamepad_axes: Record<string, number> }
   | { type: "keymap_direct_touches"; contacts: TouchContact[] }
   | { type: "keymap_debug"; enabled: boolean }
   | { type: "keymap_stop" };
@@ -71,12 +79,16 @@ export function clearDeviceInputCollections(
   for (const collection of Object.values(collections)) collection.clear();
 }
 
-function pointFromPointer(event: ReactPointerEvent<HTMLDivElement>) {
-  const bounds = event.currentTarget.getBoundingClientRect();
+function pointFromElement(element: HTMLElement, clientX: number, clientY: number) {
+  const bounds = element.getBoundingClientRect();
   return {
-    x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
-    y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+    x: Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width)),
+    y: Math.max(0, Math.min(1, (clientY - bounds.top) / bounds.height)),
   };
+}
+
+function pointFromPointer(event: ReactPointerEvent<HTMLDivElement>) {
+  return pointFromElement(event.currentTarget, event.clientX, event.clientY);
 }
 
 const pointerMappingTypes = new Set<Mapping["type"]>([
@@ -92,7 +104,31 @@ function profileUsesKey(profile: Profile, code: string) {
 }
 
 function pointerMappings(profile: Profile, ids: ReadonlySet<string>) {
-  return profile.mappings.filter((mapping) => ids.has(mapping.id) && pointerMappingTypes.has(mapping.type));
+  return profile.mappings.filter((mapping) => ids.has(mapping.id) && acceptsPointerDelta(mapping));
+}
+
+export function acceptsPointerDelta(mapping: Mapping) {
+  return pointerMappingTypes.has(mapping.type)
+    && !(mapping.type === "MouseCastSpell" && (mapping.cast_no_direction || mapping.release_mode === "OnPress"))
+    && !(mapping.type === "Fire" && mapping.preserve_fps_control);
+}
+
+export function pointerInputMappings(profile: Profile, code: string, held: ReadonlySet<string>) {
+  return profile.mappings.filter((mapping) => {
+    const binding = "bind" in mapping && Array.isArray(mapping.bind) ? mapping.bind : null;
+    return binding !== null
+      && binding.includes(code)
+      && binding.every((key) => held.has(key))
+      && acceptsPointerDelta(mapping);
+  });
+}
+
+export function rawInputTriggered(profile: Profile, held: ReadonlySet<string>) {
+  return profile.mappings.some((mapping) => (
+    mapping.type === "RawInput"
+      && mapping.bind.length > 0
+      && mapping.bind.every((key) => held.has(key))
+  ));
 }
 
 export function useDeviceInput(options: Options) {
@@ -102,6 +138,7 @@ export function useDeviceInput(options: Options) {
     command,
     frameSize,
     keymapStatus,
+    mappingEditing,
     onControlModeChange,
     pointerDebugEnabled,
     profile,
@@ -109,6 +146,8 @@ export function useDeviceInput(options: Options) {
   const [directTouches, setDirectTouches] = useState<TouchContact[]>([]);
   const optionsRef = useRef(options);
   const heldRef = useRef(new Set<string>());
+  const gamepadKeysRef = useRef(new Set<string>());
+  const gamepadAxesRef = useRef<Record<string, number>>({});
   const heldSinceRef = useRef(new Map<string, number>());
   const forwardedKeyboardRef = useRef(new Map<string, number>());
   const directTouchesRef = useRef(new Map<number, TouchContact>());
@@ -117,9 +156,11 @@ export function useDeviceInput(options: Options) {
   const mappedReleaseTimersRef = useRef(new Map<string, number>());
   const heldPointerBindingsRef = useRef(new Map<number, string>());
   const pointerLockTargetRef = useRef<HTMLElement | null>(null);
+  const pointerCursorRef = useRef({ x: 0.5, y: 0.5 });
   const activeMappingIdsRef = useRef(new Set(options.keymapStatus.active_mapping_ids));
   optionsRef.current = options;
   activeMappingIdsRef.current = new Set(options.keymapStatus.active_mapping_ids);
+  const gamepadNames = useMemo(() => gamepadInputNames(profile.mappings), [profile.mappings]);
 
   const collections = useCallback((): DeviceInputCollections => ({
     held: heldRef.current,
@@ -140,8 +181,9 @@ export function useDeviceInput(options: Options) {
     if (!current.connected || current.controlMode !== "mapping") return;
     current.command({
       type: "keymap_input",
-      keys: [...heldRef.current],
+      keys: [...heldRef.current, ...gamepadKeysRef.current],
       pointer_deltas,
+      gamepad_axes: gamepadAxesRef.current,
     });
   }, []);
 
@@ -161,17 +203,26 @@ export function useDeviceInput(options: Options) {
     const current = optionsRef.current;
     const forwarded = [...forwardedKeyboardRef.current.values()];
     clearDeviceInputCollections(collections(), (timer) => window.clearTimeout(timer));
+    gamepadKeysRef.current.clear();
+    gamepadAxesRef.current = {};
+    pointerCursorRef.current = { x: 0.5, y: 0.5 };
     setDirectTouches([]);
     exitPointerLock();
     if (!current.connected) return;
     for (const usage of forwarded) current.command({ type: "keyboard_up", usage });
     if (current.controlMode === "mapping") {
-      current.command({ type: "keymap_input", keys: [], pointer_deltas: [] });
+      current.command({ type: "keymap_input", keys: [], pointer_deltas: [], gamepad_axes: {} });
       current.command({ type: "keymap_direct_touches", contacts: [] });
     } else {
       current.command({ type: "multi_touch", contacts: [] });
     }
   }, [collections, exitPointerLock]);
+
+  const switchToKeyboardMode = useCallback(() => {
+    const current = optionsRef.current;
+    releaseAllControls();
+    current.onControlModeChange("keyboard");
+  }, [releaseAllControls]);
 
   useEffect(() => {
     if (!connected) return;
@@ -195,6 +246,39 @@ export function useDeviceInput(options: Options) {
   }, [command, connected, pointerDebugEnabled]);
 
   useEffect(() => {
+    if (!connected || controlMode !== "mapping" || mappingEditing
+      || (gamepadNames.buttons.length === 0 && gamepadNames.axes.length === 0)) {
+      gamepadKeysRef.current.clear();
+      gamepadAxesRef.current = {};
+      return;
+    }
+    let animationFrame = 0;
+    let previous = "";
+    let switchedToKeyboard = false;
+    const poll = () => {
+      if (switchedToKeyboard) return;
+      const state = readGamepadInput(gamepadNames);
+      const held = new Set([...heldRef.current, ...state.keys]);
+      const current = optionsRef.current;
+      if (rawInputTriggered(current.profile, held)) {
+        switchedToKeyboard = true;
+        switchToKeyboardMode();
+        return;
+      }
+      const signature = JSON.stringify(state);
+      if (signature !== previous) {
+        previous = signature;
+        gamepadKeysRef.current = new Set(state.keys);
+        gamepadAxesRef.current = state.axes;
+        sendKeyState();
+      }
+      animationFrame = window.requestAnimationFrame(poll);
+    };
+    poll();
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [connected, controlMode, gamepadNames, mappingEditing, sendKeyState, switchToKeyboardMode]);
+
+  useEffect(() => {
     const mode = keymapStatus.control_mode;
     if (mode && mode !== controlMode) {
       releaseAllControls();
@@ -208,6 +292,8 @@ export function useDeviceInput(options: Options) {
   useEffect(() => {
     if (!options.connected) {
       clearDeviceInputCollections(collections(), (timer) => window.clearTimeout(timer));
+      gamepadKeysRef.current.clear();
+      gamepadAxesRef.current = {};
       setDirectTouches([]);
       exitPointerLock();
     }
@@ -272,10 +358,22 @@ export function useDeviceInput(options: Options) {
         || current.controlMode !== "mapping"
         || (!event.movementX && !event.movementY)
         || document.pointerLockElement === null) return;
+      const target = pointerLockTargetRef.current;
+      if (target) {
+        const bounds = target.getBoundingClientRect();
+        if (bounds.width > 0 && bounds.height > 0) {
+          pointerCursorRef.current = {
+            x: Math.max(0, Math.min(1, pointerCursorRef.current.x + event.movementX / bounds.width)),
+            y: Math.max(0, Math.min(1, pointerCursorRef.current.y + event.movementY / bounds.height)),
+          };
+        }
+      }
       const deltas = pointerMappings(current.profile, activeMappingIdsRef.current).map((mapping) => ({
         mapping_id: mapping.id,
         delta_x: event.movementX,
         delta_y: event.movementY,
+        cursor_x: pointerCursorRef.current.x,
+        cursor_y: pointerCursorRef.current.y,
       }));
       if (deltas.length) sendKeyState(deltas);
     };
@@ -305,10 +403,15 @@ export function useDeviceInput(options: Options) {
       if (current.mappingEditing || event.repeat || isUiControl(event.target)) return;
       if (!profileUsesKey(current.profile, event.code)) return;
       event.preventDefault();
-      const triggered = current.profile.mappings.filter((mapping) => mappingBindings(mapping).includes(event.code));
-      if (triggered.some((mapping) => mapping.type === "RawInput")) {
-        releaseAllControls();
-        current.onControlModeChange("keyboard");
+      const held = new Set([...heldRef.current, ...gamepadKeysRef.current]);
+      held.add(event.code);
+      if (rawInputTriggered(current.profile, held)) {
+        switchToKeyboardMode();
+        const usage = keyboardUsage(event.code);
+        if (usage !== undefined) {
+          forwardedKeyboardRef.current.set(event.code, usage);
+          current.command({ type: "keyboard_down", usage });
+        }
         return;
       }
       const pending = mappedReleaseTimersRef.current.get(event.code);
@@ -318,7 +421,7 @@ export function useDeviceInput(options: Options) {
       }
       heldRef.current.add(event.code);
       heldSinceRef.current.set(event.code, performance.now());
-      if (triggered.some((mapping) => pointerMappingTypes.has(mapping.type))
+      if (pointerInputMappings(current.profile, event.code, held).length > 0
         && event.target instanceof HTMLElement) capturePointer(event.target);
       sendKeyState();
     };
@@ -345,7 +448,38 @@ export function useDeviceInput(options: Options) {
       window.removeEventListener("keyup", up);
       window.removeEventListener("blur", releaseAllControls);
     };
-  }, [capturePointer, releaseAllControls, releaseMappedKey, sendKeyState]);
+  }, [capturePointer, releaseAllControls, releaseMappedKey, sendKeyState, switchToKeyboardMode]);
+
+  useEffect(() => {
+    const wheel = (event: WheelEvent) => {
+      const current = optionsRef.current;
+      if (!current.connected || current.mappingEditing || current.controlMode !== "mapping") return;
+      const code = scrollBindingCode(event.deltaY);
+      if (!code || !profileUsesKey(current.profile, code)) return;
+      event.preventDefault();
+      const held = new Set([...heldRef.current, ...gamepadKeysRef.current]);
+      held.add(code);
+      if (rawInputTriggered(current.profile, held)) {
+        switchToKeyboardMode();
+        return;
+      }
+      const pending = mappedReleaseTimersRef.current.get(code);
+      if (pending !== undefined) window.clearTimeout(pending);
+      heldRef.current.delete(code);
+      heldSinceRef.current.delete(code);
+      sendKeyState();
+      const startedAt = performance.now();
+      heldRef.current.add(code);
+      heldSinceRef.current.set(code, startedAt);
+      sendKeyState();
+      mappedReleaseTimersRef.current.set(
+        code,
+        window.setTimeout(() => finishMappedRelease(code), remainingTapDuration(startedAt, performance.now())),
+      );
+    };
+    window.addEventListener("wheel", wheel, { passive: false });
+    return () => window.removeEventListener("wheel", wheel);
+  }, [finishMappedRelease, sendKeyState, switchToKeyboardMode]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const current = optionsRef.current;
@@ -353,6 +487,12 @@ export function useDeviceInput(options: Options) {
     const pointerCode = pointerButtonCode(event.button);
     if (current.controlMode === "mapping" && pointerCode && profileUsesKey(current.profile, pointerCode)) {
       event.preventDefault();
+      const held = new Set([...heldRef.current, ...gamepadKeysRef.current]);
+      held.add(pointerCode);
+      if (rawInputTriggered(current.profile, held)) {
+        switchToKeyboardMode();
+        return;
+      }
       event.currentTarget.focus();
       event.currentTarget.setPointerCapture(event.pointerId);
       const pending = mappedReleaseTimersRef.current.get(pointerCode);
@@ -363,9 +503,21 @@ export function useDeviceInput(options: Options) {
       heldPointerBindingsRef.current.set(event.pointerId, pointerCode);
       heldRef.current.add(pointerCode);
       heldSinceRef.current.set(pointerCode, performance.now());
-      const triggered = current.profile.mappings.filter((mapping) => mappingBindings(mapping).includes(pointerCode));
-      if (triggered.some((mapping) => pointerMappingTypes.has(mapping.type))) capturePointer(event.currentTarget);
-      sendKeyState();
+      const inputMappings = pointerInputMappings(current.profile, pointerCode, held);
+      if (inputMappings.length > 0 && event.currentTarget instanceof HTMLElement) {
+        pointerCursorRef.current = pointFromPointer(event);
+        capturePointer(event.currentTarget);
+      }
+      const pointer_deltas = inputMappings
+        .filter((mapping) => mapping.type === "MouseCastSpell")
+        .map((mapping) => ({
+          mapping_id: mapping.id,
+          delta_x: 0,
+          delta_y: 0,
+          cursor_x: pointerCursorRef.current.x,
+          cursor_y: pointerCursorRef.current.y,
+        }));
+      sendKeyState(pointer_deltas);
       return;
     }
     if (event.button !== 0 || directTouchesRef.current.has(event.pointerId)) return;
@@ -386,7 +538,7 @@ export function useDeviceInput(options: Options) {
     directTouchStartedAtRef.current.set(event.pointerId, performance.now());
     setDirectTouches([...directTouchesRef.current.values()]);
     sendDirectTouches();
-  }, [capturePointer, sendDirectTouches, sendKeyState]);
+  }, [capturePointer, sendDirectTouches, sendKeyState, switchToKeyboardMode]);
 
   const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const contact = directTouchesRef.current.get(event.pointerId);

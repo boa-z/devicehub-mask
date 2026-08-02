@@ -47,7 +47,7 @@ import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPrefere
 import { logFrontend } from "./diagnostics";
 import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
-import { defaultHardwareBindings, defaultProfile, hardwareButtons, keyMappingTypes, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type KeyMappingType, type Mapping, type PairDeviceResult, type Position, type Profile } from "./types";
+import { defaultHardwareBindings, defaultProfile, hardwareButtons, keyMappingTypes, updateMappingPosition, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type KeyMappingType, type Mapping, type PairDeviceResult, type Position, type Profile } from "./types";
 import type { AppBindingConflict, AppProfileBinding } from "./types";
 import { bindingForScope, conflictForScope, resolveAppProfileBinding, sameProfileResolution } from "./profileBindings";
 import { useDeviceInput, type ControlMode } from "./useDeviceInput";
@@ -717,7 +717,7 @@ export default function App() {
     }
     return { ...current, hardwareBindings: { ...current.hardwareBindings, [name]: key } };
   });
-  const moveMapping = (id: string, x: number, y: number) => updateProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? ("position" in mapping ? { ...mapping, position: { x, y } } : { ...mapping, x, y }) as Mapping : mapping) }), { mergeKey: `move:${id}` });
+  const moveMapping = (id: string, x: number, y: number) => updateProfile((current) => ({ ...current, mappings: current.mappings.map((mapping) => mapping.id === id ? updateMappingPosition(mapping, { x, y }) : mapping) }), { mergeKey: `move:${id}` });
   const addMapping = (type: KeyMappingType, position: Position = { x: 0.5, y: 0.5 }) => {
     const next = createEditorMapping(type, position, mappingFrameSize, profile.mappings);
     const id = next.id;
@@ -1438,6 +1438,7 @@ export default function App() {
                         keymapConfigured={keymapStatus.configured}
                         keymapContacts={keymapStatus.active_contacts}
                         activeMappingIds={keymapStatus.active_mapping_ids}
+                        unavailableMappingIds={keymapStatus.unavailable_mapping_ids ?? []}
                       />
                       {stageIssue && !(page === "mappings" && mappingBackgroundMode === "screenshot" && capturedScreenshot) && (
                         <div className="device-stage-state" onPointerDown={(event) => event.stopPropagation()}>

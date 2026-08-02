@@ -545,7 +545,7 @@ export function createMapping(type: KeyMappingType, position: Position, frame = 
     case "RepeatTap": return { ...random, type, duration: 50, interval: 100 };
     case "MultipleTap": return { ...random, type, items: [{ position, duration: 50, wait: 0 }] };
     case "Swipe": return { ...pointer, type, duration: 150, enable_randomization: false, positions: [position, { x: Math.min(1, position.x + 0.15), y: position.y }], script_hooks: hooks() };
-    case "DirectionPad": return { ...base, type, bind: buttons(), pointer_id: 0, max_offset_x: distance * 0.1, max_offset_y: distance * 0.1, enable_randomization: false, initial_duration: 0, random_distance_min_scale: 1, random_distance_max_scale: 1, random_offset_x: 0, random_offset_y: 0, jitter_offset_x: 0, jitter_offset_y: 0, script_hooks: hooks(), up_boost_key: null, up_boost_scale: 2 };
+    case "DirectionPad": return { ...base, type, bind: buttons(), pointer_id: 0, max_offset_x: distance * 0.1, max_offset_y: distance * 0.1, enable_randomization: false, initial_duration: 0, random_distance_min_scale: 1, random_distance_max_scale: 1, random_offset_x: 0, random_offset_y: 0, jitter_offset_x: 0, jitter_offset_y: 0, script_hooks: hooks(), up_boost_key: null, up_boost_scale: 1.4 };
     case "MouseCastSpell": return { ...random, type, center: { x: 0.5, y: 0.5 }, cast_no_direction: false, cast_radius: distance * 0.15, drag_radius: distance * 0.1, enable_initial_swipe_randomization: false, horizontal_scale_factor: 7, vertical_scale_factor: 10, initial_duration: 0, release_mode: "OnRelease" };
     case "PadCastSpell": return { ...random, type, block_direction_pad: false, drag_radius: distance * 0.1, enable_randomization: false, pad_bind: buttons(), release_mode: "OnRelease" };
     case "CancelCast": return { ...base, type, bind: [], script_hooks: hooks() };
@@ -557,7 +557,31 @@ export function createMapping(type: KeyMappingType, position: Position, frame = 
   }
 }
 
-export function mappingPosition(mapping: Mapping): Position { return "position" in mapping ? mapping.position : { x: mapping.x, y: mapping.y }; }
+export function mappingPosition(mapping: Mapping): Position {
+  if (mapping.type === "MultipleTap") return mapping.items[0]?.position ?? mapping.position;
+  if (mapping.type === "Swipe") return mapping.positions[0] ?? mapping.position;
+  return "position" in mapping ? mapping.position : { x: mapping.x, y: mapping.y };
+}
+
+export function updateMappingPosition(mapping: Mapping, position: Position): Mapping {
+  if (mapping.type === "MultipleTap") {
+    return {
+      ...mapping,
+      position,
+      items: mapping.items.map((item, index) => index === 0 ? { ...item, position } : item),
+    };
+  }
+  if (mapping.type === "Swipe") {
+    return {
+      ...mapping,
+      position,
+      positions: mapping.positions.length > 0
+        ? mapping.positions.map((point, index) => index === 0 ? position : point)
+        : [position],
+    };
+  }
+  return "position" in mapping ? { ...mapping, position } : { ...mapping, x: position.x, y: position.y };
+}
 export function mappingLabel(mapping: Mapping): string { return "label" in mapping ? mapping.label : mapping.note || mapping.type; }
 export function keyboardBindingLabel(code: string): string {
   if (/^Key[A-Z]$/.test(code)) return code.slice(3);
@@ -566,23 +590,27 @@ export function keyboardBindingLabel(code: string): string {
     ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
     ControlLeft: "Ctrl", ControlRight: "Ctrl", ShiftLeft: "Shift", ShiftRight: "Shift",
     AltLeft: "Alt", AltRight: "Alt", MetaLeft: "Meta", MetaRight: "Meta",
-    MouseLeft: "Left mouse", MouseMiddle: "Middle mouse", MouseRight: "Right mouse",
+    MouseLeft: "Left mouse", MouseMiddle: "Middle mouse", MouseRight: "Right mouse", MouseBack: "Back mouse", MouseForward: "Forward mouse",
+    GamepadSouth: "Gamepad A", GamepadEast: "Gamepad B", GamepadWest: "Gamepad X", GamepadNorth: "Gamepad Y",
+    ScrollUp: "Scroll up", ScrollDown: "Scroll down",
   };
   return labels[code] ?? code.replace(/^Numpad/, "Num ");
 }
 export function mappingBindingLabel(mapping: Mapping): string | undefined {
   if (mapping.type === "touch") return keyboardBindingLabel(mapping.key);
-  const direction = mapping.type === "dpad"
-    ? { up: [mapping.keys.up], left: [mapping.keys.left], down: [mapping.keys.down], right: [mapping.keys.right] }
-    : mapping.type === "DirectionPad" && mapping.bind.type === "Button"
-      ? { up: mapping.bind.up, left: mapping.bind.left, down: mapping.bind.down, right: mapping.bind.right }
-      : undefined;
+  const directionBinding = mapping.type === "dpad"
+    ? { type: "Button" as const, up: [mapping.keys.up], left: [mapping.keys.left], down: [mapping.keys.down], right: [mapping.keys.right] }
+    : mapping.type === "DirectionPad" ? mapping.bind
+      : mapping.type === "PadCastSpell" ? mapping.pad_bind
+        : undefined;
+  const direction = directionBinding?.type === "Button" ? directionBinding : undefined;
   if (direction) {
     const groups = [direction.up, direction.left, direction.down, direction.right]
       .map((keys) => keys.filter(Boolean).map(keyboardBindingLabel).join("+"));
     if (groups.every((group) => group.length === 1)) return groups.join("");
     return groups.filter(Boolean).join("/") || undefined;
   }
+  if (directionBinding?.type === "JoyStick") return `${directionBinding.x}/${directionBinding.y}`;
   const keys = "bind" in mapping && Array.isArray(mapping.bind) ? mapping.bind : [];
   return keys.length ? keys.map(keyboardBindingLabel).join("+") : undefined;
 }

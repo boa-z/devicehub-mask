@@ -120,7 +120,7 @@ MCP 可以创建和回放与桌面“Key Mapping”工作区共用的本地 nati
 
 回放支持 `touch`、`dpad`、`Press`、`SingleTap`、`RepeatTap`、`MultipleTap`、`Swipe`、使用键盘 Button 绑定的 `DirectionPad`、`PadCastSpell`、`MouseCastSpell`、`CancelCast`、`Observation`、`Fps`、`Fire` 和 `hardwareBindings`。`Press` 触点会在整个 `run_keymap.hold_ms` 时段内保持按下，或在游戏会话的按键持续处于 held 状态时保持按下。`DirectionPad`、施法映射及指针驱动映射优先使用 `targetResolution`，没有时使用所选设备当前的正向视频流尺寸。
 
-游戏会话中的 `pointer_deltas` 会移动指定且当前生效的 `MouseCastSpell`、`Observation`、`Fps` 或不保留 FPS 控制的 `Fire` 映射。`Observation` 会限制在 `max_radius` 内。`Fps` 使用按下边沿切换：在一次 `set_game_input` 更新中加入绑定键，并在下一次更新中移除；之后即使不按键也会保持生效并接收增量，直到再次产生按下边沿。其单/双触点回中策略会在本地 60Hz 会话中执行。`Fire` 根据 `preserve_fps_control` 选择以固定触点与 FPS 并存，或暂时接管指针控制。`CancelCast` 会把当前施法动画移动到取消点后释放。不执行浏览器随机化。
+游戏会话中的 `pointer_deltas` 会移动指定且当前生效的 `MouseCastSpell`、`Observation`、`Fps` 或不保留 FPS 控制的 `Fire` 映射。指针增量也可以携带归一化的 `cursor_x` 和 `cursor_y`；MouseCastSpell 会结合 `center`、`cast_radius`、`drag_radius` 及轴向缩放系数使用这个绝对光标位置，省略两个字段则保持相对增量兼容。`Observation` 会限制在 `max_radius` 内。`Fps` 使用按下边沿切换：在一次 `set_game_input` 更新中加入绑定键，并在下一次更新中移除；之后即使不按键也会保持生效并接收增量，直到再次产生按下边沿。其单/双触点回中策略会在本地 60Hz 会话中执行。`Fire` 根据 `preserve_fps_control` 选择以固定触点与 FPS 并存，或暂时接管指针控制。`CancelCast` 会把当前施法动画移动到取消点后释放。随机锚点、滑动曲线、方向盘距离缩放和有界漂移都由共享原生运行时计算，浏览器只发送按键、轴和指针状态。
 
 `Script` 映射和脚本钩子与桌面控制共用同一套有界运行时，但 MCP 默认禁用；只有向 `run_keymap` 或 `start_game_session` 显式提供 `allow_scripts=true` 才会执行，启用前应先检查配置。脚本可输出触点、键盘、硬件按钮、Unicode 文本以及共享 FPS/施法动作。MCP 会拒绝 `enter_raw_input()`，因为 Agent 协议会话没有切换成桌面键盘透传的明确语义；独立 `RawInput` 映射也仍会明确报错。
 
