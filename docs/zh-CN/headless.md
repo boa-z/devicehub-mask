@@ -12,6 +12,8 @@
 - 浏览器支持 HEVC WebCodecs。Windows 浏览器是否可用取决于浏览器、GPU 驱动和系统提供的 HEVC 解码能力。
 - 设备音频需要包内或通过 `--ffmpeg` 指定的 FFmpeg；FFmpeg 不参与视频解码。
 
+新的 headless 数据目录默认启用设备音频，因此 mobile app 连接后请求 `audio_demand` 即可建立音频链路。已有 `settings.json` 中明确写为 `audio_enabled: false` 的配置仍会保持关闭，可通过宿主设置接口或共享 Web UI 开启。
+
 ## 使用 Nightly 包
 
 从 [nightly release](https://github.com/boa-z/devicehub-mask/releases/tag/nightly) 下载对应平台的无头归档及相邻的 `.sha256` 文件：
@@ -205,5 +207,5 @@ DeviceHub Mask 不安装、侧载、签名或升级 iOS 应用。桌面端与无
 - 浏览器返回 `401`：重新打开当前进程输出的完整启动 URL；固定令牌部署应确认所有客户端使用同一个受保护令牌文件。
 - 页面可打开但 WebCodecs 不可用：确认浏览器处于安全上下文，并检查 Windows HEVC、GPU 驱动和硬件加速支持。
 - 没有设备：确认设备已解锁并信任、Developer Mode/DDI 就绪以及 Apple Mobile Device Service 或 usbmuxd 正常；再在页面刷新设备列表。
-- 没有声音：在设备设置中启用音频，然后点击设备工具条中的音频按钮解除浏览器自动播放限制。浏览器对 `http://localhost` 和 `http://<局域网 IP>` 的处理可能不同；如果按钮仍提示播放被阻止，请使用 HTTPS 反向代理，并检查服务日志中的 `browser_playback_suspended` 或 `browser_playback_failed` 诊断以及 FFmpeg 路径。
+- 没有声音：确认 FFmpeg 可执行文件可用，并检查已有 `settings.json` 是否将 `audio_enabled` 设为 `false`；浏览器客户端还需要点击设备工具条中的音频按钮解除自动播放限制。浏览器对 `http://localhost` 和 `http://<局域网 IP>` 的处理可能不同；如果按钮仍提示播放被阻止，请使用 HTTPS 反向代理，并检查服务日志中的 `browser_playback_suspended` 或 `browser_playback_failed` 诊断以及 FFmpeg 路径。
 - Wi-Fi 设备不可见：先通过 USB 完成配对，确认配对目录可写，并保持设备与服务端处于同一可信网络。

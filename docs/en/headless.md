@@ -12,6 +12,8 @@
 - The browser supports HEVC WebCodecs. On Windows, availability depends on the browser, GPU driver, and HEVC decoding capability supplied by the system.
 - Device audio requires the packaged FFmpeg or a binary selected with `--ffmpeg`. FFmpeg is not used for video decoding.
 
+New headless data directories enable device audio by default, so the mobile app can establish its audio stream after requesting `audio_demand`. An existing `settings.json` with `audio_enabled: false` remains disabled and can be enabled through the host settings API or the shared Web UI.
+
 ## Using a Nightly Package
 
 Download the headless archive for the host platform and its adjacent `.sha256` file from the [nightly release](https://github.com/boa-z/devicehub-mask/releases/tag/nightly):
@@ -205,5 +207,5 @@ DeviceHub Mask does not install, sideload, sign, or upgrade iOS applications. Th
 - The browser returns `401`: reopen the complete URL printed by the current process. Persistent deployments must ensure every client uses the same protected token file.
 - The page opens but WebCodecs is unavailable: verify that the browser is in a secure context, then check Windows HEVC capability, GPU drivers, and hardware acceleration.
 - No device appears: confirm that the device is unlocked and trusted, Developer Mode/DDI is ready, and Apple Mobile Device Service or usbmuxd is running; then refresh devices in the UI.
-- No audio: enable device audio in settings, then click the audio button in the device toolbar to satisfy browser autoplay policy. Browsers may treat `http://localhost` and `http://<LAN-IP>` differently. If playback is still blocked, use an HTTPS reverse proxy and inspect the service log for `browser_playback_suspended` or `browser_playback_failed` diagnostics and the FFmpeg path.
+- No audio: confirm that FFmpeg is available and that an existing `settings.json` does not set `audio_enabled` to `false`; browser clients also need a click on the device toolbar's audio button to satisfy autoplay policy. Browsers may treat `http://localhost` and `http://<LAN-IP>` differently. If playback is still blocked, use an HTTPS reverse proxy and inspect the service log for `browser_playback_suspended` or `browser_playback_failed` diagnostics and the FFmpeg path.
 - A Wi-Fi device is missing: pair it over USB first, confirm that the pairing directory is writable, and keep the device and server on the same trusted network.

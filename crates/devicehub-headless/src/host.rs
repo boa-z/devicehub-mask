@@ -9,10 +9,11 @@ use devicehub_server::http::{
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_AUDIO_VOLUME: f32 = 0.8;
+const DEFAULT_AUDIO_ENABLED: bool = true;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct PersistedSettings {
-    #[serde(default)]
+    #[serde(default = "default_audio_enabled")]
     audio_enabled: bool,
     #[serde(default)]
     audio_muted: bool,
@@ -25,7 +26,7 @@ struct PersistedSettings {
 impl Default for PersistedSettings {
     fn default() -> Self {
         Self {
-            audio_enabled: false,
+            audio_enabled: DEFAULT_AUDIO_ENABLED,
             audio_muted: false,
             audio_volume: DEFAULT_AUDIO_VOLUME,
             startup_device_priority: Vec::new(),
@@ -35,6 +36,10 @@ impl Default for PersistedSettings {
 
 fn default_audio_volume() -> f32 {
     DEFAULT_AUDIO_VOLUME
+}
+
+fn default_audio_enabled() -> bool {
+    DEFAULT_AUDIO_ENABLED
 }
 
 struct HeadlessHostInner {
@@ -196,6 +201,18 @@ mod tests {
             control.runtime_preferences().startup_device_priority(),
             ["phone", "tablet"]
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn new_headless_settings_enable_audio_for_mobile_streams() {
+        let path = std::env::temp_dir().join(format!(
+            "devicehub-headless-default-settings-{}.json",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let control = HeadlessHostControl::load(path.clone());
+        assert!(control.settings().audio_enabled);
+        assert!(control.runtime_preferences().audio_enabled());
         let _ = std::fs::remove_file(path);
     }
 }
