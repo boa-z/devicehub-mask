@@ -6,13 +6,13 @@
 
 `.github/workflows/nightly.yml` 只在 commit 和手动触发时运行。没有定时任务，也不使用 GitHub Environments，因此不会创建妨碍清理历史的 Deployment 记录。
 
-`.github/workflows/cleanup-nightly.yml` 每周运行，也支持手动触发。默认保留最新 20 次已完成的 nightly workflow 运行，并删除超过 14 天的 nightly artifacts。手动运行可以在受限范围内调整两个保留参数，或使用 dry-run 只查看预计删除内容。它不会删除滚动 `nightly` Release、tag 或 Release assets。
+`.github/workflows/cleanup-nightly.yml` 仅支持手动触发，不再设置定时任务。默认保留最新 20 次已完成的 nightly workflow 运行，并删除超过 14 天的匹配 nightly artifact。手动运行可以在受限范围内调整两个保留参数；首次运行默认使用 dry-run，只报告预计删除内容。通过 `workflow_call` 调用的 Stable 发布运行会被排除。它不会删除滚动 `nightly` Release、tag 或 Release assets。
 
 `.github/workflows/release.yml` 只允许手动触发。运行时选择包含确切发布源码的 Git ref，输入与 `v<tauri.conf.json version>` 匹配的标签，并选择是否保留为 Draft。它复用 Nightly 的同一套验证和打包流程，但会注入 Stable 通道和纯产品版本。正式标签和已发布 Release 不可覆盖。工作流会先创建或继续 Draft，上传全部资源；仅当关闭 **Draft** 时，才在上传完成后将其发布为仓库最新正式版。
 
 ## Jobs
 
-- **verify** 使用相互独立失败的 macOS、Windows 和 Linux 矩阵。每个平台运行前端 lint、测试和构建，Rust 格式、测试和 Clippy，以及 Tauri debug 应用构建。
+- **verify** 使用相互独立失败的 macOS、Windows 和 Linux 矩阵。每个平台运行统一的 `npm run verify` 门禁，然后构建 headless 可执行文件并执行平台专项打包检查；分支 push 还会构建 Tauri debug 应用。
 - **build-macos** 生成 Apple Silicon/Intel Universal DMG 和 Universal 无头 tarball，并验证两个可执行架构和完整应用签名。
 - **build-windows** 生成 x64 NSIS、MSI 安装包和 x64 无头 zip。
 - **build-linux** 使用 GitHub 托管的原生 x64、ARM64 runner，分别生成 AppImage、DEB 和无头 tarball。

@@ -14,12 +14,10 @@ on:
         default: "14"
         type: string
       dry_run:
-        description: Report deletions without changing GitHub state
+        description: Report deletions without changing GitHub state (recommended first run)
         required: true
-        default: false
+        default: true
         type: boolean
-  schedule:
-    - cron: "23 4 * * 1"
 
 permissions:
   actions: write
@@ -38,7 +36,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       KEEP_RUNS: ${{ inputs.keep_runs || '20' }}
       ARTIFACT_DAYS: ${{ inputs.artifact_days || '14' }}
-      DRY_RUN: ${{ inputs.dry_run || false }}
+      DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - name: Validate retention settings
         shell: bash
@@ -54,9 +52,10 @@ jobs:
           mapfile -t RUN_IDS < <(
             gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?status=completed&per_page=100" \
-              --jq '.workflow_runs[].id'
+              --jq '.workflow_runs[] | select(.event != "workflow_call") | .id'
           )
           echo "Found ${#RUN_IDS[@]} completed nightly runs; retaining newest ${KEEP_RUNS}."
+          echo "Stable release runs invoked through workflow_call are excluded."
           for ((index = KEEP_RUNS; index < ${#RUN_IDS[@]}; index += 1)); do
             run_id="${RUN_IDS[$index]}"
             if [[ "$DRY_RUN" == "true" ]]; then

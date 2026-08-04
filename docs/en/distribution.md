@@ -6,13 +6,13 @@
 
 `.github/workflows/nightly.yml` runs on commits and manual dispatches only. It has no scheduled trigger, does not use GitHub Environments, and therefore does not create Deployment records that obstruct history cleanup.
 
-`.github/workflows/cleanup-nightly.yml` runs weekly and can be dispatched manually. It retains the newest 20 completed nightly workflow runs and deletes nightly artifacts older than 14 days by default. Manual runs can change both bounded retention values or use dry-run. It never deletes the rolling `nightly` release, tag, or release assets.
+`.github/workflows/cleanup-nightly.yml` is manual-only; it has no scheduled trigger. It retains the newest 20 completed nightly workflow runs and deletes matching nightly artifacts older than 14 days by default. Manual runs can change both bounded retention values. The workflow starts in dry-run mode, and Stable release runs invoked through `workflow_call` are excluded. It never deletes the rolling `nightly` release, tag, or release assets.
 
 `.github/workflows/release.yml` is manual-only. Select the Git ref containing the exact source to release, enter the tag matching `v<tauri.conf.json version>`, and choose whether to retain a draft. It reuses the same verification and packaging workflow as Nightly, but injects the Stable channel and the plain product version. Stable tags and published releases are immutable. The workflow creates or resumes a draft, uploads all assets, and only then publishes it as the repository's latest release when **Draft** is disabled.
 
 ## Jobs
 
-- **verify** is a fail-independent macOS, Windows, and Linux matrix. Each leg runs frontend lint, tests, and build; Rust format, tests, and Clippy; and a debug Tauri application build.
+- **verify** is a fail-independent macOS, Windows, and Linux matrix. Each leg runs the shared `npm run verify` gate, then builds the headless executable and performs platform-specific packaging checks; branch pushes also build a debug Tauri application.
 - **build-macos** creates a Universal Apple Silicon/Intel DMG plus a Universal headless tarball, and verifies both executable architectures and the complete application signature.
 - **build-windows** creates x64 NSIS and MSI installers plus an x64 headless zip.
 - **build-linux** runs on native x64 and ARM64 GitHub-hosted runners, creating AppImage and DEB packages plus a headless tarball for each architecture.
