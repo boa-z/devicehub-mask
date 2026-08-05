@@ -43,7 +43,7 @@ Relevant logs include `selected CoreDevice transport`, `selected video decoder b
 
 - Verify tap, press-and-hold, drag, and two-contact multitouch.
 - Verify keyboard mapping presses only the intended mapping and releases cleanly.
-- Verify Home, volume, lock, and other exposed hardware buttons.
+- Verify Home, volume, lock, App Switcher, and other exposed hardware/system controls.
 
 ### Apps and AFC
 

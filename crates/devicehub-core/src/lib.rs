@@ -76,7 +76,8 @@ pub use home_screen::{
 };
 pub use input::{
     DeviceInputCommand, HARDWARE_BUTTON_NAMES, HardwareButton, KeyMods, Orientation, RotateDir,
-    TouchContact, ascii_key_usage, hardware_button, modifier_key_usages, norm, unrotate_norm,
+    SYSTEM_ACTION_NAMES, SystemAction, TouchContact, ascii_key_usage, hardware_button,
+    modifier_key_usages, norm, system_action, unrotate_norm,
 };
 pub use key_mapping::{
     InvalidKeyMappingProfile, KeyMappingProfile, KeyMappingResolution, default_hardware_bindings,

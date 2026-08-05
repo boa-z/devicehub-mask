@@ -84,6 +84,22 @@ pub fn hardware_button(name: &str) -> Option<HardwareButton> {
         .find_map(|(candidate, button)| (*candidate == name).then_some(*button))
 }
 
+/// A system-level gesture exposed as a one-shot control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemAction {
+    AppSwitcher,
+}
+
+/// System actions accepted by input adapters and control surfaces.
+pub const SYSTEM_ACTION_NAMES: [&str; 1] = ["app-switcher"];
+
+pub fn system_action(name: &str) -> Option<SystemAction> {
+    Some(match name {
+        "app-switcher" => SystemAction::AppSwitcher,
+        _ => return None,
+    })
+}
+
 /// Which way to rotate the device by 90 degrees.
 #[derive(Debug, Clone, Copy)]
 pub enum RotateDir {
@@ -147,6 +163,7 @@ pub enum DeviceInputCommand {
     Button(HardwareButton),
     ButtonDown(HardwareButton),
     ButtonUp(HardwareButton),
+    System(SystemAction),
     Rotate(RotateDir),
 }
 
@@ -233,6 +250,16 @@ mod tests {
         assert_eq!(hardware_button("home").unwrap().usage_code, 0x40);
         assert_eq!(hardware_button("action").unwrap().usage_page, 0x0B);
         assert!(hardware_button("unknown").is_none());
+    }
+
+    #[test]
+    fn system_action_names_resolve_to_stable_commands() {
+        assert_eq!(SYSTEM_ACTION_NAMES, ["app-switcher"]);
+        assert_eq!(
+            system_action("app-switcher"),
+            Some(SystemAction::AppSwitcher)
+        );
+        assert!(system_action("shake").is_none());
     }
 
     #[test]

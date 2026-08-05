@@ -62,6 +62,8 @@ DeviceHub Mask 提供三种不同的坐标概念，它们不能互换。
 
 `type_text` 发送可打印 HID 文本。CJK 或其他 Unicode 文本应使用 `paste_text`，它会写入设备剪贴板并发送 Cmd+V。`press_key` 支持 Enter、Escape、方向键、Home、End、Page Up 和 Page Down 等导航键。`press_button` 将 `home`、`lock`、`volume-up`、`volume-down`、`mute`、`siri` 或 `action` 作为硬件按钮操作。
 
+`app_switcher` 通过与原生兼容的双击 Home HID 事件打开 iPhone App 切换器。它是独立的系统动作，不属于单次硬件按键操作。
+
 `lock_device` 与 `press_button` 的 `button="lock"` 不同：`lock_device` 发送单向 Diagnostics Relay 休眠请求，不能唤醒已经锁定的设备；硬件锁定键模拟物理按钮切换，可能将其唤醒。
 
 ## 低延迟游戏流程
@@ -200,7 +202,7 @@ WDA 是需要单独准备的可选能力，DeviceHub Mask 不负责安装或签�
 
 | 分类 | 工具 | 注意事项 |
 | --- | --- | --- |
-| 画面与输入 | `screenshot`、`observe_game`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、`type_text`、`paste_text`、`press_key`、`press_button`、`lock_device`、`rotate` | 截图尺寸定义 HID 坐标；`observe_game` 无网格并支持感兴趣区域 |
+| 画面与输入 | `screenshot`、`observe_game`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、`type_text`、`paste_text`、`press_key`、`press_button`、`app_switcher`、`lock_device`、`rotate` | 截图尺寸定义 HID 坐标；`observe_game` 无网格并支持感兴趣区域 |
 | Key Mapping | `list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile`、`run_keymap`、`start_game_session`、`set_game_input`、`stop_game_session` | 本地 native v2 配置；持续会话使用完整的浏览器键盘代码状态，且不会切换桌面端激活配置 |
 | 设备与会话 | `status`、`device_details`、`list_devices`、`connect_device`、`reconnect_device`、`wait_for_device_event`、`list_companion_devices`、`home_screen_layout` | 准确选择 ID 区分 USB/Wi-Fi；稳定标识符需要显式请求 |
 | App 与进程 | `list_apps`、`launch_app`、`stop_app`、`app_status`、`wait_for_app`、`list_processes`、`process_status`、`wait_for_process` | 使用准确 Bundle ID 和最新 PID |

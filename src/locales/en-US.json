@@ -953,6 +953,9 @@
     "siri": "Siri",
     "action": "Action"
   },
+  "system": {
+    "app-switcher": "App Switcher"
+  },
   "mapping": {
     "title": "Touch mappings",
     "controllers": "Controllers",

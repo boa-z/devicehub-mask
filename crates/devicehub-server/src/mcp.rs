@@ -42,9 +42,9 @@ use devicehub_core::{
 };
 use devicehub_core::{
     DeviceInputCommand, DeviceLogEntry, DeviceLogLevel, KeyMappingProfile, KeyMappingResolution,
-    MAX_DEVICE_LOG_BATCH_ENTRIES, Orientation, RotateDir, TouchContact, default_hardware_bindings,
-    norm, unrotate_norm, validate_key_mapping_profile, validate_key_mapping_profile_name,
-    validate_paste_text,
+    MAX_DEVICE_LOG_BATCH_ENTRIES, Orientation, RotateDir, SystemAction, TouchContact,
+    default_hardware_bindings, norm, unrotate_norm, validate_key_mapping_profile,
+    validate_key_mapping_profile_name, validate_paste_text,
 };
 #[cfg(test)]
 use devicehub_runtime::DeviceEventSlot;
@@ -2700,6 +2700,17 @@ impl DeviceHub {
     }
 
     #[tool(
+        description = "Open the iPhone App Switcher using the native-compatible double Home HID sequence."
+    )]
+    async fn app_switcher(&self) -> Result<CallToolResult, McpError> {
+        self.send(InputCmd::DeviceInput(DeviceInputCommand::System(
+            SystemAction::AppSwitcher,
+        )))?;
+        self.settle().await;
+        ok_text("Opened the App Switcher.")
+    }
+
+    #[tool(
         description = "Lock the connected iPhone through Diagnostics Relay. Unlike press_button with lock, this is a one-way sleep request and will not wake an already locked device."
     )]
     async fn lock_device(&self) -> Result<CallToolResult, McpError> {
@@ -4178,6 +4189,7 @@ impl ServerHandler for DeviceHub {
                 "wda_unlock accepts no passcode and succeeds only after WDA confirms the unlocked state. wda_background_app affects only the current foreground app. ",
                 "If WDA is not already reachable, list_apps can discover a developer .xctrunner for explicit wda_start; wda_stop affects only a runner DeviceHub Mask started. DeviceHub Mask never installs or signs WDA. ",
                 "Use list_apps with launch_app or stop_app for lifecycle control, then app_status or wait_for_app for bundle-aware checks. ",
+                "Use app_switcher to invoke the native App Switcher through a double Home HID sequence; use press_button for single hardware-button actions. ",
                 "Use home_screen_layout for ordinal Dock/page/folder context, list_devices/connect_device when no device is active, and wait_for_device_event instead of polling device events. ",
                 "Use device_details for battery and system context, list_companion_devices for paired Apple Watch metadata, list_processes with process_status or wait_for_process for PID-level diagnosis, and performance_snapshot or recent_device_logs for diagnostics. ",
                 "For network or thermal testing, select only identifiers returned by list_device_conditions and always call clear_device_condition afterward. ",
@@ -4399,6 +4411,7 @@ mod tests {
             "paste_text",
             "press_key",
             "press_button",
+            "app_switcher",
             "lock_device",
             "rotate",
             "list_apps",

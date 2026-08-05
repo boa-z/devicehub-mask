@@ -2,7 +2,7 @@
 
 use devicehub_core::{
     DeviceInputCommand, HardwareButton, KeyMods, Orientation, OrientationSlot, RotateDir,
-    ascii_key_usage, modifier_key_usages,
+    SystemAction, ascii_key_usage, hardware_button, modifier_key_usages,
 };
 use idevice::{
     IdeviceError, ReadWrite,
@@ -92,6 +92,7 @@ impl DeviceInputDispatcher {
                 self.send_button(button, ButtonState::Down).await
             }
             DeviceInputCommand::ButtonUp(button) => self.send_button(button, ButtonState::Up).await,
+            DeviceInputCommand::System(action) => self.system_action(action).await,
             DeviceInputCommand::Rotate(direction) => self.rotate(direction).await,
         }
     }
@@ -130,6 +131,27 @@ impl DeviceInputDispatcher {
         Ok(())
     }
 
+    async fn system_action(&mut self, action: SystemAction) -> Result<(), IdeviceError> {
+        match action {
+            SystemAction::AppSwitcher => self.send_app_switcher().await,
+        }
+    }
+
+    async fn send_app_switcher(&mut self) -> Result<(), IdeviceError> {
+        let home = hardware_button("home").expect("home HID definition must be present");
+        for press in 0..APP_SWITCHER_PRESS_COUNT {
+            self.send_button(home, ButtonState::Down).await?;
+            self.send_button(home, ButtonState::Up).await?;
+            if press + 1 < APP_SWITCHER_PRESS_COUNT {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    APP_SWITCHER_DOUBLE_PRESS_INTERVAL_MS,
+                ))
+                .await;
+            }
+        }
+        Ok(())
+    }
+
     async fn rotate(&mut self, direction: RotateDir) -> Result<(), IdeviceError> {
         let Some(client) = &mut self.orientation else {
             tracing::warn!("rotate requested but orientation service unavailable");
@@ -151,6 +173,9 @@ impl DeviceInputDispatcher {
         Ok(())
     }
 }
+
+const APP_SWITCHER_PRESS_COUNT: u8 = 2;
+const APP_SWITCHER_DOUBLE_PRESS_INTERVAL_MS: u64 = 100;
 
 fn display_orientation(orientation: DeviceOrientation) -> Option<Orientation> {
     match orientation {
@@ -188,5 +213,11 @@ mod tests {
             display_orientation(DeviceOrientation::PortraitUpsideDown),
             Some(Orientation::PortraitUpsideDown)
         );
+    }
+
+    #[test]
+    fn app_switcher_matches_native_double_home_timing() {
+        assert_eq!(APP_SWITCHER_PRESS_COUNT, 2);
+        assert_eq!(APP_SWITCHER_DOUBLE_PRESS_INTERVAL_MS, 100);
     }
 }

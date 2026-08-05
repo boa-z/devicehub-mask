@@ -1,5 +1,6 @@
 import AimOutlined from "@ant-design/icons/es/icons/AimOutlined";
 import ApiOutlined from "@ant-design/icons/es/icons/ApiOutlined";
+import AppstoreOutlined from "@ant-design/icons/es/icons/AppstoreOutlined";
 import AudioMutedOutlined from "@ant-design/icons/es/icons/AudioMutedOutlined";
 import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
 import CameraOutlined from "@ant-design/icons/es/icons/CameraOutlined";
@@ -1041,6 +1042,9 @@ export default function App() {
     ["siri", <CustomerServiceOutlined />],
     ["action", <ThunderboltOutlined />],
   ] as const;
+  const systemControlEntries = [
+    ["app-switcher", <AppstoreOutlined />],
+  ] as const;
   const renderHardwareControls = (includeHome: boolean) => (
     <div className="hardware-controls" role="toolbar" aria-label={t("hardware.toolbar")}>
       {hardwareControlEntries.filter(([name]) => includeHome || name !== "home").map(([name, icon]) => {
@@ -1048,6 +1052,19 @@ export default function App() {
         return (
           <Tooltip key={name} title={`${label}${controlProfile.hardwareBindings[name] ? ` · ${controlProfile.hardwareBindings[name]}` : ""}`}>
             <Button disabled={!controlGranted} aria-label={label} icon={icon} onClick={() => command({ type: "button", name })} />
+          </Tooltip>
+        );
+      })}
+      {systemControlEntries.map(([name, icon]) => {
+        const label = t(`system.${name}`);
+        return (
+          <Tooltip key={name} title={label}>
+            <Button
+              disabled={!controlGranted}
+              aria-label={label}
+              icon={icon}
+              onClick={() => command({ type: "system_action", action: name })}
+            />
           </Tooltip>
         );
       })}

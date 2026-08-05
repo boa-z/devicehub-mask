@@ -62,6 +62,8 @@ For example, this moves a left joystick while holding a right action button:
 
 `type_text` sends printable HID text. Use `paste_text` for CJK or other Unicode text; it writes the device pasteboard and sends Cmd+V. `press_key` handles navigation keys such as Enter, Escape, arrows, Home, End, Page Up, and Page Down. `press_button` operates `home`, `lock`, `volume-up`, `volume-down`, `mute`, `siri`, or `action` as hardware buttons.
 
+`app_switcher` opens the iPhone App Switcher through the native-compatible double Home HID sequence. It is a separate system action rather than a single hardware-button press.
+
 `lock_device` is different from `press_button` with `button="lock"`: `lock_device` sends a one-way Diagnostics Relay sleep request and cannot wake an already locked device, while the hardware lock button toggles physical-button behavior and may wake it.
 
 ## Low-Latency Game Workflow
@@ -200,7 +202,7 @@ Supported selector strategies are `accessibility id`, `name`, `class name`, `xpa
 
 | Area | Tools | Notes |
 | --- | --- | --- |
-| Screen and input | `screenshot`, `observe_game`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, `lock_device`, `rotate` | Screenshot dimensions define HID coordinates; `observe_game` is ungridded and supports a region of interest |
+| Screen and input | `screenshot`, `observe_game`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, `app_switcher`, `lock_device`, `rotate` | Screenshot dimensions define HID coordinates; `observe_game` is ungridded and supports a region of interest |
 | Key mapping | `list_keymap_profiles`, `get_keymap_profile`, `save_keymap_profile`, `run_keymap`, `start_game_session`, `set_game_input`, `stop_game_session` | Local native v2 profiles; persistent sessions use complete keyboard-code state and never change desktop activation |
 | Device and session | `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `wait_for_device_event`, `list_companion_devices`, `home_screen_layout` | Exact selection IDs preserve USB/Wi-Fi identity; stable identifiers are opt-in |
 | Apps and processes | `list_apps`, `launch_app`, `stop_app`, `app_status`, `wait_for_app`, `list_processes`, `process_status`, `wait_for_process` | Use exact Bundle IDs and fresh PIDs |

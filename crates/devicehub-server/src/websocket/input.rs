@@ -13,7 +13,7 @@ use serde_json::Value;
 use devicehub_core::hardware_button;
 use devicehub_core::{
     DeviceInputCommand, HARDWARE_BUTTON_NAMES, KeyMappingProfile, Orientation, RotateDir,
-    TouchContact, norm, unrotate_norm,
+    TouchContact, norm, system_action, unrotate_norm,
 };
 use devicehub_runtime::{
     BrowserVideoSlot, DeviceSessionCommand as InputCmd, SessionCommandSlot as InputSink,
@@ -44,6 +44,9 @@ enum ClientMessage {
     },
     ButtonUp {
         name: String,
+    },
+    SystemAction {
+        action: String,
     },
     KeyboardDown {
         usage: u64,
@@ -222,6 +225,7 @@ pub(super) fn handle_client_message_with_keymap<HostPath>(
                 | ClientMessage::Button { .. }
                 | ClientMessage::ButtonDown { .. }
                 | ClientMessage::ButtonUp { .. }
+                | ClientMessage::SystemAction { .. }
                 | ClientMessage::KeyboardDown { .. }
                 | ClientMessage::KeyboardUp { .. }
                 | ClientMessage::Text { .. }
@@ -366,6 +370,11 @@ pub(super) fn handle_client_message_with_keymap<HostPath>(
         ClientMessage::ButtonUp { name } => {
             if let Some(button) = hardware_button(&name) {
                 input.send(InputCmd::DeviceInput(DeviceInputCommand::ButtonUp(button)));
+            }
+        }
+        ClientMessage::SystemAction { action } => {
+            if let Some(action) = system_action(&action.to_ascii_lowercase()) {
+                input.send(InputCmd::DeviceInput(DeviceInputCommand::System(action)));
             }
         }
         ClientMessage::KeyboardDown { usage } => {
@@ -528,7 +537,7 @@ mod tests {
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     use super::*;
-    use devicehub_core::{DeviceInputCommand, Orientation, norm};
+    use devicehub_core::{DeviceInputCommand, Orientation, SystemAction, norm};
 
     fn test_state() -> (
         InputSink<PathBuf>,
@@ -807,6 +816,33 @@ mod tests {
             input_rx.try_recv(),
             Ok(InputCmd::DeviceInput(DeviceInputCommand::Text(text)))
                 if text == "Hello, iPhone!"
+        ));
+        assert!(input_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn system_action_messages_dispatch_only_known_actions() {
+        let (input, browser_frames, mut input_rx) = test_state();
+        let mut pressed = HashSet::new();
+
+        handle_test_client_message(
+            &input,
+            &browser_frames,
+            r#"{"type":"system_action","action":"APP-SWITCHER"}"#,
+            &mut pressed,
+        );
+        handle_test_client_message(
+            &input,
+            &browser_frames,
+            r#"{"type":"system_action","action":"shake"}"#,
+            &mut pressed,
+        );
+
+        assert!(matches!(
+            input_rx.try_recv(),
+            Ok(InputCmd::DeviceInput(DeviceInputCommand::System(
+                SystemAction::AppSwitcher
+            )))
         ));
         assert!(input_rx.try_recv().is_err());
     }

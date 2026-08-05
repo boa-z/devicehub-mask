@@ -62,6 +62,7 @@ Lock in the device toolbar is a hardware-button press/release toggle and can wak
 | Keyboard | Mapping mode and raw HID keyboard passthrough are mutually exclusive; losing focus, changing page/mode, fullscreen transitions, and disconnect release held input |
 | Keymap scripts | Bounded virtual-time programs share the Rust desktop/MCP runtime; no shell, file, environment, process, or network access |
 | Hardware buttons | Home, Lock, Volume Up/Down, Mute, Siri, and Action, plus profile-specific keyboard shortcuts |
+| System controls | App Switcher through the native-compatible double Home HID sequence |
 
 ## idevice Service Coverage
 
@@ -98,7 +99,7 @@ For setup, coordinate rules, recommended agent workflows, WDA prerequisites, and
 
 The Streamable HTTP MCP endpoint exposes the following tools while the desktop app is running:
 
-- Screen and input: `screenshot`, `observe_game`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, and `rotate`. `observe_game` supplies an ungridded frame and optional normalized region of interest for the Agent loop.
+- Screen and input: `screenshot`, `observe_game`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, `app_switcher`, and `rotate`. `observe_game` supplies an ungridded frame and optional normalized region of interest for the Agent loop.
 - Key mapping: `list_keymap_profiles`, `get_keymap_profile`, `save_keymap_profile`, `run_keymap`, `start_game_session`, `set_game_input`, and `stop_game_session`. Agents can create native v2 profiles and run persistent 60Hz mapping playback on their selected device; the renewable lease releases controls automatically when the Agent stops updating. Bounded scripts require explicit MCP opt-in.
 - Device/session: `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `lock_device`, `wait_for_device_event`, `list_companion_devices`, and `home_screen_layout`.
 - Apps and diagnosis: `list_apps`, `launch_app`, `stop_app`, `app_status`, `wait_for_app`, `list_processes`, `process_status`, `wait_for_process`, `list_crash_reports`, `read_crash_report` with a normalized summary, `performance_snapshot`, and `recent_device_logs`.

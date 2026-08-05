@@ -953,6 +953,9 @@
     "siri": "Siri",
     "action": "操作按钮"
   },
+  "system": {
+    "app-switcher": "App 切换器"
+  },
   "mapping": {
     "title": "触控映射",
     "controllers": "控制器",

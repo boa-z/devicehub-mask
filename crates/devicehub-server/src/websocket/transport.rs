@@ -215,7 +215,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                 "target_platforms": ["ios"],
                 "video": { "codec": "hevc", "packet": "DHV2" },
                 "audio": { "codec": "pcm_s16le", "packet": "DHA1" },
-                "input": ["multi_touch", "button", "keyboard", "text", "rotate"],
+                "input": ["multi_touch", "button", "system_action", "keyboard", "text", "rotate"],
                 "control_lease": true,
             },
         });
