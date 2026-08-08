@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { TouchContact } from "../control";
 import { displayToNativePoint, diffPointerDebugContacts, pointerDebugContactKey, type PointerDebugContact, type PointerDebugEvent } from "../pointerDebug";
 import type { Orientation } from "../types";
-import type { KeymapContact } from "../useDeviceVideoStream";
+import type { KeymapContact } from "../features/device-media/useDeviceRealtimeSession";
 
 type Props = {
   visible: boolean;

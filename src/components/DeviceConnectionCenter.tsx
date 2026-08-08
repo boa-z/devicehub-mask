@@ -6,7 +6,7 @@ import SyncOutlined from "@ant-design/icons/es/icons/SyncOutlined";
 import { Button, Popover, Tag, Tooltip, Typography } from "antd";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { canConnectTransport, connectedPhysicalDeviceCount, groupDevices, isActiveSession } from "../deviceConnections";
+import { canConnectTransport, connectedPhysicalDeviceCount, groupDevices, isActiveSession } from "../features/device-session/deviceConnections";
 import type { Device } from "../types";
 import { ErrorCopyButton } from "./ErrorPresentation";
 

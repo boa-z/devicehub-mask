@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { logFrontend } from "./diagnostics";
 import type { PerformanceView } from "./types";
-import type { BackendRequest } from "./usePrivateBackend";
+import type { BackendRequest } from "./shared/backend/client";
 
 type Options = {
   activeDeviceId: string | null;

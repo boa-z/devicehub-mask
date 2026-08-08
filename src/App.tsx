@@ -43,23 +43,23 @@ import { WorkspaceLoading } from "./components/WorkspaceLoading";
 import { clearLegacyDeviceAudioPreferences, defaultDeviceAudioPreferences, deviceAudioControlAction, readLegacyDeviceAudioPreferences, type DeviceAudioPreferences } from "./deviceAudio";
 import { truncatePasteText } from "./deviceText";
 import { showErrorMessage } from "./errorMessage";
-import { isBoundKey, isUiControl } from "./control";
+import { isBoundKey, isUiControl } from "./features/device-control/control";
 import { deviceViewScaleFactor, readDeviceViewPreferences, saveDeviceViewPreferences, type DeviceViewPreferences, type DeviceViewScale } from "./deviceViewPreferences";
 import { logFrontend } from "./diagnostics";
 import { createEditorMapping, duplicateEditorMapping } from "./mappingEditor";
 import { devicePerformanceHudItems, readPerformanceHudPreferences, savePerformanceHudPreferences, type PerformanceHudPreferences } from "./performanceHudPreferences";
-import { defaultHardwareBindings, defaultProfile, hardwareButtons, keyMappingTypes, updateMappingPosition, type ClipboardEvent, type DeviceEvent, type DeviceStatus, type HardwareButtonName, type KeyMappingType, type Mapping, type PairDeviceResult, type Position, type Profile } from "./types";
-import type { AppBindingConflict, AppProfileBinding } from "./types";
-import { bindingForScope, conflictForScope, resolveAppProfileBinding, sameProfileResolution } from "./profileBindings";
-import { useDeviceInput, type ControlMode } from "./useDeviceInput";
-import { useDeviceVideoStream, type KeymapStatus } from "./useDeviceVideoStream";
-import { waitForDeviceSession } from "./deviceSelection";
-import { useDeviceMediaCapture } from "./useDeviceMediaCapture";
+import { hardwareButtons, keyMappingTypes, updateMappingPosition, type ClipboardEvent, type DeviceEvent, type HardwareButtonName, type KeyMappingType, type Mapping, type Position } from "./types";
+import { useDeviceInput, type ControlMode } from "./features/device-control/useDeviceInput";
+import { createDeviceControlApi } from "./features/device-control/deviceControlApi";
+import { useDeviceRealtimeSession, type KeymapStatus } from "./features/device-media/useDeviceRealtimeSession";
+import { useDeviceMediaCapture } from "./features/device-media/useDeviceMediaCapture";
 import { usePerformanceTelemetry, useDeviceLogDemand } from "./usePerformanceTelemetry";
-import { usePrivateBackend } from "./usePrivateBackend";
+import { useBackend } from "./app/providers/backendContext";
+import type { BackendRequest } from "./shared/backend/client";
 import { currentHostWindow } from "./hostWindow";
-import { useUndoHistory } from "./useUndoHistory";
 import { readAppSettings, readAudioOutputStatus, setAudioEnabled, setAudioPlayback, setStartupDevicePriority, type AudioOutputStatus } from "./appSettings";
+import { emptyDeviceStatus, useDeviceSessionController } from "./features/device-session/useDeviceSessionController";
+import { useProfileController } from "./features/profiles/useProfileController";
 
 const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
 const DeviceConnectionCenter = lazy(() => import("./components/DeviceConnectionCenter").then((module) => ({ default: module.DeviceConnectionCenter })));
@@ -74,34 +74,12 @@ const PerformancePage = lazy(() => import("./components/PerformancePage").then((
 const ProfileManager = lazy(() => import("./components/ProfileManager").then((module) => ({ default: module.ProfileManager })));
 const SettingsPage = lazy(() => import("./components/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
-const emptyStatus: DeviceStatus = {
-  status: "",
-  phase: "disconnected",
-  updated_at_ms: 0,
-  active_udid: null,
-  active_device_id: null,
-  error: null,
-  orientation: "portrait",
-  devices: [],
-  location: { available: false, active: false, backend: null, latitude: null, longitude: null, error: null },
-};
-type ProfileList = { profiles: string[]; active: string; app_bindings: AppProfileBinding[]; binding_conflicts: AppBindingConflict[] };
-
 function containSize(containerWidth: number, containerHeight: number, contentWidth: number, contentHeight: number) {
   if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
     return { width: 0, height: 0 };
   }
   const scale = Math.min(containerWidth / contentWidth, containerHeight / contentHeight);
   return { width: contentWidth * scale, height: contentHeight * scale };
-}
-
-function createLocalizedDefaultProfile(t: (key: string, options?: Record<string, unknown>) => string): Profile {
-  const labels = ["mapping.defaults.move", "mapping.defaults.skill1", "mapping.defaults.skill2", "mapping.defaults.skill3"];
-  return {
-    ...defaultProfile,
-    hardwareBindings: { ...defaultHardwareBindings },
-    mappings: defaultProfile.mappings.map((mapping, index) => ({ ...mapping, label: t(labels[index]) })) as Mapping[],
-  };
 }
 
 const backendStatusKeys: Record<string, string> = {
@@ -123,29 +101,31 @@ export default function App() {
   const appWindow = useMemo(() => currentHostWindow(), []);
   const [page, setPage] = useState<AppPage>("device");
   const [afcVisited, setAfcVisited] = useState(false);
-  const [status, setStatus] = useState<DeviceStatus>(() => ({ ...emptyStatus, status: t("status.starting") }));
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const { backend, request } = usePrivateBackend((error) => {
-    setStatus({ ...emptyStatus, status: t("status.backendUnavailable"), error: String(error) });
-  }, t("errors.backendNotReady"), selectedDeviceId);
+  const { client, connection: backend, error: backendError } = useBackend();
+  const releaseAllControlsRef = useRef<() => void>(() => undefined);
+  const releaseAllControls = useCallback(() => releaseAllControlsRef.current(), []);
   const {
-    value: profile,
-    update: updateProfile,
-    reset: resetProfile,
-    undo: undoProfile,
-    redo: redoProfile,
-    canUndo: canUndoProfile,
-    canRedo: canRedoProfile,
-  } = useUndoHistory<Profile>(() => createLocalizedDefaultProfile(t));
-  const initialProfileRef = useRef(profile);
-  const [controlProfile, setControlProfile] = useState<Profile>(profile);
-  const [profiles, setProfiles] = useState<string[]>([]);
+    status,
+    setStatus,
+    selectedDeviceId,
+    pairingDeviceId,
+    disconnect: disconnectDevice,
+    reconnect: reconnectDevice,
+    select: selectDevice,
+    pair: pairDevice,
+    refresh: refreshDevices,
+  } = useDeviceSessionController({
+    client,
+    startingStatus: t("status.starting"),
+    onReleaseControls: releaseAllControls,
+    t,
+  });
+  const deviceRequest = useMemo<BackendRequest>(() => {
+    if (!client || !selectedDeviceId) return () => Promise.reject(new Error(t("errors.backendNotReady")));
+    return (path, init) => client.requestForDevice(selectedDeviceId, path, init);
+  }, [client, selectedDeviceId, t]);
+  const deviceControlApi = useMemo(() => client ? createDeviceControlApi(client) : null, [client]);
   const [catalogOpen, setCatalogOpen] = useState(false);
-  const [activeProfile, setActiveProfile] = useState("default");
-  const [profileSwitching, setProfileSwitching] = useState<string | null>(null);
-  const [appProfileBindings, setAppProfileBindings] = useState<AppProfileBinding[]>([]);
-  const [appBindingConflicts, setAppBindingConflicts] = useState<AppBindingConflict[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>("move");
   const [editing, setEditing] = useState(true);
   const [controlMode, setControlMode] = useState<ControlMode>("mapping");
   const [keymapStatus, setKeymapStatus] = useState<KeymapStatus>({
@@ -160,7 +140,6 @@ export default function App() {
   const [fullscreenToolbarVisible, setFullscreenToolbarVisible] = useState(true);
   const [fullscreenToolbarHovered, setFullscreenToolbarHovered] = useState(false);
   const [fullscreenToolbarFocused, setFullscreenToolbarFocused] = useState(false);
-  const [pairingDeviceId, setPairingDeviceId] = useState<string | null>(null);
   const [startupDevicePriority, setStartupDevicePriorityState] = useState<string[]>([]);
   const [performanceHud, setPerformanceHud] = useState<PerformanceHudPreferences>(readPerformanceHudPreferences);
   const [audioPlayback, setAudioPlaybackPreferences] = useState<DeviceAudioPreferences>(defaultDeviceAudioPreferences);
@@ -182,44 +161,10 @@ export default function App() {
   const audioPlaybackGenerationRef = useRef(0);
   const startupPriorityGenerationRef = useRef(0);
   const fullscreenToolbarTimerRef = useRef<number | null>(null);
-  const selectedDeviceIntentRef = useRef<string | null>(null);
-  const profileSwitchingRef = useRef(false);
 
   useEffect(() => {
-    const intended = selectedDeviceIntentRef.current;
-    if (intended) {
-      if (status.active_device_id === intended) {
-        selectedDeviceIntentRef.current = null;
-        setSelectedDeviceId(intended);
-      } else if (status.devices.some((device) => device.id === intended)) {
-        return;
-      } else {
-        selectedDeviceIntentRef.current = null;
-      }
-    }
-    if (status.active_device_id) setSelectedDeviceId(status.active_device_id);
-  }, [status.active_device_id, status.devices]);
-
-  useEffect(() => {
-    if (!backend || selectedDeviceId) return;
-    let disposed = false;
-    const refresh = async () => {
-      try {
-        const response = await request("/api/status");
-        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        const next = await response.json() as DeviceStatus;
-        if (!disposed) setStatus(next);
-      } catch (error) {
-        if (!disposed) logFrontend("warn", "backend", "initial_status", error);
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 500);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [backend, request, selectedDeviceId]);
+    if (backendError) setStatus({ ...emptyDeviceStatus, status: t("status.backendUnavailable"), error: String(backendError) });
+  }, [backendError, setStatus, t]);
 
   useEffect(() => {
     if (page === "afc") setAfcVisited(true);
@@ -344,23 +289,6 @@ export default function App() {
     };
   }, [appWindow]);
   const mappingEditing = page === "mappings" && controlMode === "mapping" && editing;
-  useEffect(() => {
-    const handleHistoryShortcut = (event: KeyboardEvent) => {
-      if (page !== "mappings" || isUiControl(event.target) || event.altKey) return;
-      const modifier = event.ctrlKey || event.metaKey;
-      const undo = modifier && event.code === "KeyZ" && !event.shiftKey;
-      const redo = modifier && ((event.code === "KeyZ" && event.shiftKey) || (event.ctrlKey && event.code === "KeyY"));
-      if (undo && canUndoProfile) {
-        event.preventDefault();
-        undoProfile();
-      } else if (redo && canRedoProfile) {
-        event.preventDefault();
-        redoProfile();
-      }
-    };
-    window.addEventListener("keydown", handleHistoryShortcut);
-    return () => window.removeEventListener("keydown", handleHistoryShortcut);
-  }, [canRedoProfile, canUndoProfile, page, redoProfile, undoProfile]);
   const videoDemand = documentVisible
     && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
   const {
@@ -378,9 +306,9 @@ export default function App() {
     canvasRef,
     canvasReadyRef,
     bindCanvas,
-    send: command,
-  } = useDeviceVideoStream({
-    backend,
+    sendControl,
+  } = useDeviceRealtimeSession({
+    backend: client,
     deviceId: selectedDeviceId,
     orientation: status.orientation,
     videoDemand,
@@ -393,6 +321,56 @@ export default function App() {
     onDeviceEvent: setDeviceEvent,
     onKeymapStatus: setKeymapStatus,
   });
+  const {
+    profile,
+    controlProfile,
+    profiles,
+    activeProfile,
+    profileSwitching,
+    selectedId,
+    setSelectedId,
+    appProfileBindings,
+    appBindingConflicts,
+    updateProfile,
+    undoProfile,
+    redoProfile,
+    canUndoProfile,
+    canRedoProfile,
+    loadProfile,
+    save,
+    activateCurrentProfile,
+    createProfile,
+    duplicateProfile,
+    renameProfile,
+    deleteCurrentProfile,
+    importProfile,
+    installCatalogProfile,
+    switchControlProfile,
+    activateProfileForApp,
+    changeAppProfileBinding,
+  } = useProfileController({
+    client,
+    frameSize,
+    onReleaseControls: releaseAllControls,
+    t,
+  });
+  useEffect(() => {
+    const handleHistoryShortcut = (event: KeyboardEvent) => {
+      if (page !== "mappings" || isUiControl(event.target) || event.altKey) return;
+      const modifier = event.ctrlKey || event.metaKey;
+      const undo = modifier && event.code === "KeyZ" && !event.shiftKey;
+      const redo = modifier && ((event.code === "KeyZ" && event.shiftKey) || (event.ctrlKey && event.code === "KeyY"));
+      if (undo && canUndoProfile) {
+        event.preventDefault();
+        undoProfile();
+      } else if (redo && canRedoProfile) {
+        event.preventDefault();
+        redoProfile();
+      }
+    };
+    window.addEventListener("keydown", handleHistoryShortcut);
+    return () => window.removeEventListener("keydown", handleHistoryShortcut);
+  }, [canRedoProfile, canUndoProfile, page, redoProfile, undoProfile]);
   const handleControlModeChange = useCallback((mode: ControlMode) => {
     setControlMode(mode);
     setEditing(false);
@@ -408,13 +386,13 @@ export default function App() {
   const {
     activeMappingIds,
     directTouches,
-    releaseAllControls,
+    releaseAllControls: releaseInputControls,
     handlePointerDown,
     handlePointerMove,
     handlePointerUp,
   } = useDeviceInput({
     connected: connected && controlGranted,
-    command,
+    sendControl,
     profile: controlProfile,
     keymapStatus,
     frameSize,
@@ -424,6 +402,7 @@ export default function App() {
     onControlModeChange: handleControlModeChange,
     onContactLimit: handleContactLimit,
   });
+  releaseAllControlsRef.current = releaseInputControls;
   const activeDeviceName = status.devices.find((device) => device.udid === status.active_udid)?.name ?? "iPhone";
   const useCapturedMappingBackground = useCallback(() => setMappingBackgroundMode("screenshot"), []);
   const {
@@ -442,7 +421,7 @@ export default function App() {
     activeDeviceId: status.active_udid,
     activeDeviceName,
     devicePageActive: page === "device",
-    request,
+    request: deviceRequest,
     onUseCapturedBackground: useCapturedMappingBackground,
     t,
   });
@@ -482,7 +461,7 @@ export default function App() {
     activeDeviceId: status.active_device_id === selectedDeviceId ? selectedDeviceId : null,
     backendReady: backend !== null,
     enabled: performanceSamplingRequired,
-    request,
+    request: deviceRequest,
   });
 
   const deviceLogStreamingRequired = Boolean(status.active_udid) && page === "logs";
@@ -490,7 +469,7 @@ export default function App() {
     activeDeviceId: status.active_device_id === selectedDeviceId ? selectedDeviceId : null,
     backendReady: backend !== null,
     enabled: deviceLogStreamingRequired,
-    request,
+    request: deviceRequest,
   });
 
   useEffect(() => {
@@ -548,153 +527,10 @@ export default function App() {
 
   useEffect(() => {
     if (deviceEvent?.kind === "device_name_changed") {
-      void request("/api/devices/refresh", { method: "PUT" });
+      void refreshDevices();
     }
     if (deviceEvent?.kind === "lock_state_changed") releaseAllControls();
-  }, [deviceEvent, releaseAllControls, request]);
-
-  const readProfile = useCallback(async (name: string) => {
-    const response = await request(`/api/profiles/${encodeURIComponent(name)}`);
-    if (!response.ok) throw new Error(translateRef.current("errors.readProfile", { status: response.status }));
-    const loaded = await response.json() as Profile;
-    return {
-      ...loaded,
-      name,
-      hardwareBindings: { ...defaultHardwareBindings, ...loaded.hardwareBindings },
-      bundleIdentifiers: Array.isArray(loaded.bundleIdentifiers) ? loaded.bundleIdentifiers : [],
-      targetResolution: loaded.targetResolution,
-    } as Profile;
-  }, [request]);
-
-  const loadProfile = useCallback(async (name: string) => {
-    const loaded = await readProfile(name);
-    resetProfile(loaded);
-    setSelectedId(loaded.mappings[0]?.id ?? null);
-  }, [readProfile, resetProfile]);
-
-  const refreshProfiles = useCallback(async () => {
-    const response = await request("/api/profiles");
-    if (!response.ok) throw new Error(translateRef.current("errors.readProfiles", { status: response.status }));
-    const list = await response.json() as ProfileList;
-    setProfiles(list.profiles);
-    setActiveProfile(list.active);
-    setAppProfileBindings(list.app_bindings ?? []);
-    setAppBindingConflicts(list.binding_conflicts ?? []);
-    return list;
-  }, [request]);
-
-  const activateSavedControlProfile = useCallback(async (target: string) => {
-    if (target === activeProfile) return false;
-    if (profileSwitchingRef.current) throw new Error(translateRef.current("profile.switchInProgress"));
-    profileSwitchingRef.current = true;
-    setProfileSwitching(target);
-    try {
-      const loaded = await readProfile(target);
-      releaseAllControls();
-      const response = await request(`/api/profiles/${encodeURIComponent(target)}/activate`, { method: "PUT" });
-      if (!response.ok) throw new Error(translateRef.current("errors.activateProfile", { status: response.status }));
-      setActiveProfile(target);
-      setControlProfile(loaded);
-      return true;
-    } finally {
-      profileSwitchingRef.current = false;
-      setProfileSwitching(null);
-    }
-  }, [activeProfile, readProfile, releaseAllControls, request]);
-
-  const activateProfileForApp = useCallback(async (bundleId: string) => {
-    const { binding, conflict } = resolveAppProfileBinding(bundleId, frameSize, appProfileBindings, appBindingConflicts);
-    if (!binding || conflict) return;
-    try {
-      if (await activateSavedControlProfile(binding.profile)) {
-        void message.success(translateRef.current("profile.autoActivated", { profile: binding.profile }));
-      }
-    } catch (error) {
-      void message.warning(translateRef.current("profile.autoActivateFailed", { error: String(error) }));
-    }
-  }, [activateSavedControlProfile, appBindingConflicts, appProfileBindings, frameSize]);
-
-  const switchControlProfile = useCallback(async (target: string) => {
-    try {
-      if (await activateSavedControlProfile(target)) {
-        void message.success(translateRef.current("profile.switched", { profile: target }));
-      }
-    } catch (error) {
-      void showErrorMessage(translateRef.current("profile.switchFailed", { error: String(error) }));
-    }
-  }, [activateSavedControlProfile]);
-
-  const writeProfile = useCallback(async (name: string, value: Profile) => {
-    const response = await request(`/api/profiles/${encodeURIComponent(name)}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...value, name }),
-    });
-    if (!response.ok) throw new Error(translateRef.current("errors.saveProfile", { status: response.status }));
-  }, [request]);
-
-  const changeAppProfileBinding = useCallback(async (bundleId: string, bind: boolean) => {
-    const scope = frameSize;
-    if (conflictForScope(bundleId, scope, appBindingConflicts)) {
-      throw new Error(translateRef.current("profile.appBindingConflict"));
-    }
-    const owner = bindingForScope(bundleId, scope, appProfileBindings)?.profile;
-    const profileName = bind ? activeProfile : owner;
-    if (!profileName || (bind && owner && owner !== activeProfile)) {
-      throw new Error(translateRef.current("profile.appBindingOwned", { profile: owner ?? "" }));
-    }
-    const loaded = await readProfile(profileName);
-    if (bind && loaded.targetResolution !== null && !sameProfileResolution(loaded.targetResolution, frameSize)) {
-      throw new Error(translateRef.current("profile.resolutionMismatch", {
-        width: loaded.targetResolution.width,
-        height: loaded.targetResolution.height,
-      }));
-    }
-    const bundleIdentifiers = bind
-      ? [...new Set([...loaded.bundleIdentifiers, bundleId])]
-      : loaded.bundleIdentifiers.filter((candidate) => candidate !== bundleId);
-    const updated = {
-      ...loaded,
-      bundleIdentifiers,
-      targetResolution: bundleIdentifiers.length > 0 ? (loaded.targetResolution ?? { ...frameSize }) : null,
-    };
-    await writeProfile(profileName, updated);
-    await refreshProfiles();
-    const mergeBinding = (current: Profile) => current.name === profileName
-      ? {
-          ...current,
-          bundleIdentifiers: bind
-            ? [...new Set([...current.bundleIdentifiers, bundleId])]
-            : current.bundleIdentifiers.filter((candidate) => candidate !== bundleId),
-          targetResolution: updated.targetResolution,
-        }
-      : current;
-    resetProfile(mergeBinding(profile));
-    setControlProfile(mergeBinding);
-  }, [activeProfile, appBindingConflicts, appProfileBindings, frameSize, profile, readProfile, refreshProfiles, resetProfile, writeProfile]);
-
-  useEffect(() => {
-    if (!backend) return;
-    const initializeProfiles = async () => {
-      const list = await refreshProfiles();
-      if (list.profiles.length === 0) {
-        const initialProfile = initialProfileRef.current;
-        await writeProfile("default", initialProfile);
-        await request("/api/profiles/default/activate", { method: "PUT" });
-        setProfiles(["default"]);
-        setActiveProfile("default");
-        resetProfile(initialProfile);
-        setControlProfile(initialProfile);
-        return;
-      }
-      const selected = list.profiles.includes(list.active) ? list.active : list.profiles[0];
-      const loaded = await readProfile(selected);
-      resetProfile(loaded);
-      setControlProfile(loaded);
-      setSelectedId(loaded.mappings[0]?.id ?? null);
-    };
-    void initializeProfiles().catch((error) => showErrorMessage(error));
-  }, [backend, readProfile, refreshProfiles, request, resetProfile, writeProfile]);
+  }, [deviceEvent, refreshDevices, releaseAllControls]);
 
   const updateMapping = (next: Mapping, mergeKey?: string) => updateProfile((current) => {
     const keyConflict = hardwareButtons.some((button) => {
@@ -736,80 +572,6 @@ export default function App() {
     updateProfile((current) => ({ ...current, mappings: current.mappings.filter((mapping) => mapping.id !== id) }));
     setSelectedId(null);
   };
-  const save = async () => {
-    try {
-      await writeProfile(profile.name, profile);
-      await refreshProfiles();
-      resetProfile(profile);
-      if (activeProfile === profile.name) {
-        releaseAllControls();
-        setControlProfile(profile);
-      }
-      void message.success(t("mapping.saved"));
-    } catch (error) {
-      void showErrorMessage(error);
-    }
-  };
-  const activateCurrentProfile = async () => {
-    releaseAllControls();
-    await writeProfile(profile.name, profile);
-    await refreshProfiles();
-    const response = await request(`/api/profiles/${encodeURIComponent(profile.name)}/activate`, { method: "PUT" });
-    if (!response.ok) throw new Error(t("errors.activateProfile", { status: response.status }));
-    setActiveProfile(profile.name);
-    setControlProfile(profile);
-    resetProfile(profile);
-    void message.success(t("mapping.activated"));
-  };
-  const createProfile = async (name: string) => {
-    const next: Profile = { ...defaultProfile, name, mappings: [], hardwareBindings: { ...defaultHardwareBindings } };
-    await writeProfile(name, next);
-    await refreshProfiles();
-    await loadProfile(name);
-  };
-  const duplicateProfile = async (name: string) => {
-    await writeProfile(name, { ...profile, name, bundleIdentifiers: [], targetResolution: null });
-    await refreshProfiles();
-    await loadProfile(name);
-  };
-  const renameProfile = async (name: string) => {
-    const oldName = profile.name;
-    if (name === oldName) return;
-    await writeProfile(name, { ...profile, name });
-    if (activeProfile === oldName) {
-      releaseAllControls();
-      const response = await request(`/api/profiles/${encodeURIComponent(name)}/activate`, { method: "PUT" });
-      if (!response.ok) throw new Error(t("errors.activateProfile", { status: response.status }));
-      setActiveProfile(name);
-      setControlProfile({ ...profile, name });
-    }
-    const response = await request(`/api/profiles/${encodeURIComponent(oldName)}/delete`, { method: "PUT" });
-    if (!response.ok) throw new Error(t("errors.deleteOldProfile", { status: response.status }));
-    await refreshProfiles();
-    await loadProfile(name);
-  };
-  const deleteCurrentProfile = async () => {
-    const response = await request(`/api/profiles/${encodeURIComponent(profile.name)}/delete`, { method: "PUT" });
-    if (!response.ok) throw new Error(t("errors.deleteProfile", { status: response.status }));
-    setProfiles((current) => current.filter((name) => name !== profile.name));
-    resetProfile(controlProfile);
-    setSelectedId(controlProfile.mappings[0]?.id ?? null);
-  };
-  const importProfile = async (next: Profile, imported: number, skipped: number) => {
-    await writeProfile(next.name, next);
-    await refreshProfiles();
-    resetProfile(next);
-    setSelectedId(next.mappings[0]?.id ?? null);
-    if (activeProfile === next.name) {
-      releaseAllControls();
-      setControlProfile(next);
-    }
-    void message.success(t(skipped ? "mapping.importedWithSkipped" : "mapping.imported", { imported, skipped }));
-  };
-  const installCatalogProfile = async (name: string) => {
-    await refreshProfiles();
-    await loadProfile(name);
-  };
   const toggleAlwaysOnTop = async () => {
     const next = !alwaysOnTop;
     try {
@@ -835,102 +597,12 @@ export default function App() {
     setDeviceFullscreen((active) => !active);
     setPage("device");
   };
-  const connectDevice = async (deviceId: string) => {
-    selectedDeviceIntentRef.current = deviceId;
-    releaseAllControls();
-    try {
-      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "PUT" });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      const next = await waitForDeviceSession(request, deviceId);
-      setStatus(next);
-      setSelectedDeviceId(deviceId);
-    } catch (error) {
-      selectedDeviceIntentRef.current = null;
-      void showErrorMessage(t("errors.reconnectDevice", { error: String(error) }));
-    }
-  };
-  const reconnectDevice = async (deviceId = selectedDeviceId) => {
-    if (!deviceId) return false;
-    if (deviceId === selectedDeviceId) releaseAllControls();
-    try {
-      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: "PUT" });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      return true;
-    } catch (error) {
-      void showErrorMessage(t("errors.reconnectDevice", { error: String(error) }));
-      return false;
-    }
-  };
-  const selectDevice = async (deviceId: string) => {
-    const device = status.devices.find((candidate) => candidate.id === deviceId);
-    if (device?.pairing === "unpaired") return;
-    await connectDevice(deviceId);
-  };
-  const disconnectDevice = async (deviceId: string) => {
-    const isSelected = deviceId === selectedDeviceId;
-    if (isSelected) releaseAllControls();
-    try {
-      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "DELETE" });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      if (isSelected) {
-        selectedDeviceIntentRef.current = null;
-        setSelectedDeviceId(null);
-        setStatus((current) => ({
-          ...current,
-          active_udid: null,
-          active_device_id: null,
-          devices: current.devices.map((device) => device.id === deviceId
-            ? { ...device, session_phase: "disconnecting", session_status: "stopping..." }
-            : device),
-        }));
-      }
-    } catch (error) {
-      void showErrorMessage(t("errors.disconnectDevice", { error: String(error) }));
-    }
-  };
-  const pairDevice = async (deviceId: string) => {
-    if (pairingDeviceId) return;
-    const device = status.devices.find((candidate) => candidate.id === deviceId);
-    if (!device || device.connection !== "USB" || device.pairing !== "unpaired") return;
-    const messageKey = "device-pairing";
-    setPairingDeviceId(deviceId);
-    void message.loading({ key: messageKey, content: t("device.pairingWaiting"), duration: 0 });
-    try {
-      const response = await request(`/api/devices/${encodeURIComponent(deviceId)}/pair`, { method: "PUT" });
-      if (!response.ok) throw new Error(await response.text() || `${response.status} ${response.statusText}`);
-      const result = await response.json() as PairDeviceResult;
-      if (result.outcome === "paired") {
-        void message.success({ key: messageKey, content: t("device.pairingSucceeded") });
-        selectedDeviceIntentRef.current = deviceId;
-        const next = await waitForDeviceSession(request, deviceId);
-        setStatus(next);
-        setSelectedDeviceId(deviceId);
-      } else {
-        const key = result.outcome === "denied"
-          ? "device.pairingDenied"
-          : result.outcome === "locked"
-            ? "device.pairingLocked"
-            : result.outcome === "timed_out"
-              ? "device.pairingTimedOut"
-              : "device.pairingFailed";
-        void showErrorMessage(t(key, { error: result.error ?? t("device.pairingUnknownError") }), { key: messageKey });
-      }
-    } catch (error) {
-      void showErrorMessage(t("device.pairingFailed", { error: String(error) }), { key: messageKey });
-    } finally {
-      setPairingDeviceId(null);
-    }
-  };
   const pasteTextToDevice = async () => {
     if (!textInput || textInputBusy) return;
     setTextInputBusy(true);
     try {
-      const response = await request("/api/device/text/paste", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: textInput }),
-      });
-      if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
+      if (!deviceControlApi || !selectedDeviceId) throw new Error(t("errors.backendNotReady"));
+      await deviceControlApi.pasteText(selectedDeviceId, textInput);
       setTextInput("");
       setTextInputOpen(false);
     } catch (error) {
@@ -994,7 +666,7 @@ export default function App() {
     event.preventDefault();
     if (page === "device" && isBoundKey(controlProfile.mappings, "MouseRight")) return;
     if (page === "device" && connected && controlGranted && status.active_udid) {
-      command({ type: "button", name: "home" });
+      sendControl({ type: "button", name: "home" });
     }
   };
   const controlOverlayVisible = deviceViewPreferences.controlOverlayVisible;
@@ -1051,7 +723,7 @@ export default function App() {
         const label = t(`hardware.${name}`);
         return (
           <Tooltip key={name} title={`${label}${controlProfile.hardwareBindings[name] ? ` · ${controlProfile.hardwareBindings[name]}` : ""}`}>
-            <Button disabled={!controlGranted} aria-label={label} icon={icon} onClick={() => command({ type: "button", name })} />
+            <Button disabled={!controlGranted} aria-label={label} icon={icon} onClick={() => sendControl({ type: "button", name })} />
           </Tooltip>
         );
       })}
@@ -1063,7 +735,7 @@ export default function App() {
               disabled={!controlGranted}
               aria-label={label}
               icon={icon}
-              onClick={() => command({ type: "system_action", action: name })}
+              onClick={() => sendControl({ type: "system_action", action: name })}
             />
           </Tooltip>
         );
@@ -1218,7 +890,7 @@ export default function App() {
               onReconnect={(deviceId) => void reconnectDevice(deviceId)}
               onDisconnect={(deviceId) => void disconnectDevice(deviceId)}
               onPair={(deviceId) => void pairDevice(deviceId)}
-              onRefresh={() => void request("/api/devices/refresh", { method: "PUT" })}
+              onRefresh={() => void refreshDevices()}
             />
           </Suspense>
           {page === "mappings" && <Tooltip title={t("device.saveMappings")}><Button icon={<SaveOutlined />} onClick={() => void save()} /></Tooltip>}
@@ -1234,7 +906,7 @@ export default function App() {
         {!deviceFullscreen && <AppNavigation page={page} onChange={(next) => { releaseAllControls(); setPage(next); }} />}
         <div className="page-content">
           <Suspense fallback={<WorkspaceLoading />}>
-          {(afcVisited || page === "afc") && <AfcPage active={page === "afc"} activeUdid={status.active_udid} request={request} />}
+          {(afcVisited || page === "afc") && <AfcPage active={page === "afc"} activeUdid={status.active_udid} request={deviceRequest} />}
           {page === "afc" ? null : page === "settings" ? (
             <SettingsPage
               alwaysOnTop={alwaysOnTop}
@@ -1250,7 +922,7 @@ export default function App() {
               onAudioEnabledChange={setDeviceAudioEnabled}
             />
           ) : page === "location" ? (
-            <LocationPage activeUdid={status.active_udid} status={status.location} request={request} />
+            <LocationPage activeUdid={status.active_udid} status={status.location} request={deviceRequest} />
           ) : page === "performance" ? (
             <PerformancePage
               activeUdid={status.active_udid}
@@ -1259,10 +931,10 @@ export default function App() {
               renderFps={renderFps}
               view={performanceView}
               error={performanceError}
-              request={request}
+              request={deviceRequest}
             />
           ) : page === "logs" ? (
-            <DeviceLogsPage activeUdid={status.active_udid} request={request} />
+            <DeviceLogsPage activeUdid={status.active_udid} request={deviceRequest} />
           ) : (
             <>
               {page === "mappings" && (
@@ -1292,7 +964,7 @@ export default function App() {
               )}
               {catalogOpen && <KeymapCatalogModal
                 open={catalogOpen}
-                request={request}
+                request={deviceRequest}
                 profiles={profiles}
                 activeDeviceId={selectedDeviceId}
                 frameSize={frameSize}
@@ -1324,8 +996,8 @@ export default function App() {
                         if (mode === "keyboard") setEditing(false);
                       }}
                       onControlOverlayChange={() => patchDeviceViewPreferences({ controlOverlayVisible: !controlOverlayVisible })}
-                      onRotateLeft={() => command({ type: "rotate", direction: "left" })}
-                      onRotateRight={() => command({ type: "rotate", direction: "right" })}
+                      onRotateLeft={() => sendControl({ type: "rotate", direction: "left" })}
+                      onRotateRight={() => sendControl({ type: "rotate", direction: "right" })}
                       onLayoutChange={(fullscreenHardwareToolbarDock, fullscreenFunctionToolbarDock, fullscreenToolbarsAttached) => patchDeviceViewPreferences({
                         fullscreenHardwareToolbarDock,
                         fullscreenFunctionToolbarDock,
@@ -1384,8 +1056,8 @@ export default function App() {
                           )}
                           {page === "device" && deviceDisplayControls}
                           {page === "mappings" && <><span>{t("device.edit")}</span><Switch disabled={controlMode === "keyboard"} checked={mappingEditing} onChange={(value) => { releaseAllControls(); setEditing(value); }} /></>}
-                          <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateLeftOutlined />} onClick={() => command({ type: "rotate", direction: "left" })} /></Tooltip>
-                          <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateRightOutlined />} onClick={() => command({ type: "rotate", direction: "right" })} /></Tooltip>
+                          <Tooltip title={t("device.rotateLeft")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateLeftOutlined />} onClick={() => sendControl({ type: "rotate", direction: "left" })} /></Tooltip>
+                          <Tooltip title={t("device.rotateRight")}><Button disabled={deviceViewPreferences.rotationControlsLocked || !controlGranted} icon={<RotateRightOutlined />} onClick={() => sendControl({ type: "rotate", direction: "right" })} /></Tooltip>
                         </Space>
                       )}
                       hardwareControls={hardwareControls}
@@ -1492,7 +1164,7 @@ export default function App() {
                           activeUdid={status.active_udid}
                           activeDeviceId={status.active_device_id}
                           canForgetTrust={status.devices.some((device) => device.id === status.active_device_id && device.connection === "USB" && device.pairing === "paired")}
-                          request={request}
+                          request={deviceRequest}
                           activeProfile={activeProfile}
                           appProfileBindings={appProfileBindings}
                           bindingConflicts={appBindingConflicts}

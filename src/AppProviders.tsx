@@ -3,6 +3,7 @@ import enUS from "antd/locale/en_US";
 import zhCN from "antd/locale/zh_CN";
 import { useTranslation } from "react-i18next";
 import App from "./App";
+import { BackendProvider } from "./app/providers/BackendProvider";
 import { UpdateProvider } from "./components/UpdateButton";
 import { normalizeLanguage } from "./i18n";
 
@@ -18,9 +19,11 @@ export function AppProviders() {
         token: { colorPrimary: "#42b883", borderRadius: 6, fontFamily: "var(--system-font)" },
       }}
     >
-      <UpdateProvider>
-        <App />
-      </UpdateProvider>
+      <BackendProvider>
+        <UpdateProvider>
+          <App />
+        </UpdateProvider>
+      </BackendProvider>
     </ConfigProvider>
   );
 }
