@@ -3,6 +3,7 @@
 //! The active session owns AFC clients and transfer tasks. This module only
 //! validates HTTP requests, dispatches typed commands, and maps responses.
 
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,10 +11,11 @@ use std::time::Duration;
 use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::Response;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
+use image::{ImageFormat, ImageReader};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -35,6 +37,9 @@ type DeviceFileCommand = devicehub_runtime::DeviceFileCommand<PathBuf>;
 const APP_DOCUMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(11 * 60);
 const DEVICE_FILE_REQUEST_TIMEOUT: Duration = Duration::from_secs(31 * 60);
 const BROWSER_UPLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PREVIEW_DIMENSION: u32 = 8_192;
+const MAX_PREVIEW_PIXELS: u64 = 64 * 1024 * 1024;
 
 /// Narrow capability set for storage HTTP routes. Activity cancellation bypasses
 /// the serialized session command queue through the session-owned slots.
@@ -97,6 +102,7 @@ where
             "/api/device/files",
             get(device_files).delete(delete_device_file),
         )
+        .route("/api/device/files/preview", get(preview_device_file))
         .route(
             "/api/device/files/activity",
             get(device_file_activity).delete(cancel_device_file_activity),
@@ -122,6 +128,10 @@ where
             get(app_documents).delete(delete_app_document),
         )
         .route(
+            "/api/device/apps/{bundle_id}/documents/preview",
+            get(preview_app_document),
+        )
+        .route(
             "/api/device/apps/{bundle_id}/documents/export",
             put(export_app_document),
         )
@@ -140,6 +150,10 @@ where
         .route(
             "/api/device/apps/{bundle_id}/storage",
             get(app_documents).delete(delete_app_document),
+        )
+        .route(
+            "/api/device/apps/{bundle_id}/storage/preview",
+            get(preview_app_document),
         )
         .route(
             "/api/device/apps/{bundle_id}/storage/export",
@@ -239,6 +253,27 @@ async fn app_documents(
     Ok(Json(
         await_app_document_response(response, "application document listing").await?,
     ))
+}
+
+async fn preview_app_document(
+    State(state): State<StorageHttpState>,
+    session: RequestSession,
+    Path(bundle_id): Path<String>,
+    Query(query): Query<AppDocumentQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    validate_app_document_bundle(&bundle_id)?;
+    let (reply, response) = oneshot::channel();
+    dispatch_app_document_command(
+        &state.input(&session),
+        AppDocumentCommand::Preview {
+            bundle_id,
+            scope: query.scope,
+            path: query.path,
+            reply,
+        },
+    )?;
+    let bytes = await_app_document_response(response, "application document preview").await?;
+    preview_response(bytes)
 }
 
 async fn app_document_activity(
@@ -517,6 +552,7 @@ async fn await_app_document_response<T>(
                 StatusCode::CONFLICT
             } else if error.contains("too many entries")
                 || error.contains("exceeds the maximum nesting depth")
+                || error.contains("preview file exceeds")
             {
                 StatusCode::PAYLOAD_TOO_LARGE
             } else if error.starts_with("invalid ")
@@ -584,6 +620,23 @@ async fn device_files(
     Ok(Json(
         await_device_file_response(response, "device file listing").await?,
     ))
+}
+
+async fn preview_device_file(
+    State(state): State<StorageHttpState>,
+    session: RequestSession,
+    Query(query): Query<DeviceFileQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    let (reply, response) = oneshot::channel();
+    dispatch_device_file_command(
+        &state.input(&session),
+        DeviceFileCommand::Preview {
+            path: query.path,
+            reply,
+        },
+    )?;
+    let bytes = await_device_file_response(response, "device file preview").await?;
+    preview_response(bytes)
 }
 
 async fn device_file_activity(
@@ -832,6 +885,8 @@ async fn await_device_file_response<T>(
             let status =
                 if is_device_file_transfer_cancelled(&error) || error.contains("already exists") {
                     StatusCode::CONFLICT
+                } else if error.contains("preview file exceeds") {
+                    StatusCode::PAYLOAD_TOO_LARGE
                 } else if error.starts_with("invalid ")
                     || error.contains("cannot be exported")
                     || error.contains("cannot be modified")
@@ -847,6 +902,66 @@ async fn await_device_file_response<T>(
                 };
             (status, error)
         })
+}
+
+fn preview_response(bytes: Vec<u8>) -> Result<Response, (StatusCode, String)> {
+    if bytes.len() > MAX_PREVIEW_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "preview file exceeds the 64 MiB limit".into(),
+        ));
+    }
+    let format = image::guess_format(&bytes).map_err(|_| {
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "preview supports PNG, JPEG, WebP, GIF, and BMP files".into(),
+        )
+    })?;
+    let content_type = match format {
+        ImageFormat::Png => "image/png",
+        ImageFormat::Jpeg => "image/jpeg",
+        ImageFormat::WebP => "image/webp",
+        ImageFormat::Gif => "image/gif",
+        ImageFormat::Bmp => "image/bmp",
+        _ => {
+            return Err((
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "preview supports PNG, JPEG, WebP, GIF, and BMP files".into(),
+            ));
+        }
+    };
+    let reader = ImageReader::with_format(Cursor::new(&bytes), format);
+    let (width, height) = reader.into_dimensions().map_err(|_| {
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "the file is not a readable image".into(),
+        )
+    })?;
+    if width == 0
+        || height == 0
+        || width > MAX_PREVIEW_DIMENSION
+        || height > MAX_PREVIEW_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_PREVIEW_PIXELS
+    {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "preview image dimensions exceed the supported limit".into(),
+        ));
+    }
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, "inline"),
+            (header::CACHE_CONTROL, "no-store"),
+            (
+                header::HeaderName::from_static("x-content-type-options"),
+                "nosniff",
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 #[cfg(test)]
@@ -866,6 +981,160 @@ mod tests {
             ),
             receiver,
         )
+    }
+
+    fn encoded_preview_image(format: ImageFormat, width: u32, height: u32) -> Vec<u8> {
+        let mut output = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(width, height)
+            .write_to(&mut output, format)
+            .unwrap();
+        output.into_inner()
+    }
+
+    #[test]
+    fn preview_response_accepts_supported_image_formats() {
+        for (format, content_type) in [
+            (ImageFormat::Png, "image/png"),
+            (ImageFormat::Jpeg, "image/jpeg"),
+            (ImageFormat::WebP, "image/webp"),
+            (ImageFormat::Gif, "image/gif"),
+            (ImageFormat::Bmp, "image/bmp"),
+        ] {
+            let response = preview_response(encoded_preview_image(format, 2, 3)).unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                content_type
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_DISPOSITION)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "inline"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CACHE_CONTROL)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "no-store"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-content-type-options")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                "nosniff"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_response_rejects_invalid_and_oversized_images() {
+        assert_eq!(
+            preview_response(b"not an image".to_vec()).unwrap_err().0,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+        assert_eq!(
+            preview_response(encoded_preview_image(
+                ImageFormat::Png,
+                MAX_PREVIEW_DIMENSION + 1,
+                1,
+            ))
+            .unwrap_err()
+            .0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            preview_response(vec![0; MAX_PREVIEW_BYTES + 1])
+                .unwrap_err()
+                .0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_endpoints_dispatch_typed_commands_and_return_images() {
+        use devicehub_core::AppStorageScope;
+
+        let (state, mut input_rx) = test_state();
+        let app = tokio::spawn(preview_app_document(
+            State(state.clone()),
+            None,
+            Path("com.example.game".into()),
+            Query(AppDocumentQuery {
+                path: "/Images/photo.png".into(),
+                scope: AppStorageScope::Container,
+                recursive: false,
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::AppDocuments(AppDocumentCommand::Preview {
+                bundle_id,
+                scope,
+                path,
+                reply,
+            }) => {
+                assert_eq!(bundle_id, "com.example.game");
+                assert_eq!(scope, AppStorageScope::Container);
+                assert_eq!(path, "/Images/photo.png");
+                reply
+                    .send(Ok(encoded_preview_image(ImageFormat::Png, 2, 3)))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let app_response = app.await.unwrap().unwrap();
+        assert_eq!(app_response.status(), StatusCode::OK);
+        assert_eq!(
+            app_response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "image/png"
+        );
+
+        let device = tokio::spawn(preview_device_file(
+            State(state),
+            None,
+            Query(DeviceFileQuery {
+                path: "/DCIM/photo.webp".into(),
+            }),
+        ));
+        match input_rx.recv().await.unwrap() {
+            InputCmd::DeviceFiles(DeviceFileCommand::Preview { path, reply }) => {
+                assert_eq!(path, "/DCIM/photo.webp");
+                reply
+                    .send(Ok(encoded_preview_image(ImageFormat::WebP, 3, 2)))
+                    .unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+        let device_response = device.await.unwrap().unwrap();
+        assert_eq!(device_response.status(), StatusCode::OK);
+        assert_eq!(
+            device_response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "image/webp"
+        );
     }
 
     #[tokio::test]

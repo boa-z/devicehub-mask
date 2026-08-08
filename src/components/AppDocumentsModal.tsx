@@ -8,6 +8,7 @@ import FolderAddOutlined from "@ant-design/icons/es/icons/FolderAddOutlined";
 import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
 import FolderOutlined from "@ant-design/icons/es/icons/FolderOutlined";
 import HomeOutlined from "@ant-design/icons/es/icons/HomeOutlined";
+import PictureOutlined from "@ant-design/icons/es/icons/PictureOutlined";
 import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
 import StopOutlined from "@ant-design/icons/es/icons/StopOutlined";
 import UploadOutlined from "@ant-design/icons/es/icons/UploadOutlined";
@@ -15,11 +16,13 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Alert, Breadcrumb, Button, Dropdown, Empty, Input, Modal, Progress, Segmented, Spin, Tooltip, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { isPreviewableImageName } from "../afcPreview";
 import { formatFileSize } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
 import { downloadBrowserResponse, pickBrowserFile } from "../browserFiles";
 import { runningInDesktopHost } from "../hostApi";
 import type { AppDocumentActivity, AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
+import { AfcImagePreviewModal } from "./AfcImagePreviewModal";
 import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
@@ -33,6 +36,12 @@ type Props = {
   embedded?: boolean;
   fixedScope?: AppStorageScope;
   onTransferStateChange?: (active: boolean) => void;
+};
+
+type PreviewFile = {
+  name: string;
+  path: string;
+  scope: AppStorageScope;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -58,6 +67,7 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [activity, setActivity] = useState<AppDocumentActivity | null>(null);
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
   const cancelRequestedRef = useRef(false);
@@ -86,10 +96,15 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
     setScope(fixedScope ?? (app?.documents_available === false ? "container" : "documents"));
     setListing(null);
     setError(null);
+    setPreviewFile(null);
     setCancelPending(false);
     setCancelRequested(false);
     cancelRequestedRef.current = false;
   }, [app?.bundle_id, app?.documents_available, fixedScope]);
+
+  useEffect(() => {
+    if (!active) setPreviewFile(null);
+  }, [active]);
 
   const transferBusy = busy === "upload" || busy?.startsWith("export:") === true;
   useEffect(() => {
@@ -355,6 +370,10 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
     });
   };
 
+  const previewRequestPath = previewFile && app
+    ? `${endpoint(app.bundle_id, "/preview")}?${new URLSearchParams({ path: previewFile.path, scope: previewFile.scope })}`
+    : null;
+
   const content = (
     <>
       {!fixedScope && <Segmented
@@ -464,6 +483,9 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
                 {entry.kind !== "other" && (
                   <Tooltip title={t("deviceInspector.exportDocument")}><Button size="small" icon={<DownloadOutlined />} loading={busy === `export:${entry.path}`} disabled={busy !== null && busy !== `export:${entry.path}`} onClick={() => void download(entry)} /></Tooltip>
                 )}
+                {entry.kind === "file" && isPreviewableImageName(entry.name) && (
+                  <Tooltip title={t("deviceInspector.previewImage")}><Button size="small" icon={<PictureOutlined />} aria-label={t("deviceInspector.previewImage")} disabled={busy !== null} onClick={() => setPreviewFile({ name: entry.name, path: entry.path, scope })} /></Tooltip>
+                )}
                 <Tooltip title={t("deviceInspector.renameDocument")}><Button size="small" icon={<EditOutlined />} disabled={busy !== null || entry.kind === "other"} onClick={() => rename(entry)} /></Tooltip>
                 <Tooltip title={t("deviceInspector.deleteDocument")}><Button size="small" danger icon={<DeleteOutlined />} disabled={busy !== null || entry.kind === "other"} onClick={() => remove(entry)} /></Tooltip>
               </div>
@@ -477,24 +499,37 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
     </>
   );
 
+  const imagePreviewModal = (
+    <AfcImagePreviewModal
+      open={previewFile !== null}
+      fileName={previewFile?.name ?? ""}
+      requestPath={previewRequestPath}
+      request={request}
+      onClose={() => setPreviewFile(null)}
+    />
+  );
+
   if (embedded) {
-    return <div className="app-storage-browser">{content}</div>;
+    return <><div className="app-storage-browser">{content}</div>{imagePreviewModal}</>;
   }
 
   return (
-    <Modal
-      className="app-documents-modal"
-      open={app !== null}
-      width={760}
-      title={app ? t("deviceInspector.appStorageTitle", { name: app.name }) : ""}
-      footer={null}
-      destroyOnHidden
-      closable={busy === null}
-      keyboard={busy === null}
-      maskClosable={busy === null}
-      onCancel={() => { if (busy === null) onClose(); }}
-    >
-      {content}
-    </Modal>
+    <>
+      <Modal
+        className="app-documents-modal"
+        open={app !== null}
+        width={760}
+        title={app ? t("deviceInspector.appStorageTitle", { name: app.name }) : ""}
+        footer={null}
+        destroyOnHidden
+        closable={busy === null}
+        keyboard={busy === null}
+        maskClosable={busy === null}
+        onCancel={() => { if (busy === null) onClose(); }}
+      >
+        {content}
+      </Modal>
+      {imagePreviewModal}
+    </>
   );
 }

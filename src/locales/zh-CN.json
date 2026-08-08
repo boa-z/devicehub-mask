@@ -670,6 +670,7 @@
     "deviceFilesTruncated": "仅显示前 1,000 个条目。",
     "openDeviceDirectory": "打开目录",
     "exportDevicePath": "导出",
+    "previewImage": "预览",
     "deviceFileExported": "已从设备导出 {{count}} 个文件（{{size}}）。",
     "deviceFileExportFailed": "无法导出设备文件：{{error}}",
     "importDevicePath": "导入",

@@ -21,7 +21,7 @@ use devicehub_core::{
     normalize_device_file_path as normalize_path, validate_device_file_name as validate_name,
 };
 
-use super::{HostFileIo, HostFileKind};
+use super::{HostFileIo, HostFileKind, MAX_PREVIEW_FILE_BYTES};
 use crate::supervisor::ServiceReporter;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -119,6 +119,10 @@ pub enum DeviceFileCommand<Path> {
     List {
         path: String,
         reply: oneshot::Sender<Result<DeviceFileList, String>>,
+    },
+    Preview {
+        path: String,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
     Export {
         path: String,
@@ -281,6 +285,13 @@ where
             let _ = reply.send(result);
             if failed { Err(()) } else { Ok(()) }
         }
+        DeviceFileCommand::Preview { path, reply } => {
+            let result = tokio::time::timeout(METADATA_TIMEOUT, read_preview_file(client, &path))
+                .await
+                .unwrap_or_else(|_| Err("device file preview timed out".into()));
+            let _ = reply.send(result);
+            Ok(())
+        }
         DeviceFileCommand::Export {
             path,
             destination,
@@ -364,6 +375,9 @@ fn reject<Path>(command: DeviceFileCommand<Path>, error: String) {
         DeviceFileCommand::List { reply, .. } => {
             let _ = reply.send(Err(error));
         }
+        DeviceFileCommand::Preview { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
         DeviceFileCommand::Export { reply, .. } => {
             let _ = reply.send(Err(error));
         }
@@ -426,6 +440,42 @@ async fn list_files(client: &mut AfcClient, path: &str) -> Result<DeviceFileList
         entries,
         truncated,
     })
+}
+
+async fn read_preview_file(client: &mut AfcClient, path: &str) -> Result<Vec<u8>, String> {
+    let path = normalize_path(path, false)?;
+    let info = client
+        .get_file_info(path.clone())
+        .await
+        .map_err(|error| format!("unable to inspect device preview file: {error:?}"))?;
+    if info.st_link_target.is_some() {
+        return Err("symbolic links cannot be previewed".into());
+    }
+    if info.st_ifmt != "S_IFREG" {
+        return Err("only regular device files can be previewed".into());
+    }
+    let expected_size = info.size as u64;
+    if expected_size > MAX_PREVIEW_FILE_BYTES {
+        return Err("device preview file exceeds the 64 MiB limit".into());
+    }
+
+    let remote = client
+        .open(path, AfcFopenMode::RdOnly)
+        .await
+        .map_err(|error| format!("unable to open device preview file: {error:?}"))?;
+    let mut remote = BufReader::with_capacity(TRANSFER_BUFFER_BYTES, remote);
+    let mut bytes = Vec::new();
+    let read_result = (&mut remote)
+        .take(MAX_PREVIEW_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await;
+    let close_result = remote.into_inner().close().await;
+    read_result.map_err(|error| format!("unable to read device preview file: {error}"))?;
+    close_result.map_err(|error| format!("unable to close device preview file: {error:?}"))?;
+    if bytes.len() as u64 != expected_size {
+        return Err("device preview file changed while it was being read".into());
+    }
+    Ok(bytes)
 }
 
 async fn export_file<FileIo>(

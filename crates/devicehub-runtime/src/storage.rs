@@ -13,6 +13,8 @@ pub(crate) use application::{AppStorageTransport, serve as serve_app_documents};
 pub use public::DeviceFileCommand;
 pub(crate) use public::{DeviceFileTransport, serve as serve_device_files};
 
+pub(crate) const MAX_PREVIEW_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 pub type HostFileFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 pub type HostFileReader = Box<dyn AsyncRead + Unpin + Send>;
 pub type HostFileWriter = Box<dyn HostFileWrite>;

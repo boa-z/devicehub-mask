@@ -789,6 +789,9 @@ fn reject_app_document<HostPath>(command: crate::AppDocumentCommand<HostPath>, r
         crate::AppDocumentCommand::List { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
+        crate::AppDocumentCommand::Preview { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
         crate::AppDocumentCommand::Export { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
@@ -806,6 +809,9 @@ fn reject_app_document<HostPath>(command: crate::AppDocumentCommand<HostPath>, r
 fn reject_device_file<HostPath>(command: DeviceFileCommand<HostPath>, reason: &str) {
     match command {
         DeviceFileCommand::List { reply, .. } => {
+            let _ = reply.send(Err(reason.into()));
+        }
+        DeviceFileCommand::Preview { reply, .. } => {
             let _ = reply.send(Err(reason.into()));
         }
         DeviceFileCommand::Export { reply, .. } => {

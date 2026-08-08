@@ -23,7 +23,7 @@ use devicehub_core::{
     validate_app_document_name as validate_name,
 };
 
-use super::{HostFileIo, HostFileKind};
+use super::{HostFileIo, HostFileKind, MAX_PREVIEW_FILE_BYTES};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
@@ -126,6 +126,12 @@ pub enum AppDocumentCommand<Path> {
         scope: AppStorageScope,
         path: String,
         reply: oneshot::Sender<Result<AppDocumentList, String>>,
+    },
+    Preview {
+        bundle_id: String,
+        scope: AppStorageScope,
+        path: String,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
     Export {
         bundle_id: String,
@@ -320,6 +326,20 @@ async fn handle<FileIo>(
             )
             .await
             .unwrap_or_else(|_| Err("application document listing timed out".into()));
+            let _ = reply.send(result);
+        }
+        AppDocumentCommand::Preview {
+            bundle_id,
+            scope,
+            path,
+            reply,
+        } => {
+            let result = tokio::time::timeout(
+                METADATA_TIMEOUT,
+                read_preview_file(transport, &bundle_id, scope, &path),
+            )
+            .await
+            .unwrap_or_else(|_| Err("application document preview timed out".into()));
             let _ = reply.send(result);
         }
         AppDocumentCommand::Export {
@@ -1100,6 +1120,50 @@ fn afc_path(scope: AppStorageScope, path: &str) -> String {
         AppStorageScope::Documents => format!("/Documents{path}"),
         AppStorageScope::Container => path.to_owned(),
     }
+}
+
+async fn read_preview_file(
+    transport: &mut AppStorageTransport,
+    bundle_id: &str,
+    scope: AppStorageScope,
+    path: &str,
+) -> Result<Vec<u8>, String> {
+    let path = normalize_path(path, false)?;
+    let mut client = transport.connect(bundle_id, scope).await?;
+    ensure_no_symlink_components(&mut client, scope, &path).await?;
+    let device_path = afc_path(scope, &path);
+    let info = client
+        .get_file_info(device_path.clone())
+        .await
+        .map_err(|error| format!("unable to inspect application preview file: {error:?}"))?;
+    if info.st_link_target.is_some() {
+        return Err("symbolic links cannot be previewed".into());
+    }
+    if info.st_ifmt != "S_IFREG" {
+        return Err("only regular application files can be previewed".into());
+    }
+    let expected_size = info.size as u64;
+    if expected_size > MAX_PREVIEW_FILE_BYTES {
+        return Err("application preview file exceeds the 64 MiB limit".into());
+    }
+
+    let remote = client
+        .open(device_path, AfcFopenMode::RdOnly)
+        .await
+        .map_err(|error| format!("unable to open application preview file: {error:?}"))?;
+    let mut remote = BufReader::with_capacity(TRANSFER_BUFFER_BYTES, remote);
+    let mut bytes = Vec::new();
+    let read_result = (&mut remote)
+        .take(MAX_PREVIEW_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await;
+    let close_result = remote.into_inner().close().await;
+    read_result.map_err(|error| format!("unable to read application preview file: {error}"))?;
+    close_result.map_err(|error| format!("unable to close application preview file: {error:?}"))?;
+    if bytes.len() as u64 != expected_size {
+        return Err("application preview file changed while it was being read".into());
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

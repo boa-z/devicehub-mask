@@ -9,6 +9,7 @@ import FolderAddOutlined from "@ant-design/icons/es/icons/FolderAddOutlined";
 import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
 import FolderOutlined from "@ant-design/icons/es/icons/FolderOutlined";
 import HomeOutlined from "@ant-design/icons/es/icons/HomeOutlined";
+import PictureOutlined from "@ant-design/icons/es/icons/PictureOutlined";
 import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
 import SortAscendingOutlined from "@ant-design/icons/es/icons/SortAscendingOutlined";
 import SortDescendingOutlined from "@ant-design/icons/es/icons/SortDescendingOutlined";
@@ -20,11 +21,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { normalizeAfcPath, sortAfcEntries } from "../afcBrowser";
 import type { AfcSortDirection, AfcSortField } from "../afcBrowser";
+import { isPreviewableImageName } from "../afcPreview";
 import { formatFileSize } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
 import { downloadBrowserResponse, pickBrowserFile } from "../browserFiles";
 import { runningInDesktopHost } from "../hostApi";
 import type { DeviceFileActivity, DeviceFileEntry, DeviceFileList } from "../types";
+import { AfcImagePreviewModal } from "./AfcImagePreviewModal";
 import { ErrorAlert } from "./ErrorPresentation";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
@@ -35,6 +38,11 @@ type Props = {
   refreshToken: number;
   request: Request;
   onTransferStateChange?: (active: boolean) => void;
+};
+
+type PreviewFile = {
+  name: string;
+  path: string;
 };
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -59,6 +67,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
   const [sortField, setSortField] = useState<AfcSortField>("name");
   const [sortDirection, setSortDirection] = useState<AfcSortDirection>("ascending");
   const [activity, setActivity] = useState<DeviceFileActivity | null>(null);
+  const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
   const [cancelPending, setCancelPending] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
   const cancelRequestedRef = useRef(false);
@@ -92,10 +101,15 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
     setError(null);
     setBusy(null);
     setActivity(null);
+    setPreviewFile(null);
     setCancelPending(false);
     setCancelRequested(false);
     cancelRequestedRef.current = false;
   }, [deviceId]);
+
+  useEffect(() => {
+    if (!active) setPreviewFile(null);
+  }, [active]);
 
   const transferBusy = busy === "import" || busy?.startsWith("export:") === true;
   useEffect(() => {
@@ -386,8 +400,13 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
     });
   };
 
+  const previewRequestPath = previewFile
+    ? `/api/device/files/preview?${new URLSearchParams({ path: previewFile.path })}`
+    : null;
+
   return (
-    <div className="device-files-pane" hidden={!active}>
+    <>
+      <div className="device-files-pane" hidden={!active}>
       <div className="device-files-pane-heading">
         <Typography.Text strong>{t("deviceInspector.deviceFilesTitle")}</Typography.Text>
         <Typography.Text type="secondary">{t("deviceInspector.deviceFilesHint")}</Typography.Text>
@@ -528,6 +547,9 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
                 {entry.kind !== "other" && (
                   <Tooltip title={t("deviceInspector.exportDevicePath")}><Button size="small" icon={<DownloadOutlined />} aria-label={t("deviceInspector.exportDevicePath")} loading={busy === `export:${entry.path}`} disabled={busy !== null && busy !== `export:${entry.path}`} onClick={() => void exportPath(entry)} /></Tooltip>
                 )}
+                {entry.kind === "file" && isPreviewableImageName(entry.name) && (
+                  <Tooltip title={t("deviceInspector.previewImage")}><Button size="small" icon={<PictureOutlined />} aria-label={t("deviceInspector.previewImage")} disabled={busy !== null} onClick={() => setPreviewFile({ name: entry.name, path: entry.path })} /></Tooltip>
+                )}
                 <Tooltip title={t("deviceInspector.renameDeviceFile")}><Button size="small" icon={<EditOutlined />} aria-label={t("deviceInspector.renameDeviceFile")} disabled={busy !== null || entry.kind === "other"} onClick={() => rename(entry)} /></Tooltip>
                 <Tooltip title={t("deviceInspector.deleteDeviceFile")}><Button size="small" danger icon={<DeleteOutlined />} aria-label={t("deviceInspector.deleteDeviceFile")} disabled={busy !== null || entry.kind === "other"} onClick={() => remove(entry)} /></Tooltip>
               </div>
@@ -537,7 +559,15 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
       ) : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("deviceInspector.noDeviceFiles")} />
       )}
-      {listing?.truncated && <Alert type="warning" showIcon message={t("deviceInspector.deviceFilesTruncated")} />}
-    </div>
+        {listing?.truncated && <Alert type="warning" showIcon message={t("deviceInspector.deviceFilesTruncated")} />}
+      </div>
+      <AfcImagePreviewModal
+        open={previewFile !== null}
+        fileName={previewFile?.name ?? ""}
+        requestPath={previewRequestPath}
+        request={request}
+        onClose={() => setPreviewFile(null)}
+      />
+    </>
   );
 }

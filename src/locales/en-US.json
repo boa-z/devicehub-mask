@@ -670,6 +670,7 @@
     "deviceFilesTruncated": "Only the first 1,000 entries are shown.",
     "openDeviceDirectory": "Open directory",
     "exportDevicePath": "Export",
+    "previewImage": "Preview",
     "deviceFileExported": "Exported {{count}} files ({{size}}) from the device.",
     "deviceFileExportFailed": "Unable to export device files: {{error}}",
     "importDevicePath": "Import",

@@ -178,8 +178,8 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .device-wallpaper-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .device-wallpaper-actions .ant-btn { min-width: 0; padding-inline: 8px; }
 .device-wallpaper-actions .ant-btn > span:last-child { overflow: hidden; text-overflow: ellipsis; }
-.device-wallpaper-preview { width: 100%; min-height: 240px; max-height: min(70vh, 760px); display: grid; place-items: center; overflow: hidden; background: #0d1011; }
-.device-wallpaper-preview img { display: block; max-width: 100%; max-height: min(70vh, 760px); object-fit: contain; }
+.device-wallpaper-preview, .afc-image-preview { width: 100%; min-height: 240px; max-height: min(70vh, 760px); display: grid; place-items: center; overflow: hidden; background: #0d1011; }
+.device-wallpaper-preview img, .afc-image-preview img { display: block; max-width: 100%; max-height: min(70vh, 760px); object-fit: contain; }
 .device-info-row { min-height: 48px; padding: 9px 4px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.4fr); align-items: center; gap: 12px; }
 .device-info-row > :last-child { text-align: right; }
 .device-info-value-action { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
@@ -289,14 +289,14 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .app-document-transfer-actions .ant-btn { flex: 0 0 auto; }
 .app-document-transfer .ant-progress { margin: 2px 0 0; line-height: 1; }
 .app-document-list { min-height: 0; max-height: min(460px, 60vh); overflow-y: auto; border-top: 1px solid #303638; }
-.app-document-row { min-height: 48px; padding: 7px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 24px minmax(0, 1fr) 72px 152px 104px; align-items: center; gap: 8px; }
+.app-document-row { min-height: 48px; padding: 7px 2px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: 24px minmax(0, 1fr) 72px 152px 132px; align-items: center; gap: 8px; }
 .app-document-kind { color: #8ba5a1; font-size: 17px; text-align: center; }
 .app-document-name { min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .app-document-name:disabled { cursor: default; }
 .app-document-name .ant-typography { max-width: 100%; margin: 0; }
 .app-document-size, .app-document-date { margin: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .app-document-size { text-align: right; font-variant-numeric: tabular-nums; }
-.app-document-actions { min-width: 104px; display: flex; justify-content: flex-end; gap: 3px; }
+.app-document-actions { min-width: 132px; display: flex; justify-content: flex-end; gap: 3px; }
 .app-document-actions .ant-btn { width: 24px; height: 24px; padding: 0; }
 .device-profiles-pane { min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .device-profile-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 6px; }
@@ -568,7 +568,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
   .inspector { border-left: 0; border-top: 1px solid #303638; min-height: 340px; }
   .device-inspector { border-left: 0; border-top: 1px solid #303638; min-height: 420px; }
   .workspace-loading-inspector { min-width: 0; min-height: 340px; border-left: 0; border-top: 1px solid #303638; }
-  .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 68px 104px; }
+  .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 68px 132px; }
   .afc-crash-row { grid-template-columns: 24px minmax(0, 1fr) 68px 104px; }
   .app-document-date { display: none; }
   .app-console-toolbar { grid-template-columns: minmax(0, 1fr) repeat(3, 32px); }
@@ -578,7 +578,7 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 
 @media (max-width: 620px) {
   .app-documents-toolbar .ant-breadcrumb-link .ant-btn { max-width: 88px; }
-  .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 104px; }
+  .app-document-row { grid-template-columns: 24px minmax(0, 1fr) 132px; }
   .afc-crash-row { grid-template-columns: 24px minmax(0, 1fr) 104px; }
   .app-document-size { display: none; }
 }
