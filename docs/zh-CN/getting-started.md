@@ -48,7 +48,7 @@ Debian/Ubuntu 可以安装 DEB：
 sudo apt install ./devicehub-mask_<version>+<build>_amd64.deb
 ```
 
-Linux 仍需要可用的 usbmuxd 和 Apple 配对环境。安装包不能替代主机侧设备准备。
+Linux 仍需要可用的 `usbmuxd` 和 Apple 配对环境。安装包不会安装或配置主机侧守护进程及配对记录，完整的 USB 信任流程见 [Linux USB 配对](headless.md#linux-usb-配对)。
 
 ### Headless
 
@@ -109,7 +109,7 @@ sudo apt-get install build-essential cmake nasm pkg-config libssl-dev \
   librsvg2-dev patchelf ffmpeg
 ```
 
-Linux 设备连接还需要正常工作的 usbmuxd 和 Apple 配对环境，设备覆盖程度低于 macOS 和 Windows。
+Linux 设备连接还需要正常工作的 `usbmuxd` 和 Apple 配对环境，设备覆盖程度低于 macOS 和 Windows。开始桌面端或 Headless 构建前，请先阅读 [Linux USB 配对](headless.md#linux-usb-配对)。
 
 ## 获取源码
 

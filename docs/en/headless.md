@@ -14,6 +14,50 @@
 
 New headless data directories enable device audio by default, so the mobile app can establish its audio stream after requesting `audio_demand`. An existing `settings.json` with `audio_enabled: false` remains disabled and can be enabled through the host settings API or the shared Web UI.
 
+## Linux USB Pairing
+
+The Linux Headless service uses the Rust `idevice` runtime through the host's system `usbmuxd`. On Debian or Ubuntu, install and start the USB daemon before launching Headless:
+
+```sh
+sudo apt update
+sudo apt install usbmuxd libusb-1.0-0
+sudo systemctl enable --now usbmuxd
+```
+
+Use your distribution's normal service manager when it does not use systemd. Do not start a second `usbmuxd` process if the system service is already running. The following optional utility only checks whether usbmuxd can see a USB device; Headless does not depend on it:
+
+```sh
+sudo apt install libimobiledevice-utils
+idevice_id -l
+```
+
+Connect the iPhone or iPad with a data cable, unlock it, and accept **Trust This Computer**. Enter the device passcode if requested. Then start Headless from the extracted archive. A persistent token is recommended for a server that will be restarted:
+
+```sh
+cd devicehub-mask-headless_<version>+<build>_linux-x64
+umask 077
+openssl rand -hex 32 > devicehub.token
+chmod 600 devicehub.token
+./devicehub-headless \
+  --token-file ./devicehub.token \
+  --netmuxd off
+```
+
+Open the complete URL printed by the service. In the browser, open the device connection center and refresh the device list if necessary. For a USB device whose row is marked **Trust required**, click **Trust device**, keep the iPhone unlocked, accept the trust prompt, and enter its passcode. The pairing request may wait for up to 90 seconds; after it succeeds, the UI waits for the device session and connects it automatically. If the device was already trusted, select its USB row directly.
+
+There is no separate `devicehub-headless pair` command. Pairing is initiated from the browser because iOS may need to display and confirm the trust prompt interactively. The USB Lockdown trust record and the permissions needed for screen/HID control are separate: enable Developer Mode and prepare a matching Developer Disk Image/CoreDevice display service as well. The current project target requires iOS/iPadOS 27 or newer.
+
+When multiple devices are connected, use the transport-aware identifier shown by the UI or returned by `idevice_id -l`:
+
+```sh
+./devicehub-headless \
+  --device <UDID>::usb \
+  --token-file ./devicehub.token \
+  --netmuxd off
+```
+
+`--device` selects the preferred device at startup; the browser can still switch devices afterwards. The normal Linux usbmuxd socket is discovered automatically. Use `--usbmuxd <ADDRESS>` only when the daemon is exposed at a non-default Unix socket or TCP address, for example `--usbmuxd /var/run/usbmuxd` or `--usbmuxd 127.0.0.1:27015`.
+
 ## Using a Nightly Package
 
 Download the headless archive for the host platform and its adjacent `.sha256` file from the [nightly release](https://github.com/boa-z/devicehub-mask/releases/tag/nightly):
@@ -206,6 +250,6 @@ DeviceHub Mask does not install, sideload, sign, or upgrade iOS applications. Th
 - A non-loopback listener is rejected: pass `--allow-lan`; this acknowledges exposure but is not a security configuration.
 - The browser returns `401`: reopen the complete URL printed by the current process. Persistent deployments must ensure every client uses the same protected token file.
 - The page opens but WebCodecs is unavailable: verify that the browser is in a secure context, then check Windows HEVC capability, GPU drivers, and hardware acceleration.
-- No device appears: confirm that the device is unlocked and trusted, Developer Mode/DDI is ready, and Apple Mobile Device Service or usbmuxd is running; then refresh devices in the UI.
+- No device appears: on Linux, first follow [Linux USB Pairing](#linux-usb-pairing) and verify that the system `usbmuxd` service is running. On Windows, verify Apple Mobile Device Service. On every platform, confirm that the device is unlocked and trusted, Developer Mode/DDI is ready, and then refresh devices in the UI.
 - No audio: confirm that FFmpeg is available and that an existing `settings.json` does not set `audio_enabled` to `false`; browser clients also need a click on the device toolbar's audio button to satisfy autoplay policy. Browsers may treat `http://localhost` and `http://<LAN-IP>` differently. If playback is still blocked, use an HTTPS reverse proxy and inspect the service log for `browser_playback_suspended` or `browser_playback_failed` diagnostics and the FFmpeg path.
 - A Wi-Fi device is missing: pair it over USB first, confirm that the pairing directory is writable, and keep the device and server on the same trusted network.

@@ -48,7 +48,7 @@ Debian/Ubuntu can install the DEB package:
 sudo apt install ./devicehub-mask_<version>+<build>_amd64.deb
 ```
 
-Linux still requires a working usbmuxd and Apple pairing environment. A package does not replace host-side device preparation.
+Linux still requires a working `usbmuxd` and Apple pairing environment. A package does not install or configure the host-side daemon or pairing record. Follow [Linux USB Pairing](headless.md#linux-usb-pairing) for the complete USB trust flow.
 
 ### Headless
 
@@ -109,7 +109,7 @@ sudo apt-get install build-essential cmake nasm pkg-config libssl-dev \
   librsvg2-dev patchelf ffmpeg
 ```
 
-Linux connectivity also requires a working usbmuxd and Apple pairing setup and has less device coverage than macOS and Windows.
+Linux connectivity also requires a working `usbmuxd` and Apple pairing setup and has less device coverage than macOS and Windows. See [Linux USB Pairing](headless.md#linux-usb-pairing) before starting a desktop or Headless build.
 
 ## Get the Source
 
