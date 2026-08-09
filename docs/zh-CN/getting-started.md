@@ -134,6 +134,8 @@ Windows 脚本会在 `%LOCALAPPDATA%\devicehub-mask\pymobiledevice3` 创建隔�
 
 DeviceHub Mask 会将 USB 和 Wi-Fi 显示为同一设备的两个独立传输；旧版仅传入 UDID 的选择仍默认使用 USB。首次授权 Wi-Fi 发现时，请通过 USB 连接已解锁且受信任的设备。 App 会在自己的应用数据目录中保存一份私有配对记录（Unix 下目录权限为 `0700`、文件 权限为 `0600`），并用它验证 `_apple-mobdev2._tcp` Bonjour 记录。列表出现 **iPhone · Wi-Fi** 后，当前 iOS 版本在首次建立 Wi-Fi 控制连接时还会要求在已解锁的 设备上确认授权，并为 `_remotepairing._tcp` CoreDevice 隧道创建独立的 RemotePairing 凭据。授权完成且 Wi-Fi 会话启动后即可拔掉数据线。
 
+如果设备后来拒绝这些 Wi-Fi 凭据，不要因为瞬时断连直接删除配对数据。请按定向的 [Wi-Fi 重新授权流程](troubleshooting.md#remote-pairing-验证出现-early-eof)处理：从已配对 USB 条目进入设备检查器，并通过应用清理两层信任凭据。
+
 DeviceHub Mask 默认在所有平台使用内置的已认证 Bonjour 与 RemotePairing 路径。 `netmuxd` 保留为可选兼容提供者；设置 `DEVICEHUB_NETMUXD=/absolute/path/to/netmuxd` 可强制使用它。受监督的进程只监听 私有 loopback 端口并随 App 一同退出；DeviceHub Mask 不会替换或终止系统 usbmuxd。 设置 `DEVICEHUB_NETMUXD=off` 可明确保持使用内置路径。
 
 较旧的 Apple 组件仍可能要求在 Finder 中启用“连接 Wi-Fi 时显示此 iPhone”。未经验证 的附近 Bonjour 设备不会作为可连接设备显示；状态栏会提示先完成一次 USB 授权。

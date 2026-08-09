@@ -71,7 +71,20 @@ Use `RUST_LOG=devicehub_mask::session=debug` for the complete RSD service list. 
 
 `remote pairing verification failed: Socket(... UnexpectedEof ... "early eof")` means the app reached the device's Bonjour `_remotepairing._tcp` service, but the device closed that TCP stream before sending a complete RemotePairing handshake frame. It does not by itself mean the saved authorization is invalid. A device lock or network transition, an iOS RemotePairing service restart, a recently replaced Bonjour address, or a previous tunnel still shutting down can all produce this transient result.
 
-DeviceHub Mask preserves the existing credentials and retries transient disconnects with fresh sockets before rebuilding the complete Wi-Fi tunnel with bounded backoff. Keep the device awake, unlocked, and on the same network. Do not remove trust for a single EOF. If the app instead reports that Wi-Fi authorization is no longer accepted and the error persists, connect by USB, use **Forget computer trust**, approve **Trust This Computer** again, then select the Wi-Fi transport. Explicit trust removal also deletes DeviceHub Mask's separate RemotePairing credentials so the next Wi-Fi connection can create a clean identity.
+DeviceHub Mask preserves the existing credentials and retries transient disconnects with fresh sockets before rebuilding the complete Wi-Fi tunnel with bounded backoff. Keep the device awake, unlocked, and on the same network. Do not remove trust for a single EOF.
+
+If the app repeatedly reports `Wi-Fi control authorization is no longer accepted by the device`, create fresh credentials as follows:
+
+1. Connect the device with a data-capable USB cable and unlock it.
+2. In the connection center, select the **USB** entry for that physical device, not its Wi-Fi entry.
+3. Wait until the USB entry is paired and its device information is available.
+4. Open the Device inspector's **Info** tab and scroll to **Computer trust**.
+5. Select **Forget computer trust** and confirm. The button is available only for a selected, paired USB transport.
+6. Disconnect and reconnect the USB cable if the device does not immediately ask to pair again.
+7. Keep the device unlocked, select **Trust device** when shown in DeviceHub Mask, approve **Trust This Computer** on the device, and enter its passcode.
+8. Keep USB connected until Wi-Fi authorization completes and the Wi-Fi session starts; then select the Wi-Fi transport.
+
+The in-app removal clears the device's Lockdown relationship, the host pairing record, and DeviceHub Mask's separate RemotePairing credentials. It is not the same as forgetting a Wi-Fi network or disconnecting a session. If the in-app action cannot be reached, the device-wide last resort is **Settings > General > Transfer or Reset iPhone/iPad > Reset > Reset Location & Privacy**. That resets trust decisions for every computer and does not by itself clean DeviceHub Mask's host-side credentials, so prefer the targeted in-app action.
 
 ## CoreDevice Error 9021
 

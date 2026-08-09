@@ -71,7 +71,20 @@ Windows 上保持手机连接和解锁，然后运行：
 
 `remote pairing verification failed: Socket(... UnexpectedEof ... "early eof")` 表示应用已经连接到设备通过 Bonjour 发布的 `_remotepairing._tcp` 服务，但设备在发送完整 RemotePairing 握手帧前关闭了 TCP 流。它本身不能证明已保存的授权无效。设备锁屏或切换网络、iOS 重启 RemotePairing 服务、Bonjour 地址刚刚更新，或者上一条隧道仍在关闭，都可能产生这种瞬时结果。
 
-DeviceHub Mask 会保留现有凭据，使用全新 socket 重试瞬时断流，然后通过有界退避重建完整 Wi-Fi 隧道。请保持设备唤醒、解锁并与电脑处于同一网络；不要因为一次 EOF 删除信任。如果应用明确报告 Wi-Fi 授权已不再被设备接受，并且错误持续出现，再通过 USB 连接，执行**忘记电脑信任**，重新确认**信任此电脑**，然后选择 Wi-Fi 传输。显式移除信任现在也会删除 DeviceHub Mask 独立保存的 RemotePairing 凭据，使下一次 Wi-Fi 连接能够创建干净的新身份。
+DeviceHub Mask 会保留现有凭据，使用全新 socket 重试瞬时断流，然后通过有界退避重建完整 Wi-Fi 隧道。请保持设备唤醒、解锁并与电脑处于同一网络；不要因为一次 EOF 删除信任。
+
+如果应用持续报告 `Wi-Fi control authorization is no longer accepted by the device`，按以下步骤创建全新凭据：
+
+1. 使用支持数据传输的 USB 线连接设备并解锁。
+2. 在设备连接中心选择该物理设备的 **USB** 条目，不要选择 Wi-Fi 条目。
+3. 等待 USB 条目显示已配对，并能够读取设备信息。
+4. 打开设备检查器的**信息** Tab，滚动到**电脑信任**区域。
+5. 点击**移除电脑信任**并确认。该按钮只会为当前选中的已配对 USB 传输显示。
+6. 如果设备没有立即重新提示配对，拔下并重新连接 USB 线。
+7. 保持设备解锁，在 DeviceHub Mask 出现操作时点击**信任设备**，然后在设备上确认**信任此电脑**并输入锁屏密码。
+8. 保持 USB 连接，等待 Wi-Fi 授权和 Wi-Fi 会话建立完成，再选择 Wi-Fi 传输。
+
+应用内操作会清除设备的 Lockdown 信任关系、电脑端配对记录以及 DeviceHub Mask 单独保存的 RemotePairing 凭据；它不同于忘记 Wi-Fi 网络或断开一次会话。如果无法进入应用内操作，最后才使用设备系统的**设置 > 通用 > 传输或还原 iPhone/iPad > 还原 > 还原位置与隐私**。该操作会重置设备对所有电脑的信任决定，并且不会单独清理 DeviceHub Mask 的电脑端凭据，因此应优先使用应用内的定向操作。
 
 ## CoreDevice 错误 9021
 

@@ -38,6 +38,8 @@ The editor supports undo/redo, controller type changes where valid, hardware-but
 
 The inspector groups device identity, battery/storage/region data, apps, provisioning profiles, crashes, app containers, and supported management actions. Optional data can be unavailable even when control works because Apple exposes services independently.
 
+To repair a rejected pairing, connect and select the device's paired **USB** transport, open the **Info** tab, then scroll to **Computer trust > Forget computer trust**. This action is intentionally hidden for Wi-Fi and unpaired selections. It ends the current session and removes both the Lockdown trust record and DeviceHub Mask's RemotePairing credentials; reconnect the cable afterwards and approve **Trust This Computer** on the unlocked device. Do not use it for an ordinary disconnect or a single transient EOF. See [Remote Pairing Verification Ends With Early EOF](troubleshooting.md#remote-pairing-verification-ends-with-early-eof) for the complete recovery flow.
+
 The Apps view can inspect existing apps, launch/stop/restart supported apps, show bounded signing/runtime metadata, open a developer app with a session-only console, remove confirmed removable apps, and open permitted app storage. It deliberately cannot install, sideload, sign, inject, or upgrade applications.
 
 App storage uses House Arrest for one app's Documents or permitted container. The AFC workspace uses the device-wide public media container. They are different roots and permissions are controlled by iOS. Transfers expose progress and cancellation, reject unsafe paths and special entries, and keep temporary data busy until cleanup completes.
