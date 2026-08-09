@@ -62,6 +62,7 @@ import { emptyDeviceStatus, useDeviceSessionController } from "./features/device
 import { useProfileController } from "./features/profiles/useProfileController";
 
 const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
+const DeviceDashboardPage = lazy(() => import("./features/device-dashboard/DeviceDashboardPage").then((module) => ({ default: module.DeviceDashboardPage })));
 const DeviceConnectionCenter = lazy(() => import("./components/DeviceConnectionCenter").then((module) => ({ default: module.DeviceConnectionCenter })));
 const DeviceFullscreenToolbar = lazy(() => import("./components/DeviceFullscreenToolbar").then((module) => ({ default: module.DeviceFullscreenToolbar })));
 const DeviceInspector = lazy(() => import("./components/DeviceInspector").then((module) => ({ default: module.DeviceInspector })));
@@ -99,7 +100,7 @@ export default function App() {
   const translateRef = useRef(t);
   translateRef.current = t;
   const appWindow = useMemo(() => currentHostWindow(), []);
-  const [page, setPage] = useState<AppPage>("device");
+  const [page, setPage] = useState<AppPage>("dashboard");
   const [afcVisited, setAfcVisited] = useState(false);
   const { client, connection: backend, error: backendError } = useBackend();
   const releaseAllControlsRef = useRef<() => void>(() => undefined);
@@ -289,6 +290,7 @@ export default function App() {
     };
   }, [appWindow]);
   const mappingEditing = page === "mappings" && controlMode === "mapping" && editing;
+  const realtimePageActive = page === "device" || page === "mappings";
   const videoDemand = documentVisible
     && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
   const {
@@ -310,11 +312,11 @@ export default function App() {
     sendControl,
   } = useDeviceRealtimeSession({
     backend: client,
-    deviceId: selectedDeviceId,
+    deviceId: realtimePageActive ? selectedDeviceId : null,
     orientation: status.orientation,
     videoDemand,
     monitorStall: Boolean(status.active_udid) && (page === "device" || page === "mappings"),
-    audioEnabled: deviceAudioEnabled === true,
+    audioEnabled: realtimePageActive && deviceAudioEnabled === true,
     audioMuted: audioPlayback.muted,
     audioVolume: audioPlayback.volume,
     onStatus: setStatus,
@@ -898,7 +900,7 @@ export default function App() {
           <Tooltip title={t(alwaysOnTop ? "device.unpin" : "device.pin")}><Button type={alwaysOnTop ? "primary" : "default"} icon={alwaysOnTop ? <PushpinFilled /> : <PushpinOutlined />} onClick={() => void toggleAlwaysOnTop()} /></Tooltip>
           {page === "device" && <Tooltip title={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")}><Button aria-label={t(deviceViewPreferences.deviceInspectorVisible ? "device.hideDeviceInspector" : "device.showDeviceInspector")} icon={deviceViewPreferences.deviceInspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => patchDeviceViewPreferences({ deviceInspectorVisible: !deviceViewPreferences.deviceInspectorVisible })} /></Tooltip>}
           {page === "mappings" && <Tooltip title={t(deviceViewPreferences.mappingInspectorVisible ? "device.hideInspector" : "device.showInspector")}><Button aria-label={t(deviceViewPreferences.mappingInspectorVisible ? "device.hideInspector" : "device.showInspector")} icon={deviceViewPreferences.mappingInspectorVisible ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} onClick={() => patchDeviceViewPreferences({ mappingInspectorVisible: !deviceViewPreferences.mappingInspectorVisible })} /></Tooltip>}
-          <Tooltip title={t("device.enterDeviceFullscreen")}><Button icon={<ExpandOutlined />} onClick={toggleDeviceFullscreen} /></Tooltip>
+          {(page === "device" || page === "mappings") && <Tooltip title={t("device.enterDeviceFullscreen")}><Button icon={<ExpandOutlined />} onClick={toggleDeviceFullscreen} /></Tooltip>}
           <Tooltip title={t(systemFullscreen ? "device.exitSystemFullscreen" : "device.enterSystemFullscreen")}><Button icon={systemFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => void toggleSystemFullscreen()} /></Tooltip>
         </Space>
       </header>}
@@ -908,7 +910,25 @@ export default function App() {
         <div className="page-content">
           <Suspense fallback={<WorkspaceLoading />}>
           {(afcVisited || page === "afc") && <AfcPage active={page === "afc"} activeUdid={status.active_udid} request={deviceRequest} />}
-          {page === "afc" ? null : page === "settings" ? (
+          {page === "afc" ? null : page === "dashboard" ? (
+            <DeviceDashboardPage
+              devices={status.devices}
+              selectedDeviceId={selectedDeviceId}
+              backendReady={Boolean(backend)}
+              pairingDeviceId={pairingDeviceId}
+              startupDevicePriority={startupDevicePriority}
+              onOpenControl={async (deviceId) => {
+                const ready = await selectDevice(deviceId);
+                if (ready) setPage("device");
+                return ready;
+              }}
+              onConnect={selectDevice}
+              onReconnect={reconnectDevice}
+              onDisconnect={disconnectDevice}
+              onPair={pairDevice}
+              onRefresh={refreshDevices}
+            />
+          ) : page === "settings" ? (
             <SettingsPage
               alwaysOnTop={alwaysOnTop}
               systemFullscreen={systemFullscreen}

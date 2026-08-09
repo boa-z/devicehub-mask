@@ -17,6 +17,7 @@
   },
   "navigation": {
     "label": "主导航",
+    "dashboard": "设备总览",
     "device": "设备",
     "mappings": "键盘映射",
     "afc": "AFC 文件",
@@ -24,6 +25,28 @@
     "logs": "设备日志",
     "location": "虚拟定位",
     "settings": "应用设置"
+  },
+  "dashboard": {
+    "title": "设备总览",
+    "subtitle": "集中查看和管理已发现的 iPhone 与 iPad，不为列表建立实时媒体连接。",
+    "summary": "设备摘要",
+    "devices": "已发现设备",
+    "discovered": "已发现",
+    "activeSessions": "活跃会话",
+    "activeDemands": "资源需求",
+    "backendUnavailable": "DeviceHub 服务当前不可用。",
+    "resourceDemand": "会话资源需求",
+    "resources": {
+      "video": "视频",
+      "audio": "音频",
+      "performance": "性能",
+      "device_logs": "日志"
+    },
+    "openControl": "打开控制",
+    "transportCount": "{{count}} 种传输",
+    "transportCount_other": "{{count}} 种传输",
+    "updated": "更新于{{value}}",
+    "notConnectedYet": "暂无会话活动"
   },
   "afc": {
     "title": "AFC 文件",

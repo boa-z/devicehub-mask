@@ -2,13 +2,14 @@ import DashboardOutlined from "@ant-design/icons/es/icons/DashboardOutlined";
 import EnvironmentOutlined from "@ant-design/icons/es/icons/EnvironmentOutlined";
 import FileTextOutlined from "@ant-design/icons/es/icons/FileTextOutlined";
 import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
+import AppstoreOutlined from "@ant-design/icons/es/icons/AppstoreOutlined";
 import MobileOutlined from "@ant-design/icons/es/icons/MobileOutlined";
 import SettingOutlined from "@ant-design/icons/es/icons/SettingOutlined";
 import { Menu } from "antd";
 import { useTranslation } from "react-i18next";
 import { KeyboardIcon } from "./KeyboardIcon";
 
-export type AppPage = "device" | "mappings" | "afc" | "performance" | "logs" | "location" | "settings";
+export type AppPage = "dashboard" | "device" | "mappings" | "afc" | "performance" | "logs" | "location" | "settings";
 
 type Props = {
   page: AppPage;
@@ -26,6 +27,7 @@ export function AppNavigation({ page, onChange }: Props) {
         selectedKeys={[page]}
         onSelect={({ key }) => onChange(key as AppPage)}
         items={[
+          { key: "dashboard", icon: <AppstoreOutlined />, label: t("navigation.dashboard") },
           { key: "device", icon: <MobileOutlined />, label: t("navigation.device") },
           { key: "mappings", icon: <KeyboardIcon />, label: t("navigation.mappings") },
           { key: "afc", icon: <FolderOpenOutlined />, label: t("navigation.afc") },

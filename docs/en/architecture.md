@@ -70,6 +70,8 @@ Private HTTP uses `X-DeviceHub-Device`; WebSocket uses `device_id`; each MCP con
 
 The React inventory controller reads the manager-level `/api/devices` projection independently from the focused session. Device discovery, pairing and lifecycle actions update that inventory; selecting an already running session changes only local UI focus. The focused control WebSocket supplies session-specific status but is never the sole source for the multi-device list.
 
+The Devices Overview renders only this HTTP inventory projection. While it is active, the realtime hook has no target device, so dashboard rows cannot acquire a control lease or create Control/Media WebSockets. Opening a device first establishes UI focus and then enters the Device workspace, where realtime demand is created for that one target.
+
 ## Resource Governance
 
 Video, audio, performance sampling, and device-log streaming are independent per-session demands. A connected but invisible device remains available without paying the full active-device cost.

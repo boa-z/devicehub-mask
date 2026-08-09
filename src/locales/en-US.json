@@ -17,6 +17,7 @@
   },
   "navigation": {
     "label": "Main navigation",
+    "dashboard": "Devices overview",
     "device": "Device",
     "mappings": "Keyboard mappings",
     "afc": "AFC files",
@@ -24,6 +25,28 @@
     "logs": "Device logs",
     "location": "Virtual location",
     "settings": "Application settings"
+  },
+  "dashboard": {
+    "title": "Devices overview",
+    "subtitle": "Monitor and manage every discovered iPhone and iPad without opening their realtime streams.",
+    "summary": "Device summary",
+    "devices": "Discovered devices",
+    "discovered": "Discovered",
+    "activeSessions": "Active sessions",
+    "activeDemands": "Active demands",
+    "backendUnavailable": "The DeviceHub service is unavailable.",
+    "resourceDemand": "Session resource demand",
+    "resources": {
+      "video": "Video",
+      "audio": "Audio",
+      "performance": "Metrics",
+      "device_logs": "Logs"
+    },
+    "openControl": "Open control",
+    "transportCount": "{{count}} transport",
+    "transportCount_other": "{{count}} transports",
+    "updated": "Updated {{value}}",
+    "notConnectedYet": "No session activity"
   },
   "afc": {
     "title": "AFC files",

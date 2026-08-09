@@ -6,7 +6,9 @@ This guide covers everyday desktop workflows. Complete installation and device p
 
 ## Connect and Switch Devices
 
-Open the connection center to see discovered USB and authenticated Wi-Fi transports. Unlock and trust the device when prompted, then connect the desired transport. USB and Wi-Fi entries for one device are separate choices, but only one may be active for that physical device.
+The Devices Overview is the default workspace. It groups USB and authenticated Wi-Fi transports by physical device and shows connection phase, active resource demands, last activity, and copyable session errors. It does not open video, audio, or control WebSockets for its device rows. Unlock and trust the device when prompted, connect the desired transport, then use **Open control** to enter the realtime Device workspace.
+
+The compact connection center in the top bar provides the same lifecycle operations from any workspace. USB and Wi-Fi entries for one device are separate choices, but only one may be active for that physical device.
 
 Multiple devices can remain connected. Selecting another device changes the visible workspace without disconnecting existing sessions. Connection phase and errors are shown per device. Use reconnect for a failed session; remove trust only when you intend to pair again. A metadata timeout does not necessarily mean the media session failed, and recoverable metadata is loaded again in the background.
 

@@ -70,6 +70,8 @@ Headless 二进制提供同一份前端构建和 API，默认监听 `127.0.0.1:8
 
 React Inventory 控制器独立读取 manager 级 `/api/devices` 投影，不依赖当前 focus session。设备发现、配对和生命周期操作更新 Inventory；选择已经运行的 session 只改变本地 UI focus。当前设备的 Control WebSocket 提供该 session 的状态，但不再是多设备列表的唯一数据来源。
 
+设备总览只渲染这份 HTTP Inventory 投影。总览激活时 realtime hook 没有目标设备，因此设备条目无法取得 Control lease，也不会建立 Control/Media WebSocket。打开设备时先建立 UI focus，再进入设备工作区，只为该目标创建实时资源需求。
+
 ## 资源治理
 
 视频、音频、性能采样和设备日志是独立的会话级需求。已连接但未显示的设备应保持可用，同时不承担完整活动设备成本。

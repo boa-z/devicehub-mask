@@ -212,6 +212,11 @@ export function useDeviceVideoStream({
   }, [audioEnabled, audioMuted, sendMedia]);
 
   useEffect(() => {
+    if (!deviceId) {
+      setRenderFps(0);
+      renderedFramesRef.current = 0;
+      return;
+    }
     let measuredAt = performance.now();
     const timer = window.setInterval(() => {
       const now = performance.now();
@@ -221,7 +226,7 @@ export function useDeviceVideoStream({
       measuredAt = now;
     }, 1_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [deviceId]);
 
   useEffect(() => {
     if (!mediaConnected || !monitorStall) {
