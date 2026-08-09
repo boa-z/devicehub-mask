@@ -79,6 +79,8 @@ Video, audio, performance sampling, and device-log streaming are independent per
 
 ## Media and Input Flow
 
+Realtime traffic uses two authenticated WebSockets. `/api/ws/control` owns input, control lease, clipboard, status, device events, and key-mapping events; `/api/ws/media` owns HEVC, PCM, media demand, decoder feedback, and stream metrics. After the HTTP Upgrade authentication, each socket must send a channel-matching protocol-v2 `client_hello` and receive `server_hello` before it becomes ready. A media reconnect restores current demand without releasing input, while a control disconnect releases its lease and all active controls.
+
 Video follows one path: the runtime receives HEVC RTP, assembles complete Annex-B access units, applies bounded presentation credits, and publishes them through WebSocket. The browser configures WebCodecs, waits for a keyframe after resynchronization, decodes, and renders the device frame. FFmpeg is not a video decoder in the current architecture.
 
 Audio RTP contains AAC-ELD. A host-provided FFmpeg sidecar decodes it to 48 kHz stereo PCM. Tauri sends PCM to native output; headless sends bounded audio frames to authenticated browser clients. Browser audio over LAN is subject to browser autoplay and secure-context policy.

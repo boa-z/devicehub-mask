@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::WebSocketUpgrade;
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -20,8 +20,8 @@ use tokio::sync::broadcast;
 
 use super::control_lease::BrowserControlLeases;
 use super::input::{
-    ClientConnectionState, ClientMessageContext, ClientVideoFeedback,
-    handle_client_message_with_keymap, send_all_up,
+    ClientConnectionState, ClientMessageContext, ClientVideoFeedback, REALTIME_PROTOCOL_VERSION,
+    WebSocketChannel, handle_client_message_with_keymap, send_all_up, validate_client_hello,
 };
 use super::keymap::BrowserKeymapSession;
 use crate::status;
@@ -37,7 +37,7 @@ const MAX_IN_FLIGHT_FRAMES: usize = 8;
 const AUDIO_CHANNEL_CAPACITY: usize = 16;
 const AUDIO_PACKET_HEADER_BYTES: usize = 12;
 const AUDIO_PACKET_MAGIC: &[u8; 4] = b"DHA1";
-const MOBILE_PROTOCOL_VERSION: u16 = 1;
+const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct BrowserAudioSlot(Arc<Mutex<HashMap<String, broadcast::Sender<bytes::Bytes>>>>);
@@ -149,9 +149,14 @@ struct StreamMetricsView {
     megabits_per_second: f64,
 }
 
-pub async fn upgrade(ws: WebSocketUpgrade, state: WebSocketState) -> impl IntoResponse {
+pub async fn upgrade_control(ws: WebSocketUpgrade, state: WebSocketState) -> impl IntoResponse {
     ws.protocols(["devicehub-mask"])
-        .on_upgrade(move |socket| run(socket, state))
+        .on_upgrade(move |socket| run(socket, state, WebSocketChannel::Control))
+}
+
+pub async fn upgrade_media(ws: WebSocketUpgrade, state: WebSocketState) -> impl IntoResponse {
+    ws.protocols(["devicehub-mask"])
+        .on_upgrade(move |socket| run(socket, state, WebSocketChannel::Media))
 }
 
 fn synchronize_browser_generation(
@@ -177,14 +182,37 @@ fn synchronize_demand_lease(active: bool, demand: &Demand, lease: &mut Option<De
     }
 }
 
-async fn run(socket: WebSocket, state: WebSocketState) {
+async fn run(socket: WebSocket, state: WebSocketState, channel: WebSocketChannel) {
+    let (mut sender, mut receiver) = socket.split();
+    let hello = tokio::time::timeout(CLIENT_HELLO_TIMEOUT, receiver.next()).await;
+    let handshake = match hello {
+        Ok(Some(Ok(Message::Text(text)))) => validate_client_hello(&text, channel),
+        Ok(Some(Ok(_))) => Err("first application message must be text client_hello".into()),
+        Ok(Some(Err(error))) => Err(format!("failed to receive client_hello: {error}")),
+        Ok(None) => Err("connection closed before client_hello".into()),
+        Err(_) => Err("client_hello timed out".into()),
+    };
+    if let Err(reason) = handshake {
+        tracing::warn!(?channel, %reason, "realtime WebSocket handshake rejected");
+        let _ = sender
+            .send(Message::Close(Some(CloseFrame {
+                code: 1002,
+                reason: reason.clone().into(),
+            })))
+            .await;
+        return;
+    }
+
+    let is_control = channel == WebSocketChannel::Control;
+    let is_media = channel == WebSocketChannel::Media;
     let mut control_notifications = state.control_leases.subscribe();
-    let mut control_lease = state.control_leases.try_acquire(&state.selection_id);
+    let mut control_lease = is_control
+        .then(|| state.control_leases.try_acquire(&state.selection_id))
+        .flatten();
     let control_granted = control_lease.is_some();
     let (control_tx, mut control_rx) = tokio::sync::watch::channel(control_granted);
     let (keymap_event_tx, mut keymap_event_rx) =
         tokio::sync::mpsc::channel::<serde_json::Value>(32);
-    let (mut sender, mut receiver) = socket.split();
     let send_state = state.clone();
     let max_in_flight_frames = state.config.max_in_flight_frames;
     tracing::debug!(max_in_flight_frames, "configured video frame pipeline");
@@ -196,35 +224,48 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     let send_pacer = frame_pacer.clone();
     let send_connection = connection.clone();
     let send_browser_resync = browser_resync.clone();
+    let capabilities = match channel {
+        WebSocketChannel::Control => json!({
+            "input": ["multi_touch", "button", "system_action", "keyboard", "text", "rotate", "keymap"],
+            "control_lease": true,
+            "events": ["status", "clipboard", "device_event", "keymap_status"],
+        }),
+        WebSocketChannel::Media => json!({
+            "video": { "codec": "hevc", "packet": "DHV2" },
+            "audio": { "codec": "pcm_s16le", "packet": "DHA1" },
+            "feedback": ["browser_frame_accepted", "frame_presented", "browser_video_keyframe", "browser_decoder_error", "frontend_metrics"],
+        }),
+    };
+    let server_hello = json!({
+        "type": "server_hello",
+        "payload": {
+            "protocol_version": REALTIME_PROTOCOL_VERSION,
+            "channel": channel,
+            "target_platforms": ["ios"],
+            "capabilities": capabilities,
+        },
+    });
+    if sender
+        .send(Message::Text(server_hello.to_string().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    tracing::info!(?channel, "realtime WebSocket ready");
     let send_task = tokio::spawn(async move {
-        let lease_message = json!({
-            "type": "control_lease",
-            "payload": { "granted": control_granted },
-        });
-        if sender
-            .send(Message::Text(lease_message.to_string().into()))
-            .await
-            .is_err()
-        {
-            return;
-        }
-        let server_hello = json!({
-            "type": "server_hello",
-            "payload": {
-                "protocol_version": MOBILE_PROTOCOL_VERSION,
-                "target_platforms": ["ios"],
-                "video": { "codec": "hevc", "packet": "DHV2" },
-                "audio": { "codec": "pcm_s16le", "packet": "DHA1" },
-                "input": ["multi_touch", "button", "system_action", "keyboard", "text", "rotate"],
-                "control_lease": true,
-            },
-        });
-        if sender
-            .send(Message::Text(server_hello.to_string().into()))
-            .await
-            .is_err()
-        {
-            return;
+        if is_control {
+            let lease_message = json!({
+                "type": "control_lease",
+                "payload": { "granted": control_granted },
+            });
+            if sender
+                .send(Message::Text(lease_message.to_string().into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
         }
         let mut last_status = String::new();
         let mut browser_frame_rx = send_state.browser_frames.subscribe();
@@ -253,7 +294,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
         let mut browser_generation = send_state.browser_frames.generation();
         loop {
             tokio::select! {
-                changed = control_rx.changed() => {
+                changed = control_rx.changed(), if is_control => {
                     if changed.is_err() {
                         break;
                     }
@@ -265,7 +306,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         break;
                     }
                 }
-                _ = status_tick.tick() => {
+                _ = status_tick.tick(), if is_control => {
                     let snapshot = status::snapshot_for_session(
                         &send_state.application,
                         &send_state.selection_id,
@@ -280,7 +321,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         }
                     }
                 }
-                browser_frame = browser_frame_rx.recv() => {
+                browser_frame = browser_frame_rx.recv(), if is_media => {
                     match browser_frame {
                         Ok(frame) => {
                             if !send_connection.video_active() {
@@ -346,7 +387,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                     tracing::debug!("browser video resync still waiting; requesting another keyframe");
                     send_state.browser_frames.request_keyframe();
                 }
-                clipboard = clipboard_rx.recv() => {
+                clipboard = clipboard_rx.recv(), if is_control => {
                     match clipboard {
                         Ok(event) => {
                             let Ok(text) = serde_json::to_string(
@@ -364,7 +405,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                device_event = device_event_rx.recv() => {
+                device_event = device_event_rx.recv(), if is_control => {
                     match device_event {
                         Ok(event) => {
                             let Ok(text) = serde_json::to_string(
@@ -382,7 +423,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                event = keymap_event_rx.recv() => {
+                event = keymap_event_rx.recv(), if is_control => {
                     let Some(event) = event else {
                         break;
                     };
@@ -395,7 +436,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         Some(receiver) => receiver.recv().await,
                         None => std::future::pending().await,
                     }
-                } => {
+                }, if is_media => {
                     match audio {
                         Ok(pcm) => {
                             if !send_connection.audio_active() {
@@ -413,7 +454,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         }
                     }
                 }
-                _ = metrics_tick.tick() => {
+                _ = metrics_tick.tick(), if is_media => {
                     let elapsed = metrics_started.elapsed().as_secs_f64().max(f64::EPSILON);
                     let counters = send_state.video_counters.snapshot();
                     let browser_version = send_state.browser_frames.version();
@@ -493,7 +534,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
     loop {
         let message = tokio::select! {
             message = receiver.next() => message,
-            _ = keymap_tick.tick(), if connection.control_granted() => {
+            _ = keymap_tick.tick(), if is_control && connection.control_granted() => {
                 if let Some(event) = keymap.tick(&state.input, state.session.orientation.get())
                     && keymap_event_tx.send(event).await.is_err()
                 {
@@ -501,7 +542,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                 }
                 continue;
             }
-            released = control_notifications.recv(), if control_lease.is_none() => {
+            released = control_notifications.recv(), if is_control && control_lease.is_none() => {
                 let should_retry = match released {
                     Ok(selection_id) => selection_id == state.selection_id.as_ref(),
                     Err(broadcast::error::RecvError::Lagged(_)) => true,
@@ -529,6 +570,7 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         browser_frames: &state.browser_frames,
                         connection: &connection,
                         browser_resync: &browser_resync,
+                        channel,
                     },
                     &text,
                     &mut pressed_keyboard,
@@ -553,23 +595,25 @@ async fn run(socket: WebSocket, state: WebSocketState) {
                         }
                     }
                 }
-                synchronize_demand_lease(
-                    connection.video_active(),
-                    &state.session.media_demand.video,
-                    &mut video_lease,
-                );
-                synchronize_demand_lease(
-                    connection.audio_active(),
-                    &state.session.media_demand.audio,
-                    &mut audio_lease,
-                );
+                if is_media {
+                    synchronize_demand_lease(
+                        connection.video_active(),
+                        &state.session.media_demand.video,
+                        &mut video_lease,
+                    );
+                    synchronize_demand_lease(
+                        connection.audio_active(),
+                        &state.session.media_demand.audio,
+                        &mut audio_lease,
+                    );
+                }
             }
             Message::Close(_) => break,
             _ => {}
         }
     }
     send_task.abort();
-    if connection.control_granted() {
+    if is_control && connection.control_granted() {
         keymap.release(&state.input, state.session.orientation.get());
         send_all_up(&state.input, &pressed_keyboard);
     }

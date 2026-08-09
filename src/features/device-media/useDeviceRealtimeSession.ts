@@ -2,7 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BrowserVideoDecoder, BrowserVideoSequenceTracker, parseBrowserVideoPacket } from "./video/browserVideo";
 import { BrowserPcmPlayer, parseBrowserAudioPacket, type BrowserAudioPlaybackState } from "./audio/browserAudio";
 import { logFrontend } from "../../diagnostics";
-import { DeviceRealtimeTransport } from "../../shared/realtime/DeviceRealtimeTransport";
+import {
+  DeviceRealtimeTransport,
+  type ControlClientMessage,
+  type MediaClientMessage,
+} from "../../shared/realtime/DeviceRealtimeTransport";
 import { hasSourceVideoActivity, isVideoStreamStalled } from "../../streamHealth";
 import type { ClipboardEvent, DeviceEvent, DeviceStatus, Orientation, StreamMetrics } from "../../types";
 import type { BackendClient } from "../../shared/backend/client";
@@ -131,6 +135,7 @@ export function useDeviceVideoStream({
   onDisconnect,
 }: Options) {
   const [connected, setConnected] = useState(false);
+  const [mediaConnected, setMediaConnected] = useState(false);
   const [controlGranted, setControlGranted] = useState(false);
   const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(emptyMetrics);
   const [renderFps, setRenderFps] = useState(0);
@@ -147,7 +152,8 @@ export function useDeviceVideoStream({
   const renderedFramesRef = useRef(0);
   const lastSourceActivityAtRef = useRef(0);
   const lastDecodedActivityAtRef = useRef(0);
-  const transportRef = useRef<DeviceRealtimeTransport | null>(null);
+  const controlTransportRef = useRef<DeviceRealtimeTransport<ControlClientMessage> | null>(null);
+  const mediaTransportRef = useRef<DeviceRealtimeTransport<MediaClientMessage> | null>(null);
   const orientationRef = useRef(orientation);
   const videoDemandRef = useRef(videoDemand);
   const callbacksRef = useRef({ onStatus, onClipboard, onDeviceEvent, onKeymapStatus, onDisconnect });
@@ -189,17 +195,21 @@ export function useDeviceVideoStream({
     }
   }, []);
 
-  const send = useCallback((payload: unknown) => {
-    transportRef.current?.send(payload);
+  const sendControl = useCallback((payload: ControlClientMessage) => {
+    controlTransportRef.current?.send(payload);
+  }, []);
+
+  const sendMedia = useCallback((payload: MediaClientMessage) => {
+    mediaTransportRef.current?.send(payload);
   }, []);
 
   useEffect(() => {
-    send({ type: "video_demand", active: videoDemand });
-  }, [send, videoDemand]);
+    sendMedia({ type: "video_demand", active: videoDemand });
+  }, [sendMedia, videoDemand]);
 
   useEffect(() => {
-    send({ type: "audio_demand", active: audioEnabled && !audioMuted });
-  }, [audioEnabled, audioMuted, send]);
+    sendMedia({ type: "audio_demand", active: audioEnabled && !audioMuted });
+  }, [audioEnabled, audioMuted, sendMedia]);
 
   useEffect(() => {
     let measuredAt = performance.now();
@@ -214,7 +224,7 @@ export function useDeviceVideoStream({
   }, []);
 
   useEffect(() => {
-    if (!connected || !monitorStall) {
+    if (!mediaConnected || !monitorStall) {
       setStreamStalled(false);
       return;
     }
@@ -228,7 +238,7 @@ export function useDeviceVideoStream({
     update();
     const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
-  }, [connected, monitorStall]);
+  }, [mediaConnected, monitorStall]);
 
   useEffect(() => {
     if (!backend || !deviceId) return;
@@ -280,7 +290,7 @@ export function useDeviceVideoStream({
     };
     const flushFrontendMetrics = () => {
       const now = performance.now();
-      transport.send({
+      mediaTransport.send({
         type: "frontend_metrics",
         window_ms: now - frontendMetrics.startedAt,
         received_frames: frontendMetrics.receivedFrames,
@@ -293,10 +303,41 @@ export function useDeviceVideoStream({
       });
       frontendMetrics = createFrontendMetrics(now);
     };
-    const transport = new DeviceRealtimeTransport(backend, deviceId, {
-      onOpen: () => {
-        transportRef.current = transport;
-        logFrontend("info", "websocket", "opened", "Video and control socket connected");
+    const controlTransport = new DeviceRealtimeTransport<ControlClientMessage>(backend, deviceId, "control", {
+      onReady: () => {
+        controlTransportRef.current = controlTransport;
+        setConnected(true);
+        logFrontend("info", "control_websocket", "ready", "Control channel negotiated");
+      },
+      onClose: ({ event, unexpected }) => {
+        logFrontend(
+          unexpected ? "warn" : "debug",
+          "control_websocket",
+          unexpected ? "transport_error" : "closed",
+          `code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`,
+        );
+        if (controlTransportRef.current === controlTransport) {
+          callbacksRef.current.onKeymapStatus({ configured: false, active_mapping_ids: [], active_contacts: [] });
+          callbacksRef.current.onDisconnect?.();
+          controlTransportRef.current = null;
+          setConnected(false);
+          setControlGranted(false);
+        }
+      },
+      onText: (data) => {
+        const parsed = JSON.parse(data) as { type: string; payload: DeviceStatus | ClipboardEvent | DeviceEvent | KeymapStatus | { granted: boolean } };
+        const leaseGrant = controlLeaseGrant(parsed);
+        if (leaseGrant !== null) setControlGranted(leaseGrant);
+        if (parsed.type === "status") callbacksRef.current.onStatus(parsed.payload as DeviceStatus);
+        if (parsed.type === "clipboard") callbacksRef.current.onClipboard(parsed.payload as ClipboardEvent);
+        if (parsed.type === "device_event") callbacksRef.current.onDeviceEvent(parsed.payload as DeviceEvent);
+        if (parsed.type === "keymap_status") callbacksRef.current.onKeymapStatus(parsed.payload as KeymapStatus);
+      },
+    });
+    const mediaTransport = new DeviceRealtimeTransport<MediaClientMessage>(backend, deviceId, "media", {
+      onReady: () => {
+        mediaTransportRef.current = mediaTransport;
+        logFrontend("info", "media_websocket", "ready", "Media channel negotiated");
         receivedWebCodecsPacket = false;
         browserSequence = new BrowserVideoSequenceTracker();
         frontendMetrics = createFrontendMetrics();
@@ -307,11 +348,11 @@ export function useDeviceVideoStream({
               presentFrame(frame, frame.codedWidth, frame.codedHeight);
             } finally {
               frame.close();
-              transport.send({ type: "frame_presented", sequence: sequence.toString() });
+              mediaTransport.send({ type: "frame_presented", sequence: sequence.toString() });
             }
           },
           requestKeyframe: () => {
-            transport.send({ type: "browser_video_keyframe" });
+            mediaTransport.send({ type: "browser_video_keyframe" });
           },
           congestion: (decodeQueueSize) => {
             frontendMetrics.decoderCongestions += 1;
@@ -326,7 +367,7 @@ export function useDeviceVideoStream({
             frontendMetrics.decodeErrors += 1;
             setDecoderError(String(error));
             logFrontend("warn", "video", "browser_decoder", error);
-            transport.send({ type: "browser_decoder_error", message: String(error) });
+            mediaTransport.send({ type: "browser_decoder_error", message: String(error) });
           },
         });
         audioPlayer = new BrowserPcmPlayer((state, error) => {
@@ -350,17 +391,17 @@ export function useDeviceVideoStream({
         const now = performance.now();
         lastSourceActivityAtRef.current = now;
         lastDecodedActivityAtRef.current = now;
-        setConnected(true);
-        transport.send({ type: "video_demand", active: videoDemandRef.current });
+        setMediaConnected(true);
+        mediaTransport.send({ type: "video_demand", active: videoDemandRef.current });
         const audio = audioPreferencesRef.current;
-        transport.send({ type: "audio_demand", active: audio.enabled && !audio.muted });
+        mediaTransport.send({ type: "audio_demand", active: audio.enabled && !audio.muted });
         metricsTimer = window.setInterval(flushFrontendMetrics, 5_000);
       },
       onClose: ({ event, unexpected }) => {
-        const ownsCurrentTransport = transportRef.current === transport;
+        const ownsCurrentTransport = mediaTransportRef.current === mediaTransport;
         logFrontend(
           unexpected ? "warn" : "debug",
-          "websocket",
+          "media_websocket",
           unexpected ? "transport_error" : "closed",
           `code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`,
         );
@@ -372,12 +413,9 @@ export function useDeviceVideoStream({
         if (audioPlayerRef.current === audioPlayer) audioPlayerRef.current = null;
         audioPlayer = null;
         if (ownsCurrentTransport) {
-          callbacksRef.current.onKeymapStatus({ configured: false, active_mapping_ids: [], active_contacts: [] });
           setBrowserAudioState("idle");
-          callbacksRef.current.onDisconnect?.();
-          transportRef.current = null;
-          setConnected(false);
-          setControlGranted(false);
+          mediaTransportRef.current = null;
+          setMediaConnected(false);
           lastSourceActivityAtRef.current = 0;
           lastDecodedActivityAtRef.current = 0;
           canvasReadyRef.current = false;
@@ -388,18 +426,12 @@ export function useDeviceVideoStream({
         }
       },
       onText: (data) => {
-        const parsed = JSON.parse(data) as { type: string; payload: DeviceStatus | StreamMetrics | ClipboardEvent | DeviceEvent | KeymapStatus | { granted: boolean } };
-        const leaseGrant = controlLeaseGrant(parsed);
-        if (leaseGrant !== null) setControlGranted(leaseGrant);
-        if (parsed.type === "status") callbacksRef.current.onStatus(parsed.payload as DeviceStatus);
-        if (parsed.type === "clipboard") callbacksRef.current.onClipboard(parsed.payload as ClipboardEvent);
-        if (parsed.type === "device_event") callbacksRef.current.onDeviceEvent(parsed.payload as DeviceEvent);
-        if (parsed.type === "keymap_status") callbacksRef.current.onKeymapStatus(parsed.payload as KeymapStatus);
+        const parsed = JSON.parse(data) as { type: string; payload: StreamMetrics };
         if (parsed.type === "metrics") {
           const metrics = parsed.payload as StreamMetrics;
           setStreamMetrics(metrics);
           if (receivedWebCodecsPacket && metrics.decoded_fps > 0 && metrics.sent_fps === 0) {
-            transport.send({ type: "browser_video_keyframe" });
+            mediaTransport.send({ type: "browser_video_keyframe" });
           }
           if (hasSourceVideoActivity(metrics)) lastSourceActivityAtRef.current = performance.now();
         }
@@ -441,7 +473,7 @@ export function useDeviceVideoStream({
           }
           const accepted = currentBrowserDecoder.enqueue(browserPacket);
           if (accepted) {
-            transport.send({
+            mediaTransport.send({
               type: "browser_frame_accepted",
               sequence: browserPacket.sequence.toString(),
             });
@@ -452,13 +484,19 @@ export function useDeviceVideoStream({
         logFrontend("warn", "video", "unsupported_packet", "Received a non-WebCodecs video packet");
       },
     });
-    transportRef.current = transport;
-    transport.start();
-    return () => transport.stop();
+    controlTransportRef.current = controlTransport;
+    mediaTransportRef.current = mediaTransport;
+    controlTransport.start();
+    mediaTransport.start();
+    return () => {
+      controlTransport.stop();
+      mediaTransport.stop();
+    };
   }, [backend, deviceId]);
 
   return {
     connected,
+    mediaConnected,
     controlGranted,
     streamMetrics,
     renderFps,
@@ -472,8 +510,7 @@ export function useDeviceVideoStream({
     canvasRef,
     canvasReadyRef,
     bindCanvas,
-    send,
-    sendControl: send,
+    sendControl,
   };
 }
 

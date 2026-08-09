@@ -188,7 +188,7 @@ A non-loopback listener requires explicit opt-in:
 
 Replace `127.0.0.1` in the printed URL with the server's LAN address when opening it from another computer. If opening the host firewall, restrict the rule to trusted LAN sources and never port-forward the listener directly to the Internet.
 
-The built-in server provides token authentication but not TLS, user accounts, rate limiting, or Internet deployment protection. Browser APIs such as WebCodecs commonly require a secure context: browsers trust `http://localhost` specially, but may reject `http://<LAN-IP>`. Full LAN video access should terminate HTTPS at a trusted reverse proxy and forward the static UI, `/api/*`, and WebSocket `/api/ws`. TLS does not replace the access token.
+The built-in server provides token authentication but not TLS, user accounts, rate limiting, or Internet deployment protection. Browser APIs such as WebCodecs commonly require a secure context: browsers trust `http://localhost` specially, but may reject `http://<LAN-IP>`. Full LAN video access should terminate HTTPS at a trusted reverse proxy and forward the static UI, `/api/*`, and both WebSockets `/api/ws/control` and `/api/ws/media`. TLS does not replace the access token.
 
 When `--allow-lan` publishes a non-loopback listener, headless also advertises `_devicehub._tcp.local.` over Bonjour/mDNS. The record contains only the service port and `targets=ios`; it never contains the access token. Clients must still authenticate with the token from the printed URL or `--token-file`.
 

@@ -6,4 +6,6 @@ mod keymap;
 mod transport;
 
 pub use control_lease::BrowserControlLeases;
-pub use transport::{BrowserAudioSlot, WebSocketConfig, WebSocketState, upgrade};
+pub use transport::{
+    BrowserAudioSlot, WebSocketConfig, WebSocketState, upgrade_control, upgrade_media,
+};

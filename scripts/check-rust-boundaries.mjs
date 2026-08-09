@@ -274,7 +274,8 @@ if (
   !serverPrivateApi.includes("pub fn router(state: PrivateApiState, token: String)") ||
   !serverPrivateApi.includes("authorize_private_api") ||
   !serverPrivateApi.includes('route("/api/status"') ||
-  !serverPrivateApi.includes('route("/api/ws"') ||
+  !serverPrivateApi.includes('route("/api/ws/control"') ||
+  !serverPrivateApi.includes('route("/api/ws/media"') ||
   !serverPrivateApi.includes("http::devices_router") ||
   !serverPrivateApi.includes("http::provisioning_router") ||
   !tauriWebProduction.includes(

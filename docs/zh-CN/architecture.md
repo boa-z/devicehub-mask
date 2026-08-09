@@ -79,6 +79,8 @@ Headless 二进制提供同一份前端构建和 API，默认监听 `127.0.0.1:8
 
 ## 媒体与输入流
 
+实时流量使用两条经过认证的 WebSocket。`/api/ws/control` 负责输入、控制租约、剪贴板、状态、设备事件和 Key Mapping 事件；`/api/ws/media` 负责 HEVC、PCM、媒体 demand、解码反馈和流指标。HTTP Upgrade 认证完成后，每条连接都必须发送与 endpoint 通道匹配的协议 v2 `client_hello`，并收到 `server_hello` 后才能进入 Ready。媒体重连会恢复当前 demand，但不会释放输入；Control 断开则释放租约和全部活动控制。
+
 视频只有一条路径：runtime 接收 HEVC RTP、组装完整 Annex-B access unit、执行有界展示 credit，再通过 WebSocket 发布。浏览器配置 WebCodecs，在重新同步后等待关键帧，解码并绘制设备画面。当前架构不使用 FFmpeg 解码视频。
 
 音频 RTP 携带 AAC-ELD，由宿主提供的 FFmpeg sidecar 解码为 48 kHz 双声道 PCM。Tauri 送入原生输出，headless 向已认证浏览器发送有界音频帧。LAN 浏览器音频受自动播放和 secure context 策略影响。

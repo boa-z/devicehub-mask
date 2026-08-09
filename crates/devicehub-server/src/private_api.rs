@@ -80,7 +80,8 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
         .merge(profile_routes)
         .merge(keymap_catalog_routes)
         .merge(host_routes)
-        .route("/api/ws", get(ws_upgrade))
+        .route("/api/ws/control", get(ws_control_upgrade))
+        .route("/api/ws/media", get(ws_media_upgrade))
         .layer(from_fn_with_state(
             ApiToken(Arc::from(token)),
             authorize_private_api,
@@ -171,28 +172,50 @@ struct WebSocketQuery {
     device_id: String,
 }
 
-async fn ws_upgrade(
+fn websocket_state(
+    query: WebSocketQuery,
+    state: PrivateApiState,
+) -> Result<websocket::WebSocketState, StatusCode> {
+    let selection_id = query.device_id.trim().to_string();
+    let Some(session) = state.application.sessions.get(&selection_id) else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    Ok(websocket::WebSocketState::new(
+        state.application,
+        selection_id,
+        session,
+        state.websocket_config,
+        state.browser_audio,
+        state.browser_control_leases,
+    ))
+}
+
+async fn ws_control_upgrade(
     ws: WebSocketUpgrade,
     Query(query): Query<WebSocketQuery>,
     State(state): State<PrivateApiState>,
 ) -> Response {
-    let selection_id = query.device_id.trim().to_string();
-    let Some(session) = state.application.sessions.get(&selection_id) else {
-        return (StatusCode::NOT_FOUND, "device session is not available").into_response();
+    let socket_state = match websocket_state(query, state) {
+        Ok(state) => state,
+        Err(status) => return (status, "device session is not available").into_response(),
     };
-    websocket::upgrade(
-        ws,
-        websocket::WebSocketState::new(
-            state.application,
-            selection_id,
-            session,
-            state.websocket_config,
-            state.browser_audio,
-            state.browser_control_leases,
-        ),
-    )
-    .await
-    .into_response()
+    websocket::upgrade_control(ws, socket_state)
+        .await
+        .into_response()
+}
+
+async fn ws_media_upgrade(
+    ws: WebSocketUpgrade,
+    Query(query): Query<WebSocketQuery>,
+    State(state): State<PrivateApiState>,
+) -> Response {
+    let socket_state = match websocket_state(query, state) {
+        Ok(state) => state,
+        Err(status) => return (status, "device session is not available").into_response(),
+    };
+    websocket::upgrade_media(ws, socket_state)
+        .await
+        .into_response()
 }
 
 #[cfg(test)]

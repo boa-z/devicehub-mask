@@ -293,6 +293,7 @@ export default function App() {
     && (page === "device" || (page === "mappings" && mappingBackgroundMode === "live"));
   const {
     connected,
+    mediaConnected,
     controlGranted,
     streamMetrics,
     renderFps,
@@ -682,7 +683,7 @@ export default function App() {
   const viewportScrollable = activeViewScale !== "fit";
   const stageIssue = !status.active_udid
     ? "waiting"
-    : !connected
+    : !mediaConnected
       ? "reconnecting"
       : decoderError
         ? "decoder"

@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use devicehub_core::hardware_button;
@@ -23,11 +23,21 @@ use super::keymap::{
     BrowserDirectContact, BrowserKeymapPointerDelta, BrowserKeymapResolution, BrowserKeymapSession,
 };
 
+pub(super) const REALTIME_PROTOCOL_VERSION: u16 = 2;
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum WebSocketChannel {
+    Control,
+    Media,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
     ClientHello {
         protocol_version: u16,
+        channel: WebSocketChannel,
         platform: String,
         client_version: String,
         #[serde(default)]
@@ -108,6 +118,81 @@ enum ClientMessage {
     },
 }
 
+impl ClientMessage {
+    fn channel(&self) -> Option<WebSocketChannel> {
+        match self {
+            Self::ClientHello { .. } => None,
+            Self::MultiTouch { .. }
+            | Self::Button { .. }
+            | Self::ButtonDown { .. }
+            | Self::ButtonUp { .. }
+            | Self::SystemAction { .. }
+            | Self::KeyboardDown { .. }
+            | Self::KeyboardUp { .. }
+            | Self::Text { .. }
+            | Self::KeymapConfigure { .. }
+            | Self::KeymapInput { .. }
+            | Self::KeymapDirectTouches { .. }
+            | Self::KeymapDebug { .. }
+            | Self::KeymapStop
+            | Self::Rotate { .. } => Some(WebSocketChannel::Control),
+            Self::VideoDemand { .. }
+            | Self::AudioDemand { .. }
+            | Self::BrowserFrameAccepted { .. }
+            | Self::FramePresented { .. }
+            | Self::BrowserVideoKeyframe
+            | Self::BrowserDecoderError { .. }
+            | Self::FrontendMetrics { .. } => Some(WebSocketChannel::Media),
+        }
+    }
+}
+
+pub(super) fn validate_client_hello(
+    text: &str,
+    expected_channel: WebSocketChannel,
+) -> Result<(), String> {
+    let message = serde_json::from_str::<ClientMessage>(text)
+        .map_err(|_| "first application message must be client_hello".to_string())?;
+    let ClientMessage::ClientHello {
+        protocol_version,
+        channel,
+        platform,
+        client_version,
+        capabilities,
+    } = message
+    else {
+        return Err("first application message must be client_hello".into());
+    };
+    if protocol_version != REALTIME_PROTOCOL_VERSION {
+        return Err(format!(
+            "unsupported realtime protocol version {protocol_version}"
+        ));
+    }
+    if channel != expected_channel {
+        return Err(format!(
+            "client channel {channel:?} does not match endpoint {expected_channel:?}"
+        ));
+    }
+    if !matches!(platform.as_str(), "ios" | "android" | "web" | "desktop") {
+        return Err("unsupported client platform".into());
+    }
+    if client_version.is_empty() || client_version.len() > 64 {
+        return Err("client version must contain 1 to 64 bytes".into());
+    }
+    if capabilities.len() > 32 || capabilities.iter().any(|value| value.len() > 64) {
+        return Err("client capabilities exceed protocol limits".into());
+    }
+    tracing::info!(
+        protocol_version,
+        ?channel,
+        %platform,
+        %client_version,
+        ?capabilities,
+        "realtime client handshake accepted"
+    );
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub(super) struct WebContact {
     pub(super) identity: u8,
@@ -173,12 +258,14 @@ pub(super) struct ClientMessageContext<'a, HostPath> {
     pub(super) browser_frames: &'a BrowserVideoSlot,
     pub(super) connection: &'a ClientConnectionState,
     pub(super) browser_resync: &'a AtomicBool,
+    pub(super) channel: WebSocketChannel,
 }
 
 /// Separates decoder ingress acknowledgements from presentation telemetry.
 /// A browser credit is released only by the matching sequence, so a late
 /// acknowledgement cannot accidentally admit a newer frame.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_client_message<HostPath>(
     input: &InputSink<HostPath>,
     orientation: Orientation,
@@ -187,6 +274,7 @@ pub(super) fn handle_client_message<HostPath>(
     pressed_keyboard: &mut HashSet<u64>,
     connection: &ClientConnectionState,
     browser_resync: &AtomicBool,
+    channel: WebSocketChannel,
 ) -> ClientVideoFeedback {
     handle_client_message_with_keymap(
         ClientMessageContext {
@@ -195,6 +283,7 @@ pub(super) fn handle_client_message<HostPath>(
             browser_frames,
             connection,
             browser_resync,
+            channel,
         },
         text,
         pressed_keyboard,
@@ -214,10 +303,19 @@ pub(super) fn handle_client_message_with_keymap<HostPath>(
         browser_frames,
         connection,
         browser_resync,
+        channel,
     } = context;
     let Ok(message) = serde_json::from_str::<ClientMessage>(text) else {
         return ClientVideoFeedback::None;
     };
+    if matches!(message, ClientMessage::ClientHello { .. }) {
+        return ClientVideoFeedback::ProtocolError("client_hello may only be sent once".into());
+    }
+    if message.channel() != Some(channel) {
+        return ClientVideoFeedback::ProtocolError(format!(
+            "message is not valid on the {channel:?} channel"
+        ));
+    }
     if !connection.control_granted()
         && matches!(
             message,
@@ -239,40 +337,7 @@ pub(super) fn handle_client_message_with_keymap<HostPath>(
         return ClientVideoFeedback::None;
     }
     match message {
-        ClientMessage::ClientHello {
-            protocol_version,
-            platform,
-            client_version,
-            capabilities,
-        } => {
-            let platform = platform.chars().take(32).collect::<String>();
-            let client_version = client_version.chars().take(64).collect::<String>();
-            let capabilities = capabilities
-                .into_iter()
-                .take(32)
-                .map(|capability| capability.chars().take(64).collect::<String>())
-                .collect::<Vec<_>>();
-            tracing::info!(
-                protocol_version,
-                %platform,
-                %client_version,
-                ?capabilities,
-                "mobile client handshake received"
-            );
-            if protocol_version != 1 {
-                return ClientVideoFeedback::ProtocolError(format!(
-                    "unsupported client protocol version {protocol_version}"
-                ));
-            }
-            if !matches!(platform.as_str(), "ios" | "android" | "web" | "desktop") {
-                return ClientVideoFeedback::ProtocolError("unsupported client platform".into());
-            }
-            if client_version.is_empty() {
-                return ClientVideoFeedback::ProtocolError(
-                    "client version must not be empty".into(),
-                );
-            }
-        }
+        ClientMessage::ClientHello { .. } => unreachable!("duplicate hello rejected above"),
         ClientMessage::BrowserFrameAccepted { sequence } => {
             return sequence
                 .parse::<u64>()
@@ -564,6 +629,7 @@ mod tests {
             pressed_keyboard,
             &ClientConnectionState::new(true),
             &AtomicBool::new(false),
+            WebSocketChannel::Control,
         )
     }
 
@@ -572,50 +638,51 @@ mod tests {
         let (input, browser_frames, _input_rx) = test_state();
         let mut pressed = HashSet::new();
         assert_eq!(
-            handle_test_client_message(
+            handle_client_message(
                 &input,
+                Orientation::Portrait,
                 &browser_frames,
                 r#"{"type":"browser_frame_accepted","sequence":"42"}"#,
                 &mut pressed,
+                &ClientConnectionState::new(false),
+                &AtomicBool::new(false),
+                WebSocketChannel::Media,
             ),
             ClientVideoFeedback::BrowserAccepted(42)
         );
         assert_eq!(
-            handle_test_client_message(
+            handle_client_message(
                 &input,
+                Orientation::Portrait,
                 &browser_frames,
                 r#"{"type":"frame_presented","sequence":"42"}"#,
                 &mut pressed,
+                &ClientConnectionState::new(false),
+                &AtomicBool::new(false),
+                WebSocketChannel::Media,
             ),
             ClientVideoFeedback::FramePresented(42)
         );
     }
 
     #[test]
-    fn client_hello_rejects_unknown_protocol_or_platform() {
-        let (input, browser_frames, _input_rx) = test_state();
-        let mut pressed = HashSet::new();
-        let invalid_version = handle_test_client_message(
-            &input,
-            &browser_frames,
-            r#"{"type":"client_hello","protocol_version":99,"platform":"android","client_version":"test"}"#,
-            &mut pressed,
-        );
-        assert!(matches!(
-            invalid_version,
-            ClientVideoFeedback::ProtocolError(_)
-        ));
-
-        let invalid_platform = handle_test_client_message(
-            &input,
-            &browser_frames,
-            r#"{"type":"client_hello","protocol_version":1,"platform":"android-target","client_version":"test"}"#,
-            &mut pressed,
-        );
-        assert!(matches!(
-            invalid_platform,
-            ClientVideoFeedback::ProtocolError(_)
-        ));
+    fn client_hello_requires_supported_version_platform_and_matching_channel() {
+        assert!(validate_client_hello(
+            r#"{"type":"client_hello","protocol_version":2,"channel":"media","platform":"web","client_version":"test"}"#,
+            WebSocketChannel::Media,
+        ).is_ok());
+        assert!(validate_client_hello(
+            r#"{"type":"client_hello","protocol_version":99,"channel":"media","platform":"web","client_version":"test"}"#,
+            WebSocketChannel::Media,
+        ).is_err());
+        assert!(validate_client_hello(
+            r#"{"type":"client_hello","protocol_version":2,"channel":"control","platform":"web","client_version":"test"}"#,
+            WebSocketChannel::Media,
+        ).is_err());
+        assert!(validate_client_hello(
+            r#"{"type":"client_hello","protocol_version":2,"channel":"media","platform":"unknown","client_version":"test"}"#,
+            WebSocketChannel::Media,
+        ).is_err());
     }
 
     #[test]
@@ -633,6 +700,7 @@ mod tests {
             &mut pressed,
             &connection,
             &resync,
+            WebSocketChannel::Control,
         );
         assert!(input_rx.try_recv().is_err());
 
@@ -644,8 +712,48 @@ mod tests {
             &mut pressed,
             &connection,
             &resync,
+            WebSocketChannel::Media,
         );
         assert!(connection.video_active());
+    }
+
+    #[test]
+    fn ready_channels_reject_messages_owned_by_the_other_channel() {
+        let (input, browser_frames, mut input_rx) = test_state();
+        let connection = ClientConnectionState::new(true);
+        let resync = AtomicBool::new(false);
+
+        let control_result = handle_client_message(
+            &input,
+            Orientation::Portrait,
+            &browser_frames,
+            r#"{"type":"video_demand","active":true}"#,
+            &mut HashSet::new(),
+            &connection,
+            &resync,
+            WebSocketChannel::Control,
+        );
+        assert!(matches!(
+            control_result,
+            ClientVideoFeedback::ProtocolError(_)
+        ));
+        assert!(!connection.video_active());
+
+        let media_result = handle_client_message(
+            &input,
+            Orientation::Portrait,
+            &browser_frames,
+            r#"{"type":"button","name":"home"}"#,
+            &mut HashSet::new(),
+            &connection,
+            &resync,
+            WebSocketChannel::Media,
+        );
+        assert!(matches!(
+            media_result,
+            ClientVideoFeedback::ProtocolError(_)
+        ));
+        assert!(input_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -666,6 +774,7 @@ mod tests {
                 &mut pressed,
                 &demand,
                 &resync,
+                WebSocketChannel::Media,
             ),
             ClientVideoFeedback::ResetAll
         );
@@ -679,6 +788,7 @@ mod tests {
                 &mut pressed,
                 &demand,
                 &resync,
+                WebSocketChannel::Media,
             ),
             ClientVideoFeedback::None
         );
@@ -706,6 +816,7 @@ mod tests {
                 &mut HashSet::new(),
                 &demand,
                 &resync,
+                WebSocketChannel::Media,
             ),
             ClientVideoFeedback::ResetBrowser
         );
