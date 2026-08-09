@@ -2,7 +2,47 @@
 
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeveloperImageKind {
+    Legacy,
+    Personalized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeveloperImageSourceKind {
+    Xcode,
+    Custom,
+    Managed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeveloperImageMountPolicy {
+    Manual,
+    #[default]
+    Ask,
+    Automatic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeveloperImageSetDescriptor {
+    pub id: String,
+    pub kind: DeveloperImageKind,
+    pub source: DeveloperImageSourceKind,
+    pub display_name: String,
+    pub platform: String,
+    pub product_version: Option<String>,
+    pub product_build_version: Option<String>,
+    pub image_name: String,
+    pub auxiliary_name: String,
+    pub manifest_name: Option<String>,
+    pub size_bytes: u64,
+    pub removable: bool,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,9 +60,17 @@ pub enum DeveloperImageMountState {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeveloperImageOperation {
+    Mount,
+    Unmount,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct DeveloperImageMountStatus {
     pub state: DeveloperImageMountState,
+    pub operation: Option<DeveloperImageOperation>,
     pub progress_percent: Option<f64>,
     pub product_version: Option<String>,
     pub image_type: Option<String>,
@@ -30,7 +78,7 @@ pub struct DeveloperImageMountStatus {
 }
 
 /// Shared observation port for one session's Developer Disk Image operation.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DeveloperImageMountSlot(Arc<Mutex<DeveloperImageMountStatus>>);
 
 impl DeveloperImageMountSlot {
@@ -96,9 +144,11 @@ mod tests {
         let reader = slot.clone();
         slot.update(|status| {
             status.state = DeveloperImageMountState::Uploading;
+            status.operation = Some(DeveloperImageOperation::Mount);
             status.progress_percent = Some(50.0);
         });
         assert_eq!(reader.get().state, DeveloperImageMountState::Uploading);
+        assert_eq!(reader.get().operation, Some(DeveloperImageOperation::Mount));
         assert_eq!(reader.get().progress_percent, Some(50.0));
         slot.reset();
         assert_eq!(reader.get(), DeveloperImageMountStatus::default());

@@ -7,6 +7,7 @@ pub fn state(
     client: devicehub_runtime::RuntimeClient<PathBuf>,
     profile_dir: PathBuf,
     keymap_catalog_cache_dir: PathBuf,
+    developer_image_catalog: crate::developer_image::TokioDeveloperImageCatalog,
     websocket_config: devicehub_server::websocket::WebSocketConfig,
 ) -> devicehub_server::private_api::PrivateApiState {
     let commands = client.device.commands.clone();
@@ -22,9 +23,11 @@ pub fn state(
             client.device.device_control.clone(),
         ),
         wda_http: devicehub_server::http::WdaHttpState::new(commands.clone()),
-        developer_image_http: devicehub_server::http::DeveloperImageHttpState::new(
+        developer_image_http: developer_image_http_state(
             commands.clone(),
             client.device.developer_image.clone(),
+            client.manager.clone(),
+            developer_image_catalog,
         ),
         provisioning_http: devicehub_server::http::ProvisioningHttpState::new(commands.clone()),
         performance_http: devicehub_server::http::PerformanceHttpState::new(
@@ -72,4 +75,15 @@ pub fn state(
         browser_audio: None,
         browser_control_leases: devicehub_server::websocket::BrowserControlLeases::default(),
     }
+}
+
+fn developer_image_http_state(
+    commands: devicehub_runtime::SessionCommandSlot<PathBuf>,
+    status: devicehub_core::DeveloperImageMountSlot,
+    manager: devicehub_runtime::RuntimeManagerClient,
+    catalog: crate::developer_image::TokioDeveloperImageCatalog,
+) -> devicehub_server::http::DeveloperImageHttpState {
+    devicehub_server::http::DeveloperImageHttpState::new(commands, status)
+        .with_manager(manager)
+        .with_catalog(catalog)
 }

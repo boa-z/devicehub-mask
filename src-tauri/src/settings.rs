@@ -17,6 +17,10 @@ struct PersistedSettings {
     clipboard_sync_enabled: bool,
     #[serde(default)]
     startup_device_priority: Vec<String>,
+    #[serde(default)]
+    developer_image_mount_policy: devicehub_core::DeveloperImageMountPolicy,
+    #[serde(default)]
+    developer_image_directories: Vec<PathBuf>,
 }
 
 impl Default for PersistedSettings {
@@ -27,6 +31,8 @@ impl Default for PersistedSettings {
             audio_volume: DEFAULT_AUDIO_VOLUME,
             clipboard_sync_enabled: false,
             startup_device_priority: Vec::new(),
+            developer_image_mount_policy: devicehub_core::DeveloperImageMountPolicy::Ask,
+            developer_image_directories: Vec::new(),
         }
     }
 }
@@ -42,6 +48,8 @@ pub struct SettingsStatus {
     pub audio_volume: f32,
     pub clipboard_sync_enabled: bool,
     pub startup_device_priority: Vec<String>,
+    pub developer_image_mount_policy: devicehub_core::DeveloperImageMountPolicy,
+    pub developer_image_directories: Vec<PathBuf>,
 }
 
 pub struct AppSettings {
@@ -73,6 +81,7 @@ impl AppSettings {
             persisted.clipboard_sync_enabled,
         );
         runtime.set_startup_device_priority(persisted.startup_device_priority.clone());
+        runtime.set_developer_image_mount_policy(persisted.developer_image_mount_policy);
         let settings = Self {
             path,
             persisted: RwLock::new(persisted),
@@ -102,6 +111,8 @@ impl AppSettings {
             audio_volume: persisted.audio_volume,
             clipboard_sync_enabled: persisted.clipboard_sync_enabled,
             startup_device_priority: persisted.startup_device_priority.clone(),
+            developer_image_mount_policy: persisted.developer_image_mount_policy,
+            developer_image_directories: persisted.developer_image_directories.clone(),
         }
     }
 
@@ -195,6 +206,42 @@ impl AppSettings {
         drop(persisted);
         self.runtime
             .set_startup_device_priority(startup_device_priority);
+        Ok(self.status())
+    }
+
+    pub fn set_developer_image_mount_policy(
+        &self,
+        developer_image_mount_policy: devicehub_core::DeveloperImageMountPolicy,
+    ) -> Result<SettingsStatus, String> {
+        let mut persisted = self
+            .persisted
+            .write()
+            .map_err(|_| "application settings lock poisoned".to_owned())?;
+        let next = PersistedSettings {
+            developer_image_mount_policy,
+            ..persisted.clone()
+        };
+        self.save_locked(&mut persisted, next)?;
+        drop(persisted);
+        self.runtime
+            .set_developer_image_mount_policy(developer_image_mount_policy);
+        Ok(self.status())
+    }
+
+    pub fn set_developer_image_directories(
+        &self,
+        developer_image_directories: Vec<PathBuf>,
+    ) -> Result<SettingsStatus, String> {
+        let mut persisted = self
+            .persisted
+            .write()
+            .map_err(|_| "application settings lock poisoned".to_owned())?;
+        let next = PersistedSettings {
+            developer_image_directories,
+            ..persisted.clone()
+        };
+        self.save_locked(&mut persisted, next)?;
+        drop(persisted);
         Ok(self.status())
     }
 

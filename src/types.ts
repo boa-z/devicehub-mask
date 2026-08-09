@@ -193,10 +193,25 @@ export type LogArchiveStatus = {
 export type DeveloperImageMountState = "idle" | "validating" | "personalizing" | "uploading" | "mounting" | "unmounting" | "mounted" | "unmounted" | "cancelled" | "failed";
 export type DeveloperImageMountStatus = {
   state: DeveloperImageMountState;
+  operation: "mount" | "unmount" | null;
   progress_percent: number | null;
   product_version: string | null;
   image_type: string | null;
   error: string | null;
+};
+export type DeveloperImageSetDescriptor = {
+  id: string;
+  kind: "legacy" | "personalized";
+  source: "xcode" | "custom" | "managed";
+  display_name: string;
+  platform: string;
+  product_version: string | null;
+  product_build_version: string | null;
+  image_name: string;
+  auxiliary_name: string;
+  manifest_name: string | null;
+  size_bytes: number;
+  removable: boolean;
 };
 export type DeviceFileKind = "file" | "directory" | "other";
 export type DeviceFileEntry = {

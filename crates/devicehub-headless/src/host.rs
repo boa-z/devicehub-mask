@@ -21,6 +21,8 @@ struct PersistedSettings {
     audio_volume: f32,
     #[serde(default)]
     startup_device_priority: Vec<String>,
+    #[serde(default)]
+    developer_image_mount_policy: devicehub_core::DeveloperImageMountPolicy,
 }
 
 impl Default for PersistedSettings {
@@ -30,6 +32,7 @@ impl Default for PersistedSettings {
             audio_muted: false,
             audio_volume: DEFAULT_AUDIO_VOLUME,
             startup_device_priority: Vec::new(),
+            developer_image_mount_policy: devicehub_core::DeveloperImageMountPolicy::Ask,
         }
     }
 }
@@ -71,6 +74,7 @@ impl HeadlessHostControl {
         let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
         let runtime_preferences = RuntimePreferences::new(settings.audio_enabled, false);
         runtime_preferences.set_startup_device_priority(settings.startup_device_priority.clone());
+        runtime_preferences.set_developer_image_mount_policy(settings.developer_image_mount_policy);
         Self(Arc::new(HeadlessHostInner {
             settings_path,
             settings: RwLock::new(settings),
@@ -113,6 +117,8 @@ impl HostControl for HeadlessHostControl {
             audio_volume: settings.audio_volume,
             clipboard_sync_enabled: false,
             startup_device_priority: settings.startup_device_priority.clone(),
+            developer_image_mount_policy: settings.developer_image_mount_policy,
+            developer_image_directories: Vec::new(),
         }
     }
 
@@ -132,6 +138,9 @@ impl HostControl for HeadlessHostControl {
             startup_device_priority: patch
                 .startup_device_priority
                 .unwrap_or_else(|| settings.startup_device_priority.clone()),
+            developer_image_mount_policy: patch
+                .developer_image_mount_policy
+                .unwrap_or(settings.developer_image_mount_policy),
         };
         self.save(&next)?;
         self.0
@@ -140,6 +149,9 @@ impl HostControl for HeadlessHostControl {
         self.0
             .runtime_preferences
             .set_startup_device_priority(next.startup_device_priority.clone());
+        self.0
+            .runtime_preferences
+            .set_developer_image_mount_policy(next.developer_image_mount_policy);
         *settings = next;
         drop(settings);
         Ok(self.settings())

@@ -28,14 +28,14 @@ pub(crate) use details::{
     read_activation_state, read_device_battery, read_device_details,
     read_device_developer_mode_status, rename_device,
 };
-pub(crate) use developer_image::serve_developer_image_mount;
 pub use developer_image::{
-    DeveloperImageAssetFuture, DeveloperImageAssetLoader, DeveloperImageMountCommand,
-    DeveloperImageMountRequest,
+    DeveloperImageAssetFuture, DeveloperImageAssetLoader, DeveloperImageAutomaticRequestFuture,
+    DeveloperImageMountCommand, DeveloperImageMountRequest, DeveloperImageVariant,
 };
 pub(crate) use developer_image::{
     is_developer_image_mounted, is_developer_image_mounted_for_device,
 };
+pub(crate) use developer_image::{serve_developer_image_mount, unmount_image};
 pub(crate) use developer_mode::execute_developer_mode;
 pub use developer_mode::{DeveloperModeCommand, DeveloperModePreparation};
 pub use events::DeviceEventSlot;

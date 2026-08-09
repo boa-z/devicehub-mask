@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isEligibleWdaRunner, isSysdiagnoseActive, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
+import { APP_RENDER_BATCH_SIZE, appProfileBindingState, canTrustProvisioningProfileSigner, deviceAppScopeQuery, filterCrashReports, filterDeviceApps, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isDeveloperImageDeviceLockedError, isEligibleWdaRunner, isSysdiagnoseActive, nextAppRenderLimit, normalizeDeviceNameInput, shouldRefreshDeviceInspector, sortDeviceApps } from "./deviceInspector";
 import type { DeviceApp, DeviceCrashReport, ProvisioningProfile } from "./types";
 
 const apps: DeviceApp[] = [
@@ -227,6 +227,12 @@ describe("device inspector", () => {
     expect(canTrustProvisioningProfileSigner(profiles[2])).toBe(false);
     expect(canTrustProvisioningProfileSigner({ ...profiles[0], get_task_allow: false })).toBe(false);
     expect(canTrustProvisioningProfileSigner({ ...profiles[0], removal_supported: false })).toBe(false);
+  });
+
+  it("recognizes locked-device developer image failures", () => {
+    expect(isDeveloperImageDeviceLockedError("cannot unmount developer image: DeviceLocked")).toBe(true);
+    expect(isDeveloperImageDeviceLockedError("Error: PasswordProtected")).toBe(true);
+    expect(isDeveloperImageDeviceLockedError("ImageMountFailed")).toBe(false);
   });
 
   it("formats profile dates and rejects malformed values", () => {

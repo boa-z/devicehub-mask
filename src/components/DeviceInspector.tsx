@@ -2,7 +2,7 @@ import AppstoreOutlined from "@ant-design/icons/es/icons/AppstoreOutlined";
 import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
 import CopyOutlined from "@ant-design/icons/es/icons/CopyOutlined";
 import DatabaseOutlined from "@ant-design/icons/es/icons/DatabaseOutlined";
-import DeleteOutlined from "@ant-design/icons/es/icons/DeleteOutlined";
+import ClearOutlined from "@ant-design/icons/es/icons/ClearOutlined";
 import DisconnectOutlined from "@ant-design/icons/es/icons/DisconnectOutlined";
 import DownloadOutlined from "@ant-design/icons/es/icons/DownloadOutlined";
 import EditOutlined from "@ant-design/icons/es/icons/EditOutlined";
@@ -28,9 +28,9 @@ import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert, ErrorCopyButton } from "./ErrorPresentation";
-import { canTrustProvisioningProfileSigner, filterCrashReports, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isSysdiagnoseActive, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
+import { canTrustProvisioningProfileSigner, filterCrashReports, filterProvisioningProfiles, formatCapacity, formatDeviceRegionalSettings, formatElapsed, formatFileSize, formatProfileDate, formatReportDate, formatStorageUsage, isAppOperationActive, isBackupActive, isDeveloperImageActive, isDeveloperImageDeviceLockedError, isSysdiagnoseActive, normalizeDeviceNameInput, shouldRefreshDeviceInspector } from "../deviceInspector";
 import type { DeviceAppSort, DeviceInspectorTab, ProfileStatusFilter } from "../deviceInspector";
-import type { AppBindingConflict, AppOperation, AppProfileBinding, CompanionDevice, DeveloperImageMountStatus, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProfileResolution, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
+import type { AppBindingConflict, AppOperation, AppProfileBinding, CompanionDevice, DeveloperImageMountStatus, DeveloperImageSetDescriptor, DeviceApp, DeviceBackupStatus, DeviceCrashReport, DeviceCrashReportList, DeviceDetails, DeviceEvent, ForgetDeviceResult, HomeScreenLayout, ProfileResolution, ProvisioningProfile, SysdiagnoseStatus, WdaRunnerStatus } from "../types";
 import { useActivePolling } from "../hooks/useActivePolling";
 import { useLatestRequestOwner } from "../hooks/latestRequest";
 import { AppsPane } from "../features/device-inspector/apps/AppsPane";
@@ -58,6 +58,13 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<T>;
+}
+
+function developerImageErrorText(error: unknown, t: (key: string) => string): string {
+  const value = String(error ?? "");
+  return isDeveloperImageDeviceLockedError(value)
+    ? t("deviceInspector.developerImageDeviceLocked")
+    : value;
 }
 
 export function DeviceInspector({
@@ -110,7 +117,9 @@ export function DeviceInspector({
   const [renameBusy, setRenameBusy] = useState(false);
   const [developerModeBusy, setDeveloperModeBusy] = useState(false);
   const [developerImageStatus, setDeveloperImageStatus] = useState<DeveloperImageMountStatus | null>(null);
-  const [developerImageAction, setDeveloperImageAction] = useState<"start" | "stop" | "unmount" | null>(null);
+  const [developerImages, setDeveloperImages] = useState<DeveloperImageSetDescriptor[]>([]);
+  const [selectedDeveloperImageId, setSelectedDeveloperImageId] = useState<string | null>(null);
+  const [developerImageAction, setDeveloperImageAction] = useState<"start" | "stop" | "unmount" | "refresh" | "import" | "remove" | null>(null);
   const [profileMutation, setProfileMutation] = useState<string | null>(null);
   const [documentsApp, setDocumentsApp] = useState<DeviceApp | null>(null);
   const [consoleApp, setConsoleApp] = useState<DeviceApp | null>(null);
@@ -133,6 +142,7 @@ export function DeviceInspector({
   const backupStatusRequest = useLatestRequestOwner();
   const sysdiagnoseStatusRequest = useLatestRequestOwner();
   const developerImageStatusRequest = useLatestRequestOwner();
+  const developerImageInput = useRef<HTMLInputElement>(null);
   const appOperationRequest = useLatestRequestOwner();
   const wallpaperRequest = useLatestRequestOwner();
   const wdaRunnerStatusRequest = useLatestRequestOwner();
@@ -221,6 +231,19 @@ export function DeviceInspector({
     return status;
   }, [developerImageStatusRequest, request]);
 
+  const loadDeveloperImages = useCallback(async (refresh = false, productVersion = details?.product_version) => {
+    const images = await readJson<DeveloperImageSetDescriptor[]>(await request("/api/device/developer-images", {
+      method: refresh ? "POST" : "GET",
+    }));
+    setDeveloperImages(images);
+    setSelectedDeveloperImageId((current) => {
+      if (current && images.some((image) => image.id === current)) return current;
+      const expectedKind = Number.parseInt(productVersion?.split(".")[0] ?? "17", 10) < 17 ? "legacy" : "personalized";
+      return images.find((image) => image.kind === expectedKind)?.id ?? images[0]?.id ?? null;
+    });
+    return images;
+  }, [details?.product_version, request]);
+
   const readAppOperation = useCallback(
     async (signal?: AbortSignal) => readJson<AppOperation>(await request("/api/device/apps/operation", { signal })),
     [request],
@@ -249,6 +272,7 @@ export function DeviceInspector({
           loadBackupStatus(),
           loadSysdiagnoseStatus(),
           loadDeveloperImageStatus(),
+          loadDeveloperImages(false, nextDetails.product_version),
         ]);
         setCompanions([]);
         setCompanionError(null);
@@ -291,7 +315,7 @@ export function DeviceInspector({
     } finally {
       if (ticket.isCurrent()) setLoading(false);
     }
-  }, [activeUdid, inspectorLoadRequest, loadApps, loadBackupStatus, loadDeveloperImageStatus, loadHomeScreen, loadSysdiagnoseStatus, loadWdaRunnerStatus, refreshAppOperation, request, tab]);
+  }, [activeUdid, inspectorLoadRequest, loadApps, loadBackupStatus, loadDeveloperImageStatus, loadDeveloperImages, loadHomeScreen, loadSysdiagnoseStatus, loadWdaRunnerStatus, refreshAppOperation, request, tab]);
 
   useEffect(() => {
     inspectorLoadRequest.cancel();
@@ -329,6 +353,8 @@ export function DeviceInspector({
     setRenameBusy(false);
     setDeveloperModeBusy(false);
     setDeveloperImageStatus(null);
+    setDeveloperImages([]);
+    setSelectedDeveloperImageId(null);
     setDeveloperImageAction(null);
     handledDeveloperImageState.current = "";
     setBackupStatus(null);
@@ -356,7 +382,7 @@ export function DeviceInspector({
 
   useEffect(() => {
     if (!developerImageStatus) return;
-    const marker = `${developerImageStatus.state}:${developerImageStatus.error ?? ""}`;
+    const marker = `${developerImageStatus.operation ?? "none"}:${developerImageStatus.state}:${developerImageStatus.error ?? ""}`;
     if (handledDeveloperImageState.current === marker) return;
     handledDeveloperImageState.current = marker;
     if (developerImageStatus.state === "mounted") {
@@ -366,7 +392,11 @@ export function DeviceInspector({
       setDetails((current) => current ? { ...current, developer_image_mounted: false } : current);
       void message.success(t("deviceInspector.developerImageUnmounted"));
     } else if (developerImageStatus.state === "failed") {
-      void showErrorMessage(t("deviceInspector.developerImageMountFailed", { error: developerImageStatus.error ?? "" }));
+      const error = developerImageErrorText(developerImageStatus.error, t);
+      const key = developerImageStatus.operation === "unmount"
+        ? "deviceInspector.developerImageUnmountFailed"
+        : "deviceInspector.developerImageMountFailed";
+      void showErrorMessage(t(key, { error }));
     }
   }, [developerImageStatus, t]);
 
@@ -834,38 +864,25 @@ export function DeviceInspector({
     }
   };
 
-  const selectDeveloperImageFile = async (title: string, extensions: string[]) => {
-    const selected = await open({
-      multiple: false,
-      directory: false,
-      title,
-      filters: [{ name: title, extensions }],
-    });
-    return selected && !Array.isArray(selected) ? selected : null;
-  };
-
-  const startDeveloperImageMount = async () => {
-    if (!details || developerImageAction) return;
-    const majorVersion = Number.parseInt(details.product_version.split(".")[0] ?? "", 10);
-    if (!Number.isFinite(majorVersion)) {
-      void showErrorMessage(t("deviceInspector.developerImageVersionInvalid"));
-      return;
+  const mountSelectedDeveloperImage = useCallback(async () => {
+    if (!details || !selectedDeveloperImageId || developerImageAction) return;
+    setDeveloperImageAction("start");
+    try {
+      const response = await request(`/api/device/developer-image/${encodeURIComponent(selectedDeveloperImageId)}`, { method: "PUT" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadDeveloperImageStatus();
+      void message.info(t("deviceInspector.developerImageMountStarted"));
+    } catch (mountError) {
+      void showErrorMessage(t("deviceInspector.developerImageMountFailed", {
+        error: developerImageErrorText(mountError, t),
+      }));
+    } finally {
+      setDeveloperImageAction(null);
     }
-    const image = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImage"), ["dmg"]);
-    if (!image) return;
+  }, [details, developerImageAction, loadDeveloperImageStatus, request, selectedDeveloperImageId, t]);
 
-    let signature: string | undefined;
-    let trustCache: string | undefined;
-    let manifest: string | undefined;
-    if (majorVersion < 17) {
-      signature = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImageSignature"), ["signature"]) ?? undefined;
-      if (!signature) return;
-    } else {
-      trustCache = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImageTrustCache"), ["trustcache"]) ?? undefined;
-      if (!trustCache) return;
-      manifest = await selectDeveloperImageFile(t("deviceInspector.selectDeveloperImageManifest"), ["plist"]) ?? undefined;
-      if (!manifest) return;
-    }
+  const startDeveloperImageMount = () => {
+    if (!details || !selectedDeveloperImageId || developerImageAction) return;
 
     Modal.confirm({
       title: t("deviceInspector.mountDeveloperImage"),
@@ -873,23 +890,56 @@ export function DeviceInspector({
       okText: t("deviceInspector.mountDeveloperImage"),
       cancelText: t("common.cancel"),
       async onOk() {
-        setDeveloperImageAction("start");
-        try {
-          const response = await request("/api/device/developer-image", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ image, signature, trust_cache: trustCache, manifest }),
-          });
-          if (!response.ok) throw new Error((await response.text()) || response.statusText);
-          await loadDeveloperImageStatus();
-          void message.info(t("deviceInspector.developerImageMountStarted"));
-        } catch (mountError) {
-          void showErrorMessage(t("deviceInspector.developerImageMountFailed", { error: String(mountError) }));
-        } finally {
-          setDeveloperImageAction(null);
-        }
+        await mountSelectedDeveloperImage();
       },
     });
+  };
+
+  const refreshDeveloperImages = async () => {
+    if (developerImageAction) return;
+    setDeveloperImageAction("refresh");
+    try {
+      await loadDeveloperImages(true);
+    } catch (refreshError) {
+      void showErrorMessage(String(refreshError));
+    } finally {
+      setDeveloperImageAction(null);
+    }
+  };
+
+  const importDeveloperImage = async (files: FileList | null) => {
+    if (!files || files.length === 0 || developerImageAction) return;
+    setDeveloperImageAction("import");
+    try {
+      const form = new FormData();
+      for (const file of Array.from(files)) form.append("files", file, file.name);
+      const imported = await readJson<DeveloperImageSetDescriptor>(await request("/api/device/developer-images/import", {
+        method: "POST",
+        body: form,
+      }));
+      await loadDeveloperImages();
+      setSelectedDeveloperImageId(imported.id);
+    } catch (importError) {
+      void showErrorMessage(String(importError));
+    } finally {
+      if (developerImageInput.current) developerImageInput.current.value = "";
+      setDeveloperImageAction(null);
+    }
+  };
+
+  const removeDeveloperImage = async () => {
+    const selected = developerImages.find((image) => image.id === selectedDeveloperImageId);
+    if (!selected?.removable || developerImageAction) return;
+    setDeveloperImageAction("remove");
+    try {
+      const response = await request(`/api/device/developer-images/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error((await response.text()) || response.statusText);
+      await loadDeveloperImages();
+    } catch (removeError) {
+      void showErrorMessage(String(removeError));
+    } finally {
+      setDeveloperImageAction(null);
+    }
   };
 
   const stopDeveloperImageMount = async () => {
@@ -924,7 +974,9 @@ export function DeviceInspector({
           await loadDeveloperImageStatus();
           void message.info(t("deviceInspector.developerImageUnmountStarted"));
         } catch (unmountError) {
-          void showErrorMessage(t("deviceInspector.developerImageUnmountFailed", { error: String(unmountError) }));
+          void showErrorMessage(t("deviceInspector.developerImageUnmountFailed", {
+            error: developerImageErrorText(unmountError, t),
+          }));
         } finally {
           setDeveloperImageAction(null);
         }
@@ -1123,7 +1175,12 @@ export function DeviceInspector({
                 />
               )}
               {developerImageStatus.state === "failed" && developerImageStatus.error && (
-                <ErrorAlert title={t("deviceInspector.developerImageMountFailedTitle")} error={developerImageStatus.error} />
+                <ErrorAlert
+                  title={t(developerImageStatus.operation === "unmount"
+                    ? "deviceInspector.developerImageUnmountFailedTitle"
+                    : "deviceInspector.developerImageMountFailedTitle")}
+                  error={developerImageErrorText(developerImageStatus.error, t)}
+                />
               )}
             </div>
           )}
@@ -1150,7 +1207,7 @@ export function DeviceInspector({
             )}
             {details?.developer_mode_enabled === true && (
               <section className="device-developer-image-section">
-                <div>
+                <div className="device-developer-image-heading">
                   <Typography.Text strong>{t("deviceInspector.developerImage")}</Typography.Text>
                   <Typography.Text type="secondary">
                     {developerImageMountRunning && developerImageStatus
@@ -1160,30 +1217,88 @@ export function DeviceInspector({
                         : t(`deviceInspector.developerImageStates.${details.developer_image_mounted ? "mounted" : "missing"}`)}
                   </Typography.Text>
                 </div>
-                {developerImageMountRunning ? (
-                  <Button
-                    danger
-                    icon={<StopOutlined />}
-                    loading={developerImageAction === "stop"}
-                    disabled={developerImageAction !== null}
-                    onClick={() => void stopDeveloperImageMount()}
-                  >{t("deviceInspector.cancelDeveloperImageMount")}</Button>
-                ) : details.developer_image_mounted ? (
-                  <Button
-                    danger
-                    icon={<DisconnectOutlined />}
-                    loading={developerImageAction === "unmount"}
-                    disabled={developerImageAction !== null}
-                    onClick={unmountDeveloperImage}
-                  >{t("deviceInspector.unmountDeveloperImage")}</Button>
-                ) : details.developer_image_mounted === false ? (
-                  <Button
-                    icon={<UploadOutlined />}
-                    loading={developerImageAction === "start"}
-                    disabled={developerImageAction !== null}
-                    onClick={() => void startDeveloperImageMount()}
-                  >{t("deviceInspector.mountDeveloperImage")}</Button>
-                ) : null}
+                <input
+                  ref={developerImageInput}
+                  className="file-input"
+                  type="file"
+                  multiple
+                  accept=".dmg,.signature,.trustcache,.plist"
+                  onChange={(event) => void importDeveloperImage(event.currentTarget.files)}
+                />
+                {details.developer_image_mounted === false && !developerImageMountRunning && (
+                  <select
+                    className="device-developer-image-select"
+                    aria-label={t("deviceInspector.developerImage")}
+                    value={selectedDeveloperImageId ?? ""}
+                    disabled={developerImages.length === 0}
+                    onChange={(event) => setSelectedDeveloperImageId(event.currentTarget.value || null)}
+                  >
+                    {developerImages.length === 0 && (
+                      <option value="">{t("deviceInspector.noDeveloperImages")}</option>
+                    )}
+                    {developerImages.map((image) => (
+                      <option key={image.id} value={image.id}>
+                        {image.display_name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <div className="device-developer-image-actions">
+                  {developerImageMountRunning ? (
+                    <Button
+                      danger
+                      icon={<StopOutlined />}
+                      loading={developerImageAction === "stop"}
+                      disabled={developerImageAction !== null}
+                      onClick={() => void stopDeveloperImageMount()}
+                    >{t("deviceInspector.cancelDeveloperImageMount")}</Button>
+                  ) : details.developer_image_mounted ? (
+                    <Button
+                      danger
+                      icon={<DisconnectOutlined />}
+                      loading={developerImageAction === "unmount"}
+                      disabled={developerImageAction !== null}
+                      onClick={unmountDeveloperImage}
+                    >{t("deviceInspector.unmountDeveloperImage")}</Button>
+                  ) : details.developer_image_mounted === false ? (
+                    <>
+                      <Tooltip title={t("deviceInspector.refresh")}>
+                        <Button
+                          aria-label={t("deviceInspector.refresh")}
+                          icon={<ReloadOutlined />}
+                          loading={developerImageAction === "refresh"}
+                          disabled={developerImageAction !== null}
+                          onClick={() => void refreshDeveloperImages()}
+                        />
+                      </Tooltip>
+                      <Button
+                        icon={<UploadOutlined />}
+                        loading={developerImageAction === "import"}
+                        disabled={developerImageAction !== null}
+                        onClick={() => developerImageInput.current?.click()}
+                      >{t("deviceInspector.importDeveloperImage")}</Button>
+                      {developerImages.find((image) => image.id === selectedDeveloperImageId)?.removable && (
+                        <Tooltip title={t("deviceInspector.remove")}>
+                          <Button
+                            danger
+                            aria-label={t("deviceInspector.remove")}
+                            icon={<ClearOutlined />}
+                            loading={developerImageAction === "remove"}
+                            disabled={developerImageAction !== null}
+                            onClick={() => void removeDeveloperImage()}
+                          />
+                        </Tooltip>
+                      )}
+                      <Button
+                        type="primary"
+                        icon={<UploadOutlined />}
+                        loading={developerImageAction === "start"}
+                        disabled={developerImageAction !== null || !selectedDeveloperImageId}
+                        onClick={() => void startDeveloperImageMount()}
+                      >{t("deviceInspector.mountDeveloperImage")}</Button>
+                    </>
+                  ) : null}
+                </div>
               </section>
             )}
             {infoRows.map(([label, value]) => (
@@ -1526,7 +1641,7 @@ export function DeviceInspector({
                       <Button
                         danger
                         size="small"
-                        icon={<DeleteOutlined />}
+                          icon={<ClearOutlined />}
                         loading={profileMutation === `remove:${profile.uuid}`}
                         disabled={profileMutation !== null}
                         onClick={() => removeProvisioningProfile(profile)}
@@ -1608,7 +1723,7 @@ export function DeviceInspector({
                     <Button
                       danger
                       size="small"
-                      icon={<DeleteOutlined />}
+                        icon={<ClearOutlined />}
                       loading={deletingReport === report.path}
                       disabled={exportingReport !== null || deletingReport !== null}
                       onClick={() => deleteCrashReport(report)}

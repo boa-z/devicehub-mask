@@ -6,7 +6,7 @@ description = "Host-independent HTTP and WebSocket adapters for DeviceHub"
 license = "AGPL-3.0-only"
 
 [dependencies]
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
 base64 = "0.22"
 bytes = "1"
 devicehub-core = { path = "../devicehub-core" }

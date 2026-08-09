@@ -43,6 +43,8 @@ pub struct HostSettingsStatus {
     pub audio_volume: f32,
     pub clipboard_sync_enabled: bool,
     pub startup_device_priority: Vec<String>,
+    pub developer_image_mount_policy: devicehub_core::DeveloperImageMountPolicy,
+    pub developer_image_directories: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -52,6 +54,7 @@ pub struct HostSettingsPatch {
     pub audio_volume: Option<f32>,
     pub clipboard_sync_enabled: Option<bool>,
     pub startup_device_priority: Option<Vec<String>>,
+    pub developer_image_mount_policy: Option<devicehub_core::DeveloperImageMountPolicy>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

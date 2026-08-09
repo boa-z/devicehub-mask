@@ -199,6 +199,7 @@ MCP Streamable HTTP 端点为 `http://127.0.0.1:8009/mcp`。MCP 当前没有鉴�
 | `--listen <IP:PORT>` | `127.0.0.1:8080` | 浏览器 HTTP/WebSocket 监听地址 |
 | `--allow-lan` | 关闭 | 允许非回环 `--listen`，不自动提供 TLS |
 | `--data-dir <PATH>` | `./.devicehub-mask` | 设置、配对记录、映射和临时传输数据 |
+| `--developer-image-dir <PATH>` | 无 | 发现宿主目录中的只读 DDI 镜像集；最多重复 16 次 |
 | `--frontend-dir <PATH>` | `./dist` | 包含 `index.html` 的 Vite 构建目录 |
 | `--token-file <PATH>` | 临时随机令牌 | 读取持久 API 令牌 |
 | `--device <IDENTIFIER>` | 自动选择 | 启动后优先连接的设备标识符 |
@@ -216,6 +217,7 @@ MCP Streamable HTTP 端点为 `http://127.0.0.1:8009/mcp`。MCP 当前没有鉴�
 ```text
 .devicehub-mask/
 ├── settings.json
+├── developer-images/
 ├── pairings/
 ├── profiles/
 └── transfers/
@@ -239,7 +241,7 @@ RUST_LOG=devicehub_mask=debug,devicehub_runtime=debug ./devicehub-headless
 
 浏览器输入使用设备级控制租约。第一条连接到某台设备的 WebSocket 可以发送触控、键盘、旋转、文本和硬件按钮输入；同一准确设备的其他标签页继续接收状态、画面、音频和事件，但保持只读。主控标签页关闭后，一个等待中的查看者会自动取得租约，不需要重连。控制不同设备的标签页持有相互独立的租约，可以并行操作。其他标签页持有设备时，界面显示“只读查看”并禁用输入控件。HTTP 管理操作仍按令牌鉴权并显式限定设备，WebSocket 租约不会把它们静默重定向到其他设备；MCP 会话继续使用各自明确选择的目标，并且只监听回环地址。
 
-窗口置顶、桌面安装器更新、原生文件对话框、打开服务端目录和宿主剪贴板同步等桌面专属能力会被明确禁用。抓包、sysdiagnose、日志归档和 Developer Image 等仍依赖宿主文件路径的流程尚未全部完成浏览器传输适配。
+窗口置顶、桌面安装器更新、原生文件对话框、打开服务端目录和宿主剪贴板同步等桌面专属能力会被明确禁用。Developer Image 镜像集可通过已鉴权浏览器 UI 导入并原子保存到 `<data-dir>/developer-images`；受限 multipart 请求只接受一个完整镜像集，客户端只能按不透明 set ID 发起挂载。服务端本地只读目录必须在进程启动时通过可重复的绝对路径参数 `--developer-image-dir <PATH>` 配置，浏览器客户端不能提交宿主路径。抓包、sysdiagnose、日志归档等仍依赖宿主文件路径的流程尚未全部完成浏览器传输适配。
 
 DeviceHub Mask 不安装、侧载、签名或升级 iOS 应用。桌面端与无头端都不会加入这些能力。
 

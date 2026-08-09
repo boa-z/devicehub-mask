@@ -130,7 +130,20 @@ npm ci
 5. Keep the device unlocked for the first connection.
 6. Close other applications that may own the CoreDevice media session.
 
-The Windows helper creates an isolated pymobiledevice3 runtime under `%LOCALAPPDATA%\devicehub-mask\pymobiledevice3`, mounts the Personalized Developer Disk Image, and checks for `com.apple.coredevice.displayservice` over USB. It does not need elevation or a persistent helper process. Preparation may need to be repeated after rebooting or upgrading iOS.
+The Windows helper creates an isolated diagnostic runtime under `%LOCALAPPDATA%\devicehub-mask\pymobiledevice3` and checks the current Developer Disk Image and `com.apple.coredevice.displayservice` state over USB. It does not mount an image. Import and mount the matching set through DeviceHub Mask as described below. The helper does not need elevation or a persistent process.
+
+### Developer Disk Images
+
+DeviceHub Mask manages Developer Disk Images as validated sets and never accepts host file paths from HTTP clients. Open **Device > Device Info > Developer Disk Images** to refresh the catalog, import a set, mount it, or remove a managed import. Apple images are not bundled or redistributed with DeviceHub Mask.
+
+On macOS, refresh discovers Personalized DDI bundles under `/Library/Developer/DeveloperDiskImages/iOS_DDI`, the active `xcode-select -p` developer directory, and installed `Xcode*.app` bundles. Xcode-owned entries are read-only. The desktop **Settings > Developer Disk Image** section can add up to 16 custom local directories on any platform; each selected directory and at most 256 immediate child directories are scanned for complete flat or Xcode-layout image sets. Custom entries are read-only and paths never become mount API parameters. On every platform, import one complete set:
+
+- iOS 16 and earlier: one `.dmg` and its `.signature`.
+- iOS 17 and later: one `.dmg`, its `.trustcache`, and the source bundle's `BuildManifest.plist`.
+
+Imports are copied into the host data directory under `developer-images/<set-id>/`. Filenames, regular-file status, sizes, manifest identities, and image/trust-cache associations are validated before the atomic import becomes visible. For Xcode bundles with several hardware variants, the runtime selects the pair referenced by the connected device's `BoardId` and `ChipID`; directory ordering is never used.
+
+The **Settings > Developer Image mount policy** controls session startup. **Manual** never starts a mount, **Ask** exposes missing-image state for an explicit user action, and **Automatic** mounts a compatible catalog set after a device session connects. Automatic mode also applies to Headless and MCP-driven sessions and may contact Apple's TSS service for personalization.
 
 DeviceHub Mask lists USB and Wi-Fi as separate transports and defaults to USB for legacy device selections. To authorize Wi-Fi discovery, connect the device by USB once while it is unlocked and trusted. The app stores a private copy of the pairing record in its application data directory (`0700` directory and `0600` files on Unix), then authenticates `_apple-mobdev2._tcp` Bonjour records before showing them. On current iOS versions, the first Wi-Fi control connection also asks for approval on the unlocked device and creates separate RemotePairing credentials for the `_remotepairing._tcp` CoreDevice tunnel. Keep USB connected until that approval completes. After the Wi-Fi session starts, the cable can be removed.
 

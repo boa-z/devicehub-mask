@@ -18,7 +18,10 @@ mod wda;
 pub use apps::{AppHttpState, router as apps_router};
 pub use browser_transfers::{BrowserTransferFuture, BrowserTransferStore};
 pub use crash_reports::{CrashReportHttpState, router as crash_reports_router};
-pub use developer_image::{DeveloperImageHttpState, router as developer_image_router};
+pub use developer_image::{
+    DeveloperImageCatalog, DeveloperImageCatalogFuture, DeveloperImageHttpState,
+    DeveloperImageImportFile, router as developer_image_router,
+};
 pub use device::{DeviceHttpState, router as device_router};
 pub use devices::{DeviceManagerHttpState, router as devices_router};
 pub use diagnostics::{

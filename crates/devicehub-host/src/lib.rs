@@ -21,18 +21,20 @@ pub mod wifi_devices;
 use devicehub_runtime::RuntimeSessionHostAdapters;
 
 /// Construct the local-filesystem capabilities shared by all native hosts.
-pub fn session_adapters() -> RuntimeSessionHostAdapters<
+pub fn session_adapters(
+    developer_images: developer_image::TokioDeveloperImageCatalog,
+) -> RuntimeSessionHostAdapters<
     host_files::TokioHostFileIo,
     capture_files::TokioCaptureFileIo,
     device_backup::TokioDeviceBackupDestination,
-    developer_image::TokioDeveloperImageAssets,
+    developer_image::TokioDeveloperImageCatalog,
     provisioning::TokioProvisioningProfiles,
 > {
     RuntimeSessionHostAdapters {
         files: host_files::TokioHostFileIo,
         capture_files: capture_files::TokioCaptureFileIo,
         backup: device_backup::TokioDeviceBackupDestination,
-        developer_images: developer_image::TokioDeveloperImageAssets,
+        developer_images,
         provisioning_profiles: provisioning::TokioProvisioningProfiles,
     }
 }

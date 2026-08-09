@@ -56,12 +56,11 @@ if ($developerMode -ne "true") {
 $mountedImages = @(& $pymobiledevice mounter list --udid $Udid | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) { throw "Unable to query mounted developer images." }
 if ($mountedImages.Count -eq 0) {
-    Write-Host "Downloading and mounting the Personalized Developer Disk Image..."
-    & $pymobiledevice mounter auto-mount --udid $Udid
-    if ($LASTEXITCODE -ne 0) { throw "Personalized Developer Disk Image mounting failed." }
-} else {
-    Write-Host "Personalized Developer Disk Image is already mounted."
+    Write-Warning "No Developer Disk Image is mounted. Start DeviceHub Mask, open Device Info, import a complete DDI set, and mount it from the Developer Disk Images catalog."
+    Write-Host "Windows device services are ready; displayservice will be checked after DeviceHub Mask mounts the image."
+    exit 0
 }
+Write-Host "Personalized Developer Disk Image is already mounted."
 
 $previousUdid = $env:PYMOBILEDEVICE3_UDID
 try {

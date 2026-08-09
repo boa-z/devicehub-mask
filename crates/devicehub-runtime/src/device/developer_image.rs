@@ -8,9 +8,10 @@ use idevice::{IdeviceError, IdeviceService, provider::IdeviceProvider};
 mod mount;
 
 pub(crate) use mount::serve as serve_developer_image_mount;
+pub(crate) use mount::unmount_image;
 pub use mount::{
-    DeveloperImageAssetFuture, DeveloperImageAssetLoader, DeveloperImageMountCommand,
-    DeveloperImageMountRequest,
+    DeveloperImageAssetFuture, DeveloperImageAssetLoader, DeveloperImageAutomaticRequestFuture,
+    DeveloperImageMountCommand, DeveloperImageMountRequest, DeveloperImageVariant,
 };
 
 /// Reads the device OS version required to choose the image protocol.
@@ -39,9 +40,30 @@ pub(crate) async fn is_developer_image_mounted(
         .map_err(|error| format!("cannot connect mobile image mounter: {error:?}"))?;
     match mounter.lookup_image(image_type).await {
         Ok(_) => Ok(true),
-        Err(IdeviceError::NotFound) => Ok(false),
+        Err(IdeviceError::NotFound) => mounter
+            .copy_devices()
+            .await
+            .map(|entries| {
+                entries.iter().any(|entry| {
+                    entry
+                        .as_dictionary()
+                        .is_some_and(|entry| mounted_entry_matches(entry, image_type))
+                })
+            })
+            .map_err(|error| format!("cannot list mounted developer images: {error:?}")),
         Err(error) => Err(format!("cannot query developer image: {error:?}")),
     }
+}
+
+fn mounted_entry_matches(entry: &plist::Dictionary, image_type: &str) -> bool {
+    entry
+        .get("DiskImageType")
+        .and_then(plist::Value::as_string)
+        .is_some_and(|value| value == image_type)
+        && entry
+            .get("IsMounted")
+            .and_then(plist::Value::as_boolean)
+            .unwrap_or(true)
 }
 
 /// Reads the OS version and queries Developer Disk Image readiness in one call.
@@ -50,4 +72,30 @@ pub(crate) async fn is_developer_image_mounted_for_device(
 ) -> Result<bool, String> {
     let product_version = read_device_product_version(provider).await?;
     is_developer_image_mounted(provider, &product_version).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_devices_recognizes_mounted_personalized_cryptex_entries() {
+        let entry = plist::Dictionary::from_iter([
+            (
+                String::from("DiskImageType"),
+                plist::Value::String("Personalized".into()),
+            ),
+            (String::from("IsMounted"), plist::Value::Boolean(true)),
+            (
+                String::from("PersonalizedImageType"),
+                plist::Value::String("DeveloperDiskImage".into()),
+            ),
+        ]);
+        assert!(mounted_entry_matches(&entry, "Personalized"));
+        assert!(!mounted_entry_matches(&entry, "Developer"));
+
+        let mut unmounted = entry;
+        unmounted.insert(String::from("IsMounted"), plist::Value::Boolean(false));
+        assert!(!mounted_entry_matches(&unmounted, "Personalized"));
+    }
 }

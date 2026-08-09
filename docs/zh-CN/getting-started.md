@@ -130,7 +130,20 @@ npm ci
 5. 首次连接时保持设备解锁。
 6. 关闭可能占用 CoreDevice 媒体会话的其他应用。
 
-Windows 脚本会在 `%LOCALAPPDATA%\devicehub-mask\pymobiledevice3` 创建隔离环境， 挂载 Personalized Developer Disk Image，并通过 USB 检查 `com.apple.coredevice.displayservice`。脚本不需要管理员权限，也不需要常驻进程。 重启电脑或升级 iOS 后可能需要重新准备。
+Windows 脚本会在 `%LOCALAPPDATA%\devicehub-mask\pymobiledevice3` 创建隔离的诊断环境，并通过 USB 检查当前 Developer Disk Image 与 `com.apple.coredevice.displayservice` 状态。脚本不再挂载镜像；请按下文通过 DeviceHub Mask 导入并挂载匹配的镜像集。脚本不需要管理员权限，也不需要常驻进程。
+
+### Developer Disk Image
+
+DeviceHub Mask 将 Developer Disk Image 作为经过验证的镜像集管理，HTTP 客户端不能提交宿主文件路径。打开 **设备 > 设备信息 > Developer Disk Image** 可以刷新目录、导入镜像集、挂载或删除托管导入。DeviceHub Mask 不打包或重新分发 Apple 镜像。
+
+在 macOS 上，刷新会扫描 `/Library/Developer/DeveloperDiskImages/iOS_DDI`、当前 `xcode-select -p` 开发者目录和已安装的 `Xcode*.app`；Xcode 所有的条目为只读。所有平台的桌面端都可以在 **设置 > Developer Disk Image** 中添加最多 16 个自定义本地目录；每个所选目录及最多 256 个直接子目录会扫描完整的平铺镜像集或 Xcode 目录结构。自定义目录项为只读，目录路径不会成为挂载 API 参数。所有平台都可以导入一个完整镜像集：
+
+- iOS 16 及更早版本：一个 `.dmg` 及对应 `.signature`。
+- iOS 17 及更高版本：一个 `.dmg`、对应 `.trustcache` 和来源 bundle 中的 `BuildManifest.plist`。
+
+导入文件会复制到宿主数据目录的 `developer-images/<set-id>/`。文件名、普通文件属性、大小、manifest identity 及镜像与 trust cache 的关联全部验证通过后，才会原子提交并显示。Xcode bundle 含多个硬件变体时，运行时使用已连接设备的 `BoardId` 与 `ChipID` 选择 BuildIdentity 引用的文件，不依赖目录顺序。
+
+**设置 > Developer Image 挂载策略** 控制会话启动行为。**手动**不会主动挂载，**询问**会显示缺失状态并等待用户操作，**自动**会在设备会话建立后挂载兼容目录项。自动策略同样作用于 Headless 与 MCP 驱动的会话，个性化过程可能访问 Apple TSS 服务。
 
 DeviceHub Mask 会将 USB 和 Wi-Fi 显示为同一设备的两个独立传输；旧版仅传入 UDID 的选择仍默认使用 USB。首次授权 Wi-Fi 发现时，请通过 USB 连接已解锁且受信任的设备。 App 会在自己的应用数据目录中保存一份私有配对记录（Unix 下目录权限为 `0700`、文件 权限为 `0600`），并用它验证 `_apple-mobdev2._tcp` Bonjour 记录。列表出现 **iPhone · Wi-Fi** 后，当前 iOS 版本在首次建立 Wi-Fi 控制连接时还会要求在已解锁的 设备上确认授权，并为 `_remotepairing._tcp` CoreDevice 隧道创建独立的 RemotePairing 凭据。授权完成且 Wi-Fi 会话启动后即可拔掉数据线。
 

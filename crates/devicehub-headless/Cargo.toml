@@ -9,6 +9,7 @@ license = "AGPL-3.0-only"
 mdns-sd = "0.19"
 axum = "0.8"
 bytes = "1"
+devicehub-core = { path = "../devicehub-core" }
 devicehub-host = { path = "../devicehub-host" }
 devicehub-runtime = { path = "../devicehub-runtime" }
 devicehub-server = { path = "../devicehub-server" }

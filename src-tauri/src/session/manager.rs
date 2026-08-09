@@ -14,6 +14,7 @@ pub(crate) fn start(
     pairing_dir: PathBuf,
     transport: super::DeviceTransportConfig,
     preferences: crate::device_runtime::RuntimePreferences,
+    developer_images: devicehub_host::developer_image::TokioDeveloperImageCatalog,
     audio: AudioPublisher,
     audio_decoder: devicehub_host::decode::AudioDecoderConfig,
     session_diagnostics: crate::device_runtime::RuntimeSessionDiagnostics<PathBuf>,
@@ -43,7 +44,7 @@ pub(crate) fn start(
                 ),
                 diagnostic_sinks: devicehub_host::diagnostic_sinks::TokioDiagnosticDumpSinks,
                 clipboard: clipboard::ArboardClipboardProvider,
-                services: devicehub_host::session_adapters(),
+                services: devicehub_host::session_adapters(developer_images),
             }
         },
         initial_udid,

@@ -123,6 +123,33 @@ fn set_startup_device_priority(
     state.set_startup_device_priority(priority)
 }
 
+#[tauri::command]
+fn set_developer_image_mount_policy(
+    policy: devicehub_core::DeveloperImageMountPolicy,
+    state: tauri::State<'_, Arc<settings::AppSettings>>,
+) -> Result<settings::SettingsStatus, String> {
+    state.set_developer_image_mount_policy(policy)
+}
+
+#[tauri::command]
+fn set_developer_image_directories(
+    directories: Vec<PathBuf>,
+    settings: tauri::State<'_, Arc<settings::AppSettings>>,
+    catalog: tauri::State<'_, devicehub_host::developer_image::TokioDeveloperImageCatalog>,
+) -> Result<settings::SettingsStatus, String> {
+    let previous = catalog.custom_roots()?;
+    catalog.set_custom_roots(directories.clone())?;
+    match settings.set_developer_image_directories(directories) {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            if let Err(rollback_error) = catalog.set_custom_roots(previous) {
+                tracing::error!(%rollback_error, "cannot roll back developer image directories");
+            }
+            Err(error)
+        }
+    }
+}
+
 impl BackendHandle {
     fn stop(&self) {
         if let Some(shutdown) = self.shutdown.lock().unwrap().take() {
@@ -138,6 +165,7 @@ impl BackendHandle {
 fn spawn_backend(
     profile_dir: PathBuf,
     keymap_catalog_cache_dir: PathBuf,
+    developer_image_catalog: devicehub_host::developer_image::TokioDeveloperImageCatalog,
     runtime_config: device_runtime::RuntimeConfig,
 ) -> Result<BackendHandle, String> {
     let runtime = device_runtime::DeviceRuntime::start(runtime_config)?;
@@ -168,6 +196,7 @@ fn spawn_backend(
                         client.clone(),
                         profile_dir,
                         keymap_catalog_cache_dir,
+                        developer_image_catalog,
                         websocket_config,
                     ),
                     server_token,
@@ -259,7 +288,9 @@ pub fn run() {
             set_audio_playback,
             audio_output_status,
             set_clipboard_sync_enabled,
-            set_startup_device_priority
+            set_startup_device_priority,
+            set_developer_image_mount_policy,
+            set_developer_image_directories
         ])
         .setup(move |app| {
             let log_directory = app.path().app_log_dir()?;
@@ -270,6 +301,7 @@ pub fn run() {
                 app.path().app_config_dir()?.join("settings.json"),
             ));
             let audio_settings = settings.status();
+            let developer_image_directories = audio_settings.developer_image_directories.clone();
             let runtime_preferences = settings.runtime_preferences();
             let audio_output = audio_output::AudioOutput::spawn(
                 audio_settings.audio_muted,
@@ -309,15 +341,26 @@ pub fn run() {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| app_data_dir.join("profiles"));
             let keymap_catalog_cache_dir = app_data_dir.join("keymap-catalog");
+            let developer_image_catalog_dir = app_data_dir.join("developer-images");
+            let developer_images =
+                devicehub_host::developer_image::TokioDeveloperImageCatalog::new(
+                    developer_image_catalog_dir,
+                    developer_image_directories,
+                    runtime_preferences.clone(),
+                )
+                .map_err(std::io::Error::other)?;
+            app.manage(developer_images.clone());
             app.manage(ProfileDirectory(profile_dir.clone()));
             let backend = spawn_backend(
                 profile_dir,
                 keymap_catalog_cache_dir,
+                developer_images.clone(),
                 device_runtime::RuntimeConfig {
                     initial_udid,
                     pairing_dir: app_data_dir.join("pairings"),
                     transport,
                     preferences: runtime_preferences,
+                    developer_images,
                     audio: device_runtime::AudioPublisher::new(audio_output),
                     audio_decoder,
                     session_diagnostics,

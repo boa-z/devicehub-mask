@@ -46,8 +46,9 @@ pub use capture::{
 };
 pub use clipboard::{ClipboardContentKind, ClipboardEvent, clipboard_preview, validate_paste_text};
 pub use developer_image::{
-    DeveloperImageMountSlot, DeveloperImageMountState, DeveloperImageMountStatus,
-    developer_image_type_for_version,
+    DeveloperImageKind, DeveloperImageMountPolicy, DeveloperImageMountSlot,
+    DeveloperImageMountState, DeveloperImageMountStatus, DeveloperImageOperation,
+    DeveloperImageSetDescriptor, DeveloperImageSourceKind, developer_image_type_for_version,
 };
 pub use device::{
     CompanionDevice, ConnKind, DeviceActivationState, DeviceBattery, DeviceDetails, DeviceInfo,

@@ -313,7 +313,8 @@ mod tests {
             developer_image_http: http::DeveloperImageHttpState::new(
                 commands.clone(),
                 application.device.developer_image.clone(),
-            ),
+            )
+            .with_manager(application.manager.clone()),
             provisioning_http: http::ProvisioningHttpState::new(commands.clone()),
             performance_http: http::PerformanceHttpState::new(
                 application.device.performance.clone(),

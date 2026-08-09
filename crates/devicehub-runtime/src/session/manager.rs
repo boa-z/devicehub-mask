@@ -19,6 +19,7 @@ use super::{
     SessionRetryPolicy, forget_device, pair_device, run_connected_session,
 };
 use crate::clipboard::HostClipboardFactory;
+use crate::device::unmount_image;
 use crate::runtime::{CoreRuntimeFuture, CoreRuntimeState, DeviceSessionState};
 use crate::transport::{CoreTunnelConfig, DeviceDiscovery};
 use crate::{
@@ -27,7 +28,7 @@ use crate::{
     DiagnosticDumpSinkFactory, HostClipboardProvider, HostFileIo, MuxSidecar, PairingStore,
     ProvisioningProfileLoader, RuntimeClient, RuntimePreferences, RuntimeSessionHostAdapters,
     SessionCommandSlot, SessionControlCommand, SessionDiagnostics, SessionEndpoint,
-    SystemUsbmuxdConfig, resolve_device_selection,
+    SystemUsbmuxdConfig, connect_provider, resolve_device_selection,
 };
 
 const IDLE_RESCAN: Duration = Duration::from_secs(2);
@@ -338,6 +339,10 @@ impl SessionSupervisorSlot {
 enum PendingManagementAction {
     Pair(oneshot::Sender<PairDeviceResult>),
     Forget(oneshot::Sender<ForgetDeviceResult>),
+    UnmountDeveloperImage {
+        status: devicehub_core::DeveloperImageMountSlot,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 enum ManagementOutcome {
@@ -426,6 +431,32 @@ where
             .await;
             discovery.invalidate();
             ManagementOutcome::Remove(selection_id)
+        }
+        PendingManagementAction::UnmountDeveloperImage { status, reply } => {
+            let result: Result<(), String> = async {
+                let endpoint = endpoints.get(&selection_id).cloned().ok_or_else(|| {
+                    "selected device transport is no longer available".to_string()
+                })?;
+                let (provider, _) = connect_provider(endpoint).await?;
+                unmount_image(provider.as_ref(), status.clone()).await?;
+                Ok(())
+            }
+            .await;
+            match &result {
+                Ok(()) => status.update(|current| {
+                    current.state = devicehub_core::DeveloperImageMountState::Unmounted;
+                    current.operation = None;
+                    current.progress_percent = Some(100.0);
+                    current.error = None;
+                }),
+                Err(error) => status.update(|current| {
+                    current.state = devicehub_core::DeveloperImageMountState::Failed;
+                    current.operation = Some(devicehub_core::DeveloperImageOperation::Unmount);
+                    current.error = Some(error.clone());
+                }),
+            }
+            let _ = reply.send(result);
+            ManagementOutcome::None
         }
     }
 }
@@ -779,6 +810,33 @@ async fn run_session_manager<
                 Some(SessionControlCommand::Forget { selection_id, reply }) => {
                     let session = ensure_session(&selection_id, &views, &mut sessions);
                     let action = PendingManagementAction::Forget(reply);
+                    if running.contains(&selection_id) {
+                        pending_management.insert(selection_id.clone(), action);
+                        session.supervisor.stop();
+                        session.commands.send(DeviceSessionCommand::Shutdown);
+                    } else {
+                        let outcome = perform_management_action(
+                            selection_id,
+                            action,
+                            &endpoints,
+                            &session,
+                            &mut host.discovery,
+                        ).await;
+                        apply_management_outcome(outcome, &views, &mut sessions, &mut pending_connect);
+                    }
+                }
+                Some(SessionControlCommand::UnmountDeveloperImage { selection_id, status, reply }) => {
+                    let selection_id = resolve_device_selection(&selection_id, &views.devices.get())
+                        .unwrap_or(selection_id);
+                    pending_connect.remove(&selection_id);
+                    pending_reconnect.remove(&selection_id);
+                    status.set(devicehub_core::DeveloperImageMountStatus {
+                        state: devicehub_core::DeveloperImageMountState::Unmounting,
+                        operation: Some(devicehub_core::DeveloperImageOperation::Unmount),
+                        ..devicehub_core::DeveloperImageMountStatus::default()
+                    });
+                    let session = ensure_session(&selection_id, &views, &mut sessions);
+                    let action = PendingManagementAction::UnmountDeveloperImage { status, reply };
                     if running.contains(&selection_id) {
                         pending_management.insert(selection_id.clone(), action);
                         session.supervisor.stop();

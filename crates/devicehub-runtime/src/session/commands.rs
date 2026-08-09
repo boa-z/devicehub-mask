@@ -101,6 +101,11 @@ pub enum SessionControlCommand {
         selection_id: String,
         reply: oneshot::Sender<ForgetDeviceResult>,
     },
+    UnmountDeveloperImage {
+        selection_id: String,
+        status: devicehub_core::DeveloperImageMountSlot,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Quit,
 }
 

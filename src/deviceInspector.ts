@@ -22,6 +22,10 @@ export function isDeveloperImageActive(status: DeveloperImageMountStatus | null)
   return status != null && ["validating", "personalizing", "uploading", "mounting", "unmounting"].includes(status.state);
 }
 
+export function isDeveloperImageDeviceLockedError(error: unknown): boolean {
+  return /DeviceLocked|PasswordProtected|device is locked/i.test(String(error ?? ""));
+}
+
 export function isAppOperationActive(operation: AppOperation | null): boolean {
   return operation?.state === "running";
 }

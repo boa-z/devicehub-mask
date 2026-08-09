@@ -7,7 +7,11 @@ export type AppSettingsStatus = {
   audio_volume: number;
   clipboard_sync_enabled: boolean;
   startup_device_priority: string[];
+  developer_image_mount_policy: DeveloperImageMountPolicy;
+  developer_image_directories: string[];
 };
+
+export type DeveloperImageMountPolicy = "manual" | "ask" | "automatic";
 
 export type AudioOutputStatus = {
   state: "idle" | "running" | "unavailable";
@@ -56,7 +60,20 @@ export function setStartupDevicePriority(priority: string[]) {
     : updateBrowserSettings({ startup_device_priority: priority });
 }
 
-function updateBrowserSettings(patch: Record<string, boolean | number | string[]>) {
+export function setDeveloperImageMountPolicy(policy: DeveloperImageMountPolicy) {
+  return runningInDesktopHost()
+    ? invoke<AppSettingsStatus>("set_developer_image_mount_policy", { policy })
+    : updateBrowserSettings({ developer_image_mount_policy: policy });
+}
+
+export function setDeveloperImageDirectories(directories: string[]) {
+  if (!runningInDesktopHost()) {
+    return Promise.reject(new Error("Custom Developer Image directories are configured by the Headless command line."));
+  }
+  return invoke<AppSettingsStatus>("set_developer_image_directories", { directories });
+}
+
+function updateBrowserSettings(patch: Record<string, boolean | number | string | string[]>) {
   return browserHostJson<AppSettingsStatus>("/api/host/settings", {
     method: "PUT",
     headers: { "content-type": "application/json" },

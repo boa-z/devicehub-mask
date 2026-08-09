@@ -2,6 +2,7 @@ import BugOutlined from "@ant-design/icons/es/icons/BugOutlined";
 import FolderOpenOutlined from "@ant-design/icons/es/icons/FolderOpenOutlined";
 import GithubOutlined from "@ant-design/icons/es/icons/GithubOutlined";
 import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Checkbox, Select, Slider, Space, Switch, Typography, message } from "antd";
 import { useEffect, useState } from "react";
@@ -19,6 +20,8 @@ import {
   readAppSettings,
   setAudioEnabled,
   setClipboardSyncEnabled,
+  setDeveloperImageDirectories,
+  setDeveloperImageMountPolicy,
   type AppSettingsStatus,
 } from "../appSettings";
 import { UpdateButton } from "./UpdateButton";
@@ -99,6 +102,41 @@ export function SettingsPage({
       showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) }));
     } finally {
       setAppSettingsBusy(false);
+    }
+  };
+
+  const changeDeveloperImageMountPolicy = async (policy: AppSettingsStatus["developer_image_mount_policy"]) => {
+    setAppSettingsBusy(true);
+    try {
+      setAppSettings(await setDeveloperImageMountPolicy(policy));
+    } catch (error) {
+      showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) }));
+    } finally {
+      setAppSettingsBusy(false);
+    }
+  };
+
+  const changeDeveloperImageDirectories = async (directories: string[]) => {
+    setAppSettingsBusy(true);
+    try {
+      setAppSettings(await setDeveloperImageDirectories(directories));
+    } catch (error) {
+      showErrorMessage(t("settings.appSettingsUnavailable", { error: String(error) }));
+    } finally {
+      setAppSettingsBusy(false);
+    }
+  };
+
+  const addDeveloperImageDirectory = async () => {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+      title: t("settings.developerImageDirectorySelect"),
+    });
+    if (!selected || Array.isArray(selected)) return;
+    const current = appSettings?.developer_image_directories ?? [];
+    if (!current.includes(selected)) {
+      await changeDeveloperImageDirectories([...current, selected]);
     }
   };
 
@@ -202,6 +240,50 @@ export function SettingsPage({
             {t("settings.resetToolbarLayout")}
           </Button>
         </label>
+      </div>
+      <div className="settings-section">
+        <Typography.Title level={5}>{t("deviceInspector.developerImage")}</Typography.Title>
+        <label>
+          <span>{t("settings.developerImageMountPolicy")}</span>
+          <Select
+            value={appSettings?.developer_image_mount_policy ?? "ask"}
+            disabled={!appSettings}
+            loading={appSettingsBusy}
+            options={(["manual", "ask", "automatic"] as const).map((value) => ({
+              value,
+              label: t(`settings.developerImageMountPolicies.${value}`),
+            }))}
+            onChange={(policy) => void changeDeveloperImageMountPolicy(policy)}
+          />
+        </label>
+        {runningInDesktopHost() && (
+          <div className="developer-image-directory-settings">
+            <Typography.Text type="secondary">{t("settings.developerImageDirectoriesHint")}</Typography.Text>
+            {(appSettings?.developer_image_directories ?? []).map((directory) => (
+              <div className="developer-image-directory-row" key={directory}>
+                <Typography.Text ellipsis={{ tooltip: directory }}>{directory}</Typography.Text>
+                <Button
+                  danger
+                  size="small"
+                  disabled={appSettingsBusy}
+                  onClick={() => void changeDeveloperImageDirectories(
+                    (appSettings?.developer_image_directories ?? []).filter((path) => path !== directory),
+                  )}
+                >
+                  {t("common.remove")}
+                </Button>
+              </div>
+            ))}
+            <Button
+              icon={<FolderOpenOutlined />}
+              loading={appSettingsBusy}
+              disabled={!appSettings}
+              onClick={() => void addDeveloperImageDirectory()}
+            >
+              {t("settings.addDeveloperImageDirectory")}
+            </Button>
+          </div>
+        )}
       </div>
       <div className="settings-section">
         <Typography.Title level={5}>{t("settings.audio")}</Typography.Title>

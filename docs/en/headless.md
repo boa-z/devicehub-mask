@@ -199,6 +199,7 @@ When `--allow-lan` publishes a non-loopback listener, headless also advertises `
 | `--listen <IP:PORT>` | `127.0.0.1:8080` | Browser HTTP/WebSocket listener |
 | `--allow-lan` | off | Permit non-loopback `--listen`; does not add TLS |
 | `--data-dir <PATH>` | `./.devicehub-mask` | Settings, pairings, profiles, and transfer staging |
+| `--developer-image-dir <PATH>` | none | Discover read-only DDI sets in a host directory; repeat up to 16 times |
 | `--frontend-dir <PATH>` | `./dist` | Vite output containing `index.html` |
 | `--token-file <PATH>` | temporary random token | Read a persistent API token |
 | `--device <IDENTIFIER>` | automatic selection | Device to prefer after startup |
@@ -216,6 +217,7 @@ The data directory defaults to `.devicehub-mask/` under the startup directory:
 ```text
 .devicehub-mask/
 ├── settings.json
+├── developer-images/
 ├── pairings/
 ├── profiles/
 └── transfers/
@@ -239,7 +241,7 @@ Multiple devices may remain connected at once. Each browser tab selects an exact
 
 Browser input uses a device-scoped control lease. The first WebSocket connected to a device can send touch, keyboard, rotation, text, and hardware-button input. Additional tabs for the same exact device remain connected as view-only observers and continue receiving status, video, audio, and events. When the controlling tab closes, one waiting observer acquires the lease automatically without reconnecting. Tabs controlling different devices hold independent leases and can operate concurrently. The UI shows **View only** and disables its input controls while another tab owns the device. HTTP management operations remain token-authorized and explicitly device-scoped; the WebSocket lease does not silently redirect them. MCP sessions keep their own explicit target and remain loopback-only.
 
-Desktop-only capabilities such as always-on-top windows, installer updates, native file dialogs, opening server directories, and host clipboard synchronization are disabled. Packet capture, sysdiagnose, log archive, Developer Image, and other workflows that still require host paths have not all received browser transfer adapters yet.
+Desktop-only capabilities such as always-on-top windows, installer updates, native file dialogs, opening server directories, and host clipboard synchronization are disabled. Developer Image sets can be imported through the authenticated browser UI and are stored atomically under `<data-dir>/developer-images`; the bounded multipart request accepts only one complete set and clients mount only opaque set IDs. Server-local read-only catalogs must be configured at process startup with repeatable absolute `--developer-image-dir <PATH>` arguments; browser clients cannot submit host paths. Packet capture, sysdiagnose, log archive, and other workflows that still require host paths have not all received browser transfer adapters yet.
 
 DeviceHub Mask does not install, sideload, sign, or upgrade iOS applications. These capabilities remain outside both desktop and headless product scope.
 

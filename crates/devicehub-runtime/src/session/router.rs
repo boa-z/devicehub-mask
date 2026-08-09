@@ -777,8 +777,7 @@ fn reject_log_archive<HostPath>(command: LogArchiveCommand<HostPath>, reason: &s
 fn reject_developer_image<HostPath>(command: DeveloperImageMountCommand<HostPath>, reason: &str) {
     match command {
         DeveloperImageMountCommand::Start { reply, .. }
-        | DeveloperImageMountCommand::Stop { reply }
-        | DeveloperImageMountCommand::Unmount { reply } => {
+        | DeveloperImageMountCommand::Stop { reply } => {
             let _ = reply.send(Err(reason.into()));
         }
     }

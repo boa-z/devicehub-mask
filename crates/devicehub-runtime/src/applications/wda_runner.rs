@@ -148,13 +148,11 @@ pub(crate) async fn serve_wda_runner(
                     }
                     WdaRunnerCommand::Stop { reply } => {
                         let was_managed = startup.is_some() || running.is_some();
-                        if let Some(starting) = startup.take() {
-                            starting.task.abort();
-                            let _ = starting.reply.send(Err("WDA runner startup cancelled".into()));
-                        }
-                        if let Some(active) = running.take() {
-                            active.task.abort();
-                        }
+                        stop_runner_tasks(
+                            &mut startup,
+                            &mut running,
+                            "WDA runner startup cancelled",
+                        ).await;
                         status = WdaRunnerStatus::default();
                         reporter.stopped(attempt);
                         if was_managed {
@@ -218,14 +216,24 @@ pub(crate) async fn serve_wda_runner(
         }
     }
 
+    stop_runner_tasks(&mut startup, &mut running, "device session ended").await;
+    reporter.stopped(attempt);
+}
+
+async fn stop_runner_tasks(
+    startup: &mut Option<Startup>,
+    running: &mut Option<RunningRunner>,
+    startup_error: &str,
+) {
     if let Some(starting) = startup.take() {
         starting.task.abort();
-        let _ = starting.reply.send(Err("device session ended".into()));
+        let _ = starting.task.await;
+        let _ = starting.reply.send(Err(startup_error.into()));
     }
     if let Some(active) = running.take() {
         active.task.abort();
+        let _ = active.task.await;
     }
-    reporter.stopped(attempt);
 }
 
 async fn wait_startup(
@@ -372,10 +380,41 @@ fn bound_error(error: impl Into<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
 
     #[test]
     fn errors_are_bounded_on_character_boundaries() {
         let error = bound_error("你".repeat(MAX_ERROR_CHARS + 1));
         assert_eq!(error.chars().count(), MAX_ERROR_CHARS);
+    }
+
+    #[tokio::test]
+    async fn runner_cleanup_waits_for_the_aborted_task_to_drop_resources() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = dropped.clone();
+        let task = tokio::spawn(async move {
+            let _guard = DropFlag(task_dropped);
+            pending::<()>().await;
+            Ok(())
+        });
+        tokio::task::yield_now().await;
+        let mut startup = None;
+        let mut running = Some(RunningRunner {
+            bundle_id: "com.example.WebDriverAgentRunner.xctrunner".into(),
+            task,
+        });
+
+        stop_runner_tasks(&mut startup, &mut running, "session ended").await;
+
+        assert!(running.is_none());
+        assert!(dropped.load(Ordering::Acquire));
     }
 }

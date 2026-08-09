@@ -14,6 +14,7 @@ struct Config {
     listen: SocketAddr,
     allow_lan: bool,
     data_dir: PathBuf,
+    developer_image_dirs: Vec<PathBuf>,
     frontend_dir: PathBuf,
     token_file: Option<PathBuf>,
     initial_device: Option<String>,
@@ -31,6 +32,7 @@ impl Config {
             listen: "127.0.0.1:8080".parse().unwrap(),
             allow_lan: false,
             data_dir: current_dir.join(".devicehub-mask"),
+            developer_image_dirs: Vec::new(),
             frontend_dir: current_dir.join("dist"),
             token_file: None,
             initial_device: None,
@@ -53,6 +55,9 @@ impl Config {
                         .map_err(|error| format!("invalid --listen address: {error}"))?
                 }
                 "--data-dir" => config.data_dir = PathBuf::from(value_os(&mut args, argument)?),
+                "--developer-image-dir" => config
+                    .developer_image_dirs
+                    .push(PathBuf::from(value_os(&mut args, argument)?)),
                 "--frontend-dir" => {
                     config.frontend_dir = PathBuf::from(value_os(&mut args, argument)?)
                 }
@@ -115,6 +120,7 @@ fn usage() -> &'static str {
      --listen <IP:PORT>       HTTP listener (default: 127.0.0.1:8080)\n\
      --allow-lan              Required for a non-loopback HTTP listener\n\
      --data-dir <PATH>        Pairings and profiles (default: ./.devicehub-mask)\n\
+     --developer-image-dir <PATH>  Discover DDI sets in this directory (repeatable)\n\
      --frontend-dir <PATH>    Built Vite UI (default: ./dist)\n\
      --token-file <PATH>      Read a persistent API token from a protected file\n\
      --device <IDENTIFIER>    Initially selected device\n\
@@ -231,6 +237,12 @@ async fn run(config: Config) -> Result<(), String> {
     let system_usbmuxd = devicehub_runtime::SystemUsbmuxdConfig::from_host(config.system_usbmuxd);
     let host_control = host::HeadlessHostControl::load(config.data_dir.join("settings.json"));
     let preferences = host_control.runtime_preferences();
+    let developer_images = devicehub_host::developer_image::TokioDeveloperImageCatalog::new(
+        config.data_dir.join("developer-images"),
+        config.developer_image_dirs,
+        preferences.clone(),
+    )?;
+    let runtime_developer_images = developer_images.clone();
     let browser_audio = devicehub_server::websocket::BrowserAudioSlot::default();
     let runtime_browser_audio = browser_audio.clone();
     let diagnostics = devicehub_runtime::SessionDiagnostics {
@@ -258,7 +270,7 @@ async fn run(config: Config) -> Result<(), String> {
                 .all_sessions(),
                 diagnostic_sinks: devicehub_host::diagnostic_sinks::TokioDiagnosticDumpSinks,
                 clipboard: UnavailableClipboard,
-                services: devicehub_host::session_adapters(),
+                services: devicehub_host::session_adapters(runtime_developer_images),
             }
         },
         config.initial_device,
@@ -271,6 +283,7 @@ async fn run(config: Config) -> Result<(), String> {
         client.clone(),
         profile_dir,
         config.data_dir.join("keymap-catalog"),
+        developer_images,
         devicehub_server::websocket::WebSocketConfig::default(),
     );
     api_state.host_http = devicehub_server::http::HostHttpState::new(

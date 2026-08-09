@@ -48,9 +48,10 @@ pub use clipboard::{ClipboardImage, ClipboardSlot, HostClipboard, HostClipboardP
 pub use demand::{Demand, DemandLease, SessionMediaDemand};
 pub use device::{
     CompanionDeviceCommand, CrashReportExportCommand, DeveloperImageAssetFuture,
-    DeveloperImageAssetLoader, DeveloperImageMountCommand, DeveloperImageMountRequest,
-    DeveloperModeCommand, DeveloperModePreparation, DeviceConditionCommand, DeviceEventSlot,
-    DeviceLogDemand, HomeScreenCommand, LocationCommand, MAX_CRASH_REPORT_READ_BYTES,
+    DeveloperImageAssetLoader, DeveloperImageAutomaticRequestFuture, DeveloperImageMountCommand,
+    DeveloperImageMountRequest, DeveloperImageVariant, DeveloperModeCommand,
+    DeveloperModePreparation, DeviceConditionCommand, DeviceEventSlot, DeviceLogDemand,
+    HomeScreenCommand, LocationCommand, MAX_CRASH_REPORT_READ_BYTES,
     MAX_PROVISIONING_PROFILE_BYTES, ProvisioningCommand, ProvisioningFailure, ProvisioningInstall,
     ProvisioningProfileFuture, ProvisioningProfileLoader, ScreenCaptureCommand,
     parse_provisioning_profile, prepare_provisioning_install, profiles_from_raw,

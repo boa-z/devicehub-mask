@@ -167,10 +167,11 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .developer-image-progress-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .developer-image-progress-heading .ant-typography { min-width: 0; margin: 0; font-size: 11px; }
 .developer-image-progress .ant-progress { margin: 0; line-height: 1; }
-.device-developer-image-section { padding: 14px 4px; border-bottom: 1px solid #303638; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.device-developer-image-section > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.device-developer-image-section { padding: 14px 4px; border-bottom: 1px solid #303638; display: grid; gap: 8px; }
+.device-developer-image-heading { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .device-developer-image-section .ant-typography { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
-.device-developer-image-section > .ant-btn { flex: none; }
+.device-developer-image-select { width: 100%; min-width: 0; color-scheme: dark; }
+.device-developer-image-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .device-info-list { min-height: 0; flex: 1; overflow-y: auto; border-top: 1px solid #303638; }
 .device-wallpaper-section { padding: 14px 4px; border-top: 1px solid #303638; display: flex; flex-direction: column; gap: 10px; }
 .device-wallpaper-heading { display: flex; flex-direction: column; gap: 2px; }
@@ -373,6 +374,10 @@ button, input, textarea, select { font: inherit; letter-spacing: 0; }
 .settings-section { max-width: 760px; padding: 20px 0; border-bottom: 1px solid #303638; }
 .settings-section h5 { margin: 0 0 14px; }
 .settings-section label { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.developer-image-directory-settings { display: grid; gap: 8px; margin-top: 10px; }
+.developer-image-directory-settings > .ant-btn { justify-self: start; }
+.developer-image-directory-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.developer-image-directory-row > .ant-typography { min-width: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
 .diagnostics-detail { display: grid; grid-template-columns: 110px minmax(0, 1fr); align-items: center; gap: 8px 16px; margin: 8px 0 12px; }
 .diagnostics-detail code { overflow-wrap: anywhere; }
 .language-select { width: 220px; }

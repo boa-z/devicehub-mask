@@ -298,7 +298,7 @@ if (
   !serverHttp.includes("pub use device::{DeviceHttpState, router as device_router}") ||
   !serverHttp.includes("pub use wda::{WdaHttpState, router as wda_router}") ||
   !serverHttp.includes(
-    "pub use developer_image::{DeveloperImageHttpState, router as developer_image_router}",
+    "DeveloperImageImportFile, router as developer_image_router",
   ) ||
   !serverHttp.includes(
     "pub use provisioning::{ProvisioningHttpState, router as provisioning_router}",
@@ -342,7 +342,7 @@ if (
   ) ||
   tauriWebProduction.includes('route("/api/device/developer-image"') ||
   !hostDeveloperImageAssets.includes(
-    "impl devicehub_runtime::DeveloperImageAssetLoader for TokioDeveloperImageAssets",
+    "impl devicehub_runtime::DeveloperImageAssetLoader for TokioDeveloperImageCatalog",
   ) ||
   !serverProvisioningHttp.includes("pub struct ProvisioningHttpState") ||
   !serverProvisioningHttp.includes("input: InputSink") ||
