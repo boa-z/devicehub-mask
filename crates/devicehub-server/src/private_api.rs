@@ -75,6 +75,7 @@ pub fn router(state: PrivateApiState, token: String) -> Router {
 
     Router::new()
         .route("/api/status", get(api_status))
+        .route("/api/devices", get(api_devices))
         .merge(device_manager_routes)
         .merge(device_scoped_routes)
         .merge(profile_routes)
@@ -165,6 +166,10 @@ fn constant_time_token_eq(provided: &str, expected: &str) -> bool {
 
 async fn api_status(State(state): State<PrivateApiState>) -> Json<status::StatusView> {
     Json(status::snapshot(&state.application))
+}
+
+async fn api_devices(State(state): State<PrivateApiState>) -> Json<status::DeviceInventoryView> {
+    Json(status::inventory(&state.application))
 }
 
 #[derive(Deserialize)]
@@ -372,32 +377,31 @@ mod tests {
 
     #[tokio::test]
     async fn complete_route_graph_applies_shared_authentication() {
-        let unauthorized = router(test_state(), "secret".into())
-            .oneshot(
-                Request::builder()
-                    .uri("/api/status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        for path in ["/api/status", "/api/devices"] {
+            let unauthorized = router(test_state(), "secret".into())
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        }
 
         for (header, value) in [
             (AUTHORIZATION, "Bearer secret"),
             (SEC_WEBSOCKET_PROTOCOL, "devicehub-mask, secret"),
         ] {
-            let authorized = router(test_state(), "secret".into())
-                .oneshot(
-                    Request::builder()
-                        .uri("/api/status")
-                        .header(header, value)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(authorized.status(), StatusCode::OK);
+            for path in ["/api/status", "/api/devices"] {
+                let authorized = router(test_state(), "secret".into())
+                    .oneshot(
+                        Request::builder()
+                            .uri(path)
+                            .header(&header, value)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(authorized.status(), StatusCode::OK);
+            }
         }
     }
 

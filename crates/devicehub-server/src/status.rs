@@ -40,6 +40,19 @@ pub struct StatusView {
     location: LocationStatus,
 }
 
+#[derive(Serialize)]
+pub struct DeviceInventoryView {
+    active_device_id: Option<String>,
+    devices: Vec<DeviceView>,
+}
+
+pub fn inventory<HostPath>(application: &RuntimeClient<HostPath>) -> DeviceInventoryView {
+    DeviceInventoryView {
+        active_device_id: application.manager.active.selection_id(),
+        devices: device_views(application),
+    }
+}
+
 pub fn snapshot<HostPath>(application: &RuntimeClient<HostPath>) -> StatusView {
     let selection_id = application.manager.active.selection_id();
     let session = selection_id
@@ -89,47 +102,51 @@ fn snapshot_with_session<HostPath>(
         active_device_id: selection_id,
         error,
         orientation: orientation_name(session.orientation.get()),
-        devices: application
-            .manager
-            .devices
-            .get()
-            .into_iter()
-            .map(|device| {
-                let device_session = application.sessions.get(&device.id);
-                let session_status = device_session
-                    .as_ref()
-                    .map(|session| session.status.snapshot());
-                let session_error = device_session
-                    .as_ref()
-                    .and_then(|session| session.error.get());
-                let resources = device_session.as_ref().map(|session| SessionResourcesView {
-                    video: session.media_demand.video.enabled(),
-                    audio: session.media_demand.audio.enabled(),
-                    performance: session.performance_demand.enabled(),
-                    device_logs: session.device_log_demand.enabled(),
-                });
-                DeviceView {
-                    id: device.id,
-                    udid: device.udid,
-                    name: device.name,
-                    connection: device.connection.label(),
-                    pairing: device.pairing,
-                    session_status: session_status.as_ref().map(|status| status.message.clone()),
-                    session_phase: session_status.as_ref().map(|status| {
-                        if session_error.is_some() && status.phase == SessionPhase::Disconnected {
-                            SessionPhase::Failed
-                        } else {
-                            status.phase
-                        }
-                    }),
-                    session_updated_at_ms: session_status.map(|status| status.updated_at_ms),
-                    session_error,
-                    resources,
-                }
-            })
-            .collect(),
+        devices: device_views(application),
         location: session.location.get(),
     }
+}
+
+fn device_views<HostPath>(application: &RuntimeClient<HostPath>) -> Vec<DeviceView> {
+    application
+        .manager
+        .devices
+        .get()
+        .into_iter()
+        .map(|device| {
+            let device_session = application.sessions.get(&device.id);
+            let session_status = device_session
+                .as_ref()
+                .map(|session| session.status.snapshot());
+            let session_error = device_session
+                .as_ref()
+                .and_then(|session| session.error.get());
+            let resources = device_session.as_ref().map(|session| SessionResourcesView {
+                video: session.media_demand.video.enabled(),
+                audio: session.media_demand.audio.enabled(),
+                performance: session.performance_demand.enabled(),
+                device_logs: session.device_log_demand.enabled(),
+            });
+            DeviceView {
+                id: device.id,
+                udid: device.udid,
+                name: device.name,
+                connection: device.connection.label(),
+                pairing: device.pairing,
+                session_status: session_status.as_ref().map(|status| status.message.clone()),
+                session_phase: session_status.as_ref().map(|status| {
+                    if session_error.is_some() && status.phase == SessionPhase::Disconnected {
+                        SessionPhase::Failed
+                    } else {
+                        status.phase
+                    }
+                }),
+                session_updated_at_ms: session_status.map(|status| status.updated_at_ms),
+                session_error,
+                resources,
+            }
+        })
+        .collect()
 }
 
 fn orientation_name(orientation: Orientation) -> &'static str {
@@ -143,7 +160,7 @@ fn orientation_name(orientation: Orientation) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::snapshot;
+    use super::{inventory, snapshot};
     use devicehub_core::{ConnKind, DeviceInfo, SessionPhase, StatusSlot};
 
     #[test]
@@ -188,5 +205,12 @@ mod tests {
         let resources = device.resources.as_ref().expect("session resources");
         assert!(!resources.video);
         assert!(!resources.audio);
+
+        let inventory = inventory(&client);
+        assert_eq!(inventory.devices.len(), 1);
+        assert_eq!(
+            inventory.devices[0].session_phase,
+            Some(SessionPhase::Recovering)
+        );
     }
 }

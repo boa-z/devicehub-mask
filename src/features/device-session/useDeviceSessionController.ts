@@ -1,11 +1,9 @@
-import { message } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
-import { showErrorMessage } from "../../errorMessage";
-import { logFrontend } from "../../diagnostics";
-import { waitForDeviceSession } from "./deviceSelection";
 import type { BackendClient } from "../../shared/backend/client";
-import type { DeviceStatus, PairDeviceResult } from "../../types";
+import type { DeviceStatus } from "../../types";
+import { isActiveSession } from "./deviceConnections";
+import { useDeviceInventoryController } from "./useDeviceInventoryController";
 
 export const emptyDeviceStatus: DeviceStatus = {
   status: "",
@@ -26,152 +24,118 @@ type Options = {
   t: TFunction;
 };
 
+/** Combines manager inventory with one UI-focused device session without merging their ownership. */
 export function useDeviceSessionController({ client, startingStatus, onReleaseControls, t }: Options) {
-  const [status, setStatus] = useState<DeviceStatus>(() => ({ ...emptyDeviceStatus, status: startingStatus }));
+  const [sessionStatus, setSessionStatus] = useState<DeviceStatus>(() => ({
+    ...emptyDeviceStatus,
+    status: startingStatus,
+  }));
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const [pairingDeviceId, setPairingDeviceId] = useState<string | null>(null);
   const selectedDeviceIntentRef = useRef<string | null>(null);
   const releaseControlsRef = useRef(onReleaseControls);
   releaseControlsRef.current = onReleaseControls;
+  const {
+    inventory,
+    pairingDeviceId,
+    refresh,
+    connect: connectInventory,
+    reconnect: reconnectInventory,
+    disconnect: disconnectInventory,
+    pair: pairInventory,
+  } = useDeviceInventoryController({ client, t });
 
   useEffect(() => {
-    const intended = selectedDeviceIntentRef.current;
-    if (intended) {
-      if (status.active_device_id === intended) {
-        selectedDeviceIntentRef.current = null;
-        setSelectedDeviceId(intended);
-      } else if (status.devices.some((device) => device.id === intended)) {
-        return;
-      } else {
-        selectedDeviceIntentRef.current = null;
-      }
-    }
-    if (status.active_device_id) setSelectedDeviceId(status.active_device_id);
-  }, [status.active_device_id, status.devices]);
+    if (selectedDeviceIntentRef.current || selectedDeviceId || !inventory.active_device_id) return;
+    setSelectedDeviceId(inventory.active_device_id);
+  }, [inventory.active_device_id, selectedDeviceId]);
 
   useEffect(() => {
-    if (!client || selectedDeviceId) return;
-    let disposed = false;
-    const refreshStatus = async () => {
-      try {
-        const response = await client.request("/api/status");
-        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-        const next = await response.json() as DeviceStatus;
-        if (!disposed) setStatus(next);
-      } catch (error) {
-        if (!disposed) logFrontend("warn", "backend", "initial_status", error);
-      }
-    };
-    void refreshStatus();
-    const timer = window.setInterval(() => void refreshStatus(), 500);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [client, selectedDeviceId]);
-
-  const refresh = useCallback(async () => {
-    if (!client) return;
-    try {
-      const response = await client.request("/api/devices/refresh", { method: "PUT" });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    } catch (error) {
-      logFrontend("warn", "device", "refresh", error);
+    if (selectedDeviceId && !inventory.devices.some((device) => device.id === selectedDeviceId)) {
+      setSelectedDeviceId(null);
     }
-  }, [client]);
+  }, [inventory.devices, selectedDeviceId]);
+
+  const status = useMemo<DeviceStatus>(() => ({
+    ...sessionStatus,
+    active_device_id: selectedDeviceId,
+    active_udid: selectedDeviceId
+      ? inventory.devices.find((device) => device.id === selectedDeviceId)?.udid ?? sessionStatus.active_udid
+      : null,
+    devices: inventory.devices,
+  }), [inventory.devices, selectedDeviceId, sessionStatus]);
+
+  const setStatus = useCallback((update: SetStateAction<DeviceStatus>) => {
+    setSessionStatus((current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      return { ...next, devices: [] };
+    });
+  }, []);
 
   const connect = useCallback(async (deviceId: string) => {
-    if (!client) return;
     selectedDeviceIntentRef.current = deviceId;
     releaseControlsRef.current();
-    try {
-      const response = await client.request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "PUT" });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      const next = await waitForDeviceSession(client.request.bind(client), deviceId);
-      setStatus(next);
+    const connected = await connectInventory(deviceId);
+    selectedDeviceIntentRef.current = null;
+    if (connected) {
       setSelectedDeviceId(deviceId);
-    } catch (error) {
-      selectedDeviceIntentRef.current = null;
-      void showErrorMessage(t("errors.reconnectDevice", { error: String(error) }));
+      setSessionStatus((current) => ({
+        ...current,
+        status: "connecting to device...",
+        phase: "connecting",
+        active_device_id: deviceId,
+        error: null,
+      }));
     }
-  }, [client, t]);
-
-  const reconnect = useCallback(async (deviceId = selectedDeviceId) => {
-    if (!client || !deviceId) return false;
-    if (deviceId === selectedDeviceId) releaseControlsRef.current();
-    try {
-      const response = await client.request(`/api/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: "PUT" });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      return true;
-    } catch (error) {
-      void showErrorMessage(t("errors.reconnectDevice", { error: String(error) }));
-      return false;
-    }
-  }, [client, selectedDeviceId, t]);
+    return connected;
+  }, [connectInventory]);
 
   const select = useCallback(async (deviceId: string) => {
-    const device = status.devices.find((candidate) => candidate.id === deviceId);
-    if (device?.pairing === "unpaired") return;
-    await connect(deviceId);
-  }, [connect, status.devices]);
+    const device = inventory.devices.find((candidate) => candidate.id === deviceId);
+    if (!device || device.pairing === "unpaired") return false;
+    if (!isActiveSession(device)) return connect(deviceId);
+    releaseControlsRef.current();
+    selectedDeviceIntentRef.current = null;
+    setSelectedDeviceId(deviceId);
+    setSessionStatus((current) => ({
+      ...current,
+      status: device.session_status ?? "connecting to device...",
+      phase: device.session_phase ?? "connecting",
+      active_device_id: deviceId,
+      active_udid: device.udid,
+      error: device.session_error,
+    }));
+    return true;
+  }, [connect, inventory.devices]);
+
+  const reconnect = useCallback(async (deviceId = selectedDeviceId) => {
+    if (!deviceId) return false;
+    if (deviceId === selectedDeviceId) releaseControlsRef.current();
+    return reconnectInventory(deviceId);
+  }, [reconnectInventory, selectedDeviceId]);
 
   const disconnect = useCallback(async (deviceId: string) => {
     const isSelected = deviceId === selectedDeviceId;
     if (isSelected) releaseControlsRef.current();
-    if (!client) return;
-    try {
-      const response = await client.request(`/api/devices/${encodeURIComponent(deviceId)}/connect`, { method: "DELETE" });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      if (isSelected) {
-        selectedDeviceIntentRef.current = null;
-        setSelectedDeviceId(null);
-        setStatus((current) => ({
-          ...current,
-          active_udid: null,
-          active_device_id: null,
-          devices: current.devices.map((device) => device.id === deviceId
-            ? { ...device, session_phase: "disconnecting", session_status: "stopping..." }
-            : device),
-        }));
-      }
-    } catch (error) {
-      void showErrorMessage(t("errors.disconnectDevice", { error: String(error) }));
+    const disconnected = await disconnectInventory(deviceId);
+    if (disconnected && isSelected) {
+      selectedDeviceIntentRef.current = null;
+      setSelectedDeviceId(null);
+      setSessionStatus((current) => ({
+        ...current,
+        status: "stopping...",
+        phase: "disconnecting",
+        active_udid: null,
+        active_device_id: null,
+      }));
     }
-  }, [client, selectedDeviceId, t]);
+    return disconnected;
+  }, [disconnectInventory, selectedDeviceId]);
 
   const pair = useCallback(async (deviceId: string) => {
-    if (!client || pairingDeviceId) return;
-    const device = status.devices.find((candidate) => candidate.id === deviceId);
-    if (!device || device.connection !== "USB" || device.pairing !== "unpaired") return;
-    const messageKey = "device-pairing";
-    setPairingDeviceId(deviceId);
-    void message.loading({ key: messageKey, content: t("device.pairingWaiting"), duration: 0 });
-    try {
-      const response = await client.request(`/api/devices/${encodeURIComponent(deviceId)}/pair`, { method: "PUT" });
-      if (!response.ok) throw new Error(await response.text() || `${response.status} ${response.statusText}`);
-      const result = await response.json() as PairDeviceResult;
-      if (result.outcome === "paired") {
-        void message.success({ key: messageKey, content: t("device.pairingSucceeded") });
-        selectedDeviceIntentRef.current = deviceId;
-        const next = await waitForDeviceSession(client.request.bind(client), deviceId);
-        setStatus(next);
-        setSelectedDeviceId(deviceId);
-      } else {
-        const key = result.outcome === "denied"
-          ? "device.pairingDenied"
-          : result.outcome === "locked"
-            ? "device.pairingLocked"
-            : result.outcome === "timed_out"
-              ? "device.pairingTimedOut"
-              : "device.pairingFailed";
-        void showErrorMessage(t(key, { error: result.error ?? t("device.pairingUnknownError") }), { key: messageKey });
-      }
-    } catch (error) {
-      void showErrorMessage(t("device.pairingFailed", { error: String(error) }), { key: messageKey });
-    } finally {
-      setPairingDeviceId(null);
-    }
-  }, [client, pairingDeviceId, status.devices, t]);
+    const paired = await pairInventory(deviceId);
+    if (paired) setSelectedDeviceId(deviceId);
+    return paired;
+  }, [pairInventory]);
 
   return {
     status,

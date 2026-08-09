@@ -68,6 +68,8 @@ Headless 二进制提供同一份前端构建和 API，默认监听 `127.0.0.1:8
 
 私有 HTTP 使用 `X-DeviceHub-Device`，WebSocket 使用 `device_id`，每个 MCP 连接持有自己的目标。缺失或未知目标在可能误选设备时必须被拒绝。
 
+React Inventory 控制器独立读取 manager 级 `/api/devices` 投影，不依赖当前 focus session。设备发现、配对和生命周期操作更新 Inventory；选择已经运行的 session 只改变本地 UI focus。当前设备的 Control WebSocket 提供该 session 的状态，但不再是多设备列表的唯一数据来源。
+
 ## 资源治理
 
 视频、音频、性能采样和设备日志是独立的会话级需求。已连接但未显示的设备应保持可用，同时不承担完整活动设备成本。

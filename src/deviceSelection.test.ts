@@ -1,16 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { waitForDeviceSession } from "./deviceSelection";
-import type { DeviceStatus } from "./types";
+import type { DeviceInventory } from "./types";
 
-function status(activeDeviceId: string | null, sessionStatus: string | null): DeviceStatus {
+function status(activeDeviceId: string | null, sessionStatus: string | null): DeviceInventory {
   return {
-    status: sessionStatus ?? "disconnected",
-    phase: sessionStatus === "connecting" ? "connecting" : "disconnected",
-    updated_at_ms: 0,
-    active_udid: activeDeviceId ? "device" : null,
     active_device_id: activeDeviceId,
-    error: null,
-    orientation: "portrait",
     devices: [{
       id: "tablet::usb",
       udid: "device",
@@ -23,7 +17,6 @@ function status(activeDeviceId: string | null, sessionStatus: string | null): De
       session_error: null,
       resources: null,
     }],
-    location: { available: false, active: false, backend: null, latitude: null, longitude: null, error: null },
   };
 }
 
@@ -36,6 +29,7 @@ describe("device session selection", () => {
     await expect(waitForDeviceSession(request, "tablet::usb", 100, 0))
       .resolves.toMatchObject({ active_device_id: "tablet::usb" });
     expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenLastCalledWith("/api/devices");
   });
 
   it("rejects a target that never receives a registry entry", async () => {

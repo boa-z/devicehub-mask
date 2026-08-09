@@ -20,6 +20,10 @@ export type Device = {
   session_error: string | null;
   resources: SessionResources | null;
 };
+export type DeviceInventory = {
+  active_device_id: string | null;
+  devices: Device[];
+};
 export type PairDeviceResult = {
   outcome: "paired" | "denied" | "locked" | "timed_out" | "failed";
   error: string | null;

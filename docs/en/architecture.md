@@ -68,6 +68,8 @@ The host facade is split conceptually into manager and session capabilities:
 
 Private HTTP uses `X-DeviceHub-Device`; WebSocket uses `device_id`; each MCP connection holds its own target. Unknown or omitted targets are rejected where ambiguity would otherwise select the wrong phone.
 
+The React inventory controller reads the manager-level `/api/devices` projection independently from the focused session. Device discovery, pairing and lifecycle actions update that inventory; selecting an already running session changes only local UI focus. The focused control WebSocket supplies session-specific status but is never the sole source for the multi-device list.
+
 ## Resource Governance
 
 Video, audio, performance sampling, and device-log streaming are independent per-session demands. A connected but invisible device remains available without paying the full active-device cost.

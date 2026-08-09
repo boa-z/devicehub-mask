@@ -1,4 +1,4 @@
-import type { DeviceStatus } from "../../types";
+import type { DeviceInventory } from "../../types";
 import type { BackendRequest } from "../../shared/backend/client";
 
 const defaultTimeoutMs = 2_000;
@@ -14,14 +14,14 @@ export async function waitForDeviceSession(
   deviceId: string,
   timeoutMs = defaultTimeoutMs,
   pollIntervalMs = defaultPollIntervalMs,
-): Promise<DeviceStatus> {
+): Promise<DeviceInventory> {
   const deadline = performance.now() + timeoutMs;
   let lastError: unknown = null;
   do {
     try {
-      const response = await request("/api/status");
+      const response = await request("/api/devices");
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-      const status = await response.json() as DeviceStatus;
+      const status = await response.json() as DeviceInventory;
       const target = status.devices.find((device) => device.id === deviceId);
       if (status.active_device_id === deviceId && target && target.session_status !== null) return status;
     } catch (error) {
