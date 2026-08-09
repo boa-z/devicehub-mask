@@ -191,6 +191,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+      GITHUB_TOKEN: ${{ github.token }}
 
     steps:
       - name: Check out source
@@ -222,6 +223,7 @@ jobs:
           path: |
             src-tauri/resources/ffmpeg
             src-tauri/resources/ffmpeg-LICENSE.txt
+            src-tauri/resources/ffmpeg-target.json
           key: ffmpeg-macos-universal-${{ hashFiles('scripts/prepare-ffmpeg.mjs') }}
 
       - name: Install dependencies
@@ -349,6 +351,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+      GITHUB_TOKEN: ${{ github.token }}
 
     steps:
       - name: Check out source
@@ -379,6 +382,15 @@ jobs:
           key: tauri-windows-tools-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             tauri-windows-tools-${{ runner.arch }}-
+
+      - name: Restore Windows FFmpeg cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            src-tauri/resources/ffmpeg.exe
+            src-tauri/resources/ffmpeg-LICENSE.txt
+            src-tauri/resources/ffmpeg-target.json
+          key: ffmpeg-windows-${{ runner.arch }}-${{ hashFiles('scripts/prepare-ffmpeg.mjs') }}
 
       - name: Install build dependencies
         shell: pwsh
@@ -513,6 +525,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+      GITHUB_TOKEN: ${{ github.token }}
 
     steps:
       - name: Check out source
@@ -535,6 +548,15 @@ jobs:
         with:
           key: release-linux-${{ matrix.package_arch }}
           workspaces: src-tauri -> target
+
+      - name: Restore Linux FFmpeg cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            src-tauri/resources/ffmpeg
+            src-tauri/resources/ffmpeg-LICENSE.txt
+            src-tauri/resources/ffmpeg-target.json
+          key: ffmpeg-linux-${{ matrix.package_arch }}-${{ hashFiles('scripts/prepare-ffmpeg.mjs') }}
 
       - name: Install build dependencies
         shell: bash

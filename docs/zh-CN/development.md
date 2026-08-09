@@ -150,7 +150,9 @@ Crowdin 下载的文件不会被运行时自动发现。增加目标语言必须
 npm run tauri:build
 ```
 
-该命令会先为当前主机下载经过固定 SHA-256 校验的 netmuxd 和 LGPL FFmpeg sidecar。 生成的可执行文件位于 `src-tauri/resources` 且不会纳入 Git。安装包优先使用内置 FFmpeg； 测试时仍可用 `DEVICEHUB_FFMPEG` 显式覆盖。已有 FFmpeg 只有在目标架构和必需能力均通过 校验后才会复用；需要明确重建时使用 `npm run ffmpeg:prepare -- --force`。
+该命令会先为当前主机下载经过 SHA-256 校验的 netmuxd 和 LGPL FFmpeg sidecar。 Windows 与 Linux 使用 BtbN 滚动 [`latest` Release](https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest) 中的 `n8.1` LGPL 资产。准备脚本优先通过 Releases API 解析真实资产 URL 和 GitHub SHA-256 digest；API 不可用时回退到 `latest/checksums.sha256`。脚本不会下载不带文件名的 `releases/download/latest` 路径，必须指定具体资产文件名。需要复现固定构建时，可设置 `DEVICEHUB_FFMPEG_BTB_TAG` 为不可变的 BtbN Release tag。
+
+桌面 sidecar 生成在 `src-tauri/resources`，且不会纳入 Git。`ffmpeg-target.json` 记录 FFmpeg 版本和 target triple；只有元数据匹配时准备脚本才会复用现有文件。直接准备非当前主机 target 时必须指定独立暂存目录，例如 `node scripts/prepare-ffmpeg.mjs --target aarch64-unknown-linux-gnu --output-dir release-artifacts/sidecars/ffmpeg/aarch64-unknown-linux-gnu`。Headless 打包已自动使用这种隔离目录，不会再覆盖桌面主机资源。安装包优先使用内置 FFmpeg；测试时仍可用 `DEVICEHUB_FFMPEG` 显式覆盖。需要明确重建当前主机资源时使用 `npm run ffmpeg:prepare -- --force`。
 
 需要额外构建参数时，可在 `--` 后传给统一构建脚本：
 
@@ -185,7 +187,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri:build -- --target universal-apple-darwin --bundles app
 ```
 
-统一构建脚本会从 `--target` 推导 sidecar 平台，并从固定校验和的上游源码构建仅启用 LGPL 组件的 universal FFmpeg 可执行文件；Windows 与 Linux 使用固定版本并校验 SHA-256 的 LGPL 静态构建。安装包同时包含 `THIRD_PARTY_NOTICES.txt` 和完整 FFmpeg 许可证。
+统一构建脚本会从 `--target` 推导 sidecar 平台，并从固定校验和的上游源码构建仅启用 LGPL 组件的 universal FFmpeg 可执行文件；Windows 与 Linux 使用当前 `n8.1` 的 LGPL 静态构建并校验 SHA-256。安装包同时包含 `THIRD_PARTY_NOTICES.txt` 和完整 FFmpeg 许可证。
 
 产物位于 `src-tauri/target/universal-apple-darwin/release/bundle/macos`。
 

@@ -1,20 +1,34 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { cpus, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 const ffmpegVersion = "8.1.2";
 const sourceUrl = `https://ffmpeg.org/releases/ffmpeg-${ffmpegVersion}.tar.xz`;
 const sourceSha256 = "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c";
-const btbTag = "autobuild-2026-07-23-14-16";
-const btbBase = `https://github.com/BtbN/FFmpeg-Builds/releases/download/${btbTag}`;
-const btbVersion = "n8.1.2-30-g45f1910444";
+const btbApiBase = "https://api.github.com/repos/BtbN/FFmpeg-Builds";
+const btbLatestTag = "latest";
+const btbLatestBase = `https://github.com/BtbN/FFmpeg-Builds/releases/download/${btbLatestTag}`;
+const btbVersion = "n8.1.2";
+const btbSeries = btbVersion.slice(0, btbVersion.lastIndexOf("."));
 const assets = {
-  "x86_64-pc-windows-msvc": [`ffmpeg-${btbVersion}-win64-lgpl-8.1.zip`, "0c6dc759eb1c70804ca04e11d83c583a6b03ae0630474f862e97400c715c6376"],
-  "aarch64-pc-windows-msvc": [`ffmpeg-${btbVersion}-winarm64-lgpl-8.1.zip`, "679ab26bcaec11516c76b2805335208923826ec8ca410f51b4fd17928d30a8df"],
-  "x86_64-unknown-linux-gnu": [`ffmpeg-${btbVersion}-linux64-lgpl-8.1.tar.xz`, "759149752aab56335d3234f82e118c6f7d441e5b635467ff8bff307729b02e6b"],
-  "aarch64-unknown-linux-gnu": [`ffmpeg-${btbVersion}-linuxarm64-lgpl-8.1.tar.xz`, "c9c7653babc8ae7191100fc570703fb6a4e7fe11a1696da6e94fbf3b71a5a4a6"],
+  "x86_64-pc-windows-msvc": {
+    latestName: `ffmpeg-${btbSeries}-latest-win64-lgpl-8.1.zip`,
+    matches: /^ffmpeg-n8\.1\.2-[^-]+-g[0-9a-f]+-win64-lgpl-8\.1\.zip$/u,
+  },
+  "aarch64-pc-windows-msvc": {
+    latestName: `ffmpeg-${btbSeries}-latest-winarm64-lgpl-8.1.zip`,
+    matches: /^ffmpeg-n8\.1\.2-[^-]+-g[0-9a-f]+-winarm64-lgpl-8\.1\.zip$/u,
+  },
+  "x86_64-unknown-linux-gnu": {
+    latestName: `ffmpeg-${btbSeries}-latest-linux64-lgpl-8.1.tar.xz`,
+    matches: /^ffmpeg-n8\.1\.2-[^-]+-g[0-9a-f]+-linux64-lgpl-8\.1\.tar\.xz$/u,
+  },
+  "aarch64-unknown-linux-gnu": {
+    latestName: `ffmpeg-${btbSeries}-latest-linuxarm64-lgpl-8.1.tar.xz`,
+    matches: /^ffmpeg-n8\.1\.2-[^-]+-g[0-9a-f]+-linuxarm64-lgpl-8\.1\.tar\.xz$/u,
+  },
 };
 const licenseFiles = [
   ["LICENSE.md", "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"],
@@ -23,10 +37,22 @@ const licenseFiles = [
 
 const requested = valueAfter("--target") ?? hostTarget();
 const resourceDir = join(process.cwd(), "src-tauri", "resources");
-const output = join(resourceDir, requested.includes("windows") ? "ffmpeg.exe" : "ffmpeg");
-const incompatibleOutput = join(resourceDir, requested.includes("windows") ? "ffmpeg" : "ffmpeg.exe");
-const licenseOutput = join(resourceDir, "ffmpeg-LICENSE.txt");
-await mkdir(resourceDir, { recursive: true });
+const outputDir = resolve(valueAfter("--output-dir") ?? resourceDir);
+const output = join(outputDir, requested.includes("windows") ? "ffmpeg.exe" : "ffmpeg");
+const incompatibleOutput = join(outputDir, requested.includes("windows") ? "ffmpeg" : "ffmpeg.exe");
+const licenseOutput = join(outputDir, "ffmpeg-LICENSE.txt");
+const metadataOutput = join(outputDir, "ffmpeg-target.json");
+if (
+  outputDir === resolve(resourceDir)
+  && !canRunTarget(requested)
+  && !process.argv.includes("--allow-cross-resource")
+) {
+  throw new Error(
+    `Refusing to replace the host Tauri FFmpeg resource with ${requested}; `
+    + "use --output-dir for a target-specific package staging directory",
+  );
+}
+await mkdir(outputDir, { recursive: true });
 await rm(incompatibleOutput, { force: true });
 if (process.argv.includes("--verify-only")) {
   if (!canRunTarget(requested)) throw new Error(`Cannot execute FFmpeg target ${requested} on this host`);
@@ -34,9 +60,9 @@ if (process.argv.includes("--verify-only")) {
   console.log(`Verified bundled FFmpeg capabilities: ${output}`);
   process.exit(0);
 }
-if (!process.argv.includes("--force") && canRunTarget(requested) && await filesExist(output, licenseOutput)) {
+if (!process.argv.includes("--force") && await preparedTargetMatches(requested) && await filesExist(output, licenseOutput)) {
   try {
-    verifyBinary(output, requested);
+    if (canRunTarget(requested)) verifyBinary(output, requested);
     console.log(`Reusing verified bundled FFmpeg: ${output}`);
     process.exit(0);
   } catch (error) {
@@ -55,23 +81,89 @@ try {
   if (!requested.includes("windows")) await chmod(output, 0o755);
   if (canRunTarget(requested)) verifyBinary(output, requested);
   await writeLicense();
+  await writeFile(metadataOutput, `${JSON.stringify({ version: ffmpegVersion, target: requested }, null, 2)}\n`, "utf8");
   console.log(`Prepared FFmpeg ${ffmpegVersion} for ${requested}: ${output}`);
 } finally {
   await rm(work, { recursive: true, force: true });
 }
 
 async function fetchPackagedBinary(target) {
-  const asset = assets[target];
-  if (!asset) throw new Error(`Unsupported packaged FFmpeg target: ${target}`);
+  const descriptor = assets[target];
+  if (!descriptor) throw new Error(`Unsupported packaged FFmpeg target: ${target}`);
   const directory = join(work, target);
   await mkdir(directory, { recursive: true });
-  const archive = await download(`${btbBase}/${asset[0]}`, asset[1]);
-  const archivePath = join(directory, asset[0]);
+  const asset = await resolvePackagedAsset(descriptor);
+  console.log(`Using BtbN FFmpeg release ${asset.releaseTag}: ${asset.fileName}`);
+  const archive = await download(asset.url, asset.sha256, { retryNotFound: true });
+  const archivePath = join(directory, asset.fileName);
   await writeFile(archivePath, archive);
   run("tar", ["-xf", archivePath, "-C", directory]);
   const binary = await findFile(directory, target.includes("windows") ? "ffmpeg.exe" : "ffmpeg");
-  if (!binary) throw new Error(`${asset[0]} did not contain ffmpeg`);
+  if (!binary) throw new Error(`${asset.fileName} did not contain ffmpeg`);
   return binary;
+}
+
+async function resolvePackagedAsset(descriptor) {
+  const requestedTag = process.env.DEVICEHUB_FFMPEG_BTB_TAG?.trim() || btbLatestTag;
+
+  try {
+    const release = await fetchJson(`${btbApiBase}/releases/tags/${encodeURIComponent(requestedTag)}`);
+    return assetFromRelease(release, descriptor);
+  } catch (error) {
+    if (requestedTag !== btbLatestTag) throw error;
+    console.warn(`Could not resolve the BtbN ${btbLatestTag} release via the GitHub API (${String(error)}); falling back to its checksum manifest`);
+    const manifest = await download(`${btbLatestBase}/checksums.sha256`, undefined, { retryNotFound: true });
+    return {
+      releaseTag: btbLatestTag,
+      fileName: descriptor.latestName,
+      url: `${btbLatestBase}/${descriptor.latestName}`,
+      sha256: checksumFromManifest(manifest, descriptor.latestName),
+    };
+  }
+}
+
+async function assetFromRelease(release, descriptor) {
+  const asset = release.assets?.find((candidate) => candidate?.name === descriptor.latestName)
+    ?? release.assets?.find((candidate) => descriptor.matches.test(candidate?.name ?? ""));
+  if (!asset) throw new Error(`BtbN release ${release.tag_name} does not contain ${descriptor.latestName}`);
+  const releaseBase = `https://github.com/BtbN/FFmpeg-Builds/releases/download/${encodeURIComponent(release.tag_name)}`;
+  const sha256 = normalizeDigest(asset.digest) ?? checksumFromManifest(
+    await download(`${releaseBase}/checksums.sha256`, undefined, { retryNotFound: true }),
+    asset.name,
+  );
+  return {
+    releaseTag: release.tag_name,
+    fileName: asset.name,
+    url: asset.browser_download_url ?? `${releaseBase}/${asset.name}`,
+    sha256,
+  };
+}
+
+async function fetchJson(url) {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  const headers = {
+    accept: "application/vnd.github+json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+  const response = await fetchWithRetry(url, { headers });
+  if (!response.ok) throw new Error(`Download failed (${response.status}): ${url}`);
+  return response.json();
+}
+
+function normalizeDigest(value) {
+  if (typeof value !== "string") return undefined;
+  const digest = value.replace(/^sha256:/i, "").trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(digest) ? digest : undefined;
+}
+
+function checksumFromManifest(manifest, fileName) {
+  const line = manifest
+    .toString("utf8")
+    .split(/\r?\n/u)
+    .map((value) => value.match(/^([a-f0-9]{64})\s+\*?(.+)$/iu))
+    .find((match) => match?.[2] === fileName);
+  if (!line) throw new Error(`BtbN checksum manifest does not contain ${fileName}`);
+  return line[1].toLowerCase();
 }
 
 async function prepareDarwin(target, destination) {
@@ -148,13 +240,49 @@ async function writeLicense() {
   await writeFile(licenseOutput, sections.join("\n"));
 }
 
-async function download(url, expected) {
-  const response = await fetch(url, { redirect: "follow" });
+async function preparedTargetMatches(target) {
+  try {
+    const metadata = JSON.parse(await readFile(metadataOutput, "utf8"));
+    return metadata?.version === ffmpegVersion && metadata?.target === target;
+  } catch {
+    return false;
+  }
+}
+
+async function download(url, expected, options = {}) {
+  const response = await fetchWithRetry(url, { redirect: "follow" }, options);
   if (!response.ok) throw new Error(`Download failed (${response.status}): ${url}`);
   const bytes = Buffer.from(await response.arrayBuffer());
-  const actual = createHash("sha256").update(bytes).digest("hex");
-  if (actual !== expected) throw new Error(`Checksum mismatch for ${basename(url)}: ${actual}`);
+  if (expected) {
+    const actual = createHash("sha256").update(bytes).digest("hex");
+    if (actual !== expected) throw new Error(`Checksum mismatch for ${basename(url)}: ${actual}`);
+  }
   return bytes;
+}
+
+async function fetchWithRetry(url, init = {}, { retryNotFound = false } = {}) {
+  const attempts = 4;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, init);
+      if (response.ok || !retryableStatus(response.status, retryNotFound) || attempt === attempts) return response;
+      lastError = new Error(`Download failed (${response.status}): ${url}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) throw error;
+    }
+    await delay(250 * 2 ** (attempt - 1));
+  }
+  throw lastError;
+}
+
+function retryableStatus(status, retryNotFound) {
+  return status === 408 || status === 429 || status >= 500 || (retryNotFound && status === 404);
+}
+
+function delay(durationMs) {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
 
 async function findFile(directory, name) {

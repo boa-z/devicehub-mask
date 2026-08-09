@@ -4,6 +4,8 @@
 //! in the Rust backend.
 
 use std::ffi::OsString;
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -171,8 +173,19 @@ impl AudioDecoderConfig {
     }
 
     fn resolve(&self) -> std::io::Result<PathBuf> {
-        if let Some(path) = self.candidates.iter().find(|path| path.is_file()) {
-            return Ok(path.clone());
+        let mut rejected = Vec::new();
+        for path in self.candidates.iter().filter(|path| path.is_file()) {
+            match validate_host_executable(path) {
+                Ok(()) => return Ok(path.clone()),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "skipping unusable ffmpeg candidate"
+                    );
+                    rejected.push(format!("{} ({error})", path.display()));
+                }
+            }
         }
         let searched = self
             .candidates
@@ -180,14 +193,93 @@ impl AudioDecoderConfig {
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
+        let rejected = if rejected.is_empty() {
+            String::new()
+        } else {
+            format!("; rejected: {}", rejected.join(", "))
+        };
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!(
                 "ffmpeg was not found; install it and add it to PATH, or set \
-                 DEVICEHUB_FFMPEG to its absolute path (searched: {searched})"
+                 DEVICEHUB_FFMPEG to its absolute path (searched: {searched}{rejected})"
             ),
         ))
     }
+}
+
+fn validate_host_executable(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.metadata()?.permissions().mode() & 0o111 == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "file has no executable permission bits",
+            ));
+        }
+    }
+
+    let mut header = [0_u8; 20];
+    let bytes_read = File::open(path)?.read(&mut header)?;
+    if executable_header_matches_host(&header[..bytes_read]) {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "binary format is not executable on {}",
+                std::env::consts::OS
+            ),
+        ))
+    }
+}
+
+fn executable_header_matches_host(header: &[u8]) -> bool {
+    #[cfg(unix)]
+    if header.starts_with(b"#!") {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    return matches!(
+        header.get(..4),
+        Some([0xfe, 0xed, 0xfa, 0xce])
+            | Some([0xce, 0xfa, 0xed, 0xfe])
+            | Some([0xfe, 0xed, 0xfa, 0xcf])
+            | Some([0xcf, 0xfa, 0xed, 0xfe])
+            | Some([0xca, 0xfe, 0xba, 0xbe])
+            | Some([0xbe, 0xba, 0xfe, 0xca])
+            | Some([0xca, 0xfe, 0xba, 0xbf])
+            | Some([0xbf, 0xba, 0xfe, 0xca])
+    );
+    #[cfg(target_os = "linux")]
+    return elf_header_matches_host(header);
+    #[cfg(target_os = "windows")]
+    return header.starts_with(b"MZ");
+    #[allow(unreachable_code)]
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn elf_header_matches_host(header: &[u8]) -> bool {
+    if !header.starts_with(b"\x7fELF") || header.len() < 20 {
+        return false;
+    }
+    let machine = match header[5] {
+        1 => u16::from_le_bytes([header[18], header[19]]),
+        2 => u16::from_be_bytes([header[18], header[19]]),
+        _ => return false,
+    };
+    #[cfg(target_arch = "x86_64")]
+    return machine == 62;
+    #[cfg(target_arch = "aarch64")]
+    return machine == 183;
+    #[cfg(target_arch = "x86")]
+    return machine == 3;
+    #[cfg(target_arch = "arm")]
+    return machine == 40;
+    #[allow(unreachable_code)]
+    true
 }
 
 #[derive(Default)]
@@ -464,6 +556,7 @@ fn ffmpeg_executable() -> &'static str {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::fs;
 
     #[test]
     fn measures_silent_and_audible_pcm_windows() {
@@ -514,5 +607,75 @@ mod tests {
         );
         assert!(candidates.contains(&PathBuf::from("/opt/homebrew/bin/ffmpeg")));
         assert!(candidates.contains(&PathBuf::from("/usr/local/bin/ffmpeg")));
+    }
+
+    #[test]
+    fn executable_header_accepts_the_host_format_and_scripts() {
+        #[cfg(unix)]
+        assert!(executable_header_matches_host(b"#!/bin/sh\n"));
+        #[cfg(target_os = "macos")]
+        assert!(executable_header_matches_host(&[0xcf, 0xfa, 0xed, 0xfe]));
+        #[cfg(target_os = "linux")]
+        {
+            let mut elf = [0_u8; 20];
+            elf[..4].copy_from_slice(b"\x7fELF");
+            elf[5] = 1;
+            #[cfg(target_arch = "x86_64")]
+            elf[18..20].copy_from_slice(&62_u16.to_le_bytes());
+            #[cfg(target_arch = "aarch64")]
+            elf[18..20].copy_from_slice(&183_u16.to_le_bytes());
+            assert!(executable_header_matches_host(&elf));
+        }
+        #[cfg(target_os = "windows")]
+        assert!(executable_header_matches_host(b"MZ"));
+    }
+
+    #[test]
+    fn executable_header_rejects_a_foreign_binary() {
+        #[cfg(not(target_os = "linux"))]
+        assert!(!executable_header_matches_host(b"\x7fELF"));
+        #[cfg(not(target_os = "windows"))]
+        assert!(!executable_header_matches_host(b"MZ"));
+        #[cfg(not(target_os = "macos"))]
+        assert!(!executable_header_matches_host(&[0xcf, 0xfa, 0xed, 0xfe]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn executable_header_rejects_an_elf_for_another_architecture() {
+        let mut elf = [0_u8; 20];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[5] = 1;
+        let foreign_machine: u16 = if cfg!(target_arch = "aarch64") {
+            62
+        } else {
+            183
+        };
+        elf[18..20].copy_from_slice(&foreign_machine.to_le_bytes());
+        assert!(!executable_header_matches_host(&elf));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolver_skips_a_foreign_candidate_and_uses_the_next_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory =
+            std::env::temp_dir().join(format!("devicehub-ffmpeg-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).expect("create test directory");
+        let foreign = directory.join("foreign-ffmpeg");
+        let fallback = directory.join("fallback-ffmpeg");
+        fs::write(&foreign, b"MZforeign").expect("write foreign executable");
+        fs::write(&fallback, b"#!/bin/sh\nexit 0\n").expect("write fallback executable");
+        fs::set_permissions(&foreign, fs::Permissions::from_mode(0o755))
+            .expect("chmod foreign executable");
+        fs::set_permissions(&fallback, fs::Permissions::from_mode(0o755))
+            .expect("chmod fallback executable");
+
+        let config = AudioDecoderConfig {
+            candidates: Arc::from([foreign, fallback.clone()]),
+        };
+        assert_eq!(config.resolve().expect("resolve fallback"), fallback);
+        fs::remove_dir_all(directory).expect("remove test directory");
     }
 }

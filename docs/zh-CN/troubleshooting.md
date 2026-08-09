@@ -47,6 +47,7 @@ npm run tauri:build:debug
 ## 找不到 FFmpeg 或听不到设备声音
 
 - 安装包已内置经过校验的 FFmpeg，并优先于 `PATH` 使用。macOS 开发构建可运行 `brew install ffmpeg`；由于应用不会继承终端 `PATH`，还会直接检查 `/opt/homebrew/bin/ffmpeg`、`/usr/local/bin/ffmpeg` 和 `/opt/local/bin/ffmpeg`。
+- 运行时会拒绝没有执行权限或属于其他操作系统格式的候选文件，记录被拒绝的路径后继续查找系统 FFmpeg。`cannot execute binary file` 通常表示构建目录残留了其他 target 的 sidecar；可为当前主机运行 `npm run ffmpeg:prepare -- --force`，或通过 `DEVICEHUB_FFMPEG` 指向有效文件。
 - 调试 AAC-ELD 音频解码时可把 `DEVICEHUB_FFMPEG` 设置为绝对可执行路径，显式覆盖内置或系统版本。
 - Windows：运行 `winget install --id Gyan.FFmpeg --exact`，然后打开新终端。
 - 自定义路径：为应用进程设置 `DEVICEHUB_FFMPEG` 为可执行文件绝对路径。

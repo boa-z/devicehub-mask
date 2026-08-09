@@ -23,6 +23,8 @@ const packageName = `devicehub-mask-headless_${version}+${buildNumber}_${descrip
 const workRoot = resolve("release-artifacts");
 const outputRoot = resolve(valueAfter(args, "--output-dir") ?? "release-artifacts");
 const stagingRoot = join(workRoot, "staging");
+const ffmpegRoot = join(workRoot, "sidecars", "ffmpeg", target);
+const preparedFfmpegRoot = skipSidecars ? join("src-tauri", "resources") : ffmpegRoot;
 const packageRoot = join(stagingRoot, packageName);
 const archive = join(outputRoot, `${packageName}.${descriptor.archiveExtension}`);
 
@@ -35,7 +37,7 @@ mkdirSync(outputRoot, { recursive: true });
 if (!skipFrontendBuild) runNpm(["run", "build"]);
 if (!skipSidecars) {
   run(process.execPath, ["scripts/prepare-netmuxd.mjs", "--target", target]);
-  run(process.execPath, ["scripts/prepare-ffmpeg.mjs", "--target", target]);
+  run(process.execPath, ["scripts/prepare-ffmpeg.mjs", "--target", target, "--output-dir", ffmpegRoot]);
 }
 
 const binary = suppliedBinary
@@ -48,9 +50,9 @@ const executableName = descriptor.windows ? "devicehub-headless.exe" : "devicehu
 cpSync(binary, join(packageRoot, executableName));
 if (!descriptor.windows) chmodSync(join(packageRoot, executableName), 0o755);
 copyFrontend(join(packageRoot, "dist"));
-copyResource(descriptor.windows ? "ffmpeg.exe" : "ffmpeg", packageRoot, true);
+copyResource(descriptor.windows ? "ffmpeg.exe" : "ffmpeg", packageRoot, true, preparedFfmpegRoot);
 copyResource(descriptor.windows ? "netmuxd.exe" : "netmuxd", packageRoot, true);
-copyResource("ffmpeg-LICENSE.txt", packageRoot, false);
+copyResource("ffmpeg-LICENSE.txt", packageRoot, false, preparedFfmpegRoot);
 copyResource("netmuxd-LICENSE.txt", packageRoot, false);
 copyResource("THIRD_PARTY_NOTICES.txt", packageRoot, false);
 cpSync("LICENSE", join(packageRoot, "LICENSE"));
@@ -126,8 +128,8 @@ function rustBinary(selectedTarget, windows) {
   );
 }
 
-function copyResource(name, destination, executable) {
-  const source = join("src-tauri", "resources", name);
+function copyResource(name, destination, executable, sourceRoot = join("src-tauri", "resources")) {
+  const source = join(sourceRoot, name);
   requireFile(source, `bundled resource ${name}`);
   const output = join(destination, name);
   cpSync(source, output);

@@ -47,6 +47,7 @@ If the UI cannot open, use `DEVICEHUB_LOG=devicehub_mask=debug` when launching f
 ## FFmpeg Is Missing or Device Audio Is Silent
 
 - Packaged applications include a checksum-verified FFmpeg executable and use it before `PATH`. Development builds can use `brew install ffmpeg` on macOS. They also search `/opt/homebrew/bin/ffmpeg`, `/usr/local/bin/ffmpeg`, and `/opt/local/bin/ffmpeg` because they do not inherit the shell `PATH`.
+- Runtime discovery rejects bundled candidates with missing execute permissions or a binary format for another operating system, logs the rejected path, and continues to system locations. A `cannot execute binary file` warning usually means an old cross-target sidecar remains in a build output; run `npm run ffmpeg:prepare -- --force` for the current host or set `DEVICEHUB_FFMPEG` to a valid binary.
 - Set `DEVICEHUB_FFMPEG` to an absolute executable path to explicitly override the bundled or system copy while diagnosing AAC-ELD audio decoding.
 - Windows: `winget install --id Gyan.FFmpeg --exact`, then open a new terminal.
 - Custom path: set `DEVICEHUB_FFMPEG` to the executable's absolute path for the application process.

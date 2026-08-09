@@ -150,7 +150,9 @@ Build all bundles configured for the current host:
 npm run tauri:build
 ```
 
-This command first downloads checksum-pinned netmuxd and LGPL FFmpeg sidecars for the current host. Sidecar executables are generated under `src-tauri/resources` and remain ignored by Git. Packaged applications prefer the bundled FFmpeg; `DEVICEHUB_FFMPEG` remains an explicit override for testing. An existing FFmpeg is reused only after its architecture and required capabilities pass validation; use `npm run ffmpeg:prepare -- --force` to rebuild it explicitly.
+This command first downloads checksum-pinned netmuxd and LGPL FFmpeg sidecars for the current host. Windows and Linux use the `n8.1` LGPL assets from BtbN's rolling [`latest` Release](https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest). The preparation script resolves the exact asset and GitHub SHA-256 digest through the Releases API, then falls back to the `latest/checksums.sha256` manifest if the API is unavailable. It never downloads the bare `releases/download/latest` path; a concrete asset filename is required. Set `DEVICEHUB_FFMPEG_BTB_TAG` to an immutable BtbN release tag when reproducing a specific build.
+
+Desktop sidecars are generated under `src-tauri/resources` and remain ignored by Git. `ffmpeg-target.json` records the FFmpeg version and target triple; the preparation script reuses a sidecar only when that metadata matches. Direct preparation of a foreign target must use a target-specific staging directory, for example `node scripts/prepare-ffmpeg.mjs --target aarch64-unknown-linux-gnu --output-dir release-artifacts/sidecars/ffmpeg/aarch64-unknown-linux-gnu`. Headless packaging does this automatically, so it cannot replace the desktop host resource. Packaged applications prefer the bundled FFmpeg; `DEVICEHUB_FFMPEG` remains an explicit override for testing. Use `npm run ffmpeg:prepare -- --force` to rebuild the current host resource explicitly.
 
 Pass explicit Tauri build flags after `--` when needed:
 
@@ -185,7 +187,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 npm run tauri:build -- --target universal-apple-darwin --bundles app
 ```
 
-The build wrapper derives the sidecar platform from `--target` and builds an LGPL-only universal FFmpeg executable from the checksum-pinned upstream source. Windows and Linux preparation downloads pinned LGPL static builds and verifies their SHA-256 hashes. `THIRD_PARTY_NOTICES.txt` and the complete FFmpeg license are included beside the binary.
+The build wrapper derives the sidecar platform from `--target` and builds an LGPL-only universal FFmpeg executable from the checksum-pinned upstream source. Windows and Linux preparation downloads the current `n8.1` LGPL static assets and verifies their SHA-256 hashes. `THIRD_PARTY_NOTICES.txt` and the complete FFmpeg license are included beside the binary.
 
 Artifacts are written under `src-tauri/target/universal-apple-darwin/release/bundle/macos`.
 
