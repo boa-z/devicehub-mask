@@ -26,6 +26,7 @@ import { formatFileSize } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
 import { downloadBrowserResponse, pickBrowserFile } from "../browserFiles";
 import { runningInDesktopHost } from "../hostApi";
+import { readBackendJson } from "../shared/backend/response";
 import type { DeviceFileActivity, DeviceFileEntry, DeviceFileList } from "../types";
 import { AfcImagePreviewModal } from "./AfcImagePreviewModal";
 import { ErrorAlert } from "./ErrorPresentation";
@@ -44,11 +45,6 @@ type PreviewFile = {
   name: string;
   path: string;
 };
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  return response.json() as Promise<T>;
-}
 
 function parentPath(path: string) {
   const parts = path.split("/").filter(Boolean);
@@ -80,7 +76,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
     setError(null);
     try {
       const query = new URLSearchParams({ path });
-      const nextListing = await readJson<DeviceFileList>(await request(`/api/device/files?${query}`));
+      const nextListing = await readBackendJson<DeviceFileList>(await request(`/api/device/files?${query}`));
       if (requestVersion.current === version) setListing(nextListing);
     } catch (loadError) {
       if (requestVersion.current === version) {
@@ -125,7 +121,7 @@ export function DeviceFilesPane({ active, deviceId, refreshToken, request, onTra
     let cancelled = false;
     const poll = async () => {
       try {
-        const next = await readJson<DeviceFileActivity>(await request("/api/device/files/activity"));
+        const next = await readBackendJson<DeviceFileActivity>(await request("/api/device/files/activity"));
         if (!cancelled) setActivity(next);
       } catch {
         // The transfer request reports the authoritative error.

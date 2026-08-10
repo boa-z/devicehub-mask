@@ -96,7 +96,8 @@ pub use location::{LocationBackend, LocationStatus};
 pub use media::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 pub use operation::{
     ManagedOperation, ManagedOperationError, ManagedOperationKind, ManagedOperationPhase,
-    ManagedOperationRegistry, OperationErrorCode, OperationSuggestedAction,
+    ManagedOperationRegistry, ManagedOperationSummary, OperationErrorCode,
+    OperationSuggestedAction,
 };
 pub use performance::{
     AppActivityEvent, AppActivityObservation, DeviceNetworkInterface, DeviceNetworkInterfaceKind,

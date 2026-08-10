@@ -2,7 +2,9 @@
 
 use serde::Serialize;
 
-use devicehub_core::{LocationStatus, Orientation, SessionPhase, SessionStatus};
+use devicehub_core::{
+    LocationStatus, ManagedOperationSummary, Orientation, SessionPhase, SessionStatus,
+};
 use devicehub_runtime::{DeviceSessionClient, RuntimeClient};
 
 #[derive(Serialize)]
@@ -17,6 +19,7 @@ struct DeviceView {
     session_updated_at_ms: Option<u64>,
     session_error: Option<String>,
     resources: Option<SessionResourcesView>,
+    operations: Option<ManagedOperationSummary>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +130,9 @@ fn device_views<HostPath>(application: &RuntimeClient<HostPath>) -> Vec<DeviceVi
                 performance: session.performance_demand.enabled(),
                 device_logs: session.device_log_demand.enabled(),
             });
+            let operations = device_session
+                .as_ref()
+                .map(|session| session.operations.summary());
             DeviceView {
                 id: device.id,
                 udid: device.udid,
@@ -144,6 +150,7 @@ fn device_views<HostPath>(application: &RuntimeClient<HostPath>) -> Vec<DeviceVi
                 session_updated_at_ms: session_status.map(|status| status.updated_at_ms),
                 session_error,
                 resources,
+                operations,
             }
         })
         .collect()
@@ -208,6 +215,10 @@ mod tests {
         let resources = device.resources.as_ref().expect("session resources");
         assert!(!resources.video);
         assert!(!resources.audio);
+        let operations = device.operations.expect("operation summary");
+        assert_eq!(operations.active_count, 0);
+        assert_eq!(operations.failed_count, 0);
+        assert_eq!(operations.latest_updated_at_ms, None);
 
         let inventory = inventory(&client);
         assert_eq!(inventory.devices.len(), 1);

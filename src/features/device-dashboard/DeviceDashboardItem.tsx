@@ -55,6 +55,8 @@ export function DeviceDashboardItem({
         </div>
         <div className="device-dashboard-state">
           {isSelectedGroup && <Tag color="success">{t("device.currentControlTarget")}</Tag>}
+          {group.activeOperations > 0 && <Tag color="processing">{t("operations.activeCount", { count: group.activeOperations })}</Tag>}
+          {group.failedOperations > 0 && <Tag color="warning">{t("operations.failedCount", { count: group.failedOperations })}</Tag>}
           <Tag>{t(`device.sessionPhases.${group.phase}`)}</Tag>
         </div>
       </header>

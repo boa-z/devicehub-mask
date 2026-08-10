@@ -6,6 +6,8 @@ export type DashboardDeviceGroup = DeviceGroup & {
   phase: SessionPhase;
   latestUpdateMs: number | null;
   resources: SessionResources;
+  activeOperations: number;
+  failedOperations: number;
 };
 
 const emptyResources: SessionResources = {
@@ -38,6 +40,14 @@ export function buildDashboardGroups(
         performance: resources.performance || device.resources?.performance === true,
         device_logs: resources.device_logs || device.resources?.device_logs === true,
       }), { ...emptyResources }),
+      activeOperations: group.devices.reduce(
+        (count, device) => count + (device.operations?.active_count ?? 0),
+        0,
+      ),
+      failedOperations: group.devices.reduce(
+        (count, device) => count + (device.operations?.failed_count ?? 0),
+        0,
+      ),
     };
   });
 }

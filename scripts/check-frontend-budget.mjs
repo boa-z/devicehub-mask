@@ -12,7 +12,8 @@ const budgets = {
   initialJavaScript: 1_075_000,
   // Includes Developer Image directory controls and operation-specific errors.
   initialCss: 50_500,
-  totalJavaScript: 1_498_000,
+  // Includes the lazy-loaded device activity center and its validated response model.
+  totalJavaScript: 1_522_000,
   asyncJavaScriptChunk: 70_000,
 };
 

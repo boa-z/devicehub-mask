@@ -21,6 +21,7 @@ import { formatFileSize } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
 import { downloadBrowserResponse, pickBrowserFile } from "../browserFiles";
 import { runningInDesktopHost } from "../hostApi";
+import { readBackendJson } from "../shared/backend/response";
 import type { AppDocumentActivity, AppDocumentEntry, AppDocumentList, DeviceApp } from "../types";
 import { AfcImagePreviewModal } from "./AfcImagePreviewModal";
 import { ErrorAlert } from "./ErrorPresentation";
@@ -43,11 +44,6 @@ type PreviewFile = {
   path: string;
   scope: AppStorageScope;
 };
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  return response.json() as Promise<T>;
-}
 
 function endpoint(bundleId: string, suffix = "") {
   return `/api/device/apps/${encodeURIComponent(bundleId)}/storage${suffix}`;
@@ -81,7 +77,7 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
     setError(null);
     try {
       const query = new URLSearchParams({ path, scope });
-      setListing(await readJson<AppDocumentList>(await request(`${endpoint(app.bundle_id)}?${query}`)));
+      setListing(await readBackendJson<AppDocumentList>(await request(`${endpoint(app.bundle_id)}?${query}`)));
     } catch (loadError) {
       setListing(null);
       setError(String(loadError));
@@ -121,7 +117,7 @@ export function AppDocumentsModal({ app, request, onClose = () => undefined, act
     let cancelled = false;
     const poll = async () => {
       try {
-        const next = await readJson<AppDocumentActivity>(
+        const next = await readBackendJson<AppDocumentActivity>(
           await request(endpoint(bundleId, "/activity")),
         );
         if (!cancelled) setActivity(next);

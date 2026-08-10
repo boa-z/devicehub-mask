@@ -44,6 +44,7 @@ export function DeviceDashboardPage({
   const connectedCount = connectedPhysicalDeviceCount(devices);
   const activeResourceCount = groups.reduce((count, group) => count
     + Object.values(group.resources).filter(Boolean).length, 0);
+  const activeOperationCount = groups.reduce((count, group) => count + group.activeOperations, 0);
 
   const runAction = (key: string, operation: () => Promise<unknown>) => {
     if (busyActions.has(key)) return;
@@ -76,6 +77,7 @@ export function DeviceDashboardPage({
         <div><strong>{groups.length}</strong><span>{t("dashboard.discovered")}</span></div>
         <div><strong>{connectedCount}</strong><span>{t("dashboard.activeSessions")}</span></div>
         <div><strong>{activeResourceCount}</strong><span>{t("dashboard.activeDemands")}</span></div>
+        <div><strong>{activeOperationCount}</strong><span>{t("dashboard.activeOperations")}</span></div>
       </section>
 
       {!backendReady ? (

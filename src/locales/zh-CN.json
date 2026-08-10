@@ -34,6 +34,7 @@
     "discovered": "已发现",
     "activeSessions": "活跃会话",
     "activeDemands": "资源需求",
+    "activeOperations": "进行中任务",
     "backendUnavailable": "DeviceHub 服务当前不可用。",
     "resourceDemand": "会话资源需求",
     "resources": {
@@ -47,6 +48,41 @@
     "transportCount_other": "{{count}} 种传输",
     "updated": "更新于{{value}}",
     "notConnectedYet": "暂无会话活动"
+  },
+  "operations": {
+    "title": "设备活动",
+    "active": "进行中",
+    "failed": "失败",
+    "activeCount": "{{count}} 项进行中",
+    "failedCount": "{{count}} 项失败",
+    "loadFailed": "无法读取设备活动",
+    "empty": "暂无设备操作记录",
+    "openTool": "打开工具",
+    "phases": {
+      "running": "进行中",
+      "cancelling": "正在取消",
+      "succeeded": "已完成",
+      "cancelled": "已取消",
+      "failed": "失败"
+    },
+    "kinds": {
+      "app_uninstall": "卸载 App",
+      "app_document_export": "导出 App 文件",
+      "app_document_import": "导入 App 文件",
+      "device_file_export": "导出设备文件",
+      "device_file_import": "导入设备文件",
+      "device_backup": "设备备份",
+      "sysdiagnose": "Sysdiagnose",
+      "log_archive": "日志归档",
+      "network_capture": "网络抓包",
+      "bluetooth_capture": "蓝牙抓包",
+      "developer_image_mount": "挂载开发者镜像",
+      "developer_image_unmount": "卸载开发者镜像",
+      "wda_runner": "WebDriverAgent Runner"
+    },
+    "stages": {
+      "verifying": "正在验证"
+    }
   },
   "afc": {
     "title": "AFC 文件",

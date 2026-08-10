@@ -1,6 +1,7 @@
 import { Alert, Button, Descriptions, Modal, Spin } from "antd";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { readBackendJson } from "../shared/backend/response";
 import type { DeviceCrashReportSummary } from "../types";
 import { ErrorAlert } from "./ErrorPresentation";
 
@@ -13,11 +14,6 @@ type Props = {
   request: Request;
   onClose: () => void;
 };
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  return response.json() as Promise<T>;
-}
 
 export function CrashReportSummaryModal({ open, devicePath, reportName, request, onClose }: Props) {
   const { t } = useTranslation();
@@ -36,7 +32,7 @@ export function CrashReportSummaryModal({ open, devicePath, reportName, request,
     setLoading(true);
     const query = new URLSearchParams({ device_path: devicePath });
     void request(`/api/device/crash-reports/summary?${query.toString()}`, { signal: controller.signal })
-      .then((response) => readJson<DeviceCrashReportSummary>(response))
+      .then((response) => readBackendJson<DeviceCrashReportSummary>(response))
       .then((result) => {
         if (!controller.signal.aborted) setSummary(result);
       }).catch((loadError) => {

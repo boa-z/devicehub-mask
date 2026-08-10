@@ -14,6 +14,7 @@ function device(id: string, udid: string, connection: string, phase: SessionPhas
     session_updated_at_ms: phase ? 1 : null,
     session_error: null,
     resources: null,
+    operations: null,
   };
 }
 

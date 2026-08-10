@@ -8,6 +8,11 @@ export type SessionResources = {
   performance: boolean;
   device_logs: boolean;
 };
+export type ManagedOperationSummary = {
+  active_count: number;
+  failed_count: number;
+  latest_updated_at_ms: number | null;
+};
 export type Device = {
   id: string;
   udid: string;
@@ -19,6 +24,7 @@ export type Device = {
   session_updated_at_ms: number | null;
   session_error: string | null;
   resources: SessionResources | null;
+  operations: ManagedOperationSummary | null;
 };
 export type DeviceInventory = {
   active_device_id: string | null;

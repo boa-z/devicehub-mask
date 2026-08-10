@@ -1,7 +1,7 @@
 .device-dashboard-page { min-height: 0; height: 100%; padding: 24px 28px 28px; overflow: auto; }
 .device-dashboard-page > header { padding-bottom: 18px; border-bottom: 1px solid #303638; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .device-dashboard-page > header h2 { margin: 0 0 4px; font-size: 22px; }
-.device-dashboard-summary { min-height: 68px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: repeat(3, minmax(0, 180px)); align-items: center; }
+.device-dashboard-summary { min-height: 68px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: repeat(4, minmax(0, 180px)); align-items: center; }
 .device-dashboard-summary > div { min-width: 0; padding: 8px 18px; border-right: 1px solid #303638; display: flex; align-items: baseline; gap: 8px; }
 .device-dashboard-summary > div:first-child { padding-left: 0; }
 .device-dashboard-summary strong { color: #edf2f0; font-size: 22px; font-variant-numeric: tabular-nums; }
@@ -15,7 +15,7 @@
 .device-dashboard-identity > div { min-width: 0; display: grid; gap: 2px; }
 .device-dashboard-identity h4 { max-width: 100%; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
 .device-dashboard-identity .ant-typography-secondary { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-.device-dashboard-state { flex: none; display: flex; justify-content: flex-end; gap: 4px; }
+.device-dashboard-state { min-width: 0; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 4px; }
 .device-dashboard-state .ant-tag { margin: 0; }
 .device-dashboard-resources { min-height: 42px; padding: 8px 14px; border-bottom: 1px solid #303638; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .device-dashboard-resources > span { min-width: 0; display: flex; align-items: center; gap: 5px; color: #66706f; font-size: 10px; white-space: nowrap; }
@@ -40,7 +40,7 @@
   .device-dashboard-page { padding: 20px 16px; }
   .device-dashboard-page > header { align-items: stretch; flex-direction: column; }
   .device-dashboard-page > header > .ant-btn { align-self: flex-start; }
-  .device-dashboard-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .device-dashboard-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .device-dashboard-summary > div { padding-inline: 10px; align-items: flex-start; flex-direction: column; gap: 0; }
   .device-dashboard-transport { grid-template-columns: 8px minmax(0, 1fr); }
   .device-dashboard-actions { grid-column: 2; justify-content: flex-start; flex-wrap: wrap; }

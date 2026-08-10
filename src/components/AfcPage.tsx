@@ -7,6 +7,7 @@ import { Button, Empty, Segmented, Select, Spin, Tag, Tooltip, Typography } from
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { availableAfcApps } from "../afcBrowser";
+import { readBackendJson } from "../shared/backend/response";
 import type { DeviceApp } from "../types";
 import { AppDocumentsModal, type AppStorageScope } from "./AppDocumentsModal";
 import { AfcCrashReportsPane } from "./AfcCrashReportsPane";
@@ -21,11 +22,6 @@ type Props = {
   activeUdid: string | null;
   request: Request;
 };
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  return response.json() as Promise<T>;
-}
 
 export function AfcPage({ active, activeUdid, request }: Props) {
   const { t, i18n } = useTranslation();
@@ -47,7 +43,7 @@ export function AfcPage({ active, activeUdid, request }: Props) {
     setAppsLoading(true);
     setAppsError(null);
     try {
-      const result = await readJson<DeviceApp[]>(await request("/api/device/apps"));
+      const result = await readBackendJson<DeviceApp[]>(await request("/api/device/apps"));
       if (appRequestVersion.current === version) setApps(result);
     } catch (error) {
       if (appRequestVersion.current === version) {

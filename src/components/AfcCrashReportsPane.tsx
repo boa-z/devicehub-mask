@@ -12,6 +12,7 @@ import { downloadBrowserResponse } from "../browserFiles";
 import { filterCrashReports, formatFileSize, formatReportDate } from "../deviceInspector";
 import { showErrorMessage } from "../errorMessage";
 import { runningInDesktopHost } from "../hostApi";
+import { readBackendJson } from "../shared/backend/response";
 import type { DeviceCrashReport, DeviceCrashReportList } from "../types";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
 import { ErrorAlert } from "./ErrorPresentation";
@@ -24,11 +25,6 @@ type Props = {
   request: Request;
   onTransferStateChange?: (active: boolean) => void;
 };
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  return response.json() as Promise<T>;
-}
 
 export function AfcCrashReportsPane({ active, deviceId, request, onTransferStateChange }: Props) {
   const { t, i18n } = useTranslation();
@@ -53,7 +49,7 @@ export function AfcCrashReportsPane({ active, deviceId, request, onTransferState
     setLoading(true);
     setError(null);
     try {
-      const result = await readJson<DeviceCrashReportList>(await request("/api/device/crash-reports"));
+      const result = await readBackendJson<DeviceCrashReportList>(await request("/api/device/crash-reports"));
       if (version.current === requestVersion) {
         setReports(result.reports);
         setTruncated(result.truncated);

@@ -24,6 +24,7 @@ import { useTranslation } from "react-i18next";
 import { downloadBrowserResponse } from "../browserFiles";
 import { showErrorMessage } from "../errorMessage";
 import { runningInDesktopHost } from "../hostApi";
+import { readBackendJson } from "../shared/backend/response";
 import { AppDocumentsModal } from "./AppDocumentsModal";
 import { AppConsoleModal } from "./AppConsoleModal";
 import { CrashReportSummaryModal } from "./CrashReportSummaryModal";
@@ -52,13 +53,6 @@ type Props = {
   onAppLaunched?: (bundleId: string) => void;
   onAppProfileBindingChange: (bundleId: string, bind: boolean) => Promise<void>;
 };
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  }
-  return response.json() as Promise<T>;
-}
 
 function developerImageErrorText(error: unknown, t: (key: string) => string): string {
   const value = String(error ?? "");
@@ -152,7 +146,7 @@ export function DeviceInspector({
     setHomeScreenLoading(true);
     setHomeScreenError(null);
     try {
-      const layout = await readJson<HomeScreenLayout>(await request("/api/device/home-screen", {
+      const layout = await readBackendJson<HomeScreenLayout>(await request("/api/device/home-screen", {
         signal: ticket.signal,
       }));
       if (ticket.isCurrent()) {
@@ -195,7 +189,7 @@ export function DeviceInspector({
   const loadWdaRunnerStatus = useCallback(async () => {
     const ticket = wdaRunnerStatusRequest.begin();
     try {
-      const status = await readJson<WdaRunnerStatus>(await request("/api/device/wda-runner", {
+      const status = await readBackendJson<WdaRunnerStatus>(await request("/api/device/wda-runner", {
         signal: ticket.signal,
       }));
       if (ticket.isCurrent()) setWdaRunnerStatus(status);
@@ -206,7 +200,7 @@ export function DeviceInspector({
 
   const loadBackupStatus = useCallback(async () => {
     const ticket = backupStatusRequest.begin();
-    const status = await readJson<DeviceBackupStatus>(await request("/api/device/backup", {
+    const status = await readBackendJson<DeviceBackupStatus>(await request("/api/device/backup", {
       signal: ticket.signal,
     }));
     if (ticket.isCurrent()) setBackupStatus(status);
@@ -215,7 +209,7 @@ export function DeviceInspector({
 
   const loadSysdiagnoseStatus = useCallback(async () => {
     const ticket = sysdiagnoseStatusRequest.begin();
-    const status = await readJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose", {
+    const status = await readBackendJson<SysdiagnoseStatus>(await request("/api/device/sysdiagnose", {
       signal: ticket.signal,
     }));
     if (ticket.isCurrent()) setSysdiagnoseStatus(status);
@@ -224,7 +218,7 @@ export function DeviceInspector({
 
   const loadDeveloperImageStatus = useCallback(async () => {
     const ticket = developerImageStatusRequest.begin();
-    const status = await readJson<DeveloperImageMountStatus>(await request("/api/device/developer-image", {
+    const status = await readBackendJson<DeveloperImageMountStatus>(await request("/api/device/developer-image", {
       signal: ticket.signal,
     }));
     if (ticket.isCurrent()) setDeveloperImageStatus(status);
@@ -232,7 +226,7 @@ export function DeviceInspector({
   }, [developerImageStatusRequest, request]);
 
   const loadDeveloperImages = useCallback(async (refresh = false, productVersion = details?.product_version) => {
-    const images = await readJson<DeveloperImageSetDescriptor[]>(await request("/api/device/developer-images", {
+    const images = await readBackendJson<DeveloperImageSetDescriptor[]>(await request("/api/device/developer-images", {
       method: refresh ? "POST" : "GET",
     }));
     setDeveloperImages(images);
@@ -245,7 +239,7 @@ export function DeviceInspector({
   }, [details?.product_version, request]);
 
   const readAppOperation = useCallback(
-    async (signal?: AbortSignal) => readJson<AppOperation>(await request("/api/device/apps/operation", { signal })),
+    async (signal?: AbortSignal) => readBackendJson<AppOperation>(await request("/api/device/apps/operation", { signal })),
     [request],
   );
 
@@ -263,7 +257,7 @@ export function DeviceInspector({
     setError(null);
     try {
       if (tab === "info") {
-        const nextDetails = await readJson<DeviceDetails>(await request("/api/device/details", {
+        const nextDetails = await readBackendJson<DeviceDetails>(await request("/api/device/details", {
           signal: ticket.signal,
         }));
         if (!ticket.isCurrent()) return;
@@ -279,7 +273,7 @@ export function DeviceInspector({
         if (nextDetails.product_type.startsWith("iPhone")) {
           setCompanionLoading(true);
           try {
-            const nextCompanions = await readJson<CompanionDevice[]>(await request("/api/device/companions", {
+            const nextCompanions = await readBackendJson<CompanionDevice[]>(await request("/api/device/companions", {
               signal: ticket.signal,
             }));
             if (ticket.isCurrent()) setCompanions(nextCompanions);
@@ -297,12 +291,12 @@ export function DeviceInspector({
           void refreshAppOperation();
         }
       } else if (tab === "profiles") {
-        const nextProfiles = await readJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles", {
+        const nextProfiles = await readBackendJson<ProvisioningProfile[]>(await request("/api/device/provisioning-profiles", {
           signal: ticket.signal,
         }));
         if (ticket.isCurrent()) setProfiles(nextProfiles);
       } else if (tab === "crashes") {
-        const result = await readJson<DeviceCrashReportList>(await request("/api/device/crash-reports", {
+        const result = await readBackendJson<DeviceCrashReportList>(await request("/api/device/crash-reports", {
           signal: ticket.signal,
         }));
         if (ticket.isCurrent()) {
@@ -482,7 +476,7 @@ export function DeviceInspector({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ bundle_id: app.bundle_id }),
           });
-          const status = await readJson<WdaRunnerStatus>(response);
+          const status = await readBackendJson<WdaRunnerStatus>(response);
           setWdaRunnerStatus(status);
           void message.success(t("deviceInspector.wdaRunnerStarted", { name: app.name }));
         } catch (runnerError) {
@@ -500,7 +494,7 @@ export function DeviceInspector({
     const bundleId = wdaRunnerStatus?.runner_bundle_id;
     setWdaRunnerAction(bundleId ?? "stop");
     try {
-      const status = await readJson<WdaRunnerStatus>(await request("/api/device/wda-runner", { method: "DELETE" }));
+      const status = await readBackendJson<WdaRunnerStatus>(await request("/api/device/wda-runner", { method: "DELETE" }));
       setWdaRunnerStatus(status);
       void message.success(t("deviceInspector.wdaRunnerStopped"));
     } catch (runnerError) {
@@ -913,7 +907,7 @@ export function DeviceInspector({
     try {
       const form = new FormData();
       for (const file of Array.from(files)) form.append("files", file, file.name);
-      const imported = await readJson<DeveloperImageSetDescriptor>(await request("/api/device/developer-images/import", {
+      const imported = await readBackendJson<DeveloperImageSetDescriptor>(await request("/api/device/developer-images/import", {
         method: "POST",
         body: form,
       }));

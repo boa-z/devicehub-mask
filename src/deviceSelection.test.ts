@@ -16,6 +16,7 @@ function status(activeDeviceId: string | null, sessionStatus: string | null): De
       session_updated_at_ms: sessionStatus === null ? null : 0,
       session_error: null,
       resources: null,
+      operations: null,
     }],
   };
 }

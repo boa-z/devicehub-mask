@@ -90,7 +90,7 @@ npm run verify
 
 The production frontend build also checks the Vite manifest against committed budgets for initial JavaScript, initial CSS, total JavaScript, and the largest asynchronous chunk. Run `npm run budget:check` to inspect an existing `dist/` build. Do not raise a budget to hide a regression; first reduce or split the dependency graph and document any intentional baseline change.
 
-The total JavaScript baseline is 1,452,000 bytes as of the stable runtime HID identity allocator. Initial JavaScript and per-chunk limits remain unchanged, so control-path growth cannot hide a startup or lazy-loading regression.
+The total JavaScript baseline is 1,522,000 bytes after adding the lazy-loaded device activity center. Its UI, response validation, and adaptive polling remain outside the initial dependency graph. Initial JavaScript, initial CSS, and per-chunk limits remain unchanged, so optional workspace growth cannot hide a startup or chunk-size regression.
 
 This is the same cross-platform source gate used by GitHub Actions: documentation, frontend lint/tests/build, Rust formatting/tests, and Clippy with warnings denied. Run the full local gate before pushing a substantial change:
 

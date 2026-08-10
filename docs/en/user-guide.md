@@ -12,6 +12,8 @@ The compact connection center in the top bar provides the same lifecycle operati
 
 Multiple devices can remain connected. Selecting another device changes the visible workspace without disconnecting existing sessions. Connection phase and errors are shown per device. Use reconnect for a failed session; remove trust only when you intend to pair again. A metadata timeout does not necessarily mean the media session failed, and recoverable metadata is loaded again in the background.
 
+The clock button in the top bar opens **Device activity** for the selected transport. It shows active and recent bounded operations, progress, stage, completion time, and copyable failures. **Open tool** returns to the workspace that owns the detailed controls and cancellation. The Devices Overview shows active-operation counts from the shared status snapshot without polling every device separately.
+
 ## Control the Device
 
 The Device workspace contains the live frame, direct touch surface, stream state, display controls, hardware buttons, and feature tools. Right-click the frame to send Home. Select **Mapping** to convert configured keys into touch/hardware actions, or **Keyboard passthrough** to forward physical HID key events. Mouse direct touch remains available in both modes; keyboard passthrough sends it through the raw multi-touch path without key mapping. Changing mode, page, focus, fullscreen, or connection releases held input.

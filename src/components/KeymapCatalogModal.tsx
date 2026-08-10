@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import "./KeymapCatalogModal.css";
 import { filterKeymapCatalogEntries, keymapCatalogMatchLevel } from "../keymapCatalog";
 import { uniqueImportedProfileName } from "../mappingImport";
+import { readBackendJson } from "../shared/backend/response";
 import type {
   DeviceApp,
   DeviceDetails,
@@ -47,11 +48,6 @@ type Props = {
   onClose: () => void;
   onInstalled: (name: string) => Promise<void>;
 };
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  return response.json() as Promise<T>;
-}
 
 function entryResolution(entry: KeymapCatalogEntry) {
   return `${entry.match.stream_resolution.width} x ${entry.match.stream_resolution.height}`;
@@ -109,14 +105,14 @@ export function KeymapCatalogModal({
     setLoading(true);
     setError(null);
     try {
-      const nextCatalog = await readJson<KeymapCatalog>(await request("/api/keymap-catalog/refresh", {
+      const nextCatalog = await readBackendJson<KeymapCatalog>(await request("/api/keymap-catalog/refresh", {
         method: "POST",
       }));
       if (generation === refreshGenerationRef.current) setCatalog(nextCatalog);
     } catch (nextError) {
       if (generation === refreshGenerationRef.current) setError(String(nextError));
       try {
-        const cachedCatalog = await readJson<KeymapCatalog>(await request("/api/keymap-catalog"));
+        const cachedCatalog = await readBackendJson<KeymapCatalog>(await request("/api/keymap-catalog"));
         if (generation === refreshGenerationRef.current) setCatalog(cachedCatalog);
       } catch {
         if (generation === refreshGenerationRef.current) setCatalog(null);
@@ -128,7 +124,7 @@ export function KeymapCatalogModal({
 
   const loadSource = useCallback(async () => {
     try {
-      const next = await readJson<KeymapCatalogSource>(await request("/api/keymap-catalog/source"));
+      const next = await readBackendJson<KeymapCatalogSource>(await request("/api/keymap-catalog/source"));
       setSource(next);
       setSourceDraft(next.url);
       setSourceError(null);
@@ -144,8 +140,8 @@ export function KeymapCatalogModal({
       return;
     }
     const [appsResult, detailsResult] = await Promise.allSettled([
-      request("/api/device/apps").then((response) => readJson<DeviceApp[]>(response)),
-      request("/api/device/details").then((response) => readJson<DeviceDetails>(response)),
+      request("/api/device/apps").then((response) => readBackendJson<DeviceApp[]>(response)),
+      request("/api/device/details").then((response) => readBackendJson<DeviceDetails>(response)),
     ]);
     setApps(appsResult.status === "fulfilled" ? appsResult.value : []);
     setDetails(detailsResult.status === "fulfilled" ? detailsResult.value : null);
@@ -269,7 +265,7 @@ export function KeymapCatalogModal({
     const name = uniqueImportedProfileName(`${entry.slug}.json`, profiles);
     setInstalling(entry.id);
     try {
-      const installed = await readJson<KeymapCatalogInstall>(await request(
+      const installed = await readBackendJson<KeymapCatalogInstall>(await request(
         `/api/keymap-catalog/entries/${encodeURIComponent(entry.id)}/install`,
         {
           method: "POST",
@@ -290,7 +286,7 @@ export function KeymapCatalogModal({
     setSourceSaving(true);
     setSourceError(null);
     try {
-      const next = await readJson<KeymapCatalogSource>(await request("/api/keymap-catalog/source", {
+      const next = await readBackendJson<KeymapCatalogSource>(await request("/api/keymap-catalog/source", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ url }),

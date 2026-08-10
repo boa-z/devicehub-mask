@@ -14,6 +14,7 @@ function device(overrides: Partial<Device>): Device {
     session_updated_at_ms: null,
     session_error: null,
     resources: null,
+    operations: null,
     ...overrides,
   };
 }
@@ -29,6 +30,17 @@ describe("device dashboard model", () => {
     expect(groups[0].primary.id).toBe("phone::usb");
     expect(groups[0].latestUpdateMs).toBe(20);
     expect(groups[0].resources).toEqual({ video: true, audio: true, performance: true, device_logs: false });
+    expect(groups[0].activeOperations).toBe(0);
+  });
+
+  it("aggregates operation summaries without additional device requests", () => {
+    const [group] = buildDashboardGroups([
+      device({ operations: { active_count: 2, failed_count: 1, latest_updated_at_ms: 100 } }),
+      device({ id: "phone::wifi", connection: "Wi-Fi", operations: null }),
+    ], null);
+
+    expect(group.activeOperations).toBe(2);
+    expect(group.failedOperations).toBe(1);
   });
 
   it("prioritizes an active transport when the group is not focused", () => {

@@ -1,18 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { deviceAppScopeQuery } from "../../../deviceInspector";
+import { readBackendJson } from "../../../shared/backend/response";
 import type { DeviceApp } from "../../../types";
 
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 type AppScope = "system" | "clips";
 
 const APP_CATALOG_CACHE_MS = 30_000;
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    throw new Error((await response.text()) || `${response.status} ${response.statusText}`);
-  }
-  return response.json() as Promise<T>;
-}
 
 export type DeviceAppCatalog = {
   apps: DeviceApp[];
@@ -60,7 +54,7 @@ export function useDeviceAppCatalog(
     const generation = ++requestGeneration.current;
     try {
       const suffix = deviceAppScopeQuery(includeSystem, includeAppClips);
-      const nextApps = await readJson<DeviceApp[]>(await request(`/api/device/apps${suffix}`, {
+      const nextApps = await readBackendJson<DeviceApp[]>(await request(`/api/device/apps${suffix}`, {
         signal: controller.signal,
       }));
       if (requestGeneration.current !== generation || controller.signal.aborted) return false;

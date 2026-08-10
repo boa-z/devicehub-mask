@@ -34,6 +34,7 @@
     "discovered": "Discovered",
     "activeSessions": "Active sessions",
     "activeDemands": "Active demands",
+    "activeOperations": "Active operations",
     "backendUnavailable": "The DeviceHub service is unavailable.",
     "resourceDemand": "Session resource demand",
     "resources": {
@@ -47,6 +48,41 @@
     "transportCount_other": "{{count}} transports",
     "updated": "Updated {{value}}",
     "notConnectedYet": "No session activity"
+  },
+  "operations": {
+    "title": "Device activity",
+    "active": "Active",
+    "failed": "Failed",
+    "activeCount": "{{count}} active",
+    "failedCount": "{{count}} failed",
+    "loadFailed": "Unable to load device activity",
+    "empty": "No device operations yet",
+    "openTool": "Open tool",
+    "phases": {
+      "running": "Running",
+      "cancelling": "Cancelling",
+      "succeeded": "Completed",
+      "cancelled": "Cancelled",
+      "failed": "Failed"
+    },
+    "kinds": {
+      "app_uninstall": "Uninstall app",
+      "app_document_export": "Export app documents",
+      "app_document_import": "Import app documents",
+      "device_file_export": "Export device files",
+      "device_file_import": "Import device files",
+      "device_backup": "Device backup",
+      "sysdiagnose": "Sysdiagnose",
+      "log_archive": "Log archive",
+      "network_capture": "Network capture",
+      "bluetooth_capture": "Bluetooth capture",
+      "developer_image_mount": "Mount developer image",
+      "developer_image_unmount": "Unmount developer image",
+      "wda_runner": "WebDriverAgent runner"
+    },
+    "stages": {
+      "verifying": "Verifying"
+    }
   },
   "afc": {
     "title": "AFC files",

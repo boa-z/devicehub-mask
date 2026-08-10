@@ -124,6 +124,14 @@ pub struct ManagedOperation {
     pub error: Option<ManagedOperationError>,
 }
 
+/// Lightweight projection suitable for inventories that include many devices.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ManagedOperationSummary {
+    pub active_count: usize,
+    pub failed_count: usize,
+    pub latest_updated_at_ms: Option<u64>,
+}
+
 #[derive(Debug, Default)]
 struct ManagedOperationRegistryInner {
     next_id: u64,
@@ -248,6 +256,27 @@ impl ManagedOperationRegistry {
             .collect()
     }
 
+    pub fn summary(&self) -> ManagedOperationSummary {
+        let inner = self.0.lock().expect("managed operation lock poisoned");
+        ManagedOperationSummary {
+            active_count: inner
+                .operations
+                .iter()
+                .filter(|operation| operation.phase.is_active())
+                .count(),
+            failed_count: inner
+                .operations
+                .iter()
+                .filter(|operation| operation.phase == ManagedOperationPhase::Failed)
+                .count(),
+            latest_updated_at_ms: inner
+                .operations
+                .iter()
+                .map(|operation| operation.updated_at_ms)
+                .max(),
+        }
+    }
+
     fn update_active(&self, id: u64, update: impl FnOnce(&mut ManagedOperation)) {
         let mut inner = self.0.lock().expect("managed operation lock poisoned");
         if let Some(operation) = inner
@@ -309,6 +338,12 @@ mod tests {
         let operation = registry.snapshot().remove(0);
         assert_eq!(operation.phase, ManagedOperationPhase::Cancelled);
         assert_eq!(operation.progress_percent, Some(100.0));
+        assert_eq!(registry.summary().active_count, 0);
+        assert_eq!(registry.summary().failed_count, 0);
+        assert_eq!(
+            registry.summary().latest_updated_at_ms,
+            Some(operation.updated_at_ms)
+        );
         assert_eq!(operation.error.unwrap().code, OperationErrorCode::Cancelled);
     }
 }

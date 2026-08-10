@@ -64,6 +64,7 @@ import { useProfileController } from "./features/profiles/useProfileController";
 const AfcPage = lazy(() => import("./components/AfcPage").then((module) => ({ default: module.AfcPage })));
 const DeviceDashboardPage = lazy(() => import("./features/device-dashboard/DeviceDashboardPage").then((module) => ({ default: module.DeviceDashboardPage })));
 const DeviceConnectionCenter = lazy(() => import("./components/DeviceConnectionCenter").then((module) => ({ default: module.DeviceConnectionCenter })));
+const DeviceActivityCenter = lazy(() => import("./features/device-operations/DeviceActivityCenter").then((module) => ({ default: module.DeviceActivityCenter })));
 const DeviceFullscreenToolbar = lazy(() => import("./components/DeviceFullscreenToolbar").then((module) => ({ default: module.DeviceFullscreenToolbar })));
 const DeviceInspector = lazy(() => import("./components/DeviceInspector").then((module) => ({ default: module.DeviceInspector })));
 const DeviceLogsPage = lazy(() => import("./components/DeviceLogsPage").then((module) => ({ default: module.DeviceLogsPage })));
@@ -894,6 +895,18 @@ export default function App() {
               onDisconnect={(deviceId) => void disconnectDevice(deviceId)}
               onPair={(deviceId) => void pairDevice(deviceId)}
               onRefresh={() => void refreshDevices()}
+            />
+          </Suspense>
+          <Suspense fallback={<Button disabled />}>
+            <DeviceActivityCenter
+              deviceId={selectedDeviceId}
+              deviceName={status.devices.find((device) => device.id === selectedDeviceId)?.name ?? null}
+              enabled={documentVisible && status.devices.some((device) => device.id === selectedDeviceId && device.operations !== null)}
+              request={deviceRequest}
+              onNavigate={(next) => {
+                releaseAllControls();
+                setPage(next);
+              }}
             />
           </Suspense>
           {page === "mappings" && <Tooltip title={t("device.saveMappings")}><Button icon={<SaveOutlined />} onClick={() => void save()} /></Tooltip>}
