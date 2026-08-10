@@ -5,7 +5,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use devicehub_core::{LogArchiveSlot, LogArchiveState, LogArchiveStatus};
+use devicehub_core::{
+    LogArchiveSlot, LogArchiveState, LogArchiveStatus, ManagedOperationError, ManagedOperationKind,
+    ManagedOperationRegistry, OperationErrorCode,
+};
 use idevice::RsdService;
 use idevice::os_trace_relay::OsTraceRelayClient;
 use idevice::rsd::RsdHandshake;
@@ -45,11 +48,13 @@ pub fn validate_age_limit_hours(value: u16) -> Result<u16, String> {
         .ok_or_else(|| "log archive age limit must be 1, 6, or 24 hours".into())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve<FileIo>(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<LogArchiveCommand<FileIo::Path>>,
     status: LogArchiveSlot,
+    operations: ManagedOperationRegistry,
     file_io: FileIo,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -77,6 +82,18 @@ pub(crate) async fn serve<FileIo>(
                 age_limit_hours,
                 reply,
             } => {
+                let managed_id = match operations.begin(
+                    ManagedOperationKind::LogArchive,
+                    Some(format!("{age_limit_hours}h")),
+                    true,
+                ) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.message));
+                        continue;
+                    }
+                };
+                operations.update(managed_id, Some("starting".into()), Some(0.0));
                 attempt += 1;
                 let outcome = run_export(
                     &mut adapter,
@@ -92,6 +109,22 @@ pub(crate) async fn serve<FileIo>(
                     reply,
                 )
                 .await;
+                match status.get() {
+                    current if current.state == LogArchiveState::Completed => {
+                        operations.succeed(managed_id)
+                    }
+                    current if current.state == LogArchiveState::Cancelled => operations.cancel(
+                        managed_id,
+                        current.error.as_deref().unwrap_or("log archive cancelled"),
+                    ),
+                    current => operations.fail(
+                        managed_id,
+                        ManagedOperationError::new(
+                            OperationErrorCode::Internal,
+                            current.error.unwrap_or_else(|| "log archive failed".into()),
+                        ),
+                    ),
+                }
                 if outcome == ExportOutcome::SessionEnded {
                     return;
                 }

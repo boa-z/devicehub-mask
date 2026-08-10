@@ -4,22 +4,24 @@
 //! inject platform capabilities, but cannot create overlapping media sessions
 //! or implement a divergent USB/Wi-Fi retry loop.
 
+mod lifecycle;
+mod management;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devicehub_core::{
-    ActiveSlot, DeviceInfo, DeviceListSlot, DevicePairingState, ForgetDeviceResult, LocationStatus,
-    PairDeviceOutcome, PairDeviceResult, SessionPhase, StatusSlot,
+    ActiveSlot, DeviceInfo, DeviceListSlot, DevicePairingState, LocationStatus, SessionPhase,
+    StatusSlot,
 };
 use tokio::sync::{mpsc::UnboundedReceiver, mpsc::UnboundedSender, oneshot};
 
 use super::{
     ConnectedSessionHost, ConnectedSessionMedia, ConnectedSessionViews, SessionFailureAction,
-    SessionRetryPolicy, forget_device, pair_device, run_connected_session,
+    SessionRetryPolicy, run_connected_session,
 };
 use crate::clipboard::HostClipboardFactory;
-use crate::device::unmount_image;
 use crate::runtime::{CoreRuntimeFuture, CoreRuntimeState, DeviceSessionState};
 use crate::transport::{CoreTunnelConfig, DeviceDiscovery};
 use crate::{
@@ -28,8 +30,11 @@ use crate::{
     DiagnosticDumpSinkFactory, HostClipboardProvider, HostFileIo, MuxSidecar, PairingStore,
     ProvisioningProfileLoader, RuntimeClient, RuntimePreferences, RuntimeSessionHostAdapters,
     SessionCommandSlot, SessionControlCommand, SessionDiagnostics, SessionEndpoint,
-    SystemUsbmuxdConfig, connect_provider, resolve_device_selection,
+    SystemUsbmuxdConfig, resolve_device_selection,
 };
+
+use lifecycle::{running_selection_for_udid, stop_all_sessions};
+use management::{PendingManagementAction, apply_management_outcome, perform_management_action};
 
 const IDLE_RESCAN: Duration = Duration::from_secs(2);
 const SWITCH_GRACE: Duration = Duration::from_secs(3);
@@ -336,47 +341,6 @@ impl SessionSupervisorSlot {
     }
 }
 
-enum PendingManagementAction {
-    Pair(oneshot::Sender<PairDeviceResult>),
-    Forget(oneshot::Sender<ForgetDeviceResult>),
-    UnmountDeveloperImage {
-        status: devicehub_core::DeveloperImageMountSlot,
-        reply: oneshot::Sender<Result<(), String>>,
-    },
-}
-
-enum ManagementOutcome {
-    None,
-    Connect(String),
-    Remove(String),
-}
-
-async fn pair_request(
-    selection_id: String,
-    reply: oneshot::Sender<PairDeviceResult>,
-    endpoints: &HashMap<String, SessionEndpoint>,
-    views: &ConnectedSessionViews,
-) -> bool {
-    let result = pair_device(&selection_id, endpoints, &views.status).await;
-    let paired = result.outcome == PairDeviceOutcome::Paired;
-    let _ = reply.send(result);
-    paired
-}
-
-async fn forget_request<Sidecar, Store>(
-    selection_id: String,
-    reply: oneshot::Sender<ForgetDeviceResult>,
-    endpoints: &HashMap<String, SessionEndpoint>,
-    views: &ConnectedSessionViews,
-    discovery: &mut DeviceDiscovery<Sidecar, Store>,
-) where
-    Sidecar: MuxSidecar,
-    Store: PairingStore,
-{
-    let result = forget_device(&selection_id, endpoints, &views.status, discovery).await;
-    let _ = reply.send(result);
-}
-
 fn ensure_session<HostPath>(
     selection_id: &str,
     views: &SessionManagerViews<HostPath>,
@@ -396,103 +360,6 @@ fn ensure_session<HostPath>(
             session_views
         })
         .clone()
-}
-
-async fn perform_management_action<Sidecar, Store, HostPath>(
-    selection_id: String,
-    action: PendingManagementAction,
-    endpoints: &HashMap<String, SessionEndpoint>,
-    views: &ManagedSessionViews<HostPath>,
-    discovery: &mut DeviceDiscovery<Sidecar, Store>,
-) -> ManagementOutcome
-where
-    Sidecar: MuxSidecar,
-    Store: PairingStore,
-{
-    match action {
-        PendingManagementAction::Pair(reply) => {
-            let requested = selection_id.clone();
-            if pair_request(selection_id, reply, endpoints, &views.connected).await {
-                discovery.invalidate();
-                ManagementOutcome::Connect(requested)
-            } else {
-                discovery.invalidate();
-                ManagementOutcome::None
-            }
-        }
-        PendingManagementAction::Forget(reply) => {
-            forget_request(
-                selection_id.clone(),
-                reply,
-                endpoints,
-                &views.connected,
-                discovery,
-            )
-            .await;
-            discovery.invalidate();
-            ManagementOutcome::Remove(selection_id)
-        }
-        PendingManagementAction::UnmountDeveloperImage { status, reply } => {
-            let result: Result<(), String> = async {
-                let endpoint = endpoints.get(&selection_id).cloned().ok_or_else(|| {
-                    "selected device transport is no longer available".to_string()
-                })?;
-                let (provider, _) = connect_provider(endpoint).await?;
-                unmount_image(provider.as_ref(), status.clone()).await?;
-                Ok(())
-            }
-            .await;
-            match &result {
-                Ok(()) => status.update(|current| {
-                    current.state = devicehub_core::DeveloperImageMountState::Unmounted;
-                    current.operation = None;
-                    current.progress_percent = Some(100.0);
-                    current.error = None;
-                }),
-                Err(error) => status.update(|current| {
-                    current.state = devicehub_core::DeveloperImageMountState::Failed;
-                    current.operation = Some(devicehub_core::DeveloperImageOperation::Unmount);
-                    current.error = Some(error.clone());
-                }),
-            }
-            let _ = reply.send(result);
-            ManagementOutcome::None
-        }
-    }
-}
-
-fn apply_management_outcome<HostPath>(
-    outcome: ManagementOutcome,
-    views: &SessionManagerViews<HostPath>,
-    sessions: &mut HashMap<String, ManagedSessionViews<HostPath>>,
-    pending_connect: &mut HashSet<String>,
-) {
-    match outcome {
-        ManagementOutcome::None => {}
-        ManagementOutcome::Connect(selection_id) => {
-            pending_connect.insert(selection_id);
-        }
-        ManagementOutcome::Remove(selection_id) => {
-            sessions.remove(&selection_id);
-            views.sessions.remove(&selection_id);
-            if views.active.selection_id().as_deref() == Some(selection_id.as_str()) {
-                views.active.set(None);
-            }
-        }
-    }
-}
-
-fn running_selection_for_udid<'a>(
-    running: &'a HashSet<String>,
-    endpoints: &HashMap<String, SessionEndpoint>,
-    udid: &str,
-) -> Option<&'a str> {
-    running.iter().find_map(|selection_id| {
-        endpoints
-            .get(selection_id)
-            .filter(|endpoint| endpoint.udid() == udid)
-            .map(|_| selection_id.as_str())
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -621,10 +488,10 @@ fn spawn_connected_session<
                     ) {
                         SessionFailureAction::Stop => break,
                         SessionFailureAction::Retry(retry) => {
-                            views
-                                .connected
-                                .status
-                                .set("Wi-Fi control interrupted - retrying connection...");
+                            views.connected.status.set_phase(
+                                SessionPhase::Recovering,
+                                "Wi-Fi control interrupted - retrying connection...",
+                            );
                             tracing::info!(
                                 device_id = %selection_id,
                                 attempt = retry.attempt,
@@ -651,33 +518,16 @@ fn spawn_connected_session<
         views.connected.runtime_services.performance.reset();
         views.connected.runtime_services.device_logs.reset();
         views.connected.runtime_services.services.clear();
-        views.connected.status.set("disconnected");
+        views
+            .connected
+            .operations
+            .cancel_all("device session ended");
+        views
+            .connected
+            .status
+            .set_phase(SessionPhase::Disconnected, "disconnected");
         let _ = ended.send(selection_id);
     });
-}
-
-async fn stop_all_sessions<HostPath>(
-    sessions: &HashMap<String, ManagedSessionViews<HostPath>>,
-    running: &mut HashSet<String>,
-    ended: &mut UnboundedReceiver<String>,
-) {
-    for selection_id in running.iter() {
-        if let Some(session) = sessions.get(selection_id) {
-            session.supervisor.stop();
-            session.commands.send(DeviceSessionCommand::Shutdown);
-        }
-    }
-    let deadline = tokio::time::sleep(SWITCH_GRACE);
-    tokio::pin!(deadline);
-    while !running.is_empty() {
-        tokio::select! {
-            ended_id = ended.recv() => {
-                let Some(ended_id) = ended_id else { break };
-                running.remove(&ended_id);
-            }
-            _ = &mut deadline => break,
-        }
-    }
 }
 
 /// Run discovery and any number of independently supervised device sessions.
@@ -748,7 +598,10 @@ async fn run_session_manager<
                         views.active.set_selected(endpoint.udid().to_owned(), selection_id.clone());
                     }
                     if !running.contains(&selection_id) {
-                        session.connected.status.set("waiting for selected device transport...");
+                        session.connected.status.set_phase(
+                            SessionPhase::Discovered,
+                            "waiting for selected device transport...",
+                        );
                         pending_connect.insert(selection_id);
                     }
                 }
@@ -761,7 +614,10 @@ async fn run_session_manager<
                         session.supervisor.stop();
                         session.commands.send(DeviceSessionCommand::Shutdown);
                         if !running.contains(&selection_id) {
-                            session.connected.status.set("disconnected");
+                            session
+                                .connected
+                                .status
+                                .set_phase(SessionPhase::Disconnected, "disconnected");
                         }
                     }
                     if views.active.selection_id().as_deref() == Some(selection_id.as_str()) {
@@ -906,7 +762,10 @@ async fn run_session_manager<
                         session.connected.error.set(Some(format!(
                             "device is already connected through {existing}"
                         )));
-                        session.connected.status.set("disconnected");
+                        session
+                            .connected
+                            .status
+                            .set_phase(SessionPhase::Disconnected, "disconnected");
                         continue;
                     }
                     if !running.insert(selection_id.clone()) {
@@ -927,11 +786,14 @@ async fn run_session_manager<
                 }
 
                 if sessions.is_empty() {
-                    views.connected.status.set(if host.discovery.requires_pairing() {
-                        "Wi-Fi device found - connect it by USB once to authorize this app"
-                    } else {
-                        "no device - pick one from the menu"
-                    });
+                    views.connected.status.set_phase(
+                        SessionPhase::Discovered,
+                        if host.discovery.requires_pairing() {
+                            "Wi-Fi device found - connect it by USB once to authorize this app"
+                        } else {
+                            "no device - pick one from the menu"
+                        },
+                    );
                 }
             }
         }
@@ -944,7 +806,7 @@ mod tests {
         SessionManagerViews, ensure_session, startup_device_id, wait_for_session_startup_timeout,
     };
     use crate::runtime::CoreRuntimeState;
-    use devicehub_core::{ConnKind, DeviceInfo, DevicePairingState};
+    use devicehub_core::{ConnKind, DeviceInfo, DevicePairingState, SessionPhase};
     use std::time::Duration;
 
     fn device(id: &str, udid: &str, pairing: DevicePairingState) -> DeviceInfo {
@@ -988,10 +850,16 @@ mod tests {
         let views: SessionManagerViews<String> = state.manager_views();
         let mut sessions = std::collections::HashMap::new();
         let phone = ensure_session("phone::usb", &views, &mut sessions);
-        phone.connected.status.set("connected");
+        phone
+            .connected
+            .status
+            .set_phase(SessionPhase::Connected, "connected");
 
         let tablet = ensure_session("tablet::usb", &views, &mut sessions);
-        tablet.connected.status.set("connecting");
+        tablet
+            .connected
+            .status
+            .set_phase(SessionPhase::Connecting, "connecting");
 
         assert_eq!(sessions.len(), 2);
         assert_eq!(phone.connected.status.get(), "connected");
@@ -1005,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn startup_watchdog_stops_only_sessions_that_never_connect() {
         let connecting = devicehub_core::StatusSlot::default();
-        connecting.set("connecting to device...");
+        connecting.set_phase(SessionPhase::Connecting, "connecting to device...");
         tokio::time::timeout(
             Duration::from_millis(100),
             wait_for_session_startup_timeout(connecting, Duration::from_millis(5)),
@@ -1014,7 +882,7 @@ mod tests {
         .expect("connecting session should reach its startup deadline");
 
         let connected = devicehub_core::StatusSlot::default();
-        connected.set("connected");
+        connected.set_phase(SessionPhase::Connected, "connected");
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(20),

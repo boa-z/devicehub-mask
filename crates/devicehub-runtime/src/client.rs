@@ -9,8 +9,8 @@ use devicehub_core::{
     ActiveSlot, AppDocumentActivitySlot, AppOperationSlot, BluetoothCaptureSlot,
     DeveloperImageMountSlot, DeviceBackupSlot, DeviceConditionSlot, DeviceFileActivitySlot,
     DeviceListSlot, DeviceLogSlot, ErrorSlot, LocationStatusSlot, LogArchiveSlot,
-    NetworkCaptureSlot, OrientationSlot, PerformanceSlot, ServiceRegistry, StatusSlot,
-    SysdiagnoseSlot, VideoCounters,
+    ManagedOperationRegistry, NetworkCaptureSlot, OrientationSlot, PerformanceSlot,
+    ServiceRegistry, StatusSlot, SysdiagnoseSlot, VideoCounters,
 };
 
 pub use control::{DeviceControlError, DeviceControlService};
@@ -54,6 +54,7 @@ pub struct DeviceSessionClient<HostPath> {
     pub developer_image: DeveloperImageMountSlot,
     pub device_conditions: DeviceConditionSlot,
     pub app_operation: AppOperationSlot,
+    pub operations: ManagedOperationRegistry,
     pub app_documents: AppDocumentActivitySlot,
     pub device_files: DeviceFileActivitySlot,
     pub performance: PerformanceSlot,
@@ -85,6 +86,7 @@ impl<HostPath> Clone for DeviceSessionClient<HostPath> {
             developer_image: self.developer_image.clone(),
             device_conditions: self.device_conditions.clone(),
             app_operation: self.app_operation.clone(),
+            operations: self.operations.clone(),
             app_documents: self.app_documents.clone(),
             device_files: self.device_files.clone(),
             performance: self.performance.clone(),
@@ -121,6 +123,7 @@ impl<HostPath> DeviceSessionClient<HostPath> {
             developer_image: state.developer_image.clone(),
             device_conditions: state.device_conditions.clone(),
             app_operation: state.app_operation.clone(),
+            operations: state.operations.clone(),
             app_documents: state.app_documents.clone(),
             device_files: state.device_files.clone(),
             performance: state.performance.clone(),
@@ -289,7 +292,10 @@ mod tests {
         let client = state.client(control);
         let adapter_clone = client.clone();
 
-        state.device.status.set("connected");
+        state
+            .device
+            .status
+            .set_phase(devicehub_core::SessionPhase::Connected, "connected");
         assert_eq!(adapter_clone.device.status.get(), "connected");
         let demand = client.device.performance_demand.acquire();
         assert!(state.device.performance_demand.enabled());

@@ -4,7 +4,9 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use devicehub_core::{
-    BluetoothCaptureSlot, BluetoothCaptureState, BluetoothCaptureStatus, BluetoothCaptureStopReason,
+    BluetoothCaptureSlot, BluetoothCaptureState, BluetoothCaptureStatus,
+    BluetoothCaptureStopReason, ManagedOperationError, ManagedOperationKind,
+    ManagedOperationRegistry, OperationErrorCode,
 };
 use futures_util::{Stream, StreamExt};
 use idevice::RsdService;
@@ -66,6 +68,7 @@ pub(crate) async fn serve<Files>(
     mut transport: BluetoothCaptureTransport,
     mut commands: mpsc::Receiver<BluetoothCaptureCommand<Files::Destination>>,
     status: BluetoothCaptureSlot,
+    operations: ManagedOperationRegistry,
     files: Files,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -93,6 +96,14 @@ pub(crate) async fn serve<Files>(
                 duration_seconds,
                 reply,
             } => {
+                let managed_id =
+                    match operations.begin(ManagedOperationKind::BluetoothCapture, None, true) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            let _ = reply.send(Err(error.message));
+                            continue;
+                        }
+                    };
                 attempt += 1;
                 status.set(BluetoothCaptureStatus {
                     state: BluetoothCaptureState::Starting,
@@ -111,6 +122,13 @@ pub(crate) async fn serve<Files>(
                 let active = match active {
                     Ok(active) => active,
                     Err(error) => {
+                        operations.fail(
+                            managed_id,
+                            ManagedOperationError::new(
+                                OperationErrorCode::Unavailable,
+                                error.clone(),
+                            ),
+                        );
                         status.set(BluetoothCaptureStatus {
                             state: BluetoothCaptureState::Failed,
                             duration_seconds: Some(duration_seconds),
@@ -130,6 +148,8 @@ pub(crate) async fn serve<Files>(
                     &mut commands,
                     &status,
                     &reporter,
+                    &operations,
+                    managed_id,
                     attempt,
                     &mut shutdown,
                 )
@@ -175,11 +195,14 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn capture<Writer, Destination>(
     mut active: ActiveCapture<Writer>,
     commands: &mut mpsc::Receiver<BluetoothCaptureCommand<Destination>>,
     status: &BluetoothCaptureSlot,
     reporter: &ServiceReporter,
+    operations: &ManagedOperationRegistry,
+    managed_id: u64,
     attempt: u32,
     shutdown: &mut watch::Receiver<bool>,
 ) -> bool
@@ -204,6 +227,12 @@ where
             _ = &mut deadline => break BluetoothCaptureStopReason::DurationLimit,
             _ = status_tick.tick() => {
                 status.set(capture_status(&active, BluetoothCaptureState::Capturing));
+                operations.update(
+                    managed_id,
+                    Some("capturing".into()),
+                    Some((active.started.elapsed().as_secs_f64()
+                        / active.duration_seconds as f64 * 100.0).min(99.0)),
+                );
             }
             command = commands.recv() => match command {
                 Some(BluetoothCaptureCommand::Stop { reply }) => {
@@ -263,6 +292,10 @@ where
     }
     let result = match failure {
         Some(error) => {
+            operations.fail(
+                managed_id,
+                ManagedOperationError::new(OperationErrorCode::Internal, error.clone()),
+            );
             status.set(BluetoothCaptureStatus {
                 state: BluetoothCaptureState::Failed,
                 packet_count,
@@ -276,6 +309,11 @@ where
             Err(error)
         }
         None => {
+            if stopped_for_shutdown || reason == BluetoothCaptureStopReason::UserRequested {
+                operations.cancel(managed_id, "Bluetooth capture stopped");
+            } else {
+                operations.succeed(managed_id);
+            }
             status.set(BluetoothCaptureStatus {
                 state: BluetoothCaptureState::Completed,
                 packet_count,

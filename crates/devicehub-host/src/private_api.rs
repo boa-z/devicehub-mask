@@ -21,6 +21,7 @@ pub fn state(
             commands.clone(),
             client.device.location.clone(),
             client.device.device_control.clone(),
+            client.device.operations.clone(),
         ),
         wda_http: devicehub_server::http::WdaHttpState::new(commands.clone()),
         developer_image_http: developer_image_http_state(

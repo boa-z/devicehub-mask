@@ -167,7 +167,10 @@ mod tests {
     fn snapshot_accepts_an_opaque_host_path_type() {
         let (client, _control) =
             devicehub_runtime::RuntimeClientFixture::<String>::default().build();
-        client.device.status.set("connected");
+        client
+            .device
+            .status
+            .set_phase(devicehub_core::SessionPhase::Connected, "connected");
 
         let status = snapshot(&client);
 

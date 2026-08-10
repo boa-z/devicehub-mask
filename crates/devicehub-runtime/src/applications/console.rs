@@ -202,7 +202,7 @@ pub(crate) async fn serve_app_console(
                 let Some(command) = command else { break };
                 match command {
                     AppConsoleCommand::Start { bundle_id, reply } => {
-                        if let Some(task) = reader.take() { task.abort(); }
+                        stop_reader(&mut reader).await;
                         state.lock().unwrap().begin(bundle_id.clone());
                         attempt += 1;
                         reporter.connecting(attempt);
@@ -229,7 +229,7 @@ pub(crate) async fn serve_app_console(
                         }
                     }
                     AppConsoleCommand::Stop { clear, reply } => {
-                        if let Some(task) = reader.take() { task.abort(); }
+                        stop_reader(&mut reader).await;
                         let mut current = state.lock().unwrap();
                         if clear {
                             *current = ConsoleState::default();
@@ -275,11 +275,16 @@ pub(crate) async fn serve_app_console(
         }
     }
 
-    if let Some(task) = reader.take() {
-        task.abort();
-    }
+    stop_reader(&mut reader).await;
     *state.lock().unwrap() = ConsoleState::default();
     reporter.stopped(attempt);
+}
+
+async fn stop_reader(reader: &mut Option<JoinHandle<Result<(), String>>>) {
+    if let Some(task) = reader.take() {
+        task.abort();
+        let _ = task.await;
+    }
 }
 
 async fn wait_reader(

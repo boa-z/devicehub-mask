@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use devicehub_core::{
     DeveloperImageMountSlot, DeveloperImageMountState, DeveloperImageMountStatus,
-    DeveloperImageOperation, developer_image_type_for_version as image_type_for_version,
+    DeveloperImageOperation, ManagedOperationError, ManagedOperationKind, ManagedOperationRegistry,
+    OperationErrorCode, developer_image_type_for_version as image_type_for_version,
 };
 use idevice::services::lockdown::LockdownClient;
 use idevice::services::mobile_image_mounter::ImageMounter;
@@ -104,13 +105,14 @@ pub(crate) async fn serve<Assets>(
     provider: Arc<dyn IdeviceProvider>,
     mut commands: mpsc::Receiver<DeveloperImageMountCommand<Assets::Source>>,
     status: DeveloperImageMountSlot,
+    operations: ManagedOperationRegistry,
     assets: Assets,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
 ) where
     Assets: DeveloperImageAssetLoader,
 {
-    let mut active: Option<JoinHandle<Result<DeveloperImageMountState, String>>> = None;
+    let mut active: Option<ActiveDeveloperImageOperation> = None;
     let mut attempt = 0;
     status.reset();
     reporter.stopped(attempt);
@@ -130,28 +132,35 @@ pub(crate) async fn serve<Assets>(
                 }
                 Ok(false) => match assets.automatic_request(&product_version).await {
                     Ok(Some(request)) => {
-                        attempt += 1;
-                        status.set(DeveloperImageMountStatus {
-                            state: DeveloperImageMountState::Validating,
-                            operation: Some(DeveloperImageOperation::Mount),
-                            product_version: Some(product_version),
-                            ..DeveloperImageMountStatus::default()
-                        });
-                        reporter.connecting(attempt);
-                        let mount_provider = provider.clone();
-                        let mount_status = status.clone();
-                        let mount_assets = assets.clone();
-                        active = Some(tokio::spawn(async move {
-                            mount_image(
-                                mount_provider.as_ref(),
-                                request,
-                                mount_status,
-                                &mount_assets,
-                            )
-                            .await
-                            .map(|_| DeveloperImageMountState::Mounted)
-                        }));
-                        tracing::info!("automatically mounting recommended developer image set");
+                        match operations.begin(
+                            ManagedOperationKind::DeveloperImageMount,
+                            Some(product_version.clone()),
+                            true,
+                        ) {
+                            Ok(managed_id) => {
+                                attempt += 1;
+                                status.set(DeveloperImageMountStatus {
+                                    state: DeveloperImageMountState::Validating,
+                                    operation: Some(DeveloperImageOperation::Mount),
+                                    product_version: Some(product_version),
+                                    ..DeveloperImageMountStatus::default()
+                                });
+                                reporter.connecting(attempt);
+                                active = Some(ActiveDeveloperImageOperation::spawn(
+                                    managed_id,
+                                    provider.clone(),
+                                    request,
+                                    status.clone(),
+                                    assets.clone(),
+                                ));
+                                tracing::info!(
+                                    "automatically mounting recommended developer image set"
+                                );
+                            }
+                            Err(error) => {
+                                fail(&status, &reporter, attempt, error.message);
+                            }
+                        }
                     }
                     Ok(None) => {}
                     Err(error) => fail(&status, &reporter, attempt, error),
@@ -170,8 +179,8 @@ pub(crate) async fn serve<Assets>(
         tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    if let Some(task) = active.take() {
-                        task.abort();
+                    if let Some(operation) = active.take() {
+                        operation.cancel(&operations, "device session ended").await;
                         mark_cancelled(&status, "device session ended");
                     }
                     reporter.stopped(attempt);
@@ -180,8 +189,8 @@ pub(crate) async fn serve<Assets>(
             }
             command = commands.recv() => {
                 let Some(command) = command else {
-                    if let Some(task) = active.take() {
-                        task.abort();
+                    if let Some(operation) = active.take() {
+                        operation.cancel(&operations, "device session ended").await;
                         mark_cancelled(&status, "device session ended");
                     }
                     reporter.stopped(attempt);
@@ -194,30 +203,35 @@ pub(crate) async fn serve<Assets>(
                             continue;
                         }
                         attempt += 1;
+                        let managed_id = match operations.begin(
+                            ManagedOperationKind::DeveloperImageMount,
+                            None,
+                            true,
+                        ) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                let _ = reply.send(Err(error.message));
+                                continue;
+                            }
+                        };
                         status.set(DeveloperImageMountStatus {
                             state: DeveloperImageMountState::Validating,
                             operation: Some(DeveloperImageOperation::Mount),
                             ..DeveloperImageMountStatus::default()
                         });
                         reporter.connecting(attempt);
-                        let mount_provider = provider.clone();
-                        let mount_status = status.clone();
-                        let mount_assets = assets.clone();
-                        active = Some(tokio::spawn(async move {
-                            mount_image(
-                                mount_provider.as_ref(),
-                                request,
-                                mount_status,
-                                &mount_assets,
-                            )
-                                .await
-                                .map(|_| DeveloperImageMountState::Mounted)
-                        }));
+                        active = Some(ActiveDeveloperImageOperation::spawn(
+                            managed_id,
+                            provider.clone(),
+                            request,
+                            status.clone(),
+                            assets.clone(),
+                        ));
                         let _ = reply.send(Ok(()));
                     }
                     DeveloperImageMountCommand::Stop { reply } => {
-                        if let Some(task) = active.take() {
-                            task.abort();
+                        if let Some(operation) = active.take() {
+                            operation.cancel(&operations, "cancelled by user").await;
                             mark_cancelled(&status, "cancelled by user");
                             reporter.stopped(attempt);
                             let _ = reply.send(Ok(()));
@@ -228,7 +242,7 @@ pub(crate) async fn serve<Assets>(
                 }
             }
             result = wait_for_mount(&mut active) => {
-                active.take();
+                let completed_operation = active.take().expect("completed operation exists");
                 match result {
                     Ok(Ok(completed)) => {
                         status.update(|current| {
@@ -238,16 +252,32 @@ pub(crate) async fn serve<Assets>(
                             current.error = None;
                         });
                         reporter.stopped(attempt);
+                        operations.succeed(completed_operation.managed_id);
                         tracing::info!(state = ?completed, "developer image operation completed");
                     }
                     Ok(Err(error)) => {
+                        operations.fail(
+                            completed_operation.managed_id,
+                            ManagedOperationError::new(OperationErrorCode::Internal, error.clone()),
+                        );
                         fail(&status, &reporter, attempt, error);
                     }
                     Err(error) if error.is_cancelled() => {
+                        operations.cancel(
+                            completed_operation.managed_id,
+                            "developer image operation cancelled",
+                        );
                         mark_cancelled(&status, "developer image operation cancelled");
                         reporter.stopped(attempt);
                     }
                     Err(error) => {
+                        operations.fail(
+                            completed_operation.managed_id,
+                            ManagedOperationError::new(
+                                OperationErrorCode::Internal,
+                                format!("developer image task failed: {error}"),
+                            ),
+                        );
                         fail(
                             &status,
                             &reporter,
@@ -261,11 +291,44 @@ pub(crate) async fn serve<Assets>(
     }
 }
 
+struct ActiveDeveloperImageOperation {
+    managed_id: u64,
+    task: JoinHandle<Result<DeveloperImageMountState, String>>,
+}
+
+impl ActiveDeveloperImageOperation {
+    fn spawn<Assets>(
+        managed_id: u64,
+        provider: Arc<dyn IdeviceProvider>,
+        request: DeveloperImageMountRequest<Assets::Source>,
+        status: DeveloperImageMountSlot,
+        assets: Assets,
+    ) -> Self
+    where
+        Assets: DeveloperImageAssetLoader,
+    {
+        Self {
+            managed_id,
+            task: tokio::spawn(async move {
+                mount_image(provider.as_ref(), request, status, &assets)
+                    .await
+                    .map(|_| DeveloperImageMountState::Mounted)
+            }),
+        }
+    }
+
+    async fn cancel(self, operations: &ManagedOperationRegistry, reason: &str) {
+        self.task.abort();
+        let _ = self.task.await;
+        operations.cancel(self.managed_id, reason);
+    }
+}
+
 async fn wait_for_mount(
-    active: &mut Option<JoinHandle<Result<DeveloperImageMountState, String>>>,
+    active: &mut Option<ActiveDeveloperImageOperation>,
 ) -> Result<Result<DeveloperImageMountState, String>, tokio::task::JoinError> {
     match active.as_mut() {
-        Some(task) => task.await,
+        Some(operation) => (&mut operation.task).await,
         None => pending().await,
     }
 }

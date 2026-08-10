@@ -12,7 +12,10 @@ use idevice::services::wda::WdaClient;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use devicehub_core::{WdaRunnerPhase, WdaRunnerStatus, validate_wda_runner_bundle_id};
+use devicehub_core::{
+    ManagedOperationError, ManagedOperationKind, ManagedOperationRegistry, OperationErrorCode,
+    WdaRunnerPhase, WdaRunnerStatus, validate_wda_runner_bundle_id,
+};
 
 use crate::supervisor::ServiceReporter;
 
@@ -96,12 +99,14 @@ impl XCUITestListener for NoopListener {}
 pub(crate) async fn serve_wda_runner(
     provider: Arc<dyn IdeviceProvider>,
     mut commands: mpsc::Receiver<WdaRunnerCommand>,
+    operations: ManagedOperationRegistry,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut status = WdaRunnerStatus::default();
     let mut startup: Option<Startup> = None;
     let mut running: Option<RunningRunner> = None;
+    let mut managed_id = None;
     let mut attempt = 0;
     reporter.stopped(attempt);
 
@@ -126,6 +131,19 @@ pub(crate) async fn serve_wda_runner(
                             let _ = reply.send(Err(format!("WDA runner {active} is already managed")));
                             continue;
                         }
+                        let operation_id = match operations.begin(
+                            ManagedOperationKind::WdaRunner,
+                            Some(bundle_id.clone()),
+                            true,
+                        ) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                let _ = reply.send(Err(error.message));
+                                continue;
+                            }
+                        };
+                        operations.update(operation_id, Some("starting".into()), Some(0.0));
+                        managed_id = Some(operation_id);
                         attempt += 1;
                         status = WdaRunnerStatus {
                             phase: WdaRunnerPhase::Starting,
@@ -153,6 +171,9 @@ pub(crate) async fn serve_wda_runner(
                             &mut running,
                             "WDA runner startup cancelled",
                         ).await;
+                        if let Some(operation_id) = managed_id.take() {
+                            operations.cancel(operation_id, "WDA runner stopped");
+                        }
                         status = WdaRunnerStatus::default();
                         reporter.stopped(attempt);
                         if was_managed {
@@ -173,6 +194,9 @@ pub(crate) async fn serve_wda_runner(
                             last_error: None,
                         };
                         reporter.ready(attempt);
+                        if let Some(operation_id) = managed_id {
+                            operations.update(operation_id, Some("running".into()), None);
+                        }
                         tracing::info!(
                             component = "wda_runner",
                             operation = "ready",
@@ -183,15 +207,34 @@ pub(crate) async fn serve_wda_runner(
                         running = Some(active);
                     }
                     Ok(Err(error)) => {
+                        if let Some(operation_id) = managed_id.take() {
+                            operations.fail(
+                                operation_id,
+                                ManagedOperationError::new(
+                                    OperationErrorCode::Unavailable,
+                                    error.clone(),
+                                ),
+                            );
+                        }
                         fail_startup(&mut status, &reporter, attempt, starting, error);
                     }
                     Err(error) => {
+                        let message = format!("WDA runner startup task failed: {error}");
+                        if let Some(operation_id) = managed_id.take() {
+                            operations.fail(
+                                operation_id,
+                                ManagedOperationError::new(
+                                    OperationErrorCode::Internal,
+                                    message.clone(),
+                                ),
+                            );
+                        }
                         fail_startup(
                             &mut status,
                             &reporter,
                             attempt,
                             starting,
-                            format!("WDA runner startup task failed: {error}"),
+                            message,
                         );
                     }
                 }
@@ -204,6 +247,12 @@ pub(crate) async fn serve_wda_runner(
                     Err(error) => format!("WDA runner task failed: {error}"),
                 };
                 let error = bound_error(error);
+                if let Some(operation_id) = managed_id.take() {
+                    operations.fail(
+                        operation_id,
+                        ManagedOperationError::new(OperationErrorCode::Internal, error.clone()),
+                    );
+                }
                 tracing::warn!(component = "wda_runner", operation = "exit", runner_bundle_id = %active.bundle_id, %error, "managed WebDriverAgent runner ended");
                 reporter.unavailable(attempt, error.clone());
                 status = WdaRunnerStatus {
@@ -217,6 +266,9 @@ pub(crate) async fn serve_wda_runner(
     }
 
     stop_runner_tasks(&mut startup, &mut running, "device session ended").await;
+    if let Some(operation_id) = managed_id.take() {
+        operations.cancel(operation_id, "device session ended");
+    }
     reporter.stopped(attempt);
 }
 

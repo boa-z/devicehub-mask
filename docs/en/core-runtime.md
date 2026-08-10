@@ -31,6 +31,7 @@ The important public split is:
 - `RuntimeManagerClient`: inventory, frontend selection, pairing/trust and manager operations.
 - `DeviceSessionRegistry`: exact session lookup.
 - `DeviceSessionClient`: one target's observations, commands, media and demand.
+- `ManagedOperationRegistry`: bounded lifecycle and typed error projection for one target's long operations; detailed domain status remains in the owning service.
 - Host ports: clipboard, files, capture destinations, developer images, provisioning data, backups, diagnostic sinks, audio pipeline and sidecars.
 
 ## `devicehub-server`
@@ -55,7 +56,7 @@ Neither composition root may create a second device session manager or duplicate
 
 ## Multi-Device Contract
 
-The registry key is a transport-aware selection ID. Operations resolve that ID before accessing a session. Switching UI focus does not destroy sessions. Duplicate USB/Wi-Fi activity for one physical UDID is rejected. Disconnect and recovery affect only the target. MCP connections can select independent devices, and HTTP/WebSocket clients carry explicit device scope.
+The registry key is a transport-aware selection ID. Operations resolve that ID before accessing a session. Switching UI focus does not destroy sessions. Duplicate USB/Wi-Fi activity for one physical UDID is rejected. Disconnect and recovery affect only the target. MCP connections can select independent devices, HTTP resolves one authenticated `DeviceScope` per request, and WebSocket clients carry explicit device scope.
 
 Demand leases for video, audio, performance and logs are session-scoped. A consumer must release its lease on disconnect or failure. New background services need an owner, bounded restart policy, health reporting, and deterministic shutdown.
 

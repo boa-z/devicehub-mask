@@ -6,8 +6,8 @@ use devicehub_core::{
     ActiveSlot, AppDocumentActivitySlot, AppOperationSlot, BluetoothCaptureSlot,
     DeveloperImageMountSlot, DeviceBackupSlot, DeviceConditionSlot, DeviceFileActivitySlot,
     DeviceListSlot, DeviceLogSlot, ErrorSlot, LocationStatusSlot, LogArchiveSlot,
-    NetworkCaptureSlot, OrientationSlot, PerformanceSlot, ServiceRegistry, StatusSlot,
-    SysdiagnoseSlot, VideoCounters,
+    ManagedOperationRegistry, NetworkCaptureSlot, OrientationSlot, PerformanceSlot,
+    ServiceRegistry, StatusSlot, SysdiagnoseSlot, VideoCounters,
 };
 
 use crate::session::{
@@ -45,6 +45,7 @@ pub(crate) struct DeviceSessionState<HostPath> {
     pub(crate) developer_image: DeveloperImageMountSlot,
     pub(crate) device_conditions: DeviceConditionSlot,
     pub(crate) app_operation: AppOperationSlot,
+    pub(crate) operations: ManagedOperationRegistry,
     pub(crate) app_documents: AppDocumentActivitySlot,
     pub(crate) device_files: DeviceFileActivitySlot,
     pub(crate) performance: PerformanceSlot,
@@ -75,6 +76,7 @@ impl<HostPath> Default for DeviceSessionState<HostPath> {
             developer_image: DeveloperImageMountSlot::default(),
             device_conditions: DeviceConditionSlot::default(),
             app_operation: AppOperationSlot::default(),
+            operations: ManagedOperationRegistry::default(),
             app_documents: AppDocumentActivitySlot::default(),
             device_files: DeviceFileActivitySlot::default(),
             performance: PerformanceSlot::default(),
@@ -98,6 +100,7 @@ impl<HostPath> DeviceSessionState<HostPath> {
             orientation: self.orientation.clone(),
             error: self.error.clone(),
             app_operation: self.app_operation.clone(),
+            operations: self.operations.clone(),
             clipboard: self.clipboard.clone(),
             video_counters: self.video_counters.clone(),
             browser_frames: self.browser_frames.clone(),
@@ -113,6 +116,7 @@ impl<HostPath> DeviceSessionState<HostPath> {
                 device_conditions: self.device_conditions.clone(),
             },
             host_services: RuntimeHostServiceViews {
+                operations: self.operations.clone(),
                 app_documents: self.app_documents.clone(),
                 device_files: self.device_files.clone(),
                 network_capture: self.network_capture.clone(),
@@ -176,7 +180,10 @@ mod tests {
         let state = CoreRuntimeState::<String>::default();
         let views = state.manager_views();
 
-        state.device.status.set("connected");
+        state
+            .device
+            .status
+            .set_phase(devicehub_core::SessionPhase::Connected, "connected");
         state
             .manager
             .active

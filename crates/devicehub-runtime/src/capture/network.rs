@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use devicehub_core::{
-    ConnKind, NetworkCaptureSlot, NetworkCaptureState, NetworkCaptureStatus,
-    NetworkCaptureStopReason,
+    ConnKind, ManagedOperationError, ManagedOperationKind, ManagedOperationRegistry,
+    NetworkCaptureSlot, NetworkCaptureState, NetworkCaptureStatus, NetworkCaptureStopReason,
+    OperationErrorCode,
 };
 use idevice::pcapd::{DevicePacket, PcapdClient};
 use idevice::provider::IdeviceProvider;
@@ -82,6 +83,7 @@ pub(crate) async fn serve<Files>(
     mut transport: NetworkCaptureTransport,
     mut commands: mpsc::Receiver<NetworkCaptureCommand<Files::Destination>>,
     status: NetworkCaptureSlot,
+    operations: ManagedOperationRegistry,
     files: Files,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -112,6 +114,17 @@ pub(crate) async fn serve<Files>(
                 process_id,
                 reply,
             } => {
+                let managed_id = match operations.begin(
+                    ManagedOperationKind::NetworkCapture,
+                    process_id.map(|pid| format!("pid {pid}")),
+                    true,
+                ) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.message));
+                        continue;
+                    }
+                };
                 attempt += 1;
                 status.set(NetworkCaptureStatus {
                     state: NetworkCaptureState::Starting,
@@ -131,6 +144,13 @@ pub(crate) async fn serve<Files>(
                 let active = match active {
                     Ok(active) => active,
                     Err(error) => {
+                        operations.fail(
+                            managed_id,
+                            ManagedOperationError::new(
+                                OperationErrorCode::Unavailable,
+                                error.clone(),
+                            ),
+                        );
                         status.set(NetworkCaptureStatus {
                             state: NetworkCaptureState::Failed,
                             process_id,
@@ -151,6 +171,8 @@ pub(crate) async fn serve<Files>(
                     &mut commands,
                     &status,
                     &reporter,
+                    &operations,
+                    managed_id,
                     attempt,
                     &mut shutdown,
                 )
@@ -266,11 +288,14 @@ fn describe_service_error(error: &idevice::IdeviceError) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn capture<Writer, Destination>(
     mut active: ActiveCapture<Writer>,
     commands: &mut mpsc::Receiver<NetworkCaptureCommand<Destination>>,
     status: &NetworkCaptureSlot,
     reporter: &ServiceReporter,
+    operations: &ManagedOperationRegistry,
+    managed_id: u64,
     attempt: u32,
     shutdown: &mut watch::Receiver<bool>,
 ) -> bool
@@ -295,6 +320,12 @@ where
             _ = &mut deadline => break NetworkCaptureStopReason::DurationLimit,
             _ = status_tick.tick() => {
                 status.set(capture_status(&active, NetworkCaptureState::Capturing));
+                operations.update(
+                    managed_id,
+                    Some("capturing".into()),
+                    Some((active.started.elapsed().as_secs_f64()
+                        / active.duration_seconds as f64 * 100.0).min(99.0)),
+                );
             }
             command = commands.recv() => match command {
                 Some(NetworkCaptureCommand::Stop { reply }) => {
@@ -358,6 +389,10 @@ where
     }
     let result = match failure {
         Some(error) => {
+            operations.fail(
+                managed_id,
+                ManagedOperationError::new(OperationErrorCode::Internal, error.clone()),
+            );
             status.set(NetworkCaptureStatus {
                 state: NetworkCaptureState::Failed,
                 process_id,
@@ -373,6 +408,11 @@ where
             Err(error)
         }
         None => {
+            if stopped_for_shutdown || reason == NetworkCaptureStopReason::UserRequested {
+                operations.cancel(managed_id, "packet capture stopped");
+            } else {
+                operations.succeed(managed_id);
+            }
             status.set(NetworkCaptureStatus {
                 state: NetworkCaptureState::Completed,
                 process_id,

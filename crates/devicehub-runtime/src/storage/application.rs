@@ -18,7 +18,8 @@ use devicehub_core::AppDocumentActivityState;
 use devicehub_core::{
     APP_DOCUMENT_TRANSFER_CANCELLED as TRANSFER_CANCELLED, AppDocumentActivityKind,
     AppDocumentActivitySlot, AppDocumentEntry, AppDocumentKind, AppDocumentList,
-    AppDocumentTransfer, AppStorageScope, ConnKind, join_app_document_path as join_path,
+    AppDocumentTransfer, AppStorageScope, ConnKind, ManagedOperationError, ManagedOperationKind,
+    ManagedOperationRegistry, OperationErrorCode, join_app_document_path as join_path,
     normalize_app_document_path as normalize_path, validate_app_bundle_id as validate_bundle_id,
     validate_app_document_name as validate_name,
 };
@@ -283,6 +284,7 @@ pub(crate) async fn serve<FileIo>(
     mut transport: AppStorageTransport,
     mut commands: mpsc::Receiver<AppDocumentCommand<FileIo::Path>>,
     activity: AppDocumentActivitySlot,
+    operations: ManagedOperationRegistry,
     file_io: FileIo,
     mut shutdown: watch::Receiver<bool>,
 ) where
@@ -298,7 +300,7 @@ pub(crate) async fn serve<FileIo>(
             }
             command = commands.recv() => {
                 let Some(command) = command else { break };
-                handle(command, &mut transport, &activity, &file_io).await;
+                handle(command, &mut transport, &activity, &operations, &file_io).await;
             }
         }
     }
@@ -309,6 +311,7 @@ async fn handle<FileIo>(
     command: AppDocumentCommand<FileIo::Path>,
     transport: &mut AppStorageTransport,
     activity: &AppDocumentActivitySlot,
+    operations: &ManagedOperationRegistry,
     file_io: &FileIo,
 ) where
     FileIo: HostFileIo,
@@ -349,6 +352,17 @@ async fn handle<FileIo>(
             destination,
             reply,
         } => {
+            let managed_id = match operations.begin(
+                ManagedOperationKind::AppDocumentExport,
+                Some(bundle_id.clone()),
+                true,
+            ) {
+                Ok(id) => id,
+                Err(error) => {
+                    let _ = reply.send(Err(error.message));
+                    return;
+                }
+            };
             let id = activity.start(
                 &bundle_id,
                 scope,
@@ -374,6 +388,7 @@ async fn handle<FileIo>(
             let _ = progress.finish();
             let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
             activity.finish(id, &outcome);
+            finish_managed_transfer(operations, managed_id, &outcome);
             let _ = reply.send(result);
         }
         AppDocumentCommand::Import {
@@ -383,6 +398,17 @@ async fn handle<FileIo>(
             source,
             reply,
         } => {
+            let managed_id = match operations.begin(
+                ManagedOperationKind::AppDocumentImport,
+                Some(bundle_id.clone()),
+                true,
+            ) {
+                Ok(id) => id,
+                Err(error) => {
+                    let _ = reply.send(Err(error.message));
+                    return;
+                }
+            };
             let id = activity.start(
                 &bundle_id,
                 scope,
@@ -408,6 +434,7 @@ async fn handle<FileIo>(
             let _ = progress.finish();
             let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
             activity.finish(id, &outcome);
+            finish_managed_transfer(operations, managed_id, &outcome);
             let _ = reply.send(result);
         }
         AppDocumentCommand::CreateDirectory {
@@ -455,6 +482,21 @@ async fn handle<FileIo>(
             .unwrap_or_else(|_| Err("application document deletion timed out".into()));
             let _ = reply.send(result);
         }
+    }
+}
+
+fn finish_managed_transfer(
+    operations: &ManagedOperationRegistry,
+    id: u64,
+    result: &Result<(), String>,
+) {
+    match result {
+        Ok(()) => operations.succeed(id),
+        Err(error) if error == TRANSFER_CANCELLED => operations.cancel(id, error),
+        Err(error) => operations.fail(
+            id,
+            ManagedOperationError::new(OperationErrorCode::Internal, error.clone()),
+        ),
     }
 }
 

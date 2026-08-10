@@ -17,6 +17,8 @@ use axum::{Json, Router};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::oneshot;
 
+use crate::device_scope::DeviceScope;
+
 use devicehub_core::{
     DeveloperImageMountSlot, DeveloperImageMountStatus, DeveloperImageSetDescriptor,
 };
@@ -298,16 +300,8 @@ async fn stop_developer_image_mount(
 
 async fn unmount_developer_image(
     State(state): State<DeveloperImageHttpState>,
-    session: RequestSession,
-    headers: axum::http::HeaderMap,
+    Extension(scope): Extension<DeviceScope>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let selection_id = headers
-        .get("x-devicehub-device")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or((StatusCode::BAD_REQUEST, "missing device selection".into()))?
-        .to_string();
     let manager = state.manager.as_ref().ok_or((
         StatusCode::NOT_IMPLEMENTED,
         "developer image unmount management is unavailable on this host".into(),
@@ -316,8 +310,8 @@ async fn unmount_developer_image(
     manager
         .control
         .send(SessionControlCommand::UnmountDeveloperImage {
-            selection_id,
-            status: state.status(&session),
+            selection_id: scope.selection_id.to_string(),
+            status: scope.session.developer_image.clone(),
             reply,
         })
         .map_err(|_| {
@@ -433,6 +427,7 @@ mod tests {
 
     fn test_state() -> (
         DeveloperImageHttpState,
+        devicehub_runtime::DeviceSessionClient<PathBuf>,
         tokio::sync::mpsc::UnboundedReceiver<InputCmd>,
         tokio::sync::mpsc::UnboundedReceiver<SessionControlCommand>,
     ) {
@@ -443,8 +438,9 @@ mod tests {
             devicehub_runtime::RuntimeClientFixture::<PathBuf>::default().build();
         (
             DeveloperImageHttpState::new(input, DeveloperImageMountSlot::default())
-                .with_manager(application.manager)
+                .with_manager(application.manager.clone())
                 .with_catalog(TestCatalog),
+            application.device,
             receiver,
             manager_commands,
         )
@@ -452,7 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_routes_dispatch_opaque_host_sources() {
-        let (state, mut commands, mut manager_commands) = test_state();
+        let (state, session, mut commands, mut manager_commands) = test_state();
         assert_eq!(
             developer_image_status(State(state.clone()), None)
                 .await
@@ -491,9 +487,8 @@ mod tests {
         reply.send(Ok(())).unwrap();
         assert_eq!(stop.await.unwrap().unwrap(), StatusCode::NO_CONTENT);
 
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-devicehub-device", "phone::usb".parse().unwrap());
-        let unmount = tokio::spawn(unmount_developer_image(State(state), None, headers));
+        let scope = DeviceScope::new("phone::usb", session);
+        let unmount = tokio::spawn(unmount_developer_image(State(state), Extension(scope)));
         let SessionControlCommand::UnmountDeveloperImage {
             selection_id,
             status,

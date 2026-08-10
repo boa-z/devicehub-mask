@@ -66,7 +66,7 @@ Headless 二进制提供同一份前端构建和 API，默认监听 `127.0.0.1:8
 - `DeviceSessionRegistry` 按准确 selection ID 解析 `DeviceSessionClient`。
 - `DeviceSessionClient` 只暴露一个会话的观测、媒体、输入和操作。
 
-私有 HTTP 使用 `X-DeviceHub-Device`，WebSocket 使用 `device_id`，每个 MCP 连接持有自己的目标。缺失或未知目标在可能误选设备时必须被拒绝。
+私有 HTTP 只解析一次 `X-DeviceHub-Device`，并生成已认证的 `DeviceScope`；WebSocket 使用 `device_id`，每个 MCP 连接持有自己的准确、包含传输信息的目标。缺失或未知目标会被拒绝，不再回退到旧的默认会话。设备范围错误使用稳定 JSON 结构，包含 code、message、retryable 和可选 suggested action。
 
 React Inventory 控制器独立读取 manager 级 `/api/devices` 投影，不依赖当前 focus session。设备发现、配对和生命周期操作更新 Inventory；选择已经运行的 session 只改变本地 UI focus。当前设备的 Control WebSocket 提供该 session 的状态，但不再是多设备列表的唯一数据来源。
 
@@ -79,7 +79,7 @@ React Inventory 控制器独立读取 manager 级 `/api/devices` 投影，不依
 - 没有视频消费者时继续排空并观测 RTP/RTCP，但跳过 access unit 发布；恢复时清除旧状态并请求关键帧。
 - 桌面端只解码当前设备音频；headless 仅在浏览器为该会话请求未静音音频时解码。
 - 性能和设备日志只在工作区或 API 消费者持有需求时启动。
-- 关闭和会话替换以有界方式释放按住的 HID、消费者、sidecar 和监督任务。
+- 关闭和会话替换以有界方式释放按住的 HID、消费者、sidecar 和监督任务。服务树共用一个关闭截止时间；超时任务会被标识、中止并等待完成析构，随后关闭流程才返回。
 
 ## 媒体与输入流
 
@@ -95,7 +95,7 @@ React Inventory 控制器独立读取 manager 级 `/api/devices` 投影，不依
 
 每项设备服务报告规范化健康阶段，能安全恢复时独立监督。定位、日志、诊断或性能通道故障不应拆掉视频和输入。传输终止故障只转换受影响会话并使用有界重连策略。错误投影保留用户或 agent 可操作的目标和操作上下文，不暴露无界原始协议数据。
 
-抓包、备份、诊断、文件传输和控制台等长操作都有明确限制，在支持时可取消，并随会话清理。宿主文件只能通过注入能力访问，runtime 不解析或信任本地路径。
+长操作保留各自的领域状态，同时通过 `ManagedOperationRegistry` 发布统一的设备级生命周期元数据。共享记录包含 kind、phase、stage、progress、是否可取消、时间戳和类型化有界错误；同一设备同类操作最多允许一个处于活动状态，历史数量有界，会话结束会取消残留活动记录。HTTP 通过 `/api/device/operations` 暴露，MCP 通过 `list_operations` 暴露。宿主文件只能通过注入能力访问，runtime 不解析或信任本地路径。
 
 ## 数据所有权
 

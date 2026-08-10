@@ -73,11 +73,6 @@ pub struct SessionStatus {
 pub struct StatusSlot(Arc<Mutex<SessionStatus>>);
 
 impl StatusSlot {
-    pub fn set(&self, s: impl Into<String>) {
-        let message = s.into();
-        self.set_phase(infer_session_phase(&message), message);
-    }
-
     pub fn set_phase(&self, phase: SessionPhase, message: impl Into<String>) {
         *self.0.lock().unwrap() = SessionStatus {
             phase,
@@ -92,19 +87,6 @@ impl StatusSlot {
 
     pub fn snapshot(&self) -> SessionStatus {
         self.0.lock().unwrap().clone()
-    }
-}
-
-fn infer_session_phase(message: &str) -> SessionPhase {
-    match message {
-        "connected" | "device management connected" => SessionPhase::Connected,
-        "disconnected" => SessionPhase::Disconnected,
-        "stopping..." | "removing device trust..." => SessionPhase::Disconnecting,
-        value if value.contains("retrying") => SessionPhase::Recovering,
-        value if value.contains("waiting for selected device") || value.contains("No device") => {
-            SessionPhase::Discovered
-        }
-        _ => SessionPhase::Connecting,
     }
 }
 
@@ -285,9 +267,9 @@ mod tests {
     fn cloned_state_ports_share_runtime_observations() {
         let status = StatusSlot::default();
         let status_reader = status.clone();
-        status.set("streaming");
+        status.set_phase(SessionPhase::Connected, "streaming");
         assert_eq!(status_reader.get(), "streaming");
-        assert_eq!(status_reader.snapshot().phase, SessionPhase::Connecting);
+        assert_eq!(status_reader.snapshot().phase, SessionPhase::Connected);
 
         let counters = VideoCounters::default();
         let counter_reader = counters.clone();
@@ -304,13 +286,13 @@ mod tests {
     fn status_slot_exposes_structured_session_phases() {
         let status = StatusSlot::default();
 
-        status.set("connected");
+        status.set_phase(SessionPhase::Connected, "connected");
         let connected = status.snapshot();
         assert_eq!(connected.phase, SessionPhase::Connected);
         assert_eq!(connected.message, "connected");
         assert!(connected.updated_at_ms > 0);
 
-        status.set("connection lost; retrying in 2s");
+        status.set_phase(SessionPhase::Recovering, "connection lost; retrying in 2s");
         assert_eq!(status.snapshot().phase, SessionPhase::Recovering);
 
         status.set_phase(SessionPhase::Failed, "transport failed");

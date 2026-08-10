@@ -11,8 +11,8 @@ use std::time::Duration;
 use idevice::{IdeviceError, IdeviceService, lockdown::LockdownClient, usbmuxd::Connection};
 
 use devicehub_core::{
-    ForgetDeviceOutcome, ForgetDeviceResult, PairDeviceOutcome, PairDeviceResult, StatusSlot,
-    device_id_fingerprint,
+    ForgetDeviceOutcome, ForgetDeviceResult, PairDeviceOutcome, PairDeviceResult, SessionPhase,
+    StatusSlot, device_id_fingerprint,
 };
 
 use crate::{SessionEndpoint, UsbmuxdEndpoint};
@@ -35,7 +35,10 @@ pub(crate) async fn pair_device(
 ) -> PairDeviceResult {
     match endpoints.get(selection_id) {
         Some(SessionEndpoint::Usbmuxd(endpoint)) => {
-            status.set("waiting for device trust confirmation...");
+            status.set_phase(
+                SessionPhase::Connecting,
+                "waiting for device trust confirmation...",
+            );
             pair_usb_endpoint(endpoint).await
         }
         Some(SessionEndpoint::Wifi(_)) => PairDeviceResult {
@@ -60,7 +63,7 @@ where
 {
     match endpoints.get(selection_id) {
         Some(SessionEndpoint::Usbmuxd(endpoint)) => {
-            status.set("removing device trust...");
+            status.set_phase(SessionPhase::Disconnecting, "removing device trust...");
             forget_usb_endpoint(endpoint, credentials).await
         }
         Some(SessionEndpoint::Wifi(_)) => ForgetDeviceResult {

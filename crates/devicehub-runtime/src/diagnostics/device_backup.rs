@@ -7,7 +7,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use devicehub_core::{ConnKind, DeviceBackupSlot, DeviceBackupState, DeviceBackupStatus};
+use devicehub_core::{
+    ConnKind, DeviceBackupSlot, DeviceBackupState, DeviceBackupStatus, ManagedOperationError,
+    ManagedOperationKind, ManagedOperationRegistry, OperationErrorCode,
+};
 use idevice::mobilebackup2::{BackupDelegate, DirEntryInfo, FsBackupDelegate, MobileBackup2Client};
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
@@ -79,6 +82,7 @@ pub(crate) async fn serve<Executor>(
     mut transport: DeviceBackupTransport,
     mut commands: mpsc::Receiver<DeviceBackupCommand<Executor::Destination>>,
     status: DeviceBackupSlot,
+    operations: ManagedOperationRegistry,
     executor: Executor,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -108,6 +112,18 @@ pub(crate) async fn serve<Executor>(
                 full,
                 reply,
             } => {
+                let managed_id = match operations.begin(
+                    ManagedOperationKind::DeviceBackup,
+                    executor.destination_name(&destination),
+                    true,
+                ) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.message));
+                        continue;
+                    }
+                };
+                operations.update(managed_id, Some("starting".into()), Some(0.0));
                 attempt += 1;
                 status.set(DeviceBackupStatus {
                     state: DeviceBackupState::Starting,
@@ -129,6 +145,27 @@ pub(crate) async fn serve<Executor>(
                     reply,
                 )
                 .await;
+                match status.get() {
+                    current if current.state == DeviceBackupState::Completed => {
+                        operations.succeed(managed_id)
+                    }
+                    current if current.state == DeviceBackupState::Cancelled => operations.cancel(
+                        managed_id,
+                        current
+                            .error
+                            .as_deref()
+                            .unwrap_or("device backup cancelled"),
+                    ),
+                    current => operations.fail(
+                        managed_id,
+                        ManagedOperationError::new(
+                            OperationErrorCode::Internal,
+                            current
+                                .error
+                                .unwrap_or_else(|| "device backup failed".into()),
+                        ),
+                    ),
+                }
                 if result == BackupRunResult::SessionEnded {
                     return;
                 }

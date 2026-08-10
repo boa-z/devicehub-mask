@@ -7,6 +7,7 @@ mod developer_image;
 mod device;
 mod devices;
 mod diagnostics;
+mod error;
 mod host;
 mod keymap_catalog;
 mod performance;
@@ -28,6 +29,7 @@ pub use diagnostics::{
     DiagnosticDestinationKind, DiagnosticDestinationPreparer, DiagnosticsHttpState,
     router as diagnostics_router,
 };
+pub use error::{ApiError, ApiErrorBody, ApiErrorDetail};
 pub use host::{
     HostBuildInfo, HostCapabilities, HostControl, HostDiagnosticsStatus, HostHttpState,
     HostSettingsPatch, HostSettingsStatus, router as host_router,

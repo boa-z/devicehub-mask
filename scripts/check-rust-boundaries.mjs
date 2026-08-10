@@ -593,7 +593,20 @@ const runtimeSessionManager = readFileSync(
   "crates/devicehub-runtime/src/session/manager.rs",
   "utf8",
 );
+const runtimeSessionManagerFamily = [
+  runtimeSessionManager,
+  readFileSync(
+    "crates/devicehub-runtime/src/session/manager/lifecycle.rs",
+    "utf8",
+  ),
+  readFileSync(
+    "crates/devicehub-runtime/src/session/manager/management.rs",
+    "utf8",
+  ),
+].join("\n");
 const requiredManagerOwnership = [
+  "mod lifecycle;",
+  "mod management;",
   "pub struct RuntimeHostAdapters",
   "struct SessionManager",
   "pub fn start_runtime<",
@@ -610,7 +623,7 @@ const requiredManagerOwnership = [
   "SWITCH_GRACE",
 ];
 const missingManagerOwnership = requiredManagerOwnership.filter(
-  (signature) => !runtimeSessionManager.includes(signature),
+  (signature) => !runtimeSessionManagerFamily.includes(signature),
 );
 const forbiddenTauriManagerOwnership = [
   "DeviceDiscovery",

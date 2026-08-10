@@ -1630,6 +1630,23 @@ impl DeviceHub {
         Ok(())
     }
 
+    fn selected_session(
+        &self,
+    ) -> Result<(String, DeviceSessionClient<std::path::PathBuf>), McpError> {
+        let selection_id = self
+            .selection_id
+            .read()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| McpError::invalid_params("no device is selected", None))?;
+        let session = self
+            .application
+            .sessions
+            .get(&selection_id)
+            .ok_or_else(|| McpError::internal_error("device session is not available", None))?;
+        Ok((selection_id, session))
+    }
+
     fn to_device(&self, x: f32, y: f32, size: Option<(u32, u32)>) -> Option<(u16, u16)> {
         let session = self.current_session();
         let turns = session.orientation.get().quarter_turns_cw();
@@ -3811,16 +3828,27 @@ impl DeviceHub {
         ok_text(json!({ "devices": devices }).to_string())
     }
 
+    #[tool(
+        description = "List lifecycle state, progress, and typed errors for operations owned by the selected device session."
+    )]
+    async fn list_operations(&self) -> Result<CallToolResult, McpError> {
+        let (selection_id, session) = self.selected_session()?;
+        ok_text(
+            json!({
+                "device_id": selection_id,
+                "operations": session.operations.snapshot(),
+            })
+            .to_string(),
+        )
+    }
+
     async fn switch_device(
         &self,
         udid: String,
         reconnect: bool,
     ) -> Result<CallToolResult, McpError> {
         let devices = self.application.manager.devices.get();
-        let selected = devices
-            .iter()
-            .find(|device| device.id == udid)
-            .or_else(|| devices.iter().find(|device| device.udid == udid));
+        let selected = devices.iter().find(|device| device.id == udid);
         if selected
             .is_some_and(|device| device.pairing == devicehub_core::DevicePairingState::Unpaired)
         {
@@ -3891,7 +3919,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Connect to an attached device by selection ID from list_devices (or a legacy UDID) and wait for a new screen frame."
+        description = "Connect to an attached device by its transport-aware selection ID from list_devices and wait for a new screen frame."
     )]
     async fn connect_device(
         &self,
@@ -3901,7 +3929,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Tear down and reconnect a device by selection ID from list_devices (or a legacy UDID), then wait for a new screen frame."
+        description = "Tear down and reconnect a device by its transport-aware selection ID from list_devices, then wait for a new screen frame."
     )]
     async fn reconnect_device(
         &self,
@@ -4121,17 +4149,45 @@ impl DeviceHub {
         description = "Report active device, stream state, screen size, orientation and virtual-location state."
     )]
     async fn status(&self) -> Result<CallToolResult, McpError> {
-        let session = self.current_session();
         let selection_id = self.selection_id.read().unwrap().clone();
-        let active_udid = selection_id.as_deref().and_then(|selection_id| {
-            self.application
-                .manager
-                .devices
-                .get()
-                .into_iter()
-                .find(|device| device.id == selection_id)
-                .map(|device| device.udid)
-        });
+        let Some(selection_id) = selection_id else {
+            return ok_text(
+                json!({
+                    "device_id": null,
+                    "active_udid": null,
+                    "status": "no device selected",
+                    "error": null,
+                    "streaming": false,
+                    "screen_size": null,
+                    "orientation": null,
+                    "location": null,
+                })
+                .to_string(),
+            );
+        };
+        let Some(session) = self.application.sessions.get(&selection_id) else {
+            return ok_text(
+                json!({
+                    "device_id": selection_id,
+                    "active_udid": null,
+                    "status": "device session is not available",
+                    "error": "device session is not available",
+                    "streaming": false,
+                    "screen_size": null,
+                    "orientation": null,
+                    "location": null,
+                })
+                .to_string(),
+            );
+        };
+        let active_udid = self
+            .application
+            .manager
+            .devices
+            .get()
+            .into_iter()
+            .find(|device| device.id == selection_id)
+            .map(|device| device.udid);
         let screen_size = {
             let turns = session.orientation.get().quarter_turns_cw();
             session
@@ -4341,6 +4397,39 @@ mod tests {
         assert!(phone_rx.try_recv().is_err());
     }
 
+    #[tokio::test]
+    async fn managed_operations_are_scoped_to_the_selected_device() {
+        let (phone, _) =
+            devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default().build();
+        phone
+            .device
+            .operations
+            .begin(
+                devicehub_core::ManagedOperationKind::DeviceBackup,
+                None,
+                true,
+            )
+            .unwrap();
+        let (tablet, _) =
+            devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default().build();
+        let (application, _) =
+            devicehub_runtime::RuntimeClientFixture::<std::path::PathBuf>::default()
+                .with_session("phone::usb", phone.device)
+                .with_session("tablet::usb", tablet.device)
+                .build();
+        let hub = DeviceHub::new_with_service(application);
+
+        hub.select_session("phone::usb".into()).unwrap();
+        let phone = tool_json(&hub.list_operations().await.unwrap());
+        assert_eq!(phone["device_id"], "phone::usb");
+        assert_eq!(phone["operations"][0]["kind"], "device_backup");
+
+        hub.select_session("tablet::usb".into()).unwrap();
+        let tablet = tool_json(&hub.list_operations().await.unwrap());
+        assert_eq!(tablet["device_id"], "tablet::usb");
+        assert_eq!(tablet["operations"].as_array().unwrap().len(), 0);
+    }
+
     fn test_device_details() -> devicehub_core::DeviceDetails {
         devicehub_core::DeviceDetails {
             udid: "private-udid".into(),
@@ -4445,6 +4534,7 @@ mod tests {
             "device_details",
             "wait_for_device_event",
             "list_devices",
+            "list_operations",
             "connect_device",
             "reconnect_device",
             "set_location",

@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use devicehub_core::{
-    AppOperationKind, AppOperationSlot, AppSigningKind, DeviceApp,
+    AppOperationKind, AppOperationSlot, AppSigningKind, DeviceApp, ManagedOperationError,
+    ManagedOperationKind, ManagedOperationRegistry, OperationErrorCode,
     process_executable_belongs_to_app,
 };
 
@@ -103,16 +104,38 @@ impl AppClientSet {
 
 struct ActiveAppOperation {
     id: u64,
+    managed_id: u64,
     handle: tokio::task::JoinHandle<()>,
 }
 
-fn cancel_active_operation(operation: &AppOperationSlot, task: &mut Option<ActiveAppOperation>) {
+fn cancel_active_operation(
+    operation: &AppOperationSlot,
+    operations: &ManagedOperationRegistry,
+    task: &mut Option<ActiveAppOperation>,
+) {
     if let Some(active) = task.take() {
         if !active.handle.is_finished() {
             active.handle.abort();
         }
         operation.cancel(active.id);
+        operations.cancel(active.managed_id, "device session ended");
     }
+}
+
+async fn stop_active_operation(
+    operation: &AppOperationSlot,
+    operations: &ManagedOperationRegistry,
+    task: &mut Option<ActiveAppOperation>,
+) {
+    let Some(active) = task.take() else {
+        return;
+    };
+    if !active.handle.is_finished() {
+        active.handle.abort();
+    }
+    let _ = active.handle.await;
+    operation.cancel(active.id);
+    operations.cancel(active.managed_id, "device session ended");
 }
 
 /// Owns every long-lived app client and all app-operation task state for one device session.
@@ -120,6 +143,7 @@ pub(crate) struct AppManagement {
     provider: Arc<dyn IdeviceProvider>,
     control: AppControlSlot,
     operation: AppOperationSlot,
+    operations: ManagedOperationRegistry,
     operation_task: Option<ActiveAppOperation>,
     app_service: Option<AppServiceClient<Box<dyn ReadWrite>>>,
     installation_proxy: Option<InstallationProxyClient>,
@@ -128,7 +152,7 @@ pub(crate) struct AppManagement {
 
 impl Drop for AppManagement {
     fn drop(&mut self) {
-        cancel_active_operation(&self.operation, &mut self.operation_task);
+        cancel_active_operation(&self.operation, &self.operations, &mut self.operation_task);
     }
 }
 
@@ -136,6 +160,7 @@ impl AppManagement {
     pub(crate) fn new(
         provider: Arc<dyn IdeviceProvider>,
         operation: AppOperationSlot,
+        operations: ManagedOperationRegistry,
         clients: AppClientSet,
         transport: AppServiceTransport,
     ) -> Self {
@@ -147,11 +172,16 @@ impl AppManagement {
             provider,
             control: AppControlSlot::default(),
             operation,
+            operations,
             operation_task: None,
             app_service,
             installation_proxy,
             transport,
         }
+    }
+
+    pub(crate) async fn shutdown(&mut self) {
+        stop_active_operation(&self.operation, &self.operations, &mut self.operation_task).await;
     }
 
     pub(crate) async fn handle(&mut self, command: AppCommand) {
@@ -349,27 +379,76 @@ impl AppManagement {
         {
             self.operation
                 .fail(operation.id, "app operation ended unexpectedly".into());
+            self.operations.fail(
+                operation.managed_id,
+                ManagedOperationError::new(
+                    OperationErrorCode::Internal,
+                    "app operation ended unexpectedly",
+                ),
+            );
         }
     }
 
     fn uninstall_app(&mut self, bundle_id: String) -> Result<(), String> {
         self.clear_finished_operation();
-        let id = self
+        let managed_id = self
+            .operations
+            .begin(
+                ManagedOperationKind::AppUninstall,
+                Some(bundle_id.clone()),
+                false,
+            )
+            .map_err(|error| error.message)?;
+        let id = match self
             .operation
-            .start(AppOperationKind::Uninstall, bundle_id.clone())?;
+            .start(AppOperationKind::Uninstall, bundle_id.clone())
+        {
+            Ok(id) => id,
+            Err(error) => {
+                self.operations.fail(
+                    managed_id,
+                    ManagedOperationError::new(OperationErrorCode::Busy, error.clone()),
+                );
+                return Err(error);
+            }
+        };
         self.operation.update(id, "verifying", None);
+        self.operations
+            .update(managed_id, Some("verifying".into()), None);
         let provider = self.provider.clone();
         let operation = self.operation.clone();
+        let operations = self.operations.clone();
         let task_operation = operation.clone();
+        let task_operations = operations.clone();
         let handle = tokio::spawn(async move {
-            let result =
-                uninstall_user_app(provider.as_ref(), &bundle_id, task_operation.clone(), id).await;
+            let result = uninstall_user_app(
+                provider.as_ref(),
+                &bundle_id,
+                task_operation.clone(),
+                id,
+                task_operations.clone(),
+                managed_id,
+            )
+            .await;
             match result {
-                Ok(()) => operation.succeed(id),
-                Err(error) => operation.fail(id, error),
+                Ok(()) => {
+                    operation.succeed(id);
+                    operations.succeed(managed_id);
+                }
+                Err(error) => {
+                    operation.fail(id, error.clone());
+                    operations.fail(
+                        managed_id,
+                        ManagedOperationError::new(OperationErrorCode::Internal, error),
+                    );
+                }
             }
         });
-        self.operation_task = Some(ActiveAppOperation { id, handle });
+        self.operation_task = Some(ActiveAppOperation {
+            id,
+            managed_id,
+            handle,
+        });
         Ok(())
     }
 }
@@ -379,6 +458,8 @@ pub(super) async fn uninstall_user_app(
     bundle_id: &str,
     operation: AppOperationSlot,
     operation_id: u64,
+    operations: ManagedOperationRegistry,
+    managed_operation_id: u64,
 ) -> Result<(), String> {
     let mut client = InstallationProxyClient::connect(provider)
         .await
@@ -397,14 +478,20 @@ pub(super) async fn uninstall_user_app(
     }
 
     operation.update(operation_id, "uninstalling", Some(0));
+    operations.update(managed_operation_id, Some("uninstalling".into()), Some(0.0));
     client
         .uninstall_with_callback(
             bundle_id,
             None,
-            |(progress, (operation, id))| async move {
+            |(progress, (operation, id, operations, managed_id))| async move {
                 operation.update(id, "uninstalling", Some(progress.min(100) as u8));
+                operations.update(
+                    managed_id,
+                    Some("uninstalling".into()),
+                    Some(progress.min(100) as f64),
+                );
             },
-            (operation, operation_id),
+            (operation, operation_id, operations, managed_operation_id),
         )
         .await
         .map_err(|error| format!("unable to uninstall app: {error:?}"))
@@ -975,19 +1062,34 @@ mod tests {
     #[tokio::test]
     async fn cancelling_app_owner_aborts_work_and_publishes_cancelled_state() {
         let operation = AppOperationSlot::default();
+        let operations = ManagedOperationRegistry::default();
         let id = operation
             .start(AppOperationKind::Uninstall, "com.example.app".into())
             .unwrap();
+        let managed_id = operations
+            .begin(
+                ManagedOperationKind::AppUninstall,
+                Some("com.example.app".into()),
+                false,
+            )
+            .unwrap();
         let handle = tokio::spawn(std::future::pending::<()>());
         let abort = handle.abort_handle();
-        let mut task = Some(ActiveAppOperation { id, handle });
+        let mut task = Some(ActiveAppOperation {
+            id,
+            managed_id,
+            handle,
+        });
 
-        cancel_active_operation(&operation, &mut task);
-        tokio::task::yield_now().await;
+        stop_active_operation(&operation, &operations, &mut task).await;
 
         assert!(task.is_none());
         assert!(abort.is_finished());
         assert_eq!(operation.get().state, AppOperationState::Cancelled);
+        assert_eq!(
+            operations.snapshot()[0].phase,
+            devicehub_core::ManagedOperationPhase::Cancelled
+        );
     }
 
     #[test]

@@ -128,7 +128,7 @@ In a game session, `pointer_deltas` move the named active `MouseCastSpell`, `Obs
 
 ## Device and Session Workflow
 
-Use `list_devices` for the current transport inventory and `status` for this MCP connection's selected session. `connect_device` selects or reuses the exact session without stopping sessions for other physical devices. `reconnect_device` tears down and rebuilds only that target. Both wait for a new video frame for a bounded period and may report that connection is still being established; follow with `status` or `screenshot` rather than repeatedly reconnecting.
+Use `list_devices` for the current transport inventory and pass its exact transport-aware `id` to `connect_device` or `reconnect_device`; bare UDIDs are not accepted. `status` reports this MCP connection's selected session, while `list_operations` returns that session's bounded long-operation lifecycle and typed errors. Connecting selects or reuses the exact session without stopping sessions for other physical devices. Reconnecting tears down and rebuilds only that target. Both wait for a new video frame for a bounded period and may report that connection is still being established; follow with `status` or `screenshot` rather than repeatedly reconnecting.
 
 `device_details` refreshes normalized product, OS, hardware, storage, activation, Developer Mode, regional, and bounded battery information. Stable identifiers are deliberately omitted unless `include_identifiers=true`; UDID, serial number, and ECID should be requested only when identity is required.
 
@@ -204,7 +204,7 @@ Supported selector strategies are `accessibility id`, `name`, `class name`, `xpa
 | --- | --- | --- |
 | Screen and input | `screenshot`, `observe_game`, `tap`, `swipe`, `multi_touch`, `wait_for_frame`, `type_text`, `paste_text`, `press_key`, `press_button`, `app_switcher`, `lock_device`, `rotate` | Screenshot dimensions define HID coordinates; `observe_game` is ungridded and supports a region of interest |
 | Key mapping | `list_keymap_profiles`, `get_keymap_profile`, `save_keymap_profile`, `run_keymap`, `start_game_session`, `set_game_input`, `stop_game_session` | Local native v2 profiles; persistent sessions use complete keyboard-code state and never change desktop activation |
-| Device and session | `status`, `device_details`, `list_devices`, `connect_device`, `reconnect_device`, `wait_for_device_event`, `list_companion_devices`, `home_screen_layout` | Exact selection IDs preserve USB/Wi-Fi identity; stable identifiers are opt-in |
+| Device and session | `status`, `device_details`, `list_devices`, `list_operations`, `connect_device`, `reconnect_device`, `wait_for_device_event`, `list_companion_devices`, `home_screen_layout` | Exact selection IDs preserve USB/Wi-Fi identity; stable identifiers are opt-in |
 | Apps and processes | `list_apps`, `launch_app`, `stop_app`, `app_status`, `wait_for_app`, `list_processes`, `process_status`, `wait_for_process` | Use exact Bundle IDs and fresh PIDs |
 | Diagnostics | `list_crash_reports`, `read_crash_report`, `performance_snapshot`, `recent_device_logs` | Bounded, read-only diagnostic output |
 | Location and conditions | `set_location`, `clear_location`, `list_device_conditions`, `apply_device_condition`, `clear_device_condition` | Clear simulations after every test |

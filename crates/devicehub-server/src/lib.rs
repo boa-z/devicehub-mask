@@ -4,6 +4,7 @@
 //! starts an Apple-device runtime, reads process configuration, or binds a
 //! listener; hosts inject an existing runtime client and explicit settings.
 
+mod device_scope;
 pub mod http;
 pub mod mcp;
 pub mod private_api;

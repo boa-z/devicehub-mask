@@ -98,12 +98,17 @@ impl ServiceSupervisor {
 
     pub(crate) async fn shutdown(&mut self) {
         let _ = self.shutdown.send(true);
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
         for mut task in self.tasks.drain(..) {
-            if tokio::time::timeout(SHUTDOWN_GRACE, &mut task)
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
+                tracing::warn!(
+                    component = "service_supervisor",
+                    task_id = ?task.id(),
+                    grace_ms = SHUTDOWN_GRACE.as_millis(),
+                    "device service exceeded shutdown grace; aborting task"
+                );
                 task.abort();
+                let _ = task.await;
             }
         }
     }
@@ -134,11 +139,44 @@ pub(crate) async fn wait_for_retry(shutdown: &mut watch::Receiver<bool>, delay: 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
 
     #[test]
     fn reconnect_backoff_is_bounded() {
         assert_eq!(reconnect_backoff(0), Duration::from_millis(500));
         assert_eq!(reconnect_backoff(20), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn shutdown_waits_for_service_resources_to_drop() {
+        struct Resource(Arc<AtomicBool>);
+
+        impl Drop for Resource {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        let local = tokio::task::LocalSet::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = dropped.clone();
+
+        runtime.block_on(local.run_until(async move {
+            let mut supervisor = ServiceSupervisor::new(ServiceRegistry::default());
+            supervisor.spawn(async move {
+                let _resource = Resource(task_dropped);
+                std::future::pending::<()>().await;
+            });
+            tokio::task::yield_now().await;
+            supervisor.shutdown().await;
+        }));
+
+        assert!(dropped.load(Ordering::Acquire));
     }
 }

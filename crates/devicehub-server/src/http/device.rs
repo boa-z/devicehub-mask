@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use devicehub_core::{
-    LocationStatus, LocationStatusSlot, SessionPhase, validate_device_name, validate_paste_text,
+    LocationStatus, LocationStatusSlot, ManagedOperation, ManagedOperationRegistry, SessionPhase,
+    validate_device_name, validate_paste_text,
 };
 use devicehub_runtime::{
     DeveloperModeCommand, DeviceControlError, DeviceControlService, DeviceSessionCommand,
@@ -37,6 +38,7 @@ pub struct DeviceHttpState {
     input: InputSink,
     location: LocationStatusSlot,
     device_control: DeviceControlService<PathBuf>,
+    operations: ManagedOperationRegistry,
 }
 
 impl DeviceHttpState {
@@ -44,11 +46,13 @@ impl DeviceHttpState {
         input: InputSink,
         location: LocationStatusSlot,
         device_control: DeviceControlService<PathBuf>,
+        operations: ManagedOperationRegistry,
     ) -> Self {
         Self {
             input,
             location,
             device_control,
+            operations,
         }
     }
 
@@ -72,6 +76,13 @@ impl DeviceHttpState {
             .map(|session| session.device_control.clone())
             .unwrap_or_else(|| self.device_control.clone())
     }
+
+    fn operations(&self, session: &RequestSession) -> ManagedOperationRegistry {
+        session
+            .as_ref()
+            .map(|session| session.operations.clone())
+            .unwrap_or_else(|| self.operations.clone())
+    }
 }
 
 pub fn router<S>(state: DeviceHttpState) -> Router<S>
@@ -80,6 +91,7 @@ where
 {
     Router::new()
         .route("/api/device/details", get(device_details))
+        .route("/api/device/operations", get(device_operations))
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
         .route("/api/device/wallpaper/{kind}", get(device_wallpaper))
@@ -100,6 +112,13 @@ where
                 .delete(clear_device_location),
         )
         .with_state(state)
+}
+
+async fn device_operations(
+    State(state): State<DeviceHttpState>,
+    session: RequestSession,
+) -> Json<Vec<ManagedOperation>> {
+    Json(state.operations(&session).snapshot())
 }
 
 #[derive(Deserialize)]
@@ -489,6 +508,7 @@ mod tests {
                 input,
                 application.device.location,
                 application.device.device_control,
+                application.device.operations,
             ),
             receiver,
         )
@@ -516,7 +536,10 @@ mod tests {
     #[test]
     fn metadata_requests_do_not_queue_while_the_session_is_connecting() {
         let status = devicehub_core::StatusSlot::default();
-        status.set("connecting to device...");
+        status.set_phase(
+            devicehub_core::SessionPhase::Connecting,
+            "connecting to device...",
+        );
         let (client, _control) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default()
             .with_status(status)
             .build();

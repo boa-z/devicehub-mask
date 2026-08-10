@@ -82,8 +82,12 @@ mod tests {
         let (second_control, _) = tokio::sync::mpsc::unbounded_channel();
         let first_client = first.client(first_control).device;
         let second_client = second.client(second_control).device;
-        first_client.status.set("connected:first");
-        second_client.status.set("connected:second");
+        first_client
+            .status
+            .set_phase(devicehub_core::SessionPhase::Connected, "connected:first");
+        second_client
+            .status
+            .set_phase(devicehub_core::SessionPhase::Connected, "connected:second");
 
         let registry = DeviceSessionRegistry::default();
         registry.insert("phone::usb".into(), first_client);

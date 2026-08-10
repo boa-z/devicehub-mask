@@ -66,7 +66,7 @@ The host facade is split conceptually into manager and session capabilities:
 - `DeviceSessionRegistry` resolves a `DeviceSessionClient` by exact selection ID.
 - `DeviceSessionClient` exposes only one session's observations, media, input and operations.
 
-Private HTTP uses `X-DeviceHub-Device`; WebSocket uses `device_id`; each MCP connection holds its own target. Unknown or omitted targets are rejected where ambiguity would otherwise select the wrong phone.
+Private HTTP resolves `X-DeviceHub-Device` once into an authenticated `DeviceScope`; WebSocket uses `device_id`; each MCP connection holds its own exact transport-aware target. Unknown or omitted targets are rejected instead of falling back to a legacy default session. Device-scope failures use a stable JSON error envelope with code, message, retryability, and an optional suggested action.
 
 The React inventory controller reads the manager-level `/api/devices` projection independently from the focused session. Device discovery, pairing and lifecycle actions update that inventory; selecting an already running session changes only local UI focus. The focused control WebSocket supplies session-specific status but is never the sole source for the multi-device list.
 
@@ -79,7 +79,7 @@ Video, audio, performance sampling, and device-log streaming are independent per
 - With no video consumer, RTP/RTCP remains drained and observable, while access-unit publication is skipped. Resuming clears stale state and requests a keyframe.
 - Desktop audio decodes only the selected device. Headless audio decodes only while a browser client requests unmuted audio for that session.
 - Performance and device logs start only while their workspaces or API consumers hold demand.
-- Shutdown and session replacement release held HID input, consumers, sidecars, and supervised tasks with bounded cleanup.
+- Shutdown and session replacement release held HID input, consumers, sidecars, and supervised tasks with bounded cleanup. The service tree shares one shutdown deadline; any task exceeding it is identified, aborted, and awaited before teardown returns.
 
 ## Media and Input Flow
 
@@ -95,7 +95,7 @@ Pointer, mapping, keyboard passthrough, and MCP input normalize into core input 
 
 Each device service reports a normalized health phase and is supervised independently where recovery is safe. A location, logging, diagnostics, or performance channel failure should not tear down video and input. Transport-ending failures transition only the affected session and use bounded reconnect policy. Error projections retain enough target and operation context for a user or agent to act without exposing raw unbounded protocol data.
 
-Long operations such as captures, backups, diagnostics, file transfers, and console streams have explicit limits, cancellation where supported, and session cleanup. Host files are accessed through injected capabilities so runtime never trusts or resolves local paths itself.
+Long operations keep their domain-specific status while also publishing shared device-scoped lifecycle metadata through `ManagedOperationRegistry`. The shared record contains kind, phase, stage, progress, cancellation capability, timestamps, and a typed bounded error. At most one active operation of a kind is admitted per device, retained history is bounded, and session teardown cancels remaining active records. HTTP exposes `/api/device/operations`; MCP exposes `list_operations`. Host files are accessed through injected capabilities so runtime never trusts or resolves local paths itself.
 
 ## Data Ownership
 

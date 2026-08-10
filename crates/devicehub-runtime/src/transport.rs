@@ -26,7 +26,7 @@ use idevice::{
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice},
 };
 
-use devicehub_core::{ConnKind, DeviceInfo, StatusSlot, device_id_fingerprint};
+use devicehub_core::{ConnKind, DeviceInfo, SessionPhase, StatusSlot, device_id_fingerprint};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_WIFI_PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
@@ -447,7 +447,10 @@ async fn connect_wifi_core_tunnel(
         },
         None => authorize_remote_pairing(endpoint, remote_pairings, status, system_usbmuxd).await?,
     };
-    status.set("verifying Wi-Fi control authorization...");
+    status.set_phase(
+        SessionPhase::Connecting,
+        "verifying Wi-Fi control authorization...",
+    );
     let address = scoped_socket_addr(
         endpoint.remote_pairing_address,
         endpoint.remote_pairing_scope_id,
@@ -491,7 +494,10 @@ async fn connect_wifi_core_tunnel(
         .create_tcp_listener()
         .await
         .map_err(|error| format!("remote tunnel listener failed: {error:?}"))?;
-    status.set("establishing secure Wi-Fi tunnel...");
+    status.set_phase(
+        SessionPhase::Connecting,
+        "establishing secure Wi-Fi tunnel...",
+    );
     let tunnel_address = scoped_socket_addr(
         endpoint.remote_pairing_address,
         endpoint.remote_pairing_scope_id,
@@ -545,7 +551,10 @@ async fn authorize_remote_pairing(
     status: &StatusSlot,
     system_usbmuxd: &SystemUsbmuxdConfig,
 ) -> Result<RpPairingFile, String> {
-    status.set("unlock the device and approve Wi-Fi control...");
+    status.set_phase(
+        SessionPhase::Connecting,
+        "unlock the device and approve Wi-Fi control...",
+    );
     tracing::info!(
         device_id = %device_id_fingerprint(&endpoint.udid),
         "remote pairing credentials missing; authorizing over USB"

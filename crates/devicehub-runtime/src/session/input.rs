@@ -96,6 +96,7 @@ pub(crate) async fn run_device_command_loop<HostPath>(
             _ => tracing::warn!("session router returned an unhandled command"),
         }
     }
+    router.shutdown().await;
 }
 
 /// Runs commands when screen control and HID setup failed but management
@@ -124,6 +125,7 @@ pub(crate) async fn run_management_command_loop<HostPath>(
             _ => tracing::warn!("session router returned an unhandled command"),
         }
     }
+    router.shutdown().await;
 }
 
 async fn paste_text(

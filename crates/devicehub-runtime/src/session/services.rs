@@ -112,6 +112,7 @@ pub(crate) struct RuntimeDeviceServicePorts {
 /// Host-visible state shared with filesystem-backed runtime services.
 #[derive(Clone)]
 pub(crate) struct RuntimeHostServiceViews {
+    pub(crate) operations: devicehub_core::ManagedOperationRegistry,
     pub(crate) app_documents: devicehub_core::AppDocumentActivitySlot,
     pub(crate) device_files: devicehub_core::DeviceFileActivitySlot,
     pub(crate) network_capture: devicehub_core::NetworkCaptureSlot,
@@ -171,6 +172,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         views: RuntimeServiceViews,
+        operations: devicehub_core::ManagedOperationRegistry,
     ) -> Self {
         views.performance.reset();
         views.device_logs.reset();
@@ -304,6 +306,7 @@ impl RuntimeSessionServices {
         supervisor.spawn(serve_wda_runner(
             provider.clone(),
             wda_runner_commands,
+            operations,
             supervisor.reporter("device.wda_runner"),
             supervisor.shutdown_receiver(),
         ));
@@ -382,12 +385,14 @@ impl RuntimeSessionServices {
         Profiles: crate::ProvisioningProfileLoader<Source = Files::Path>,
     {
         let runtime = self.take_device_ports();
+        let operations = views.operations.clone();
         let documents = self.start_app_documents(
             provider.clone(),
             connection,
             adapter.clone(),
             handshake.clone(),
             views.app_documents,
+            operations.clone(),
             adapters.files.clone(),
         );
         let device_files = self.start_device_files(
@@ -396,6 +401,7 @@ impl RuntimeSessionServices {
             adapter.clone(),
             handshake.clone(),
             views.device_files,
+            operations.clone(),
             adapters.files.clone(),
         );
         let network_capture = self.start_network_capture(
@@ -404,12 +410,14 @@ impl RuntimeSessionServices {
             adapter.clone(),
             handshake.clone(),
             views.network_capture,
+            operations.clone(),
             adapters.capture_files.clone(),
         );
         let bluetooth_capture = self.start_bluetooth_capture(
             adapter.clone(),
             handshake.clone(),
             views.bluetooth_capture,
+            operations.clone(),
             adapters.capture_files,
         );
         let device_backup = self.start_device_backup(
@@ -419,23 +427,27 @@ impl RuntimeSessionServices {
             handshake.clone(),
             source_identifier,
             views.device_backup,
+            operations.clone(),
             adapters.backup,
         );
         let sysdiagnose = self.start_sysdiagnose(
             adapter.clone(),
             handshake.clone(),
             views.sysdiagnose,
+            operations.clone(),
             adapters.files.clone(),
         );
         let log_archive = self.start_log_archive(
             adapter.clone(),
             handshake.clone(),
             views.log_archive,
+            operations.clone(),
             adapters.files.clone(),
         );
         let developer_image = self.start_developer_image(
             provider.clone(),
             views.developer_image,
+            operations,
             adapters.developer_images,
         );
         let provisioning = self.start_provisioning(
@@ -476,6 +488,7 @@ impl RuntimeSessionServices {
     }
 
     /// Start sandboxed application storage with host-owned file persistence.
+    #[allow(clippy::too_many_arguments)]
     fn start_app_documents<Files>(
         &mut self,
         provider: Arc<dyn IdeviceProvider>,
@@ -483,6 +496,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         activity: devicehub_core::AppDocumentActivitySlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         files: Files,
     ) -> mpsc::Sender<AppDocumentCommand<Files::Path>>
     where
@@ -493,6 +507,7 @@ impl RuntimeSessionServices {
             AppStorageTransport::new(provider, connection, adapter, handshake),
             commands,
             activity,
+            operations,
             files,
             self.supervisor.shutdown_receiver(),
         ));
@@ -500,6 +515,7 @@ impl RuntimeSessionServices {
     }
 
     /// Start public AFC storage with host-owned file persistence.
+    #[allow(clippy::too_many_arguments)]
     fn start_device_files<Files>(
         &mut self,
         provider: Arc<dyn IdeviceProvider>,
@@ -507,6 +523,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         activity: devicehub_core::DeviceFileActivitySlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         files: Files,
     ) -> mpsc::Sender<DeviceFileCommand<Files::Path>>
     where
@@ -517,6 +534,7 @@ impl RuntimeSessionServices {
             DeviceFileTransport::new(provider, connection, adapter, handshake),
             commands,
             activity,
+            operations,
             files,
             self.supervisor.reporter("device.files"),
             self.supervisor.shutdown_receiver(),
@@ -525,6 +543,7 @@ impl RuntimeSessionServices {
     }
 
     /// Start network packet capture with host-owned atomic file publication.
+    #[allow(clippy::too_many_arguments)]
     fn start_network_capture<Files>(
         &mut self,
         provider: Arc<dyn IdeviceProvider>,
@@ -532,6 +551,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         status: devicehub_core::NetworkCaptureSlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         files: Files,
     ) -> mpsc::Sender<NetworkCaptureCommand<Files::Destination>>
     where
@@ -542,6 +562,7 @@ impl RuntimeSessionServices {
             NetworkCaptureTransport::new(provider, connection, adapter, handshake),
             commands,
             status,
+            operations,
             files,
             self.supervisor.reporter("network.capture"),
             self.supervisor.shutdown_receiver(),
@@ -555,6 +576,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         status: devicehub_core::BluetoothCaptureSlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         files: Files,
     ) -> mpsc::Sender<BluetoothCaptureCommand<Files::Destination>>
     where
@@ -565,6 +587,7 @@ impl RuntimeSessionServices {
             BluetoothCaptureTransport::new(adapter, handshake),
             commands,
             status,
+            operations,
             files,
             self.supervisor.reporter("bluetooth.capture"),
             self.supervisor.shutdown_receiver(),
@@ -582,6 +605,7 @@ impl RuntimeSessionServices {
         handshake: RsdHandshake,
         source_identifier: String,
         status: devicehub_core::DeviceBackupSlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         executor: Executor,
     ) -> mpsc::Sender<DeviceBackupCommand<Executor::Destination>>
     where
@@ -592,6 +616,7 @@ impl RuntimeSessionServices {
             DeviceBackupTransport::new(provider, connection, adapter, handshake, source_identifier),
             commands,
             status,
+            operations,
             executor,
             self.supervisor.reporter("device.backup"),
             self.supervisor.shutdown_receiver(),
@@ -605,6 +630,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         status: devicehub_core::SysdiagnoseSlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         files: Files,
     ) -> mpsc::Sender<SysdiagnoseCommand<Files::Path>>
     where
@@ -616,6 +642,7 @@ impl RuntimeSessionServices {
             handshake,
             commands,
             status,
+            operations,
             files,
             self.supervisor.reporter("device.sysdiagnose"),
             self.supervisor.shutdown_receiver(),
@@ -629,6 +656,7 @@ impl RuntimeSessionServices {
         adapter: AdapterHandle,
         handshake: RsdHandshake,
         status: devicehub_core::LogArchiveSlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         files: Files,
     ) -> mpsc::Sender<LogArchiveCommand<Files::Path>>
     where
@@ -640,6 +668,7 @@ impl RuntimeSessionServices {
             handshake,
             commands,
             status,
+            operations,
             files,
             self.supervisor.reporter("device.log_archive"),
             self.supervisor.shutdown_receiver(),
@@ -652,6 +681,7 @@ impl RuntimeSessionServices {
         &mut self,
         provider: Arc<dyn IdeviceProvider>,
         status: devicehub_core::DeveloperImageMountSlot,
+        operations: devicehub_core::ManagedOperationRegistry,
         assets: Assets,
     ) -> mpsc::Sender<DeveloperImageMountCommand<Assets::Source>>
     where
@@ -662,6 +692,7 @@ impl RuntimeSessionServices {
             provider,
             commands,
             status,
+            operations,
             assets,
             self.supervisor.reporter("device.developer_image"),
             self.supervisor.shutdown_receiver(),

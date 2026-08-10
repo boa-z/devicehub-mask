@@ -31,6 +31,7 @@ Runtime 是唯一 Apple 设备执行层，拥有发现、配对/信任协调、�
 - `RuntimeManagerClient`：清单、前端选择、配对/信任和 manager 操作。
 - `DeviceSessionRegistry`：准确会话查找。
 - `DeviceSessionClient`：单一目标的观测、命令、媒体和需求。
+- `ManagedOperationRegistry`：单一目标长操作的有界生命周期与类型化错误投影；详细领域状态仍由所属服务维护。
 - 宿主端口：剪贴板、文件、抓包目标、Developer Image、描述文件、备份、诊断 sink、音频 pipeline 和 sidecar。
 
 ## `devicehub-server`
@@ -55,7 +56,7 @@ Host 包含桌面与 headless 共用的原生实现：受限文件系统、profi
 
 ## 多设备契约
 
-注册表 key 是包含传输信息的 selection ID。操作先解析该 ID，再访问会话。切换 UI 焦点不销毁会话；一个物理 UDID 的重复 USB/Wi-Fi 活动会被拒绝；断开和恢复只影响目标。MCP 连接可以选择不同设备，HTTP/WebSocket 客户端携带明确设备范围。
+注册表 key 是包含传输信息的 selection ID。操作先解析该 ID，再访问会话。切换 UI 焦点不销毁会话；一个物理 UDID 的重复 USB/Wi-Fi 活动会被拒绝；断开和恢复只影响目标。MCP 连接可以选择不同设备，HTTP 为每个请求解析一次已认证 `DeviceScope`，WebSocket 客户端携带明确设备范围。
 
 视频、音频、性能和日志的需求租约按会话隔离，消费者在断开或失败时必须释放。新后台服务必须有明确所有者、有界重启策略、健康报告和确定性关闭。
 

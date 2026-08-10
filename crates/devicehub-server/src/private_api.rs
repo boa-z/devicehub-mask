@@ -15,6 +15,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 
+use crate::device_scope::DeviceScope;
 use crate::{http, status, websocket};
 
 pub const DEVICE_ID_HEADER: &str = "x-devicehub-device";
@@ -101,19 +102,29 @@ async fn resolve_device_session(
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty() && value.len() <= 256)
+        .map(str::to_owned)
     {
         Some(selection_id) => selection_id,
         None => {
-            return (
+            return http::ApiError::new(
                 StatusCode::BAD_REQUEST,
+                "missing_device_scope",
                 format!("missing required {DEVICE_ID_HEADER} header"),
             )
-                .into_response();
+            .into_response();
         }
     };
-    let Some(session) = application.sessions.get(selection_id) else {
-        return (StatusCode::NOT_FOUND, "device session is not available").into_response();
+    let Some(session) = application.sessions.get(&selection_id) else {
+        return http::ApiError::new(
+            StatusCode::NOT_FOUND,
+            "device_session_unavailable",
+            "device session is not available",
+        )
+        .into_response();
     };
+    request
+        .extensions_mut()
+        .insert(DeviceScope::new(selection_id, session.clone()));
     request.extensions_mut().insert(session);
     next.run(request).await
 }
@@ -308,6 +319,7 @@ mod tests {
                 commands.clone(),
                 application.device.location.clone(),
                 application.device.device_control.clone(),
+                application.device.operations.clone(),
             ),
             wda_http: http::WdaHttpState::new(commands.clone()),
             developer_image_http: http::DeveloperImageHttpState::new(
@@ -409,9 +421,15 @@ mod tests {
     #[tokio::test]
     async fn device_scope_resolves_exact_session_without_using_legacy_state() {
         let (phone, _) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default().build();
-        phone.device.status.set("phone");
+        phone
+            .device
+            .status
+            .set_phase(devicehub_core::SessionPhase::Connected, "phone");
         let (tablet, _) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default().build();
-        tablet.device.status.set("tablet");
+        tablet
+            .device
+            .status
+            .set_phase(devicehub_core::SessionPhase::Connected, "tablet");
         let (application, _) = devicehub_runtime::RuntimeClientFixture::<PathBuf>::default()
             .with_session("phone::usb", phone.device)
             .with_session("tablet::usb", tablet.device)
@@ -450,5 +468,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(missing.into_body(), 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "missing_device_scope");
     }
 }

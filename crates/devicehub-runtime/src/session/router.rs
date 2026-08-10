@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use devicehub_core::{AppOperationSlot, DeviceDetails};
+use devicehub_core::{AppOperationSlot, DeviceDetails, ManagedOperationRegistry};
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
@@ -48,6 +48,7 @@ pub(crate) struct DeviceSessionRouter<HostPath> {
 pub(crate) struct DeviceManagementBootstrap {
     provider: Arc<dyn IdeviceProvider>,
     app_operation: AppOperationSlot,
+    operations: ManagedOperationRegistry,
     requested_udid: String,
     details: Option<DeviceDetails>,
     app_clients: AppClientSet,
@@ -58,6 +59,7 @@ impl DeviceManagementBootstrap {
         provider: Arc<dyn IdeviceProvider>,
         requested_udid: String,
         app_operation: AppOperationSlot,
+        operations: ManagedOperationRegistry,
     ) -> Self {
         let details = match tokio::time::timeout(
             BOOTSTRAP_METADATA_TIMEOUT,
@@ -99,6 +101,7 @@ impl DeviceManagementBootstrap {
         Self {
             provider,
             app_operation,
+            operations,
             requested_udid,
             details,
             app_clients,
@@ -113,6 +116,7 @@ impl DeviceManagementBootstrap {
         DeviceManagementSession {
             provider: self.provider,
             app_operation: self.app_operation,
+            operations: self.operations,
             requested_udid: self.requested_udid,
             details: self.details,
             app_clients: self.app_clients,
@@ -125,6 +129,7 @@ impl DeviceManagementBootstrap {
 pub(crate) struct DeviceManagementSession {
     provider: Arc<dyn IdeviceProvider>,
     app_operation: AppOperationSlot,
+    operations: ManagedOperationRegistry,
     requested_udid: String,
     details: Option<DeviceDetails>,
     app_clients: AppClientSet,
@@ -153,6 +158,7 @@ impl DeviceManagementSession {
         DeviceSessionRouter::new(
             self.provider,
             self.app_operation,
+            self.operations,
             self.requested_udid,
             self.details,
             self.app_clients,
@@ -163,9 +169,11 @@ impl DeviceManagementSession {
 }
 
 impl<HostPath> DeviceSessionRouter<HostPath> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         provider: Arc<dyn IdeviceProvider>,
         app_operation: AppOperationSlot,
+        operations: ManagedOperationRegistry,
         requested_udid: String,
         details: Option<DeviceDetails>,
         app_clients: AppClientSet,
@@ -175,6 +183,7 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
         let apps = AppManagement::new(
             provider.clone(),
             app_operation,
+            operations,
             app_clients,
             app_service_transport,
         );
@@ -503,6 +512,10 @@ impl<HostPath> DeviceSessionRouter<HostPath> {
             }
             other => Some(other),
         }
+    }
+
+    pub(crate) async fn shutdown(&mut self) {
+        self.apps.shutdown().await;
     }
 
     fn refresh_device_details(

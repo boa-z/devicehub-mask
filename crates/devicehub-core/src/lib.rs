@@ -19,6 +19,7 @@ mod key_mapping;
 mod key_mapping_catalog;
 mod location;
 mod media;
+mod operation;
 mod performance;
 mod provisioning;
 mod service_health;
@@ -93,6 +94,10 @@ pub use key_mapping_catalog::{
 };
 pub use location::{LocationBackend, LocationStatus};
 pub use media::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
+pub use operation::{
+    ManagedOperation, ManagedOperationError, ManagedOperationKind, ManagedOperationPhase,
+    ManagedOperationRegistry, OperationErrorCode, OperationSuggestedAction,
+};
 pub use performance::{
     AppActivityEvent, AppActivityObservation, DeviceNetworkInterface, DeviceNetworkInterfaceKind,
     EnergyMeasurement, MAX_APP_ACTIVITY_EVENTS, MAX_ENERGY_PROCESSES, PerformanceObservation,

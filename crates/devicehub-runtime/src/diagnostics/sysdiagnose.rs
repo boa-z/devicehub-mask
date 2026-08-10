@@ -2,7 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use devicehub_core::{SysdiagnoseSlot, SysdiagnoseState, SysdiagnoseStatus};
+use devicehub_core::{
+    ManagedOperationError, ManagedOperationKind, ManagedOperationRegistry, OperationErrorCode,
+    SysdiagnoseSlot, SysdiagnoseState, SysdiagnoseStatus,
+};
 use futures_util::StreamExt;
 use idevice::RsdService;
 use idevice::core_device::DiagnostisServiceClient;
@@ -32,11 +35,13 @@ pub enum SysdiagnoseCommand<Destination> {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve<FileIo>(
     mut adapter: AdapterHandle,
     mut handshake: RsdHandshake,
     mut commands: mpsc::Receiver<SysdiagnoseCommand<FileIo::Path>>,
     status: SysdiagnoseSlot,
+    operations: ManagedOperationRegistry,
     file_io: FileIo,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -62,6 +67,15 @@ pub(crate) async fn serve<FileIo>(
                 let _ = reply.send(Err("no sysdiagnose export is running".into()));
             }
             SysdiagnoseCommand::Start { destination, reply } => {
+                let managed_id =
+                    match operations.begin(ManagedOperationKind::Sysdiagnose, None, true) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            let _ = reply.send(Err(error.message));
+                            continue;
+                        }
+                    };
+                operations.update(managed_id, Some("starting".into()), Some(0.0));
                 attempt += 1;
                 let outcome = run_export(
                     &mut adapter,
@@ -76,6 +90,22 @@ pub(crate) async fn serve<FileIo>(
                     reply,
                 )
                 .await;
+                match status.get() {
+                    current if current.state == SysdiagnoseState::Completed => {
+                        operations.succeed(managed_id)
+                    }
+                    current if current.state == SysdiagnoseState::Cancelled => operations.cancel(
+                        managed_id,
+                        current.error.as_deref().unwrap_or("sysdiagnose cancelled"),
+                    ),
+                    current => operations.fail(
+                        managed_id,
+                        ManagedOperationError::new(
+                            OperationErrorCode::Internal,
+                            current.error.unwrap_or_else(|| "sysdiagnose failed".into()),
+                        ),
+                    ),
+                }
                 if outcome == ExportOutcome::SessionEnded {
                     return;
                 }

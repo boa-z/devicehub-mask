@@ -1,6 +1,9 @@
 //! Complete lifecycle for one selected, connected device session.
 
-use devicehub_core::{AppOperationSlot, ErrorSlot, OrientationSlot, StatusSlot, VideoCounters};
+use devicehub_core::{
+    AppOperationSlot, ErrorSlot, ManagedOperationRegistry, OrientationSlot, SessionPhase,
+    StatusSlot, VideoCounters,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::{
@@ -28,6 +31,7 @@ pub(crate) struct ConnectedSessionViews {
     pub(crate) orientation: OrientationSlot,
     pub(crate) error: ErrorSlot,
     pub(crate) app_operation: AppOperationSlot,
+    pub(crate) operations: ManagedOperationRegistry,
     pub(crate) clipboard: ClipboardSlot,
     pub(crate) video_counters: VideoCounters,
     pub(crate) browser_frames: BrowserVideoSlot,
@@ -96,13 +100,16 @@ where
     DeveloperImages: DeveloperImageAssetLoader<Source = Files::Path>,
     Profiles: ProvisioningProfileLoader<Source = Files::Path>,
 {
-    views.status.set("connecting to device...");
+    views
+        .status
+        .set_phase(SessionPhase::Connecting, "connecting to device...");
     let requested_udid = endpoint.udid().to_owned();
     let (provider, connection) = connect_provider(endpoint.clone()).await?;
     let management = DeviceManagementBootstrap::prepare(
         provider.clone(),
         requested_udid.clone(),
         views.app_operation.clone(),
+        views.operations.clone(),
     )
     .await;
     let (mut adapter, mut handshake) = transport
@@ -116,6 +123,7 @@ where
         adapter.clone(),
         handshake.clone(),
         views.runtime_services,
+        views.operations.clone(),
     )
     .attach_host_services(
         provider,
@@ -130,7 +138,9 @@ where
     // This receiver SSRC must be present in the offer or device RTCP feedback
     // is ignored even though the RTP stream itself remains healthy.
     let our_ssrc = uuid::Uuid::new_v4().as_u128() as u32;
-    views.status.set("starting screen media stream...");
+    views
+        .status
+        .set_phase(SessionPhase::Connecting, "starting screen media stream...");
     let negotiated = match start_screen_media_stream(
         &mut adapter,
         &mut handshake,
@@ -144,16 +154,22 @@ where
         Err(error) => {
             tracing::warn!("screen control unavailable; keeping device management session alive");
             views.error.set(Some(error));
-            views.status.set("device management connected");
+            views
+                .status
+                .set_phase(SessionPhase::Connected, "device management connected");
             let services = session_services.take_management();
             run_management_command_loop(management.into_router(services), commands).await;
             session_services.shutdown().await;
-            views.status.set("stopping...");
+            views
+                .status
+                .set_phase(SessionPhase::Disconnecting, "stopping...");
             return Ok(());
         }
     };
 
-    views.status.set("connecting HID...");
+    views
+        .status
+        .set_phase(SessionPhase::Connecting, "connecting HID...");
     let hid_dump_sink = host
         .diagnostic_sinks
         .open(media.diagnostics.hid_dump, 1, "HID diagnostic dump")
@@ -183,7 +199,7 @@ where
         decoder_backend = "webcodecs",
         "selected video decoder backend"
     );
-    views.status.set("connected");
+    views.status.set_phase(SessionPhase::Connected, "connected");
 
     let cname = format!("devicehub@{}", adapter.host_ip());
     let mut display = negotiated.client;
@@ -233,7 +249,9 @@ where
 
     session_services.shutdown().await;
     browser_lifecycle.reset_dimensions();
-    views.status.set("stopping...");
+    views
+        .status
+        .set_phase(SessionPhase::Disconnecting, "stopping...");
     display.stop_media_stream().await.ok();
     Ok(())
 }

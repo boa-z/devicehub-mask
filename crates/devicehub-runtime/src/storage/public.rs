@@ -17,6 +17,7 @@ use devicehub_core::DeviceFileActivityState;
 use devicehub_core::{
     ConnKind, DEVICE_FILE_TRANSFER_CANCELLED as TRANSFER_CANCELLED, DeviceFileActivityKind,
     DeviceFileActivitySlot, DeviceFileEntry, DeviceFileKind, DeviceFileList, DeviceFileTransfer,
+    ManagedOperationError, ManagedOperationKind, ManagedOperationRegistry, OperationErrorCode,
     is_device_file_transfer_cancelled as is_transfer_cancelled, join_device_file_path as join_path,
     normalize_device_file_path as normalize_path, validate_device_file_name as validate_name,
 };
@@ -218,6 +219,7 @@ pub(crate) async fn serve<FileIo>(
     mut transport: DeviceFileTransport,
     mut commands: mpsc::Receiver<DeviceFileCommand<FileIo::Path>>,
     activity: DeviceFileActivitySlot,
+    operations: ManagedOperationRegistry,
     file_io: FileIo,
     reporter: ServiceReporter,
     mut shutdown: watch::Receiver<bool>,
@@ -256,6 +258,7 @@ pub(crate) async fn serve<FileIo>(
             client.as_mut().expect("AFC client initialized"),
             command,
             &activity,
+            &operations,
             &file_io,
         )
         .await;
@@ -271,6 +274,7 @@ async fn handle<FileIo>(
     client: &mut AfcClient,
     command: DeviceFileCommand<FileIo::Path>,
     activity: &DeviceFileActivitySlot,
+    operations: &ManagedOperationRegistry,
     file_io: &FileIo,
 ) -> Result<(), ()>
 where
@@ -297,6 +301,17 @@ where
             destination,
             reply,
         } => {
+            let managed_id = match operations.begin(
+                ManagedOperationKind::DeviceFileExport,
+                Some(path.clone()),
+                true,
+            ) {
+                Ok(id) => id,
+                Err(error) => {
+                    let _ = reply.send(Err(error.message));
+                    return Ok(());
+                }
+            };
             let id = activity.start(DeviceFileActivityKind::Export, path.clone());
             let mut progress = TransferProgress::new(activity.clone(), id);
             let result = tokio::time::timeout(
@@ -308,6 +323,7 @@ where
             let _ = progress.finish();
             let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
             activity.finish(id, &outcome);
+            finish_managed_transfer(operations, managed_id, &outcome);
             let failed = result
                 .as_ref()
                 .is_err_and(|error| !is_transfer_cancelled(error));
@@ -319,6 +335,17 @@ where
             source,
             reply,
         } => {
+            let managed_id = match operations.begin(
+                ManagedOperationKind::DeviceFileImport,
+                Some(directory.clone()),
+                true,
+            ) {
+                Ok(id) => id,
+                Err(error) => {
+                    let _ = reply.send(Err(error.message));
+                    return Ok(());
+                }
+            };
             let id = activity.start(DeviceFileActivityKind::Import, directory.clone());
             let mut progress = TransferProgress::new(activity.clone(), id);
             let result = tokio::time::timeout(
@@ -330,6 +357,7 @@ where
             let _ = progress.finish();
             let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
             activity.finish(id, &outcome);
+            finish_managed_transfer(operations, managed_id, &outcome);
             let failed = result
                 .as_ref()
                 .is_err_and(|error| !is_transfer_cancelled(error));
@@ -367,6 +395,21 @@ where
             let _ = reply.send(result);
             if failed { Err(()) } else { Ok(()) }
         }
+    }
+}
+
+fn finish_managed_transfer(
+    operations: &ManagedOperationRegistry,
+    id: u64,
+    result: &Result<(), String>,
+) {
+    match result {
+        Ok(()) => operations.succeed(id),
+        Err(error) if is_transfer_cancelled(error) => operations.cancel(id, error),
+        Err(error) => operations.fail(
+            id,
+            ManagedOperationError::new(OperationErrorCode::Internal, error.clone()),
+        ),
     }
 }
 
