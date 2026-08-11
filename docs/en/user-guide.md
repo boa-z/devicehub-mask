@@ -12,7 +12,7 @@ The compact connection center in the top bar provides the same lifecycle operati
 
 Multiple devices can remain connected. Selecting another device changes the visible workspace without disconnecting existing sessions. Connection phase and errors are shown per device. Use reconnect for a failed session; remove trust only when you intend to pair again. A metadata timeout does not necessarily mean the media session failed, and recoverable metadata is loaded again in the background.
 
-The clock button in the top bar opens **Device activity** for the selected transport. It shows active and recent bounded operations, progress, stage, completion time, and copyable failures. **Open tool** returns to the workspace that owns the detailed controls and cancellation. The Devices Overview shows active-operation counts from the shared status snapshot without polling every device separately.
+The clock button in the top bar opens **Device activity** for the selected transport. It shows active and recent bounded operations, progress, stage, completion time, and copyable failures. Cancellable work has a confirmed **Cancel task** action; **Open tool** returns to its detailed workspace. The Devices Overview shows active-operation counts from the shared status snapshot without polling every device separately.
 
 ## Control the Device
 

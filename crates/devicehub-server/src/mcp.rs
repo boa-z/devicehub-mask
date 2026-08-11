@@ -52,7 +52,7 @@ use devicehub_runtime::DeviceEventSlot;
 use devicehub_runtime::DeviceLogDemand;
 #[cfg(test)]
 use devicehub_runtime::PerformanceDemand;
-use devicehub_runtime::{DeviceSessionClient, RuntimeClient};
+use devicehub_runtime::{DeviceSessionClient, ManagedOperationCancelError, RuntimeClient};
 type InputCmd = devicehub_runtime::DeviceSessionCommand<std::path::PathBuf>;
 type ControlCmd = devicehub_runtime::SessionControlCommand;
 #[cfg(test)]
@@ -486,6 +486,12 @@ struct RotateParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct DeviceParams {
     udid: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct OperationParams {
+    /// Operation ID returned by list_operations.
+    operation_id: u64,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -3842,6 +3848,36 @@ impl DeviceHub {
         )
     }
 
+    #[tool(
+        description = "Cancel a cancellable operation on the selected device using an operation ID from list_operations."
+    )]
+    async fn cancel_operation(
+        &self,
+        Parameters(params): Parameters<OperationParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (selection_id, session) = self.selected_session()?;
+        session
+            .operation_control
+            .cancel(params.operation_id)
+            .await
+            .map_err(|error| match error {
+                ManagedOperationCancelError::NotFound
+                | ManagedOperationCancelError::NotActive
+                | ManagedOperationCancelError::NotCancellable => {
+                    McpError::invalid_params(error.to_string(), None)
+                }
+                _ => McpError::internal_error(error.to_string(), None),
+            })?;
+        ok_text(
+            json!({
+                "device_id": selection_id,
+                "operation_id": params.operation_id,
+                "status": "cancelling",
+            })
+            .to_string(),
+        )
+    }
+
     async fn switch_device(
         &self,
         udid: String,
@@ -4535,6 +4571,7 @@ mod tests {
             "wait_for_device_event",
             "list_devices",
             "list_operations",
+            "cancel_operation",
             "connect_device",
             "reconnect_device",
             "set_location",

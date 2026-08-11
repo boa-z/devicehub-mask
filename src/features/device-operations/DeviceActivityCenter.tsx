@@ -1,6 +1,5 @@
-import ClockCircleOutlined from "@ant-design/icons/es/icons/ClockCircleOutlined";
 import ReloadOutlined from "@ant-design/icons/es/icons/ReloadOutlined";
-import RightOutlined from "@ant-design/icons/es/icons/RightOutlined";
+import SyncOutlined from "@ant-design/icons/es/icons/SyncOutlined";
 import { Badge, Button, Empty, Popover, Tag, Tooltip, Typography } from "antd";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -27,7 +26,15 @@ type Props = {
 export function DeviceActivityCenter({ deviceId, deviceName, enabled, request, onNavigate }: Props) {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(false);
-  const { operations, error, refresh } = useManagedOperations(request, deviceId, enabled, open);
+  const [cancelConfirmationId, setCancelConfirmationId] = useState<number | null>(null);
+  const {
+    operations,
+    error,
+    actionError,
+    cancelOperation,
+    clearActionError,
+    refresh,
+  } = useManagedOperations(request, deviceId, enabled, open);
   const activeCount = operations.filter(isActiveOperation).length;
   const failedCount = operations.filter((operation) => operation.phase === "failed").length;
   const visibleOperations = useMemo(() => operations.slice(0, 12), [operations]);
@@ -47,6 +54,13 @@ export function DeviceActivityCenter({ deviceId, deviceName, enabled, request, o
         <span><strong>{activeCount}</strong>{t("operations.active")}</span>
         <span><strong>{failedCount}</strong>{t("operations.failed")}</span>
       </div>
+      {actionError && (
+        <div className="device-activity-action-error">
+          <Typography.Text type="danger" ellipsis title={actionError}>{t("operations.cancelFailed")}</Typography.Text>
+          <ErrorCopyButton error={actionError} />
+          <Button type="text" size="small" onClick={clearActionError}>{t("operations.dismiss")}</Button>
+        </div>
+      )}
       {error ? (
         <div className="device-activity-error">
           <Typography.Text type="danger" ellipsis title={error}>{t("operations.loadFailed")}</Typography.Text>
@@ -61,6 +75,13 @@ export function DeviceActivityCenter({ deviceId, deviceName, enabled, request, o
               key={operation.id}
               operation={operation}
               locale={i18n.language}
+              confirmingCancel={cancelConfirmationId === operation.id}
+              onRequestCancel={() => setCancelConfirmationId(operation.id)}
+              onDismissCancel={() => setCancelConfirmationId(null)}
+              onCancel={() => {
+                setCancelConfirmationId(null);
+                void cancelOperation(operation.id);
+              }}
               onNavigate={() => {
                 setOpen(false);
                 onNavigate(operationWorkspace(operation.kind));
@@ -78,21 +99,28 @@ export function DeviceActivityCenter({ deviceId, deviceName, enabled, request, o
       trigger="click"
       placement="bottomRight"
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setCancelConfirmationId(null);
+      }}
       overlayClassName="device-activity-popover"
     >
       <Tooltip title={t("operations.title")}>
         <Badge count={activeCount} dot={activeCount === 0 && failedCount > 0} color={failedCount > 0 && activeCount === 0 ? "#d89614" : undefined}>
-          <Button aria-label={t("operations.title")} disabled={!deviceId || !enabled} icon={<ClockCircleOutlined />} />
+          <Button aria-label={t("operations.title")} disabled={!deviceId || !enabled} icon={<SyncOutlined spin={activeCount > 0} />} />
         </Badge>
       </Tooltip>
     </Popover>
   );
 }
 
-function OperationRow({ operation, locale, onNavigate }: {
+function OperationRow({ operation, locale, confirmingCancel, onRequestCancel, onDismissCancel, onCancel, onNavigate }: {
   operation: ManagedOperation;
   locale: string;
+  confirmingCancel: boolean;
+  onRequestCancel: () => void;
+  onDismissCancel: () => void;
+  onCancel: () => void;
   onNavigate: () => void;
 }) {
   const { t } = useTranslation();
@@ -123,13 +151,29 @@ function OperationRow({ operation, locale, onNavigate }: {
           <ErrorCopyButton error={operation.error.message} />
         </div>
       )}
+      {confirmingCancel && (
+        <div className="device-activity-cancel-confirmation">
+          <Typography.Text>{t("operations.cancelConfirmDescription")}</Typography.Text>
+          <div>
+            <Button type="text" size="small" onClick={onDismissCancel}>{t("operations.keepTask")}</Button>
+            <Button danger size="small" onClick={onCancel}>{t("operations.cancel")}</Button>
+          </div>
+        </div>
+      )}
       <div className="device-activity-row-footer">
         <Typography.Text type="secondary">
           {new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(operation.updated_at_ms)}
         </Typography.Text>
-        <Button type="link" size="small" onClick={onNavigate}>
-          {t("operations.openTool")} <RightOutlined />
-        </Button>
+        <div className="device-activity-row-actions">
+          {operation.phase === "running" && operation.cancellable && !confirmingCancel && (
+            <Button danger type="text" size="small" onClick={onRequestCancel}>
+              {t("operations.cancel")}
+            </Button>
+          )}
+          <Button type="link" size="small" onClick={onNavigate}>
+            {t("operations.openTool")}
+          </Button>
+        </div>
       </div>
     </div>
   );

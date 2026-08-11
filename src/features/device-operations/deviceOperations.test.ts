@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cancelManagedOperation,
   operationPollDelay,
   operationWorkspace,
   parseManagedOperations,
@@ -25,6 +26,9 @@ function operation(overrides: Partial<ManagedOperation> = {}): ManagedOperation 
 describe("device operations", () => {
   it("rejects malformed backend operation records", () => {
     expect(() => parseManagedOperations([{ ...operation(), kind: "unknown" }])).toThrow();
+    expect(() => parseManagedOperations([{ ...operation(), id: 1.5 }])).toThrow();
+    expect(() => parseManagedOperations([{ ...operation(), progress_percent: Number.NaN }])).toThrow();
+    expect(() => parseManagedOperations([{ ...operation(), progress_percent: 101 }])).toThrow();
     expect(parseManagedOperations([operation({ phase: "succeeded" })])).toHaveLength(1);
   });
 
@@ -39,5 +43,17 @@ describe("device operations", () => {
     expect(operationWorkspace("network_capture")).toBe("performance");
     expect(operationWorkspace("log_archive")).toBe("logs");
     expect(operationWorkspace("developer_image_mount")).toBe("device");
+  });
+
+  it("cancels a managed operation through its device-scoped endpoint", async () => {
+    let path = "";
+    let method = "";
+    await cancelManagedOperation(async (nextPath, init) => {
+      path = nextPath;
+      method = init?.method ?? "";
+      return new Response(null, { status: 204 });
+    }, 42);
+    expect(path).toBe("/api/device/operations/42");
+    expect(method).toBe("DELETE");
   });
 });

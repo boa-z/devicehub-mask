@@ -95,7 +95,7 @@ React Inventory 控制器独立读取 manager 级 `/api/devices` 投影，不依
 
 每项设备服务报告规范化健康阶段，能安全恢复时独立监督。定位、日志、诊断或性能通道故障不应拆掉视频和输入。传输终止故障只转换受影响会话并使用有界重连策略。错误投影保留用户或 agent 可操作的目标和操作上下文，不暴露无界原始协议数据。
 
-长操作保留各自的领域状态，同时通过 `ManagedOperationRegistry` 发布统一的设备级生命周期元数据。共享记录包含 kind、phase、stage、progress、是否可取消、时间戳和类型化有界错误；同一设备同类操作最多允许一个处于活动状态，历史数量有界，会话结束会取消残留活动记录。HTTP 通过 `/api/device/operations` 暴露，MCP 通过 `list_operations` 暴露。宿主文件只能通过注入能力访问，runtime 不解析或信任本地路径。
+长操作保留各自的领域状态，同时通过 `ManagedOperationRegistry` 发布统一的设备级生命周期元数据。共享记录包含 kind、phase、stage、progress、是否可取消、时间戳和类型化有界错误；同一设备同类操作最多允许一个处于活动状态，历史数量有界，会话结束会取消残留活动记录。`ManagedOperationController` 根据 operation ID 定位实际拥有取消能力的 runtime 服务，HTTP 和 MCP 不再重建各服务的 Stop 命令。HTTP 在 `/api/device/operations` 下提供查询和取消，MCP 提供 `list_operations` 与 `cancel_operation`。宿主文件只能通过注入能力访问，runtime 不解析或信任本地路径。
 
 ## 数据所有权
 

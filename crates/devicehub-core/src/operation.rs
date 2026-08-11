@@ -210,6 +210,21 @@ impl ManagedOperationRegistry {
         changed
     }
 
+    /// Restore a running operation when its owning service rejected a cancel
+    /// request. Completed operations are intentionally left unchanged.
+    pub fn cancel_request_failed(&self, id: u64) -> bool {
+        let mut changed = false;
+        let mut inner = self.0.lock().expect("managed operation lock poisoned");
+        if let Some(operation) = inner.operations.iter_mut().find(|operation| {
+            operation.id == id && operation.phase == ManagedOperationPhase::Cancelling
+        }) {
+            operation.phase = ManagedOperationPhase::Running;
+            operation.updated_at_ms = unix_millis();
+            changed = true;
+        }
+        changed
+    }
+
     pub fn succeed(&self, id: u64) {
         self.finish(id, ManagedOperationPhase::Succeeded, None);
     }
@@ -332,6 +347,8 @@ mod tests {
                 .is_err()
         );
         registry.update(id, Some("copying".into()), Some(120.0));
+        assert!(registry.request_cancel(id));
+        assert!(registry.cancel_request_failed(id));
         assert!(registry.request_cancel(id));
         registry.cancel(id, "session ended");
 

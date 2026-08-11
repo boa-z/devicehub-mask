@@ -42,7 +42,7 @@ pub use capture::{
 pub use client::RuntimeClientFixture;
 pub use client::{
     DeviceControlError, DeviceControlService, DeviceSessionClient, DeviceSessionRegistry,
-    RuntimeClient, RuntimeManagerClient,
+    ManagedOperationCancelError, ManagedOperationController, RuntimeClient, RuntimeManagerClient,
 };
 pub use clipboard::{ClipboardImage, ClipboardSlot, HostClipboard, HostClipboardProvider};
 pub use demand::{Demand, DemandLease, SessionMediaDemand};

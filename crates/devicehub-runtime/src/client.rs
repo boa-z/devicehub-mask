@@ -1,6 +1,7 @@
 //! Cloneable runtime client shared by host protocol adapters.
 
 mod control;
+mod operations;
 mod registry;
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -14,6 +15,7 @@ use devicehub_core::{
 };
 
 pub use control::{DeviceControlError, DeviceControlService};
+pub use operations::{ManagedOperationCancelError, ManagedOperationController};
 pub use registry::DeviceSessionRegistry;
 
 use crate::runtime::CoreRuntimeState;
@@ -37,6 +39,7 @@ pub struct RuntimeManagerClient {
 /// ownership explicit before a host starts retaining several sessions.
 pub struct DeviceSessionClient<HostPath> {
     pub device_control: DeviceControlService<HostPath>,
+    pub operation_control: ManagedOperationController<HostPath>,
     pub orientation: OrientationSlot,
     pub error: ErrorSlot,
     pub status: StatusSlot,
@@ -69,6 +72,7 @@ impl<HostPath> Clone for DeviceSessionClient<HostPath> {
     fn clone(&self) -> Self {
         Self {
             device_control: self.device_control.clone(),
+            operation_control: self.operation_control.clone(),
             orientation: self.orientation.clone(),
             error: self.error.clone(),
             status: self.status.clone(),
@@ -105,6 +109,12 @@ impl<HostPath> DeviceSessionClient<HostPath> {
             device_control: DeviceControlService::new(
                 state.browser_frames.clone(),
                 state.commands.clone(),
+            ),
+            operation_control: ManagedOperationController::new(
+                state.operations.clone(),
+                state.commands.clone(),
+                state.app_documents.clone(),
+                state.device_files.clone(),
             ),
             orientation: state.orientation.clone(),
             error: state.error.clone(),

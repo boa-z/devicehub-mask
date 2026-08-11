@@ -128,7 +128,7 @@ MCP 可以创建和回放与桌面“Key Mapping”工作区共用的本地 nati
 
 ## 设备与会话流程
 
-使用 `list_devices` 查看当前传输清单，并把其中包含传输信息的准确 `id` 传给 `connect_device` 或 `reconnect_device`；不再接受裸 UDID。`status` 检查这条 MCP 连接选中的会话，`list_operations` 返回该会话的有界长操作生命周期和类型化错误。连接会选择或复用准确会话，不会停止其他物理设备的会话；重连只拆除并重新建立该目标。两者都会在有界时间内等待新视频帧，也可能报告连接仍在建立；此时应继续调用 `status` 或 `screenshot`，不要连续反复重连。
+使用 `list_devices` 查看当前传输清单，并把其中包含传输信息的准确 `id` 传给 `connect_device` 或 `reconnect_device`；不再接受裸 UDID。`status` 检查这条 MCP 连接选中的会话，`list_operations` 返回该会话的有界长操作生命周期和类型化错误。把可取消的 operation ID 传给 `cancel_operation`，runtime 会将取消请求路由到所选设备上真正拥有该任务的服务。连接会选择或复用准确会话，不会停止其他物理设备的会话；重连只拆除并重新建立该目标。两者都会在有界时间内等待新视频帧，也可能报告连接仍在建立；此时应继续调用 `status` 或 `screenshot`，不要连续反复重连。
 
 `device_details` 会刷新规范化的产品、系统、硬件、存储、激活、开发者模式、区域设置和有界电池信息。默认有意省略稳定标识符；只有确实需要设备身份时才设置 `include_identifiers=true` 请求 UDID、序列号和 ECID。
 
@@ -204,7 +204,7 @@ WDA 是需要单独准备的可选能力，DeviceHub Mask 不负责安装或签�
 | --- | --- | --- |
 | 画面与输入 | `screenshot`、`observe_game`、`tap`、`swipe`、`multi_touch`、`wait_for_frame`、`type_text`、`paste_text`、`press_key`、`press_button`、`app_switcher`、`lock_device`、`rotate` | 截图尺寸定义 HID 坐标；`observe_game` 无网格并支持感兴趣区域 |
 | Key Mapping | `list_keymap_profiles`、`get_keymap_profile`、`save_keymap_profile`、`run_keymap`、`start_game_session`、`set_game_input`、`stop_game_session` | 本地 native v2 配置；持续会话使用完整的浏览器键盘代码状态，且不会切换桌面端激活配置 |
-| 设备与会话 | `status`、`device_details`、`list_devices`、`list_operations`、`connect_device`、`reconnect_device`、`wait_for_device_event`、`list_companion_devices`、`home_screen_layout` | 准确选择 ID 区分 USB/Wi-Fi；稳定标识符需要显式请求 |
+| 设备与会话 | `status`、`device_details`、`list_devices`、`list_operations`、`cancel_operation`、`connect_device`、`reconnect_device`、`wait_for_device_event`、`list_companion_devices`、`home_screen_layout` | 准确选择 ID 区分 USB/Wi-Fi；稳定标识符需要显式请求 |
 | App 与进程 | `list_apps`、`launch_app`、`stop_app`、`app_status`、`wait_for_app`、`list_processes`、`process_status`、`wait_for_process` | 使用准确 Bundle ID 和最新 PID |
 | 诊断 | `list_crash_reports`、`read_crash_report`、`performance_snapshot`、`recent_device_logs` | 有界、只读的诊断输出 |
 | 定位与条件 | `set_location`、`clear_location`、`list_device_conditions`、`apply_device_condition`、`clear_device_condition` | 每次测试后清除模拟状态 |

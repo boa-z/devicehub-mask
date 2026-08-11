@@ -11,19 +11,21 @@ use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::IntoResponse;
-use axum::routing::{get, put};
+use axum::routing::{delete, get, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use devicehub_core::{
-    LocationStatus, LocationStatusSlot, ManagedOperation, ManagedOperationRegistry, SessionPhase,
-    validate_device_name, validate_paste_text,
+    LocationStatus, LocationStatusSlot, ManagedOperation, ManagedOperationRegistry,
+    OperationSuggestedAction, SessionPhase, validate_device_name, validate_paste_text,
 };
 use devicehub_runtime::{
     DeveloperModeCommand, DeviceControlError, DeviceControlService, DeviceSessionCommand,
-    SessionCommandSlot,
+    ManagedOperationCancelError, SessionCommandSlot,
 };
+
+use super::error::ApiError;
 
 type InputCmd = DeviceSessionCommand<PathBuf>;
 type InputSink = SessionCommandSlot<PathBuf>;
@@ -92,6 +94,10 @@ where
     Router::new()
         .route("/api/device/details", get(device_details))
         .route("/api/device/operations", get(device_operations))
+        .route(
+            "/api/device/operations/{operation_id}",
+            delete(cancel_device_operation),
+        )
         .route("/api/device/companions", get(device_companions))
         .route("/api/device/home-screen", get(device_home_screen))
         .route("/api/device/wallpaper/{kind}", get(device_wallpaper))
@@ -119,6 +125,63 @@ async fn device_operations(
     session: RequestSession,
 ) -> Json<Vec<ManagedOperation>> {
     Json(state.operations(&session).snapshot())
+}
+
+async fn cancel_device_operation(
+    session: RequestSession,
+    Path(operation_id): Path<u64>,
+) -> Result<StatusCode, ApiError> {
+    let session = session.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "device_session_unavailable",
+            "no active device session",
+        )
+        .retryable(OperationSuggestedAction::ReconnectDevice)
+    })?;
+    session
+        .operation_control
+        .cancel(operation_id)
+        .await
+        .map_err(operation_cancel_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn operation_cancel_error(error: ManagedOperationCancelError) -> ApiError {
+    match error {
+        ManagedOperationCancelError::NotFound => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "operation_not_found",
+            error.to_string(),
+        ),
+        ManagedOperationCancelError::NotActive => ApiError::new(
+            StatusCode::CONFLICT,
+            "operation_not_active",
+            error.to_string(),
+        ),
+        ManagedOperationCancelError::NotCancellable => ApiError::new(
+            StatusCode::CONFLICT,
+            "operation_not_cancellable",
+            error.to_string(),
+        ),
+        ManagedOperationCancelError::ServiceUnavailable => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "operation_service_unavailable",
+            error.to_string(),
+        )
+        .retryable(OperationSuggestedAction::ReconnectDevice),
+        ManagedOperationCancelError::Rejected(_) => ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "operation_cancel_rejected",
+            error.to_string(),
+        ),
+        ManagedOperationCancelError::TimedOut => ApiError::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            "operation_cancel_timed_out",
+            error.to_string(),
+        )
+        .retryable(OperationSuggestedAction::Retry),
+    }
 }
 
 #[derive(Deserialize)]
@@ -529,6 +592,30 @@ mod tests {
                     .unwrap_err()
                     .0,
                 StatusCode::BAD_REQUEST
+            );
+        }
+    }
+
+    #[test]
+    fn operation_cancellation_errors_have_stable_http_statuses() {
+        for (error, expected) in [
+            (ManagedOperationCancelError::NotFound, StatusCode::NOT_FOUND),
+            (
+                ManagedOperationCancelError::NotCancellable,
+                StatusCode::CONFLICT,
+            ),
+            (
+                ManagedOperationCancelError::ServiceUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                ManagedOperationCancelError::TimedOut,
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
+        ] {
+            assert_eq!(
+                operation_cancel_error(error).into_response().status(),
+                expected
             );
         }
     }

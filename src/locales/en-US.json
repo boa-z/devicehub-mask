@@ -58,6 +58,11 @@
     "loadFailed": "Unable to load device activity",
     "empty": "No device operations yet",
     "openTool": "Open tool",
+    "cancel": "Cancel task",
+    "cancelConfirmDescription": "Cancel may discard partial output.",
+    "keepTask": "Keep",
+    "cancelFailed": "Unable to cancel task",
+    "dismiss": "Dismiss",
     "phases": {
       "running": "Running",
       "cancelling": "Cancelling",

@@ -1,6 +1,6 @@
 import type { AppPage } from "../../components/AppNavigation";
 import type { BackendRequest } from "../../shared/backend/client";
-import { readBackendJson } from "../../shared/backend/response";
+import { readBackendJson, requireBackendSuccess } from "../../shared/backend/response";
 
 export type ManagedOperationKind =
   | "app_uninstall"
@@ -95,6 +95,14 @@ export async function fetchManagedOperations(request: BackendRequest, signal?: A
   return parseManagedOperations(await readBackendJson<unknown>(response));
 }
 
+export async function cancelManagedOperation(request: BackendRequest, operationId: number, signal?: AbortSignal) {
+  const response = await request(`/api/device/operations/${operationId}`, {
+    method: "DELETE",
+    signal,
+  });
+  await requireBackendSuccess(response);
+}
+
 export function parseManagedOperations(value: unknown): ManagedOperation[] {
   if (!Array.isArray(value) || !value.every(isManagedOperation)) {
     throw new Error("device operation response is invalid");
@@ -105,16 +113,24 @@ export function parseManagedOperations(value: unknown): ManagedOperation[] {
 function isManagedOperation(value: unknown): value is ManagedOperation {
   if (!value || typeof value !== "object") return false;
   const operation = value as Partial<ManagedOperation>;
-  return typeof operation.id === "number"
+  return isNonNegativeSafeInteger(operation.id) && operation.id > 0
     && operationKinds.has(operation.kind as ManagedOperationKind)
     && operationPhases.has(operation.phase as ManagedOperationPhase)
     && (operation.stage === null || typeof operation.stage === "string")
     && (operation.label === null || typeof operation.label === "string")
-    && (operation.progress_percent === null || typeof operation.progress_percent === "number")
+    && (operation.progress_percent === null
+      || (typeof operation.progress_percent === "number"
+        && Number.isFinite(operation.progress_percent)
+        && operation.progress_percent >= 0
+        && operation.progress_percent <= 100))
     && typeof operation.cancellable === "boolean"
-    && typeof operation.started_at_ms === "number"
-    && typeof operation.updated_at_ms === "number"
+    && isNonNegativeSafeInteger(operation.started_at_ms)
+    && isNonNegativeSafeInteger(operation.updated_at_ms)
     && (operation.error === null || isManagedOperationError(operation.error));
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isManagedOperationError(value: unknown): value is ManagedOperationError {

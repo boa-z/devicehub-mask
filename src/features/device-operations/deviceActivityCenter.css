@@ -1,6 +1,6 @@
 .device-activity-popover { width: min(420px, calc(100vw - 24px)); }
 .device-activity-popover .ant-popover-inner { padding: 0; overflow: hidden; }
-.device-activity-center { max-height: min(620px, calc(100vh - 88px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr); color: #dce5e2; }
+.device-activity-center { max-height: min(620px, calc(100vh - 88px)); display: flex; flex-direction: column; color: #dce5e2; }
 .device-activity-center > header { min-height: 54px; padding: 10px 12px; border-bottom: 1px solid #303638; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .device-activity-center > header > div:first-child { min-width: 0; display: grid; }
 .device-activity-summary { min-height: 44px; padding: 7px 12px; border-bottom: 1px solid #303638; display: flex; gap: 20px; }
@@ -19,7 +19,15 @@
 .device-activity-row-footer { min-height: 24px; }
 .device-activity-row-footer .ant-typography { font-size: 10px; font-variant-numeric: tabular-nums; }
 .device-activity-row-footer .ant-btn { height: 24px; padding-inline: 2px; font-size: 11px; }
+.device-activity-row-actions { display: flex; align-items: center; gap: 4px; }
+.device-activity-cancel-confirmation { padding: 7px 8px; border: 1px solid #69412d; border-radius: 4px; background: #30241e; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.device-activity-cancel-confirmation > .ant-typography { min-width: 0; color: #d6c4b8; font-size: 11px; }
+.device-activity-cancel-confirmation > div { flex: none; display: flex; align-items: center; gap: 4px; }
+.device-activity-cancel-confirmation .ant-btn { height: 24px; padding-inline: 7px; font-size: 11px; }
+.device-activity-action-error { min-height: 40px; padding: 6px 12px; border-bottom: 1px solid #5f3232; background: #351f20; display: flex; align-items: center; gap: 6px; }
+.device-activity-action-error > .ant-typography { min-width: 0; flex: 1; }
 .device-activity-error { min-height: 70px; padding: 16px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .device-activity-center > .ant-empty { margin: 28px 12px; }
 @keyframes device-activity-progress { from { transform: translateX(-25%); } to { transform: translateX(210%); } }
 @media (prefers-reduced-motion: reduce) { .device-activity-progress.is-indeterminate > span { animation: none; transform: translateX(90%); } }
+@media (max-width: 520px) { .device-activity-cancel-confirmation { align-items: stretch; flex-direction: column; } .device-activity-cancel-confirmation > div { justify-content: flex-end; } }

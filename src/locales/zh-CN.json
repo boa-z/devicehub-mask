@@ -58,6 +58,11 @@
     "loadFailed": "无法读取设备活动",
     "empty": "暂无设备操作记录",
     "openTool": "打开工具",
+    "cancel": "取消任务",
+    "cancelConfirmDescription": "可能丢弃部分输出。",
+    "keepTask": "保留",
+    "cancelFailed": "无法取消任务",
+    "dismiss": "关闭",
     "phases": {
       "running": "进行中",
       "cancelling": "正在取消",
