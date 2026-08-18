@@ -1,12 +1,11 @@
 //! Supervised lifecycle for an installed WebDriverAgent XCTest runner.
 
-use std::future::pending;
 use std::sync::Arc;
 use std::time::Duration;
 
 use idevice::IdeviceService;
 use idevice::provider::IdeviceProvider;
-use idevice::services::dvt::xctest::{TestConfig, XCUITestService, listener::XCUITestListener};
+use idevice::services::dvt::xctest::{TestConfig, WdaRunHandle, XCUITestService};
 use idevice::services::installation_proxy::InstallationProxyClient;
 use idevice::services::wda::WdaClient;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -65,36 +64,29 @@ struct Startup {
 
 struct RunningRunner {
     bundle_id: String,
-    task: JoinHandle<Result<(), idevice::IdeviceError>>,
+    handle: Option<WdaRunHandle>,
+    provider: Arc<dyn IdeviceProvider>,
 }
 
-struct AbortOnDrop<T>(Option<JoinHandle<T>>);
-
-impl<T> AbortOnDrop<T> {
-    fn new(task: JoinHandle<T>) -> Self {
-        Self(Some(task))
-    }
-
-    fn is_finished(&self) -> bool {
-        self.0.as_ref().is_none_or(JoinHandle::is_finished)
-    }
-
-    fn take(&mut self) -> JoinHandle<T> {
-        self.0.take().expect("runner task is present")
-    }
-}
-
-impl<T> Drop for AbortOnDrop<T> {
+impl Drop for RunningRunner {
     fn drop(&mut self) {
-        if let Some(task) = self.0.take() {
-            task.abort();
+        // `WdaRunHandle` intentionally exposes explicit cancellation rather
+        // than aborting in its own `Drop` implementation. Keep the handle
+        // supervised by the DeviceHub service on every exit path.
+        if let Some(handle) = &self.handle {
+            handle.abort();
         }
     }
 }
 
-struct NoopListener;
-
-impl XCUITestListener for NoopListener {}
+impl RunningRunner {
+    async fn stop(mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+            let _ = handle.wait().await;
+        }
+    }
+}
 
 pub(crate) async fn serve_wda_runner(
     provider: Arc<dyn IdeviceProvider>,
@@ -241,10 +233,11 @@ pub(crate) async fn serve_wda_runner(
             }
             result = wait_runner(&mut running) => {
                 let active = running.take().expect("completed runner exists");
+                let bundle_id = active.bundle_id.clone();
+                active.stop().await;
                 let error = match result {
-                    Ok(Ok(())) => "WDA runner exited unexpectedly".to_string(),
-                    Ok(Err(error)) => format!("WDA runner stopped: {error:?}"),
-                    Err(error) => format!("WDA runner task failed: {error}"),
+                    Ok(()) => "WDA runner exited unexpectedly".to_string(),
+                    Err(error) => format!("WDA runner stopped: {error:?}"),
                 };
                 let error = bound_error(error);
                 if let Some(operation_id) = managed_id.take() {
@@ -253,12 +246,12 @@ pub(crate) async fn serve_wda_runner(
                         ManagedOperationError::new(OperationErrorCode::Internal, error.clone()),
                     );
                 }
-                tracing::warn!(component = "wda_runner", operation = "exit", runner_bundle_id = %active.bundle_id, %error, "managed WebDriverAgent runner ended");
+                tracing::warn!(component = "wda_runner", operation = "exit", runner_bundle_id = %bundle_id, %error, "managed WebDriverAgent runner ended");
                 reporter.unavailable(attempt, error.clone());
                 status = WdaRunnerStatus {
                     phase: WdaRunnerPhase::Failed,
                     managed: false,
-                    runner_bundle_id: Some(active.bundle_id),
+                    runner_bundle_id: Some(bundle_id),
                     last_error: Some(error),
                 };
             }
@@ -278,13 +271,17 @@ async fn stop_runner_tasks(
     startup_error: &str,
 ) {
     if let Some(starting) = startup.take() {
-        starting.task.abort();
-        let _ = starting.task.await;
+        // `run_until_wda_ready` owns the underlying XCTest task while it is
+        // waiting for readiness. Let it finish so that a handle returned at
+        // the cancellation boundary can be explicitly aborted instead of
+        // being detached when the startup task is dropped.
+        if let Ok(Ok(active)) = starting.task.await {
+            active.stop().await;
+        }
         let _ = starting.reply.send(Err(startup_error.into()));
     }
     if let Some(active) = running.take() {
-        active.task.abort();
-        let _ = active.task.await;
+        active.stop().await;
     }
 }
 
@@ -293,16 +290,34 @@ async fn wait_startup(
 ) -> Result<Result<RunningRunner, String>, tokio::task::JoinError> {
     match startup.as_mut() {
         Some(startup) => (&mut startup.task).await,
-        None => pending().await,
+        None => std::future::pending().await,
     }
 }
 
-async fn wait_runner(
-    running: &mut Option<RunningRunner>,
-) -> Result<Result<(), idevice::IdeviceError>, tokio::task::JoinError> {
-    match running.as_mut() {
-        Some(runner) => (&mut runner.task).await,
-        None => pending().await,
+async fn wait_runner(running: &mut Option<RunningRunner>) -> Result<(), idevice::IdeviceError> {
+    let Some(runner) = running.as_mut() else {
+        return std::future::pending::<Result<(), idevice::IdeviceError>>().await;
+    };
+
+    let wda = WdaClient::new(runner.provider.as_ref())
+        .with_ports(
+            runner
+                .handle
+                .as_ref()
+                .expect("running WDA handle is present")
+                .ports(),
+        )
+        .with_timeout(STATUS_PROBE_TIMEOUT);
+    loop {
+        match tokio::time::timeout(STATUS_PROBE_TIMEOUT, wda.status()).await {
+            Ok(Ok(_)) => tokio::time::sleep(POLL_INTERVAL).await,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(idevice::IdeviceError::UnknownErrorType(
+                    "WDA runner stopped responding".into(),
+                ));
+            }
+        }
     }
 }
 
@@ -363,37 +378,16 @@ async fn start_runner(
         .await
         .map_err(|error| format!("unable to prepare WDA runner: {error:?}"))?;
 
-    let service = XCUITestService::new(provider.clone());
-    let mut runner_task = AbortOnDrop::new(tokio::spawn(async move {
-        let mut listener = NoopListener;
-        service.run(config, &mut listener, None).await
-    }));
-    let wda = WdaClient::new(provider.as_ref()).with_timeout(STATUS_PROBE_TIMEOUT);
-    let deadline = tokio::time::Instant::now() + STARTUP_TIMEOUT;
+    let handle = XCUITestService::new(provider.clone())
+        .run_until_wda_ready(config, STARTUP_TIMEOUT)
+        .await
+        .map_err(|error| format!("unable to start WDA runner: {error:?}"))?;
 
-    loop {
-        if runner_task.is_finished() {
-            let result = runner_task
-                .take()
-                .await
-                .map_err(|error| format!("WDA runner task failed: {error}"))?;
-            result.map_err(|error| format!("WDA runner exited during startup: {error:?}"))?;
-            return Err("WDA runner exited before becoming reachable".into());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err("WDA runner did not become reachable within 30 seconds".into());
-        }
-        match tokio::time::timeout_at(deadline, wda.status()).await {
-            Ok(Ok(_)) => {
-                return Ok(RunningRunner {
-                    bundle_id,
-                    task: runner_task.take(),
-                });
-            }
-            Ok(Err(_)) => tokio::time::sleep(POLL_INTERVAL).await,
-            Err(_) => return Err("WDA runner did not become reachable within 30 seconds".into()),
-        }
-    }
+    Ok(RunningRunner {
+        bundle_id,
+        handle: Some(handle),
+        provider,
+    })
 }
 
 async fn validate_installed_runner(
@@ -432,41 +426,10 @@ fn bound_error(error: impl Into<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    struct DropFlag(Arc<AtomicBool>);
-
-    impl Drop for DropFlag {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::Release);
-        }
-    }
 
     #[test]
     fn errors_are_bounded_on_character_boundaries() {
         let error = bound_error("你".repeat(MAX_ERROR_CHARS + 1));
         assert_eq!(error.chars().count(), MAX_ERROR_CHARS);
-    }
-
-    #[tokio::test]
-    async fn runner_cleanup_waits_for_the_aborted_task_to_drop_resources() {
-        let dropped = Arc::new(AtomicBool::new(false));
-        let task_dropped = dropped.clone();
-        let task = tokio::spawn(async move {
-            let _guard = DropFlag(task_dropped);
-            pending::<()>().await;
-            Ok(())
-        });
-        tokio::task::yield_now().await;
-        let mut startup = None;
-        let mut running = Some(RunningRunner {
-            bundle_id: "com.example.WebDriverAgentRunner.xctrunner".into(),
-            task,
-        });
-
-        stop_runner_tasks(&mut startup, &mut running, "session ended").await;
-
-        assert!(running.is_none());
-        assert!(dropped.load(Ordering::Acquire));
     }
 }

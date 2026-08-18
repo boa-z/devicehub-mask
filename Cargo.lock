@@ -2499,7 +2499,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "idevice"
 version = "0.1.65"
-source = "git+https://github.com/boa-z/idevice.git?rev=942e397#942e39742b1937c241dfa8cb1bd84d396f785a00"
+source = "git+https://github.com/boa-z/idevice.git?rev=6e12220#6e1222075e920a237055050a42018d5e2dae9f45"
 dependencies = [
  "aes",
  "async-stream",

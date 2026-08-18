@@ -485,21 +485,7 @@ where
         MountAssets::Developer { image, signature } => {
             status.update(|current| current.state = DeveloperImageMountState::Uploading);
             mounter
-                .upload_image_with_progress(
-                    "Developer",
-                    &image,
-                    signature.clone(),
-                    update_upload_progress,
-                    status.clone(),
-                )
-                .await
-                .map_err(|error| developer_image_protocol_error("upload", error))?;
-            status.update(|current| {
-                current.state = DeveloperImageMountState::Mounting;
-                current.progress_percent = None;
-            });
-            mounter
-                .mount_image("Developer", signature, None, None)
+                .mount_developer(&image, signature)
                 .await
                 .map_err(|error| developer_image_protocol_error("mount", error))?;
         }

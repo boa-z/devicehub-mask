@@ -11,7 +11,9 @@ use devicehub_core::{
     ConnKind, DeviceBackupSlot, DeviceBackupState, DeviceBackupStatus, ManagedOperationError,
     ManagedOperationKind, ManagedOperationRegistry, OperationErrorCode,
 };
-use idevice::mobilebackup2::{BackupDelegate, DirEntryInfo, FsBackupDelegate, MobileBackup2Client};
+use idevice::mobilebackup2::{
+    BackupDelegate, BackupProgress, DirEntryInfo, FsBackupDelegate, MobileBackup2Client,
+};
 use idevice::provider::IdeviceProvider;
 use idevice::rsd::RsdHandshake;
 use idevice::tcp::handle::AdapterHandle;
@@ -517,7 +519,10 @@ impl BackupDelegate for ConfinedBackupDelegate {
         self.status.update(|current| current.files_received = total);
     }
 
-    fn on_progress(&self, bytes_done: u64, bytes_total: u64, overall_progress: f64) {
+    fn on_progress(&self, progress: BackupProgress) {
+        let bytes_done = progress.session_bytes_done;
+        let bytes_total = progress.session_bytes_total;
+        let overall_progress = progress.overall_progress;
         self.status.update(|current| {
             current.bytes_done = bytes_done;
             current.bytes_total = bytes_total;
