@@ -1,15 +1,8 @@
 name: Synchronize Crowdin translations
 
+# This workflow has write-capable translation credentials and creates a PR;
+# run it on demand after reviewing source-locale changes.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "src/locales/en-US.json"
-      - "crowdin.yml"
-      - ".github/workflows/crowdin.yml"
-  schedule:
-    - cron: "17 4 * * *"
   workflow_dispatch:
 
 permissions:

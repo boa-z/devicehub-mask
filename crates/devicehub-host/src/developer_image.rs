@@ -27,6 +27,7 @@ struct DeveloperImageCatalogInner {
     managed_root: PathBuf,
     custom_roots: RwLock<Vec<PathBuf>>,
     sets: RwLock<HashMap<String, CatalogEntry>>,
+    #[cfg(target_os = "macos")]
     discover_xcode: bool,
 }
 
@@ -53,6 +54,8 @@ impl TokioDeveloperImageCatalog {
         discover_xcode: bool,
     ) -> Result<Self, String> {
         let custom_roots = validate_custom_roots(custom_roots)?;
+        #[cfg(not(target_os = "macos"))]
+        let _ = discover_xcode;
         std::fs::create_dir_all(&managed_root).map_err(|error| {
             format!(
                 "cannot create developer image catalog {}: {error}",
@@ -64,6 +67,7 @@ impl TokioDeveloperImageCatalog {
                 managed_root,
                 custom_roots: RwLock::new(custom_roots),
                 sets: RwLock::new(HashMap::new()),
+                #[cfg(target_os = "macos")]
                 discover_xcode,
             }),
             preferences,
