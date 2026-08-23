@@ -556,7 +556,6 @@ fn ffmpeg_executable() -> &'static str {
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::fs;
 
     #[test]
     fn measures_silent_and_audible_pcm_windows() {
@@ -658,6 +657,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolver_skips_a_foreign_candidate_and_uses_the_next_executable() {
+        use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
         let directory =
