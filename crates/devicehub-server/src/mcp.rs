@@ -4653,7 +4653,9 @@ mod tests {
         assert_eq!((width, height), (3, 2));
         assert_eq!(
             right
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|pixel| pixel[0])
                 .collect::<Vec<_>>(),
             vec![5, 3, 1, 6, 4, 2]
@@ -4662,7 +4664,9 @@ mod tests {
         let (width, height, left) = orient_rgb(rgb, 2, 3, Orientation::LandscapeLeft).unwrap();
         assert_eq!((width, height), (3, 2));
         assert_eq!(
-            left.chunks_exact(3)
+            left.as_chunks::<3>()
+                .0
+                .iter()
                 .map(|pixel| pixel[0])
                 .collect::<Vec<_>>(),
             vec![2, 4, 6, 1, 3, 5]
