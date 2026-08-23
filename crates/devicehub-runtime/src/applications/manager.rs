@@ -11,7 +11,7 @@ use devicehub_core::{
 use super::{AppCommand, collect_app_stream};
 use idevice::{
     IdeviceService, ReadWrite, RsdService,
-    core_device::AppServiceClient,
+    core_device::{AppServiceClient, ProcessToken},
     dvt::{process_control::ProcessControlClient, remote_server::RemoteServerClient},
     installation_proxy::InstallationProxyClient,
     provider::IdeviceProvider,
@@ -24,6 +24,11 @@ const APP_METADATA_TIMEOUT: Duration = Duration::from_secs(4);
 const APP_CLIENT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const APP_DVT_CHANNEL_TIMEOUT: Duration = Duration::from_secs(2);
 const APP_CONTROL_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
+const APP_FORCE_QUIT_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
+const APP_FORCE_QUIT_SIGNAL: u32 = 9;
+const APP_FORCE_QUIT_VERIFY_TIMEOUT: Duration = Duration::from_secs(3);
+const APP_FORCE_QUIT_VERIFY_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_APP_CONTROL_ERROR_CHARS: usize = 512;
 pub const APP_LIST_REQUEST_TIMEOUT: Duration = Duration::from_secs(24);
 pub const APP_CONTROL_REQUEST_TIMEOUT: Duration = Duration::from_secs(22);
 
@@ -869,22 +874,76 @@ async fn stop_device_app(
         .list_processes()
         .await
         .map_err(|error| format!("unable to list app processes: {error:?}"))?;
-    let process_ids: Vec<_> = processes
-        .into_iter()
+    let process_ids = app_process_ids(&app.path, &processes);
+    if process_ids.is_empty() {
+        return Ok(false);
+    }
+
+    // Resolve fresh process IDs and use the same CoreDevice force-quit path as
+    // StikDebug. SIGKILL does not rely on the application handling SIGTERM.
+    let mut signal_errors = Vec::new();
+    for pid in &process_ids {
+        if let Err(error) = client.send_signal(*pid, APP_FORCE_QUIT_SIGNAL).await
+            && signal_errors.len() < 4
+        {
+            signal_errors.push(bounded_app_control_error(format!("PID {pid}: {error}")));
+        }
+    }
+
+    let deadline = Instant::now() + APP_FORCE_QUIT_VERIFY_TIMEOUT;
+    let mut verification_error = None;
+    loop {
+        match client.list_processes().await {
+            Ok(processes) if app_process_ids(&app.path, &processes).is_empty() => return Ok(true),
+            Ok(_) => {}
+            Err(error) => {
+                verification_error = Some(bounded_app_control_error(format!(
+                    "exit verification: {error}"
+                )))
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(APP_FORCE_QUIT_VERIFY_INTERVAL).await;
+    }
+
+    if let Some(error) = verification_error {
+        signal_errors.push(error);
+    }
+    if signal_errors.is_empty() {
+        Err("app process remained running after force quit".into())
+    } else {
+        signal_errors.sort();
+        signal_errors.dedup();
+        Err(bounded_app_control_error(format!(
+            "unable to force quit app: {}",
+            signal_errors.join("; ")
+        )))
+    }
+}
+
+fn bounded_app_control_error(message: impl AsRef<str>) -> String {
+    message
+        .as_ref()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_APP_CONTROL_ERROR_CHARS)
+        .collect()
+}
+
+fn app_process_ids(app_path: &str, processes: &[ProcessToken]) -> Vec<u32> {
+    processes
+        .iter()
         .filter(|process| {
             process.executable_url.as_ref().is_some_and(|executable| {
-                process_executable_belongs_to_app(&app.path, &executable.relative)
+                process_executable_belongs_to_app(app_path, &executable.relative)
             })
         })
         .map(|process| process.pid)
-        .collect();
-    for pid in &process_ids {
-        client
-            .send_signal(*pid, 15)
-            .await
-            .map_err(|error| format!("unable to stop app: {error:?}"))?;
-    }
-    Ok(!process_ids.is_empty())
+        .collect()
 }
 
 async fn connect_app_control(
@@ -1025,14 +1084,14 @@ pub(super) async fn stop_device_app_isolated(
     let started = Instant::now();
     let mut client = connect_app_control(adapter, handshake).await?;
     let result = tokio::time::timeout(
-        APP_CONTROL_OPERATION_TIMEOUT,
+        APP_FORCE_QUIT_OPERATION_TIMEOUT,
         stop_device_app(&mut client, &bundle_id),
     )
     .await
     .map_err(|_| {
         format!(
             "CoreDevice app stop timed out after {} seconds",
-            APP_CONTROL_OPERATION_TIMEOUT.as_secs()
+            APP_FORCE_QUIT_OPERATION_TIMEOUT.as_secs()
         )
     })?;
     tracing::debug!(
@@ -1114,6 +1173,56 @@ mod tests {
             + APP_CONTROL_OPERATION_TIMEOUT;
         assert!(APP_CONTROL_REQUEST_TIMEOUT > dvt_attempt);
         assert!(APP_CONTROL_REQUEST_TIMEOUT > fallback_attempt);
+        assert!(
+            APP_CONTROL_REQUEST_TIMEOUT
+                > APP_CLIENT_RECONNECT_TIMEOUT + APP_FORCE_QUIT_OPERATION_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn force_quit_targets_only_the_selected_apps_main_process() {
+        let processes = vec![
+            ProcessToken {
+                pid: 41,
+                executable_url: Some(idevice::core_device::ExecutableUrl {
+                    relative: "file:///private/var/containers/Bundle/Application/A/Game.app/Game"
+                        .into(),
+                }),
+            },
+            ProcessToken {
+                pid: 42,
+                executable_url: Some(idevice::core_device::ExecutableUrl {
+                    relative:
+                        "file:///private/var/containers/Bundle/Application/A/Game.app/PlugIns/Widget.appex/Widget"
+                            .into(),
+                }),
+            },
+            ProcessToken {
+                pid: 43,
+                executable_url: Some(idevice::core_device::ExecutableUrl {
+                    relative: "file:///private/var/containers/Bundle/Application/B/Other.app/Other"
+                        .into(),
+                }),
+            },
+        ];
+
+        assert_eq!(
+            app_process_ids(
+                "/private/var/containers/Bundle/Application/A/Game.app",
+                &processes,
+            ),
+            vec![41]
+        );
+    }
+
+    #[test]
+    fn force_quit_errors_are_single_line_and_bounded() {
+        let error = bounded_app_control_error(format!(
+            "failed\n{} private",
+            "x".repeat(MAX_APP_CONTROL_ERROR_CHARS + 20)
+        ));
+        assert!(!error.contains('\n'));
+        assert_eq!(error.chars().count(), MAX_APP_CONTROL_ERROR_CHARS);
     }
 
     #[test]

@@ -3585,7 +3585,7 @@ impl DeviceHub {
     }
 
     #[tool(
-        description = "Stop a running user app by bundle ID. The server resolves the app's current main process and sends SIGTERM; callers cannot provide a PID or signal."
+        description = "Force quit a running user app by bundle ID. The server resolves the app's current main process, sends SIGKILL, and verifies that it exited; callers cannot provide a PID or signal."
     )]
     async fn stop_app(
         &self,

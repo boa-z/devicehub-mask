@@ -40,7 +40,7 @@
 - 通过 CoreDevice AppService 列出用户 App，并可按需列出 Apple 默认 App；用户 App 目录可 回退 Installation Proxy。
 - 可通过 CoreDevice OpenStdioSocket 显式启动开发者 App 或第三方 App，并在当前会话内有界采集 stdout/stderr。
 - 在设备允许时显示原生图标、版本、签名类型、可移除状态、上报存储、运行状态，以及 SpringBoard Dock/页面/文件夹位置。
-- 支持启动、重新启动、停止，以及安全卸载符合条件的用户 App。卸载前会根据设备当前元数据重新鉴权，操作由当前会话持有，并报告进度或失败。
+- 支持启动、重新启动、强制关闭，以及安全卸载符合条件的用户 App。强制关闭会重新解析 App 当前主进程 PID，通过 CoreDevice AppService 发送 SIGKILL，并验证进程已经退出。卸载前会根据设备当前元数据重新鉴权，操作由当前会话持有，并报告进度或失败。
 - iOS 允许时通过 House Arrest 打开 Documents 或完整 Container，执行有界的文件与目录 传输和修改。
 - 可将 App 关联到已保存的按键映射配置；从 App 列表启动时会激活对应配置。
 - 可显式启动和停止已安装、开发者签名的 WebDriverAgent `.xctrunner`；应用不会安装或签名 WDA。

@@ -447,7 +447,7 @@ export function DeviceInspector({
     }
   }, [loadApps, onAppLaunched, request, t]);
 
-  const stopApp = useCallback(async (app: DeviceApp) => {
+  const forceQuitApp = useCallback(async (app: DeviceApp) => {
     setAppProcessAction({ bundleId: app.bundle_id, kind: "stop" });
     try {
       const response = await request(`/api/device/apps/${encodeURIComponent(app.bundle_id)}/stop`, { method: "PUT" });
@@ -461,6 +461,17 @@ export function DeviceInspector({
       setAppProcessAction(null);
     }
   }, [loadApps, request, t]);
+
+  const stopApp = useCallback((app: DeviceApp) => {
+    Modal.confirm({
+      title: t("deviceInspector.stopApp"),
+      content: t("deviceInspector.stopAppConfirm", { name: app.name }),
+      okText: t("deviceInspector.stopApp"),
+      okButtonProps: { danger: true },
+      cancelText: t("common.cancel"),
+      onOk: () => forceQuitApp(app),
+    });
+  }, [forceQuitApp, t]);
 
   const startWdaRunner = useCallback((app: DeviceApp) => {
     Modal.confirm({
