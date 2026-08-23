@@ -292,7 +292,7 @@ struct AudioSignalWindow {
 
 impl AudioSignalWindow {
     fn observe(&mut self, pcm: &[u8]) {
-        for bytes in pcm.chunks_exact(2) {
+        for bytes in pcm.as_chunks::<2>().0 {
             let sample = i32::from(i16::from_le_bytes([bytes[0], bytes[1]]));
             let magnitude = sample.abs();
             self.sample_count += 1;
